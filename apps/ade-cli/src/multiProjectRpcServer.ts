@@ -672,6 +672,34 @@ export async function readMachineNextScheduledWakeAt(args: BootedRuntimeSources 
 }
 
 /**
+ * After an ADE Cloud computer wakes: every chat's scheduled work and
+ * scheduled sends are armed again from the wall clock, in each project this
+ * brain has booted and its personal chats. A timer counts the monotonic clock,
+ * which stops while a Linux machine is frozen, so without this a check due
+ * soon after the timed wake (`cloudWake.ts` wakes it two minutes early) fired
+ * late by the whole time asleep. Never throws.
+ */
+export async function rearmMachineTimersAfterWake(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "bootedRuntime">>;
+}): Promise<void> {
+  const rearm = async (runtime: AdeRuntime): Promise<void> => {
+    try {
+      await runtime.agentChatService?.rearmScheduledWorkAfterFreeze?.();
+    } catch {
+      // One project's chats never hold the others back; the next timer re-arms it.
+    }
+  };
+  // The personal chats' lookup never holds the projects back.
+  const personal = typeof args.personalChatScope.bootedRuntime === "function"
+    ? args.personalChatScope.bootedRuntime().catch(() => null).then((runtime) => (runtime ? rearm(runtime) : undefined))
+    : undefined;
+  await Promise.all([
+    mapBootedProjectRuntimes(args, rearm).catch(() => []),
+    personal,
+  ]);
+}
+
+/**
  * What restarting this machine's ADE would stop, across every project the
  * brain has booted and its personal chats.
  */

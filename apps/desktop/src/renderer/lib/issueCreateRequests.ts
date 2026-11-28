@@ -1,6 +1,18 @@
 import type { NormalizedLinearIssue } from "../../shared/types";
 import { createPendingRequestChannel } from "./pendingRequestChannel";
 
+/** Linear fields a new issue starts with (a list group's "+": its status, assignee, project, ...). */
+export type LinearIssuePrefill = {
+  teamKey?: string | null;
+  stateId?: string | null;
+  priority?: number | null;
+  assigneeId?: string | null;
+  labelIds?: string[];
+  projectId?: string | null;
+  milestoneId?: string | null;
+  cycleId?: string | null;
+};
+
 /**
  * "Start a new issue" — asked for by a pane's `+ New`, an issue viewer's
  * "New sub-issue", and the chat selection toolbar's "Create issue"; answered
@@ -18,6 +30,11 @@ export type IssueCreateRequest = {
       | { provider: "github"; owner: string; repo: string; number: number }
       | { provider: "jira"; siteUrl: string; key: string }
       | null;
+    /**
+     * Linear fields to start with, e.g. from a list group's "+". Opens a fresh
+     * form that neither loads nor overwrites the saved draft.
+     */
+    linear?: LinearIssuePrefill | null;
   };
   /** Where the issue was started from, for its "Context" footer. */
   context?: { sessionId?: string | null; laneId?: string | null; laneName?: string | null } | null;

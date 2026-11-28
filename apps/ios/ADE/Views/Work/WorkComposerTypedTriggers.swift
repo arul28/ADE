@@ -1739,13 +1739,28 @@ enum WorkComposerTriggerDetector {
   /// The trigger detector intentionally accepts spaces for multi-word names;
   /// this second pass uses the selected row's label to distinguish that name
   /// from a trailing sentence.
+  /// A leading kind filter word and its `:` or spaces (`chat ` in
+  /// `chat Deploy notes`), or "" when the query has none (`parseAtQuery`).
+  static func mentionFilterPrefix(_ query: String) -> String {
+    guard WorkComposerSuggestionSection.parseAtQuery(query).filter != nil else { return "" }
+    let text = query as NSString
+    var end = 0
+    while end < text.length, let scalar = UnicodeScalar(text.character(at: end)), CharacterSet.letters.contains(scalar) { end += 1 }
+    if end < text.length, text.character(at: end) == 0x3A { end += 1 }
+    while end < text.length, text.character(at: end) == 0x20 || text.character(at: end) == 0x09 { end += 1 }
+    return text.substring(to: end)
+  }
+
   static func matchForSelection(
     _ match: WorkComposerTriggerMatch,
     suggestion: WorkComposerSuggestion
   ) -> WorkComposerTriggerMatch {
     guard match.kind == .at else { return match }
-    // A model row's token is not what the user typed; its name is.
-    let rawLabel = suggestion.modelId == nil && suggestion.insertText.hasPrefix("@")
+    // A file row's label is its path, which is what the user typed toward. Any
+    // other row's token (`@lane:<id>`, a model's) is not typed; its name is,
+    // as on desktop (`composerTriggerForSelection`).
+    let isFileRow = suggestion.mentionKind == nil && suggestion.modelId == nil
+    let rawLabel = isFileRow && suggestion.insertText.hasPrefix("@")
       ? String(suggestion.insertText.dropFirst())
       : suggestion.title
     let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1758,19 +1773,27 @@ enum WorkComposerTriggerDetector {
         candidateLabels.append(basenameString)
       }
     }
-    let searchableQuery = fileSearchQuery(for: match.query)
-    if searchableQuery != match.query,
+    // A kind filter word (`@chat Deploy notes about this`) goes with the
+    // splice, never with the title: the menu searched the words after it, so
+    // an entity's title is matched there, as on desktop.
+    let filterPrefix = isFileRow ? "" : mentionFilterPrefix(match.query)
+    let typed = (match.query as NSString).substring(from: (filterPrefix as NSString).length)
+    let searchableQuery = fileSearchQuery(for: typed)
+    if searchableQuery != typed,
        label.lowercased().hasSuffix(searchableQuery.lowercased()),
        !candidateLabels.contains(where: { $0.lowercased() == searchableQuery.lowercased() }) {
       candidateLabels.append(searchableQuery)
     }
-    let pathPrefix = pathPrefixForSelection(query: match.query, selectedLabel: label)
+    // Only a file's path may continue past the words typed before prose. For a
+    // chat or a lane it would match the filter word (`@lane up` against
+    // `lane:<id>`) and leave the typed word behind the chip.
+    let pathPrefix = isFileRow ? pathPrefixForSelection(query: match.query, selectedLabel: label) : ""
     if !pathPrefix.isEmpty,
        !candidateLabels.contains(where: { $0.lowercased() == pathPrefix.lowercased() }) {
       candidateLabels.append(pathPrefix)
     }
 
-    let query = match.query as NSString
+    let query = typed as NSString
     for candidateLabel in candidateLabels {
       let labelLength = (candidateLabel as NSString).length
       guard query.length >= labelLength else { continue }
@@ -1787,7 +1810,7 @@ enum WorkComposerTriggerDetector {
         guard character == 0x20 || character == 0x09 else { break }
         separatorLength += 1
       }
-      let consumedQuery = query.substring(to: labelLength + separatorLength)
+      let consumedQuery = filterPrefix + query.substring(to: labelLength + separatorLength)
       return WorkComposerTriggerMatch(
         kind: match.kind,
         query: consumedQuery,
@@ -2556,12 +2579,15 @@ final class WorkComposerSuggestionController: ObservableObject {
     atFilter = parsed.filter
     atGeneration += 1
     let generation = atGeneration
-    // A chat whose ADE Cloud computer has no live link: its menu is built here
-    // from saved copies and the account, and the computer is asked nothing (a
-    // read never wakes it). Its files live on it, so none list meanwhile.
-    let restingRows = sessionId.flatMap { syncService?.restingCloudChatMentionRows(sessionId: $0) }
+    // A chat whose ADE Cloud computer has no live link: the computer is asked
+    // nothing (a read never wakes it). Its menu comes from what it saved
+    // before it rested, so it reads the same asleep as awake.
+    if let sessionId, let restingRows = syncService?.restingCloudChatMentionRows(sessionId: sessionId) {
+      scheduleRestingAt(sessionId: sessionId, filter: parsed.filter, rest: parsed.rest, liveRows: restingRows, generation: generation)
+      return
+    }
 
-    if restingRows == nil, parsed.filter == nil || parsed.filter == .files {
+    if parsed.filter == nil || parsed.filter == .files {
       scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: parsed.rest))
     } else {
       fetchTask?.cancel()
@@ -2573,14 +2599,7 @@ final class WorkComposerSuggestionController: ObservableObject {
     mentionTask?.cancel()
     mentionTask = nil
     // Models come from the local catalog, so `@model` asks the host for nothing.
-    if let restingRows, parsed.filter != .files, parsed.filter != .models {
-      atMentions = Self.mentionSuggestions(from: WorkChatMentionMenuRanker.rank(
-        restingRows,
-        kind: parsed.filter?.mentionKindWord,
-        query: parsed.rest
-      ))
-      atMentionsPending = false
-    } else if parsed.filter != .files, parsed.filter != .models, mentionsAvailable, let sync = syncService {
+    if parsed.filter != .files, parsed.filter != .models, mentionsAvailable, let sync = syncService {
       atMentionsPending = true
       // A section filter is re-sent as the host's own kind word, so the host
       // narrows server-side and returns that kind's full list rather than a
@@ -2608,6 +2627,92 @@ final class WorkComposerSuggestionController: ObservableObject {
       atMentionsPending = false
     }
     recombineAt()
+  }
+
+  /// A resting cloud chat's `@` query. Its computer saved its menu before it
+  /// rested (`CloudMentionSnapshot`): every kind's rows and each lane's file
+  /// names, ranked here as the computer ranks them. Machines come live from
+  /// the account. Until the saved menu is read (once per sleep), and when none
+  /// was saved (an older computer), the rows built from saved chats answer.
+  private func scheduleRestingAt(
+    sessionId: String,
+    filter: WorkComposerSuggestionSection?,
+    rest: String,
+    liveRows: [ChatMentionSuggestionRow],
+    generation: Int
+  ) {
+    fetchTask?.cancel()
+    fetchTask = nil
+    mentionTask?.cancel()
+    mentionTask = nil
+    let address = syncService?.restingCloudMentionAddress(sessionId: sessionId)
+    let fileLane = address?.laneId ?? laneId
+    let held = address.flatMap {
+      CloudAtRestStore.shared.heldMentionSnapshot(machineKey: $0.machineKey, projectKey: $0.projectKey, laneId: $0.laneId)
+    }
+    applyRestingAt(filter: filter, rest: rest, liveRows: liveRows, snapshot: held, fileLane: fileLane)
+    if let address, let sync = syncService {
+      if held == nil, filter == nil || filter == .files { atFilesPending = true }
+      let account = CloudAtRestStore.shared.generation
+      mentionTask = Task { [weak self] in
+        let snapshot = await CloudAtRestStore.shared.mentionSnapshot(
+          machineKey: address.machineKey, projectKey: address.projectKey, laneId: address.laneId, using: sync
+        )
+        guard !Task.isCancelled, let self, self.atGeneration == generation else { return }
+        // A sign-out after the read but before this resumes: the copy is the last account's, so it shows nothing.
+        let current = CloudAtRestStore.shared.generation == account ? snapshot : nil
+        self.applyRestingAt(filter: filter, rest: rest, liveRows: liveRows, snapshot: current, fileLane: fileLane)
+        self.recombineAt()
+      }
+    }
+    recombineAt()
+  }
+
+  private func applyRestingAt(
+    filter: WorkComposerSuggestionSection?,
+    rest: String,
+    liveRows: [ChatMentionSuggestionRow],
+    snapshot: CloudMentionSnapshot?,
+    fileLane: String?
+  ) {
+    // Models come from the local catalog.
+    if filter != .files, filter != .models {
+      let rows = snapshot.map { CloudMentionSnapshotMenu.rows($0, excludeSessionId: sessionId, machines: liveRows) } ?? liveRows
+      atMentions = Self.mentionSuggestions(from: WorkChatMentionMenuRanker.rank(rows, kind: filter?.mentionKindWord, query: rest))
+    } else {
+      atMentions = []
+    }
+    atMentionsPending = false
+    if let snapshot, let fileLane, filter == nil || filter == .files {
+      atFiles = CloudMentionSnapshotMenu.files(
+        snapshot,
+        laneId: fileLane,
+        query: WorkComposerTriggerDetector.fileSearchQuery(for: rest),
+        limit: Self.fileSuggestionLimit
+      ).map { Self.fileSuggestion(path: $0.path, isDirectory: $0.isDirectory) }
+    } else {
+      atFiles = []
+    }
+    atFilesPending = false
+  }
+
+  /// File rows an `@` query lists, awake or asleep.
+  static let fileSuggestionLimit = 20
+
+  /// A folder's token ends in `/`, as desktop writes it (`chipFromPath`), so
+  /// the chip reads back as a folder (`WorkChipPathDetector`).
+  nonisolated static func fileSuggestion(path: String, isDirectory: Bool) -> WorkComposerSuggestion {
+    let name = (path as NSString).lastPathComponent
+    let dir = (path as NSString).deletingLastPathComponent
+    let token = isDirectory && !path.hasSuffix("/") ? "\(path)/" : path
+    return WorkComposerSuggestion(
+      id: "file:\(path)",
+      kind: .at,
+      title: name.isEmpty ? path : name,
+      subtitle: dir.isEmpty ? (isDirectory ? "Folder" : nil) : dir,
+      insertText: "@\(token)",
+      isDirectory: isDirectory
+    )
   }
 
   /// Pure — and deliberately `nonisolated` — so the token form is testable
@@ -2708,25 +2813,13 @@ final class WorkComposerSuggestionController: ObservableObject {
         let items = try await sync.quickOpen(
           workspaceId: workspaceId,
           query: query,
-          limit: 20,
+          limit: Self.fileSuggestionLimit,
           includeIgnored: true,
           allowComposerPrefixFallback: true,
           includeDirectories: true
         )
         guard !Task.isCancelled, self.laneGeneration == generation else { return }
-        let mapped = items.map { item -> WorkComposerSuggestion in
-          let name = (item.path as NSString).lastPathComponent
-          let dir = (item.path as NSString).deletingLastPathComponent
-          let isDirectory = item.isDirectory == true
-          return WorkComposerSuggestion(
-            id: "file:\(item.path)",
-            kind: .at,
-            title: name.isEmpty ? item.path : name,
-            subtitle: dir.isEmpty ? (isDirectory ? "Folder" : nil) : dir,
-            insertText: "@\(item.path)",
-            isDirectory: isDirectory
-          )
-        }
+        let mapped = items.map { Self.fileSuggestion(path: $0.path, isDirectory: $0.isDirectory == true) }
         await MainActor.run {
           guard self.laneGeneration == generation else { return }
           // Only successful fetches are cached — caching the `[]` from a failed

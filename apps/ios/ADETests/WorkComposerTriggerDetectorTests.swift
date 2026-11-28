@@ -96,6 +96,59 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     )
   }
 
+  /// A resting cloud chat lists files from its saved menu, ranked as the
+  /// computer's own index ranks them (`quickOpenScore.ts`), so the menu reads
+  /// the same asleep as awake. Expected values are the TypeScript ranker's.
+  func testSavedMenuFileRankingMatchesTheComputersIndex() {
+    let cases: [(path: String, query: String, fallback: Bool, expected: Double)] = [
+      ("src/App.tsx", "", true, 99),
+      ("src/app.tsx", "SRC/App.tsx", false, 1000),
+      ("apps/desktop/src/app.tsx", "app.tsx", false, 900),
+      ("apps/desktop/src/app.tsx", "desk", false, 595),
+      ("README.md", "nope", true, -1),
+      ("docs/My Notes/plan", "my notes/plan fix this", true, 900.013),
+      ("docs/My Notes/plan", "my notes/plan fix this", false, -1),
+      ("Makefile", "makefile please", true, 600.008),
+      ("docs/🙂/notes.md", "notes", false, 592),
+    ]
+    for item in cases {
+      let score = CloudMentionSnapshotMenu.scoreQuickOpenPath(item.path, query: item.query, allowComposerPrefixFallback: item.fallback)
+      XCTAssertEqual(score, item.expected, accuracy: 0.0001, "\(item.path) / \(item.query)")
+    }
+    let snapshot = CloudMentionSnapshot(
+      savedAt: 1,
+      rows: [],
+      files: ["lane-1": CloudMentionSnapshotFiles(files: ["b/readme.md", "a/readme.md", "readme.md", "x.ts"], directories: ["readme.md.d"], truncated: false)]
+    )
+    let ranked = CloudMentionSnapshotMenu.files(snapshot, laneId: "lane-1", query: "readme.md", limit: 10)
+    XCTAssertEqual(ranked.map(\.path), ["readme.md", "a/readme.md", "b/readme.md", "readme.md.d"])
+    XCTAssertEqual(ranked.map(\.isDirectory), [false, false, false, true])
+  }
+
+  /// An entity row reads its name, never the file path rules: the filter word
+  /// (`@lane up`) is not a path prefix, so the whole query goes, as on desktop.
+  func testAtSelectionOfEntityRowReplacesFilterWordAndQuery() {
+    let cases: [(text: String, title: String, insertText: String, kind: WorkChatMention.Kind, expected: String)] = [
+      ("ask @lane up", "upload-fix", "@lane:f98c22fb", .lane, "ask @lane:f98c22fb "),
+      ("ask @chat dep", "Deploy notes", "@chat:96cf2ea7", .chat, "ask @chat:96cf2ea7 "),
+      ("ask @Deploy notes about this", "Deploy notes", "@chat:96cf2ea7", .chat, "ask @chat:96cf2ea7 about this"),
+      // The title is matched after the filter word, so prose after it stays.
+      ("ask @chat Deploy notes about this", "Deploy notes", "@chat:96cf2ea7", .chat, "ask @chat:96cf2ea7 about this"),
+      // A title equal to the filter word never eats it and leaves the search behind.
+      ("ask @lane up", "lane", "@lane:f98c22fb", .lane, "ask @lane:f98c22fb "),
+    ]
+    for item in cases {
+      let match = try! XCTUnwrap(detect(item.text))
+      let suggestion = WorkComposerSuggestion(
+        id: "\(item.kind):x", kind: .at, title: item.title, subtitle: nil,
+        insertText: item.insertText, mentionKind: item.kind
+      )
+      let narrowed = WorkComposerTriggerDetector.matchForSelection(match, suggestion: suggestion)
+      let spliced = (item.text as NSString).replacingCharacters(in: narrowed.range, with: suggestion.insertText + " ")
+      XCTAssertEqual(spliced, item.expected, item.text)
+    }
+  }
+
   func testAtSelectionRangePreservesTrailingProseAfterShorthandFileQuery() {
     let text = "ask @foo.swift about this"
     let match = try! XCTUnwrap(detect(text))

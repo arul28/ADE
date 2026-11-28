@@ -1145,6 +1145,7 @@ import type {
   ChatMentionPersonSource,
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
+  ChatMentionSuggestion,
 } from "../../../shared/types/chatMentions";
 import type { RuntimeProcessSummary } from "../../../shared/types/sessions";
 import { formatWorkingDuration } from "../../../shared/sessionStatusPresentation";
@@ -76186,6 +76187,13 @@ export function createAgentChatService(args: {
     await scheduledWorkScheduler?.refreshGlobalPause();
   };
 
+  /** After the machine thawed (an ADE Cloud computer woke): timers armed again from the wall clock. */
+  const rearmScheduledWorkAfterFreeze = async (): Promise<void> => {
+    await scheduledWorkReady;
+    scheduledWorkScheduler?.rearmAfterFreeze();
+    draftScheduler.refresh();
+  };
+
   /**
    * Is this chat's auto-resume row paused?
    *
@@ -86071,6 +86079,8 @@ ${schedule.prompt}`
   const listMentionSuggestions = (
     args: ChatMentionSuggestArgs = {},
   ): Promise<ChatMentionSuggestResult> => chatMentionService.listChatMentionSuggestions(args);
+  /** The menu's rows an ADE Cloud computer saves before it rests (`cloudMentionSnapshot.ts`). */
+  const listMentionSnapshotRows = (): Promise<{ rows: ChatMentionSuggestion[]; complete: boolean }> => chatMentionService.listMentionSnapshotRows();
 
   /**
    * Expand `@chat:` / `@lane:` / `@term:` chips into `<ade-mention>` pointer
@@ -86834,6 +86844,7 @@ ${schedule.prompt}`
     updateThreadComment,
     deleteThreadComment,
     listMentionSuggestions,
+    listMentionSnapshotRows,
     messageSession: (messageArgs: AgentChatMessageSessionArgs, options?: { trustedSpawnCompletion?: boolean }) => {
       noteCliChildSelfReport(messageArgs);
       // A tracked agent CLI takes the text in its terminal (`agentCliSessionActions.ts`).
@@ -86894,6 +86905,7 @@ ${schedule.prompt}`
       };
     },
     refreshScheduledWork,
+    rearmScheduledWorkAfterFreeze,
     readTranscript,
     getCodexGoal,
     setCodexGoal,

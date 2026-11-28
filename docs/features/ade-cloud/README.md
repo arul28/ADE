@@ -69,7 +69,8 @@ Brain (`apps/ade-cli/src/services/`):
 Server (`apps/account-directory/src/cloud/`): `routes.ts`, `store.ts`,
 `plans.ts`, `credits.ts`, `phones.ts`, `billing.ts`, `cron.ts`, `provider.ts`
 (the only code that knows Agent 37's API), `contract.ts`, `chats.ts`,
-`chatMessages.ts`, `sessionCopies.ts`, `gitSummaries.ts`, `forkCapsules.ts`,
+`chatMessages.ts`, `sessionCopies.ts`, `gitSummaries.ts`, `mentionSnapshots.ts`,
+`forkCapsules.ts`,
 `projectOverview.ts`, `seal.ts`, `launches.ts`, `launchMessages.ts`,
 `launchFiles.ts`, `moves.ts`, `laneBackups.ts`, `idleCleanup.ts`,
 `planCleanup.ts`, `updates.ts`, `computerStatus.ts`, `automations.ts`,
@@ -172,6 +173,7 @@ server with `ADE_ACCOUNT_DIRECTORY_URL`.
 | Saved chats (and their cited proof pictures) | `chats.ts` |
 | CLI and shell copies (shells keep 5,000 lines) | `sessionCopies.ts` |
 | Git summaries at rest | `gitSummaries.ts` |
+| The `@` menu at rest (rows and file names, migration `0071`) | `mentionSnapshots.ts` |
 | Lane backups (work not on GitHub) | `laneBackups.ts` |
 | Project overview | `projectOverview.ts` |
 | Account lane index (mentions only) | `accountLanes/routes.ts` |
@@ -499,7 +501,10 @@ and cloud automations send it with no computer. Routes:
   `ADE_LAUNCH_JOIN` code (HMAC under `CLOUD_LAUNCH_JOIN_KEY`, valid 30 minutes);
   `cloudBootLaunch.ts` calls `POST /cloud/launches/:id/join` and completes the
   returned Clerk ticket with no browser (`approveSignInLinkDirectly`), headless
-  Chromium as fallback, else `needs_approval` with one Approve tap.
+  Chromium as fallback, else `needs_approval` with one Approve tap. The join
+  first notes the address it came from, so Clerk's new-device email is not sent
+  for the computer's own sign-in (`apps/account-directory/src/newDeviceEmail.ts`:
+  the account server sends that email itself).
 - **Run**: the computer reads the facts, clones with its own Git sign-in,
   prefetches the agent's tool, and runs `chat.startLaunch` with the same ids,
   posting stage changes (`PUT .../stages`). A provider that needs a sign-in there
@@ -534,6 +539,18 @@ never a pin.
   --prune`). A failed read is `failed`, never `clean`; `github_refused` /
   `github_unreachable` say what GitHub did. A resting computer that saved its
   lanes is checked from its backups with no wake.
+- **Secrets stop a push** (`cloudPushSecretCheck.ts`). Before push-work commits,
+  it reads what it would send: the lane's changes (staged into a copy of the
+  index) and every commit no remote has, then the commit again after its hooks.
+  An added line holding one of the project's DAEX secrets (8+ characters, plain
+  or base64/base64url/URL-encoded), a token with a known shape (GitHub, AWS, a
+  private key, Stripe, Slack, Anthropic, OpenAI, Google, npm), or an added key
+  file (`.env`, `.env.local` but not `.env.example`, `id_rsa`, `.netrc`, a
+  `.p12`) stops the lane: nothing is pushed or committed. The lane reads
+  `failed` with `reason: "secret_found"` and up to 5 `secretFiles`; a free
+  keeps the computer, as a refusal. A read that can't finish (30 s, 64 MB) keeps
+  the work too. Split, encrypted or binary secrets and shapeless passwords are
+  not caught.
 - **Delete lane**: the computer, the lane and its saved chats go (work check
   first). "Keep its chats" passes `keepChats`. `cloud.delete` keeps chats;
   `cloud.lane_delete` deletes them and refuses `keepChats` from an agent.
@@ -667,9 +684,23 @@ One list, `decideCloudBusy` (`cloudKeepAwake.ts`); unknown is busy.
 - **Waking**: a send wakes it (15–30 s); the pane shows "Waking the computer…";
   `user_message.sentAt` keeps when Enter was pressed. Tool panels wake on a
   click (`CloudToolGate`). Every wake for use logs `remote.cloud_woken_for_use`.
-- **While resting**, saved rows carry the chat's settings and lane color; the @
-  menu reads only account data; thread comments and pasted files stay on the
+- **While resting**, saved rows carry the chat's settings and lane color; thread
+  comments and pasted files stay on the
   device (`heldChatAttachments.ts`) until a send carries them.
+- **The @ menu reads the same asleep as awake.** The rest save asks each project
+  for its mention rows but machines (`listMentionSnapshotRows`) and each lane's
+  file and folder names (`listQuickOpenPaths`, ignored files left out), builds
+  one copy (`shared/cloudMentionSnapshot.ts`: ≤900 KB, ≤500 rows a kind) and
+  uploads it (`PUT /cloud/mentions/:machine`) when it changed and every read
+  worked. Clients rank it with the computer's own rankers
+  (`rankChatMentionMenu`, `rankQuickOpenPaths`); machines come live from the
+  account. Desktop and DAEX Web read it through the account call
+  `mentionSnapshot` (`cloudMentionSnapshotCache.ts`), the phone through
+  `CloudAtRestStore.mentionSnapshot` with Swift rankers. A client downloads it
+  once per sleep (re-asks at most every 30 s; the first read waits ≤800 ms).
+  With no copy yet, the menu shows the saved chats, lanes and open PRs from the
+  Work slice (`chatMentionClientRows.ts`; the phone has no PRs or files). A
+  deleted computer's chat lists no files.
 - **Still wakes before a send**: a permission/mode change, saving or scheduling a
   draft, dismissing a question card, a screenshot added from a tool.
 - **Per-account client state** (`state/accountScopedStorage.ts`): cached lane
@@ -701,7 +732,12 @@ One list, `decideCloudBusy` (`cloudKeepAwake.ts`); unknown is busy.
 ## Timed wakes and event wakes
 
 - **Timed wakes**: before sleeping, the computer sends its next timer
-  (`PUT /cloud/wake`); the cron wakes it 2 minutes early. The brain opens every
+  (`PUT /cloud/wake`); the cron wakes it 2 minutes early and logs each one as a
+  `timed_wake` power row (`woke`, `awake`, `gave_up_capped`,
+  `gave_up_unreachable`). Woken, the computer re-arms scheduled work and
+  scheduled sends from the wall clock (`rearmMachineTimersAfterWake`, within a
+  minute), because timers count a monotonic clock that stops while it is
+  frozen. The brain opens every
   project at start (`cloud.project_open_at_start`) so timers survive restarts; a
   timer due in under 5 minutes keeps it awake.
 - **Event wakes**: the computer lists topics (`PUT

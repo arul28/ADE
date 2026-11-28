@@ -659,6 +659,12 @@ import type {
   LinearProjectMilestone,
   LinearUploadResult,
   CtoLinearCustomView,
+  CtoGetLinearViewPreferencesArgs,
+  CtoUpdateLinearViewPreferencesArgs,
+  CtoUpdateLinearViewPreferencesResult,
+  LinearDisplayPreferences,
+  CtoLinearRailData,
+  CtoLinearDocument,
   LinearAgentOverview,
   LinearInboxNotification,
   NormalizedLinearIssue as LinearAgentNormalizedIssue,
@@ -5848,6 +5854,14 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<CtoCountLinearIssuesResult>;
         getLinearCustomViews: (pin: OpenProjectBinding) => Promise<CtoLinearCustomView[]>;
+        /** Linear's display settings for an issue tab or custom view (grouping, ordering, nesting, fields). */
+        getLinearViewPreferences: (args: CtoGetLinearViewPreferencesArgs, pin: OpenProjectBinding) => Promise<LinearDisplayPreferences>;
+        /** Writes a display change back to Linear; falls back to ADE-only when Linear refuses. */
+        updateLinearViewPreferences: (args: CtoUpdateLinearViewPreferencesArgs, pin: OpenProjectBinding) => Promise<CtoUpdateLinearViewPreferencesResult>;
+        /** Rail data: cycles, initiatives, favorites and documents. Each list is empty when Linear has none or refuses. */
+        getLinearRailData: (args: { teamKey?: string | null } | undefined, pin: OpenProjectBinding) => Promise<CtoLinearRailData>;
+        /** One Linear document with its markdown content. */
+        getLinearDocument: (args: { documentId: string }, pin: OpenProjectBinding) => Promise<CtoLinearDocument | null>;
         getLinearAgentOverview: (pin: OpenProjectBinding) => Promise<LinearAgentOverview>;
         startLinearAgentInstall: (pin: OpenProjectBinding) => Promise<LinearAgentInstallStart>;
         getLinearAgentInstallSession: (sessionId: string, pin: OpenProjectBinding) => Promise<LinearAgentInstallSession>;

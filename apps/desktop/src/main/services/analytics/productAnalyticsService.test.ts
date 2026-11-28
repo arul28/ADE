@@ -2534,6 +2534,22 @@ describe("product analytics producers", () => {
       title: "Crash on launch",
       issue_number: 1520,
     })).toEqual({ feature: "issues", action: "issue_created" });
+    // The Display menu fact keeps which control changed and nothing it was set to.
+    for (const outcome of ["display_grouping", "display_ordering", "display_nesting", "display_fields", "display_completed", "display_hidden_groups"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "issues",
+        action: "issue_display_changed",
+        outcome,
+        source: "renderer_route",
+      })).toEqual({ feature: "issues", action: "issue_display_changed", outcome, source: "renderer_route" });
+    }
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "issues",
+      action: "issue_display_changed",
+      outcome: "display_priority",
+      grouping: "priority",
+      team: "ADE",
+    })).toEqual({ feature: "issues", action: "issue_display_changed" });
   });
 
   it.each([

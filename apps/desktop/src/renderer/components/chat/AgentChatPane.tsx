@@ -525,6 +525,8 @@ import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeC
 import { CloudQueuedBubbleContext, CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
 import { cloudQueueWaitLine, useCloudQueuedBubbles } from "./useCloudQueuedBubbles";
 import { chatMentionMenu } from "./chatMentionClientRows";
+import { restingMentionSnapshot } from "./cloudMentionSnapshotCache";
+import { cloudMentionSnapshotFiles } from "../../../shared/cloudMentionSnapshot";
 import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
@@ -6136,6 +6138,8 @@ export function AgentChatPane({
   chatMachineEntryRef.current = chatMachineEntry;
   const chatComputerAwayRef = useRef(false);
   chatComputerAwayRef.current = chatComputerResting || chatComputerGone;
+  const chatComputerGoneRef = useRef(false);
+  chatComputerGoneRef.current = chatComputerGone;
   // A size change or a move of the chat's ADE Cloud lane, while it runs: ADE
   // on the lane's computer stops for minutes (a move replaces the computer),
   // so a direct send then would fail, or start a turn the change cuts. The
@@ -12301,6 +12305,25 @@ export function AgentChatPane({
     if (!laneId) return [];
     const trimmed = query.trim();
 
+    // A chat whose ADE Cloud computer rests: its files come from the names it
+    // saved before it rested, ranked as its own index ranks them. A read never
+    // wakes it, so it is asked nothing.
+    if (selectedSessionId && chatComputerAwayRef.current) {
+      // A deleted computer's chat continues on a new one, through the account
+      // queue, which takes text only: an attached file would hold that send.
+      if (chatComputerGoneRef.current || freedChatLaneRef.current) return [];
+      // No other source of file names while it rests: the search waits for the copy (once per sleep).
+      const saved = await restingMentionSnapshot(selectedSessionId, { waitMs: null }).catch(() => null);
+      // The computer can go while the copy downloads.
+      if (!saved || chatComputerGoneRef.current || freedChatLaneRef.current) return [];
+      return cloudMentionSnapshotFiles(saved.snapshot, { laneId: saved.laneId ?? laneId, query: trimmed, limit: 60, includeDirectories: true })
+        .map((hit) => ({
+          path: hit.path,
+          type: inferAttachmentType(hit.path),
+          ...(hit.isDirectory ? { isDirectory: true as const } : {}),
+        }));
+    }
+
     // Try Codex fuzzy file search if we have an active Codex session
     if (trimmed.length && selectedSessionId && sessionProvider === "codex") {
       try {
@@ -12362,6 +12385,9 @@ export function AgentChatPane({
     const suggestions = await chatMentionMenu({
       query,
       away,
+      restingSnapshot: selectedSessionId
+        ? async () => (await restingMentionSnapshot(selectedSessionId))?.snapshot ?? null
+        : undefined,
       excludeSessionId: selectedSessionId,
       localMachineKey: selectedSessionId
         ? chatQueueMachineKey(pin, savedChatLocation(pin, selectedSessionId, () => false))

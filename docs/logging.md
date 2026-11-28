@@ -135,8 +135,11 @@ output, file contents and diffs, terminal output, clipboard, secrets.
   restarting (`brainRestartLoop.ts`), a brain freeze with a named cause
   (`brainStallProfiler.ts`), the first `runtime-failed` health transition per
   provider and kind (`providerRuntimeHealth.ts`), DAEX Cloud server failures
-  (`reportCloudFailure`, `apps/account-directory/src/cloud/store.ts`), and
-  feature-specific warnings with a stable `fingerprint`.
+  (`reportCloudFailure`, `apps/account-directory/src/cloud/store.ts`), failures
+  of the new-device sign-in email the account server sends itself
+  (`cloud.new_device_email_*`, `apps/account-directory/src/newDeviceEmail.ts`;
+  it never sends the address or the device), and feature-specific warnings
+  with a stable `fingerprint`.
 
 **What is a Sentry Log, not an issue.** Things the user is shown or can fix:
 
@@ -262,6 +265,14 @@ one-way account hash (`ade_user_…`) plus plan, platform and app version;
 sign-out rotates the anonymous id. The sign-in funnel is `ade_feature_used` with
 `feature: "account_sign_in"` (`accountSignInAnalytics.ts`): one start and one
 end per attempt.
+
+**Linear display changes.** A change in the Linear issue window's Display menu
+is `ade_feature_used` with `feature: "issues"`, `action:
+"issue_display_changed"` and the control that changed as `outcome`
+(`display_grouping`, `display_ordering`, `display_nesting`, `display_fields`,
+`display_completed`, `display_hidden_groups`), captured at the one writer in
+`renderer/components/app/linear/linearDisplayPreferences.ts`. No value, view,
+team, project or issue crosses; a per-control one-hour dedupe key bounds it.
 
 **Budgets.** Capture is lazy and batched, with a hard installation-wide budget
 of 200 events per UTC day (`DEFAULT_DAILY_BUDGET`), tighter per-event budgets

@@ -79,7 +79,8 @@ export function readIssueDraft(provider: IssueProvider, scope: string | null): I
       jira: { ...EMPTY_JIRA, ...(parsed.jira ?? {}), parentKey: "" },
       formAnswers: parsed.formAnswers && typeof parsed.formAnswers === "object" ? parsed.formAnswers : {},
     };
-  } catch {
+  } catch (error) {
+    console.warn("[issues] could not read the saved draft", error);
     return null;
   }
 }
@@ -108,8 +109,9 @@ export function writeIssueDraft(provider: IssueProvider, scope: string | null, d
       jira: { ...(draft.jira ?? EMPTY_JIRA), parentKey: "" },
     };
     window.localStorage.setItem(draftKey(provider, scope), JSON.stringify(kept));
-  } catch {
-    // The draft is a convenience; losing it is not an error.
+  } catch (error) {
+    // The draft is a convenience; losing it is not an error, but say so.
+    console.warn("[issues] could not save the draft", error);
   }
 }
 
@@ -117,12 +119,13 @@ export function initialIssueProvider(request: IssueCreateRequest): IssueProvider
   if (request.prefill?.parent) {
     return request.prefill.parent.provider;
   }
+  if (request.prefill?.linear) return "linear";
   if (request.provider === "linear" || request.provider === "github" || request.provider === "jira") return request.provider;
   try {
     const last = window.localStorage.getItem(LAST_PROVIDER_KEY);
     if (last === "linear" || last === "github" || last === "jira") return last;
-  } catch {
-    // fall through
+  } catch (error) {
+    console.warn("[issues] could not read the last tracker", error);
   }
   return "linear";
 }
@@ -130,8 +133,8 @@ export function initialIssueProvider(request: IssueCreateRequest): IssueProvider
 export function rememberIssueProvider(provider: IssueProvider): void {
   try {
     window.localStorage.setItem(LAST_PROVIDER_KEY, provider);
-  } catch {
-    // ignore
+  } catch (error) {
+    console.warn("[issues] could not remember the tracker", error);
   }
 }
 
@@ -139,9 +142,14 @@ export function rememberIssueProvider(provider: IssueProvider): void {
  * The form a request opens with. A request with text (a chat selection) starts
  * clean; otherwise the draft for the tracker and project comes back. A
  * sub-issue request fixes the parent, and for Linear the parent's team.
+ *
+ * A request with Linear fields (a list group's "+") opens a separate, unsaved
+ * form: it reads no draft and `keepsDraft` is false, so typing in it never
+ * overwrites (and creating from it never clears) the saved draft.
  */
 export function initialIssueForm(request: IssueCreateRequest, scope: string | null): {
   provider: IssueProvider;
+  keepsDraft: boolean;
   title: string;
   body: string;
   linear: LinearFields;
@@ -150,9 +158,13 @@ export function initialIssueForm(request: IssueCreateRequest, scope: string | nu
   formAnswers: GitHubIssueFormAnswers;
 } {
   const provider = initialIssueProvider(request);
-  const hasPrefill = Boolean(request.prefill?.title || request.prefill?.body);
+  const linearPrefill = request.prefill?.linear ?? null;
+  const keepsDraft = !linearPrefill;
+  const hasPrefill = Boolean(request.prefill?.title || request.prefill?.body) || !keepsDraft;
   const draft = hasPrefill ? null : readIssueDraft(provider, scope);
-  const linear = { ...EMPTY_LINEAR, ...(hasPrefill ? {} : readIssueDraft("linear", scope)?.linear ?? {}) };
+  const linear = linearPrefill
+    ? { ...EMPTY_LINEAR, ...linearPrefill, labelIds: linearPrefill.labelIds ?? [] }
+    : { ...EMPTY_LINEAR, ...(hasPrefill ? {} : readIssueDraft("linear", scope)?.linear ?? {}) };
   const githubDraft = hasPrefill ? null : readIssueDraft("github", scope);
   const github = { ...EMPTY_GITHUB, ...(githubDraft?.github ?? {}) };
   const jira = { ...EMPTY_JIRA, ...(hasPrefill ? {} : readIssueDraft("jira", scope)?.jira ?? {}) };
@@ -160,6 +172,7 @@ export function initialIssueForm(request: IssueCreateRequest, scope: string | nu
   const jiraParent = parent?.provider === "jira" ? parent : null;
   return {
     provider,
+    keepsDraft,
     title: request.prefill?.title ?? draft?.title ?? "",
     body: request.prefill?.body ?? draft?.body ?? "",
     linear: parent?.provider === "linear" ? { ...linear, parent: parent.identifier, teamKey: parent.teamKey ?? linear.teamKey } : linear,

@@ -9,6 +9,10 @@
  *    whose terminal wrote nothing since the last save is not sent again.
  * 3. A Git summary per lane (`PUT /cloud/git/:m/:lane`), sent only when it
  *    changed.
+ * 3b. The `@` menu per project (`PUT /cloud/mentions/:m`,
+ *    `cloudMentionSnapshot.ts`): the rows the menu lists and each lane's file
+ *    names, so a chat's menu reads the same while the computer sleeps. Sent
+ *    only when it changed.
  * 0. A backup of each lane's work that is not on GitHub yet
  *    (`cloudLaneBackup.ts`), then a report of every lane's state, which a
  *    cleanup reads to delete the computer with no wake. Before the copies:
@@ -58,7 +62,9 @@ import {
   cloudLaneColorOf,
 } from "../../../../account-directory/src/cloud/contract";
 import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
+import { buildCloudMentionSnapshot } from "../../../../desktop/src/shared/cloudMentionSnapshot";
 import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
+import type { FilesQuickOpenItem } from "../../../../desktop/src/shared/types/files";
 import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
 import { isTrackedAgentCliToolType, type TerminalSessionSummary } from "../../../../desktop/src/shared/types/sessions";
 import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
@@ -83,6 +89,8 @@ type Logger = {
 
 /** Uploads at once, across copies, summaries and capsule parts. */
 const UPLOAD_PARALLEL = 4;
+/** File names read per lane for the `@` menu's copy; the copy keeps what fits its size. */
+const MENTION_FILES_READ = 30_000;
 /** A shell's tail is read at most this large before it is cut to its last lines. */
 const SHELL_TAIL_READ_BYTES = 4 * 1024 * 1024;
 /** Chat providers whose own history travels in a capsule (CONTRACTS §8). */
@@ -149,6 +157,8 @@ type RestSaveState = {
   sessions: Record<string, string>;
   /** Lane id → hash of the summary saved. */
   git: Record<string, string>;
+  /** Project key → hash of the `@` menu saved (its time left out). */
+  mentions?: Record<string, string>;
   /** Chat or CLI id → the activity mark its capsule was made at. */
   capsules: Record<string, string>;
   /** The event-wake topics the server holds for this computer, sorted; null before the first write. */
@@ -554,6 +564,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           subagentScans: parsed.subagentScans ?? {},
           proofs: parsed.proofs ?? {},
           proofScans: parsed.proofScans ?? {},
+          mentions: parsed.mentions ?? {},
         };
       }
     } catch {
@@ -747,6 +758,50 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       }
     }
 
+    // 3b. The `@` menu per project, when it changed: its chats' menus read the same while it sleeps.
+    const mentionTasks: Array<() => Promise<void>> = [];
+    for (const runtime of runtimes) {
+      const chat = runtime.agentChatService;
+      const key = projectKey(runtime);
+      if (!chat?.listMentionSnapshotRows || !key) continue;
+      mentionTasks.push(async () => {
+        // Every read waits no longer than the save's own end. A late or failed read
+        // keeps the menu already saved, and the next save tries again.
+        const timeLeft = () => deadline - Date.now();
+        if (!idle() || timeLeft() <= 0) return;
+        try {
+          const read = await withinMs(chat.listMentionSnapshotRows(), timeLeft());
+          // A kind that failed to read: only a first save goes out without it, marked
+          // partial, and the server keeps a copy it already holds (this computer's record can be lost).
+          if (!read || (!read.complete && state.mentions?.[key] != null)) return;
+          const lanes = await runtimeLanes(runtime);
+          if (!lanes) return;
+          // The computer's lane; its main checkout only when it has no other (lane lists leave it out).
+          const present = lanes.filter((lane) => lane.worktreePath && fs.existsSync(lane.worktreePath));
+          const ownLanes = present.filter((lane) => lane.laneType !== "primary");
+          const files: Record<string, FilesQuickOpenItem[]> = {};
+          for (const lane of ownLanes.length ? ownLanes : present) {
+            if (!idle() || timeLeft() <= 0) return;
+            const listed = runtime.fileService
+              ? await withinMs(runtime.fileService.listQuickOpenPaths({ workspaceId: lane.id, limit: MENTION_FILES_READ }), timeLeft())
+              : [];
+            if (!listed) return;
+            files[lane.id] = listed;
+          }
+          const snapshot = buildCloudMentionSnapshot({ savedAt: Date.now(), rows: read.rows, files });
+          const { savedAt: _savedAt, ...shape } = snapshot;
+          const hash = createHash("sha256").update(JSON.stringify(shape)).digest("hex");
+          if (state.mentions?.[key] === hash || !idle() || timeLeft() <= 0) return;
+          const upload = { instanceId, projectKey: key, snapshot, ...(read.complete ? {} : { partial: true }) };
+          const answer = await api.putMentionSnapshot(machineKey, upload, { timeoutMs: timeLeft() });
+          // `kept`: the server holds a newer copy (this computer's clock went back) or a whole one, so this one is tried again.
+          if (!answer.kept) (state.mentions ??= {})[key] = hash;
+        } catch (error) {
+          logger.warn("cloud.rest_save_mentions_failed", { error: errorText(error) });
+        }
+      });
+    }
+
     // 4. Capsules, at every save: a chat's history only, when it changed since its last capsule.
     const capsuleTasks: Array<() => Promise<void>> = [];
     for (const runtime of runtimes) {
@@ -935,7 +990,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
 
     // Git first (small), then capsules (what a continue needs), then the copies and subagents. The chats'
     // proof is optional: it gets only the time left after all of them, so a conversion never starves a save.
-    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks, ...subagentTasks], UPLOAD_PARALLEL, deadline)
+    const notStarted = await runLimited([...gitTasks, ...mentionTasks, ...capsuleTasks, ...sessionTasks, ...subagentTasks], UPLOAD_PARALLEL, deadline)
       + await runLimited(proof.tasks, UPLOAD_PARALLEL, deadline);
     if (proof.counts.sent > 0) report.proofs = proof.counts.sent;
     // 5. The events that wake this computer at rest: a Linear workspace or webhook a rule here acts on.

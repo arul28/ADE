@@ -30,6 +30,7 @@ import { routeCloudLimits } from "./limits";
 import { carryLaunchMessagesForComputer, routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
 import { routeSessionCopies } from "./sessionCopies";
 import { routeGitSummaries } from "./gitSummaries";
+import { deleteMentionSnapshotsForMachineStatement, routeMentionSnapshots } from "./mentionSnapshots";
 import { routeForkCapsules } from "./forkCapsules";
 import { handleProjectOverview } from "./projectOverview";
 import { handleCloudModels } from "./models";
@@ -1438,10 +1439,24 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
   // Only the person's delete takes the lane's backups. A failed create, a cancelled
   // launch, a move or a cleanup also keeps no lane here, but the backup may be the lane's only copy.
   if (!keepLane) await deleteBackupsWithComputer(env, computer, reason === "user");
+  // The @ menu it saved lists its lane's files: it goes with a delete that keeps no lane.
+  if (!keepLane && computer.machine_key) await deleteMenusWithComputer(env, computer);
   const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
   // An agent's delete names its chat; a person's desktop leaves `who` unset.
   captureCloudAction(env, waitUntil, computer.user_id, { action: "delete", plan: await planIdFor(env, computer.user_id), origin: who ? "agent" : "person", tier: tierOf(size) }, computer.instance_id, now);
   return json({ deleted: true });
+}
+
+/** A deleted computer's saved @ menus, unless another live computer answers to its machine key. Never throws. */
+async function deleteMenusWithComputer(env: CloudEnv, computer: Pick<ComputerRow, "user_id" | "instance_id" | "machine_key">): Promise<void> {
+  if (!computer.machine_key) return;
+  try {
+    const liveOther = await env.DB.prepare("select 1 from cloud_computers where user_id = ? and machine_key = ? and instance_id <> ? and deleted_at is null limit 1")
+      .bind(computer.user_id, computer.machine_key, computer.instance_id).first();
+    if (!liveOther) await deleteMentionSnapshotsForMachineStatement(env, computer.user_id, computer.machine_key).run();
+  } catch (error) {
+    reportCloudFailure("cloud.mention_snapshot_delete_failed", { instanceId: computer.instance_id, message: error instanceof Error ? error.message : "unknown" });
+  }
 }
 
 async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now }: CloudRequestContext): Promise<Response> {
@@ -1880,7 +1895,7 @@ const CHAT_PROOF_ROUTE = /^\/cloud\/chats\/[^/]+\/[^/]+\/proof\/[^/]+$/;
 /** The minute budget a write to these rows counts against (`takeRequest`); null for a read or another route. */
 function writeBucketOf(path: string, method: string): CloudRequestBucket | null {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
-  if ([CLOUD_PATHS.sessions, CLOUD_PATHS.git, CLOUD_PATHS.capsules, CLOUD_PATHS.backups].some((route) => path.startsWith(`${route}/`))) return "uploads";
+  if ([CLOUD_PATHS.sessions, CLOUD_PATHS.git, CLOUD_PATHS.mentions, CLOUD_PATHS.capsules, CLOUD_PATHS.backups].some((route) => path.startsWith(`${route}/`))) return "uploads";
   if (LAUNCH_FILE_ROUTE.test(path) || CHAT_PROOF_ROUTE.test(path)) return "uploads";
   if (path === CLOUD_EDGE_PATHS.limits || EVENT_WAKES_ROUTE.test(path)) return "settings";
   return null;
@@ -2136,6 +2151,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   if (path === CLOUD_PATHS.sessions || path.startsWith(`${CLOUD_PATHS.sessions}/`)) return routeSessionCopies(request, url, path, env, caller.userId, now);
   if (path === CLOUD_PATHS.git || path.startsWith(`${CLOUD_PATHS.git}/`)) return routeGitSummaries(request, url, path, env, caller.userId, now);
+  if (path.startsWith(`${CLOUD_PATHS.mentions}/`)) return routeMentionSnapshots(request, url, path, env, caller.userId, now);
   if (path.startsWith(`${CLOUD_PATHS.capsules}/`)) return routeForkCapsules(request, path, env, caller.userId, now);
   // Lane backups: rows and R2 only, so a person gets their work back with no wake and no hours.
   if (path === CLOUD_PATHS.backups || path.startsWith(`${CLOUD_PATHS.backups}/`)) return routeLaneBackups(request, url, path, env, caller.userId, now);

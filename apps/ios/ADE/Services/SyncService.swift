@@ -12606,6 +12606,44 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// The person's Linear display settings for a view type. Nil when no
+  /// computer can read them (the account path, or an older brain that does
+  /// not know the command): the list then uses Linear's defaults.
+  func fetchLinearViewPreferences(viewType: String, customViewId: String?) async throws -> LinearDisplayPreferences? {
+    if linearReadsThroughAccount { return nil }
+    guard supportsRemoteAction("cto.getLinearViewPreferences") else { return nil }
+    var args: [String: Any] = ["viewType": viewType]
+    if let customViewId, !customViewId.isEmpty { args["customViewId"] = customViewId }
+    return try await sendDecodableCommand(
+      action: "cto.getLinearViewPreferences",
+      args: args,
+      disconnectOnTimeout: false,
+      as: LinearDisplayPreferences.self
+    )
+  }
+
+  /// Writes a Display menu change back to Linear. Nil when no computer can
+  /// write it; the caller keeps the change for this session.
+  func updateLinearViewPreferences(
+    viewType: String,
+    customViewId: String?,
+    patch: LinearDisplayPreferencesPatch
+  ) async throws -> LinearViewPreferencesUpdateResult? {
+    if linearReadsThroughAccount { return nil }
+    guard supportsRemoteAction("cto.updateLinearViewPreferences") else { return nil }
+    var args: [String: Any] = [
+      "viewType": viewType,
+      "patch": try encodedCommandArgs(from: patch),
+    ]
+    if let customViewId, !customViewId.isEmpty { args["customViewId"] = customViewId }
+    return try await sendDecodableCommand(
+      action: "cto.updateLinearViewPreferences",
+      args: args,
+      disconnectOnTimeout: false,
+      as: LinearViewPreferencesUpdateResult.self
+    )
+  }
+
   // MARK: - Cursor Cloud fleet (global pane)
   //
   // All execution is host-side: the phone renders the fleet the paired

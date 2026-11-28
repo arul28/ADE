@@ -1057,6 +1057,32 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
   });
 
+  it("fires at its time after a freeze once its timers are armed again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: () => undefined,
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+    });
+    await scheduler.upsert(wakeup({ fireAt: START + 12 * 60_000 }));
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    // Frozen seven minutes (an ADE Cloud computer asleep): the wall clock
+    // moves and pending timers keep their remaining time, as Linux's
+    // monotonic clock does. The wake comes two minutes before the fire.
+    vi.setSystemTime(START + 10 * 60_000);
+    scheduler.rearmAfterFreeze();
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000 - 1);
+    expect(fire).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fire).toHaveBeenCalledWith(expect.objectContaining({ id: "wake-1" }), { late: false });
+    scheduler.dispose();
+  });
+
   it.each([
     // The winner's one-shot stays `fired` until its turn finishes.
     { kind: "wakeup" as const, cron: undefined, settled: { status: "fired", fireAt: START + 1_000 } },

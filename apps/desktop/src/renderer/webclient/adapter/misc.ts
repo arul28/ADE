@@ -1428,6 +1428,12 @@ function createCtoNamespace(
     ),
     countLinearIssues: (args?: unknown) => call("cto.countLinearIssues", args, { counts: {} }),
     getLinearCustomViews: () => call("cto.getLinearCustomViews", {}, []),
+    // An older host without these commands: preferences reject (the list uses
+    // Linear's defaults), the rail is empty, and a document reads as missing.
+    getLinearViewPreferences: (args?: unknown) => call("cto.getLinearViewPreferences", args, unavailableOnHost("Linear display settings are unavailable on the connected ADE host.")),
+    updateLinearViewPreferences: (args?: unknown) => call("cto.updateLinearViewPreferences", args, unavailableOnHost("Linear display settings are unavailable on the connected ADE host."), false),
+    getLinearRailData: (args?: unknown) => call("cto.getLinearRailData", args ?? {}, { cycles: [], initiatives: [], favorites: [], documents: [] }),
+    getLinearDocument: (args?: unknown) => call("cto.getLinearDocument", args, null),
     getLinearAgentOverview: () => call("linear_agent.getOverview", {}, {
       available: false,
       message: `The ${BRAND.NAME} Linear agent is unavailable on the connected ${BRAND.NAME} host.`,

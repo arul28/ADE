@@ -24,6 +24,8 @@ the CTO does not own):
 - `linearClient.ts`, `linearClientShared.ts`, `linearQuickView.ts`,
   `linearIssueSearch.ts`, `linearInbox.ts`, `linearIssueTracker.ts`,
   `issueTracker.ts`, `linearGraphQLInput.ts` — the GraphQL client.
+- `linearViewData.ts` — the list's display settings (Linear's view
+  preferences), the rail data and a document's content.
 - `linearLaneCardService.ts` (Open in DAEX attachments),
   `linearLiveStatusService.ts`, `linearAgentService.ts`, `linearAgentRuntime.ts`,
   `linearAgentRelayClient.ts`, `linearInboxAttentionService.ts`,
@@ -37,15 +39,21 @@ Account server and relay: `apps/account-directory/src/cloud/integrations.ts`
 (`POST /cloud/integrations/linear/query`), `linearRenewal.ts`
 (`cloud_linear_renewals`, migration `0041`), `apps/push-relay/src/accountVault.ts`;
 client `apps/desktop/src/shared/adeCloud/integrationReads.ts`,
-`shared/linearIssueNormalize.ts`; iOS `Services/SyncService+LinearAccount.swift`.
+`shared/linearIssueNormalize.ts` (also the closed state types, the list's
+state-type order and the PR URL check), `shared/linearDisplayPreferences.ts`
+(the default display and how patches merge; one copy for every surface); iOS `Services/SyncService+LinearAccount.swift`.
 
 Renderer and iOS: `renderer/components/app/LinearQuickViewButton.tsx`,
 `LinearIssueBrowser.tsx` (+ model, rows, detail pane, property pickers),
-`LinearPaneHeader.tsx`, `LinearIssueSelectModal.tsx`,
+`renderer/components/app/linear/` (the list's model, display settings, rail,
+toolbar, virtual rows, document reader, PR chips and the DAEX status column
+`adeStatus.tsx`/`adeStatusIndex.ts`), `LinearPaneHeader.tsx`,
+`LinearPaneModal.tsx`, `LinearIssueSelectModal.tsx`,
 `LinearIssueResolveModals.tsx`, `IssueLaunchHost.tsx`; `renderer/lib/linearBatchLaunch.ts`,
 `launchedLanesHighlight.ts`; `settings/LinearSection.tsx`;
 `lanes/LinearIssueBadge.tsx`; iOS `apps/ios/ADE/Views/Linear/`
-(`LinearPaneSheet`, list, detail, launch, `LinearConnectionScreen`,
+(`LinearPaneSheet`, list, `LinearIssueGrouping`, `LinearIssueListMenus`,
+detail, launch, `LinearConnectionScreen`,
 `LinearOAuthRunner`).
 
 Shared and CLI: `shared/linearMagicWords.ts` (`Refs`/`Fixes`),
@@ -151,7 +159,38 @@ custom views, the quick view (parallel queries), comments, labels, users, inbox.
 Writes: `updateIssue` (one `issueUpdate`), comments, labels, webhooks. Blockers
 come from "blocked by" relations. The desktop pane is `LinearIssueBrowser`; one
 issue opens per [Issues](../issues/README.md). iOS routes
-`daex://linear-issue/<IDENT>` to its pane.
+`daex://linear-issue/<IDENT>` to its pane. `@linear/sdk` supplies types only;
+DAEX sends its own GraphQL (the SDK's webhook helper rejects deliveries older
+than 60 s).
+
+## The issue list
+
+Shaped like Linear's own. Tabs: Active (Todo and In Progress), Backlog, All,
+plus the rail's teams, projects, cycles, labels, initiatives, views and
+documents (`getLinearRailData`, `getLinearDocument`; an older brain shows
+"needs a newer DAEX").
+
+- **Display menu**: grouping (status, assignee, project, priority, label,
+  cycle, milestone, team or none), nesting (sub-issues under their parent in
+  the same group; a parent in another group is a muted context row), ordering
+  and row fields. A group's "+" opens a fresh create form prefilled for that
+  group; it never touches the saved draft.
+- **Settings come from Linear.** `getLinearViewPreferences` reads the tab's or
+  view's preferences; `updateLinearViewPreferences` writes a patch and keeps
+  keys DAEX does not edit. When Linear refuses (a team-scoped tab), the brain
+  keeps the project's settings itself (source `"ade"`, "Saved in DAEX only").
+  The renderer re-reads after 60 s and on window focus and keeps unsaved or
+  refused changes as a patch over each read.
+- **Hidden groups** use Linear's ids for the grouping (priority `"0"`–`"4"`;
+  "No X" groups use keys such as `assignee:none`), the same on desktop and
+  iPhone.
+- **Completed issues** are off by default and left out on the server (query
+  and counts); the list pages until it fills.
+- **DAEX status column**: each issue's lanes, chats and PRs on any machine. A
+  bare lane id from an attachment counts only when it is unique across
+  machines; Linear's PR attachments join DAEX's PR rows.
+- **iPhone** groups, nests and has the same display menu
+  (`LinearIssueGrouping.swift`, `LinearIssueListMenus.swift`).
 
 ## Lanes, commits and PRs
 

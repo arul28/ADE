@@ -530,6 +530,25 @@ export type CtoSearchLinearIssuesArgs = {
   priority?: number | null;
   /** Full-text search term (Linear `searchIssues`), plus an identifier/number match. */
   query?: string | null;
+  /** Only issues in this cycle (rail "Cycles" entry). */
+  cycleId?: string | null;
+  /** Only issues in projects of this initiative (rail "Initiatives" entry). */
+  initiativeId?: string | null;
+  /** Only issues carrying this label (rail favorite of a label). */
+  labelId?: string | null;
+  /**
+   * Server-side order (Linear `sort`). Absent = most recently updated first
+   * (`orderBy: updatedAt`). `manual` sends Linear's manual sort (`sortOrder`,
+   * the order people drag issues into; Linear accepts it with every filter
+   * here). The renderer still orders within its groups.
+   */
+  ordering?: LinearIssueOrdering | null;
+  /**
+   * Linear's direction, literally (`desc` on priority = Urgent first). Absent =
+   * the ordering's natural direction: manual/dueDate/title asc,
+   * priority/updatedAt/createdAt/estimate desc. Full-text search ignores both.
+   */
+  orderingDirection?: "asc" | "desc" | null;
   first?: number;
   after?: string | null;
   includeArchived?: boolean;
@@ -571,6 +590,183 @@ export type CtoLinearCustomView = {
   color: string | null;
   teamKey: string | null;
   shared: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// Issue list display: Linear's own view preferences (ViewPreferencesValues).
+// ADE reads the person's Linear display settings and writes changes back, so
+// the website and ADE show the same list. Values mirror Linear's strings.
+// ---------------------------------------------------------------------------
+
+/** Linear `issueGrouping` values ADE can render. Others read as "workflowState". */
+export const LINEAR_ISSUE_GROUPINGS = [
+  "workflowState",
+  "assignee",
+  "project",
+  "priority",
+  "cycle",
+  "label",
+  "projectMilestone",
+  "team",
+  "none",
+] as const;
+export type LinearIssueGrouping = (typeof LINEAR_ISSUE_GROUPINGS)[number];
+export function isLinearIssueGrouping(value: unknown): value is LinearIssueGrouping {
+  return typeof value === "string" && (LINEAR_ISSUE_GROUPINGS as readonly string[]).includes(value);
+}
+
+/** Linear `viewOrdering` values ADE can render. Others read as "manual". */
+export const LINEAR_ISSUE_ORDERINGS = [
+  "manual",
+  "priority",
+  "updatedAt",
+  "createdAt",
+  "dueDate",
+  "estimate",
+  "title",
+] as const;
+export type LinearIssueOrdering = (typeof LINEAR_ISSUE_ORDERINGS)[number];
+export function isLinearIssueOrdering(value: unknown): value is LinearIssueOrdering {
+  return typeof value === "string" && (LINEAR_ISSUE_ORDERINGS as readonly string[]).includes(value);
+}
+
+/** Linear `issueNesting`: none = flat, showAll/showMatching = sub-issues under their parent. */
+export const LINEAR_ISSUE_NESTINGS = ["none", "showAll", "showMatching"] as const;
+export type LinearIssueNesting = (typeof LINEAR_ISSUE_NESTINGS)[number];
+export function isLinearIssueNesting(value: unknown): value is LinearIssueNesting {
+  return typeof value === "string" && (LINEAR_ISSUE_NESTINGS as readonly string[]).includes(value);
+}
+
+/** Linear's view types for the issue tabs ADE shows. */
+export const LINEAR_ISSUE_VIEW_TYPES = ["allIssues", "activeIssues", "backlog", "myIssues", "cycle", "project"] as const;
+export type LinearIssueViewType = (typeof LINEAR_ISSUE_VIEW_TYPES)[number];
+export function isLinearIssueViewType(value: unknown): value is LinearIssueViewType {
+  return typeof value === "string" && (LINEAR_ISSUE_VIEW_TYPES as readonly string[]).includes(value);
+}
+
+export type LinearIssueDisplayFields = {
+  id: boolean;
+  status: boolean;
+  priority: boolean;
+  assignee: boolean;
+  labels: boolean;
+  project: boolean;
+  cycle: boolean;
+  milestone: boolean;
+  estimate: boolean;
+  dueDate: boolean;
+  pullRequests: boolean;
+  createdAt: boolean;
+  updatedAt: boolean;
+  /** ADE-only column: lane / running chat / ADE PR checks. Not a Linear field. */
+  adeStatus: boolean;
+};
+
+export type LinearDisplayPreferences = {
+  grouping: LinearIssueGrouping;
+  subGrouping: LinearIssueGrouping;
+  ordering: LinearIssueOrdering;
+  orderingDirection: "asc" | "desc";
+  nesting: LinearIssueNesting;
+  showEmptyGroups: boolean;
+  /** Linear `showCompletedIssues`: whether closed issues are listed. */
+  showCompletedIssues: boolean;
+  /**
+   * Groups hidden in the list (Linear `hiddenGroupsList`), by Linear's own id
+   * for the active grouping, so ADE and linear.app hide the same groups:
+   * workflowState -> workflow state id, assignee -> user id, project ->
+   * project id, priority -> "0".."4", label -> label id, cycle -> cycle id,
+   * projectMilestone -> milestone id, team -> team id. The "No X" groups use
+   * ADE keys (`assignee:none`, `project:none`, `cycle:none`, `label:none`,
+   * `milestone:none`). Desktop and iOS both match on these.
+   */
+  hiddenGroups: string[];
+  fields: LinearIssueDisplayFields;
+  /**
+   * Where these came from: the view's saved display, the person's own Linear
+   * preferences for this view type, changes ADE saved for this project because
+   * Linear would not store them ("ade"), or Linear's defaults (nothing saved).
+   */
+  source: "linear-view" | "linear-user" | "ade" | "default";
+};
+
+export type CtoGetLinearViewPreferencesArgs = {
+  viewType: LinearIssueViewType;
+  /** A custom view's own display settings win over the view type's. */
+  customViewId?: string | null;
+};
+
+export type CtoUpdateLinearViewPreferencesArgs = CtoGetLinearViewPreferencesArgs & {
+  patch: Partial<Omit<LinearDisplayPreferences, "source" | "fields">> & { fields?: Partial<LinearIssueDisplayFields> };
+};
+
+export type CtoUpdateLinearViewPreferencesResult = {
+  /** The preferences now in effect (patched even when the save failed). */
+  preferences: LinearDisplayPreferences;
+  /** True when Linear stored the change; false means ADE-only until reload. */
+  savedToLinear: boolean;
+  /** Why Linear did not store it, in words a person can read. */
+  reason?: string | null;
+};
+
+export type CtoLinearCycle = {
+  id: string;
+  number: number;
+  name: string | null;
+  teamId: string;
+  teamKey: string;
+  startsAt: string;
+  endsAt: string;
+  isActive: boolean;
+  isNext: boolean;
+  isPrevious: boolean;
+  /** 0..1, Linear `cycle.progress`. */
+  progress: number | null;
+  issueCount: number | null;
+};
+
+export type CtoLinearInitiative = {
+  id: string;
+  name: string;
+  icon: string | null;
+  color: string | null;
+  /** Linear status string ("Planned", "Active", "Completed"). */
+  status: string | null;
+  targetDate: string | null;
+  url: string | null;
+  projectCount: number;
+};
+
+export type CtoLinearFavorite = {
+  id: string;
+  /** Linear favorite type: issue, project, customView, cycle, label, initiative, document, folder, ... */
+  type: string;
+  title: string;
+  /** Id of the favorited entity (issue id, project id, view id, ...). */
+  targetId: string | null;
+  url: string | null;
+  icon: string | null;
+  color: string | null;
+  sortOrder: number;
+};
+
+export type CtoLinearDocument = {
+  id: string;
+  title: string;
+  icon: string | null;
+  color: string | null;
+  url: string | null;
+  projectName: string | null;
+  updatedAt: string;
+  /** Present only on a single-document read. */
+  content?: string | null;
+};
+
+export type CtoLinearRailData = {
+  cycles: CtoLinearCycle[];
+  initiatives: CtoLinearInitiative[];
+  favorites: CtoLinearFavorite[];
+  documents: CtoLinearDocument[];
 };
 
 export type LinearIssueRelationKind = "blocks" | "blocked_by" | "related" | "duplicate";

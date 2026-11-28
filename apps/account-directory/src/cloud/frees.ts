@@ -96,6 +96,21 @@ function githubFailure(lanes: readonly PushWorkLane[]): StepResult | null {
   if (problem === "unreachable") return { kind: "fail", error: pushWorkGithubMessage(problem, "kept"), code: "github_unreachable" };
   return null;
 }
+/**
+ * A lane push-work didn't push because it found what looks like a key or a
+ * password in it (`cloudPushSecretCheck.ts` on the computer): the person's to
+ * take out, so it is refused, not a Sentry event.
+ */
+function secretFailure(lanes: readonly PushWorkLane[]): StepResult | null {
+  const found = lanes.filter((lane) => lane.reason === "secret_found");
+  if (found.length === 0) return null;
+  const files = found.flatMap((lane) => lane.secretFiles ?? []);
+  return {
+    kind: "fail",
+    error: `ADE found what looks like a key or a password${files.length ? ` in ${files.join(", ")}` : ""}${laneNamesOf(found)}, so it didn't push that work and the computer stays. Open the lane, take it out (from its commits too, if one has it), then try again.`,
+    refused: true,
+  };
+}
 const withoutStop = (text: string): string => text.trim().replace(/[.!?…]+$/, "");
 
 export function freeRecordOf(job: JobRow): CloudFreeRecord {
@@ -200,6 +215,8 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
   logCloud("cloud.free_pushed", { jobId: job.job_id, pushed: tally.pushed, failed: tally.failed, skipped: tally.skipped });
   const left = (tally.lanes ?? []).filter((lane) => lane.state === "unpushed" || lane.state === "failed");
   if (tally.failed > 0 || left.length > 0 || (!tally.lanes && tally.skipped > 0)) {
+    const secret = secretFailure(left);
+    if (secret) return secret;
     const github = githubFailure(left);
     if (github) return github;
     // A lane it couldn't read (nothing seen to push, the read itself failed)

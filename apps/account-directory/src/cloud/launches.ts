@@ -1,4 +1,5 @@
 import { mintDeviceApprovalLink } from "../deviceAppApproval";
+import { expectCloudComputerSignIn } from "../newDeviceEmail";
 import { unsettledPhoneMilli } from "./credits";
 import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
 import { sha256Hex } from "../sinkUtils";
@@ -1558,6 +1559,9 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
       .bind(row.join_used_at, row.join_user_code, rejoinCount, launchId, now).run();
     return fail(link.error, MINT_FAILED[link.error] ?? MINT_UNAVAILABLE, link.status);
   }
+  // The computer signs in to Clerk next, from this address: Clerk's "new device" email for that sign-in isn't sent
+  // (`newDeviceEmail.ts`). Before the link is answered, so the note is there first. Never fails the join.
+  await expectCloudComputerSignIn(env, row.user_id, request, now);
   // The network the computer joined from is ADE Cloud's own (Free Small's tripwire, `sponsoredSmall.ts`). Never fails the join.
   await noteComputerJoin(env, instanceId, requestNetwork(request)).catch((error: unknown) => {
     reportCloudFailure("cloud.computer_join_network_failed", { message: error instanceof Error ? error.message : "unknown" });

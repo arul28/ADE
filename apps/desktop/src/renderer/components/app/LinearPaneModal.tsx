@@ -11,6 +11,7 @@ import {
   LINEAR_PANE_BRAND,
   type IssuePaneBrand,
 } from "./LinearPaneHeader";
+import { LINEAR_PANE_CLOSE_REQUEST_EVENT } from "./linear/linearPaneNavigation";
 
 export type { IssuePaneBrand } from "./LinearPaneHeader";
 
@@ -57,6 +58,16 @@ export function LinearPaneModal({
     return () => {
       window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
     };
+  }, [open]);
+
+  // A chip inside the pane that moves the app (to a lane, a PR) asks the pane to close.
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return undefined;
+    const handle = () => onCloseRef.current();
+    window.addEventListener(LINEAR_PANE_CLOSE_REQUEST_EVENT, handle);
+    return () => window.removeEventListener(LINEAR_PANE_CLOSE_REQUEST_EVENT, handle);
   }, [open]);
 
   if (!open) return null;

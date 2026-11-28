@@ -304,6 +304,13 @@ Every cloud computer is shown as "DAEX Cloud" (`CloudLaneComputerLabels.label`).
   computer); Settings › DAEX Cloud reads `/cloud/account`, `/cloud/instances`,
   `/cloud/limits` and `/cloud/sign-ins` (status only); Settings › Machines shows
   one DAEX Cloud row.
+- **Linear issue list** (`Views/Linear/LinearIssueListScreen.swift`,
+  `LinearIssueGrouping.swift`, `LinearIssueListMenus.swift`): groups by status,
+  assignee, project, priority, label, cycle, milestone or team, nests
+  sub-issues inside a group, and has a display menu (ordering, fields, hidden
+  groups) that reads and writes Linear's view preferences
+  (`cto.getLinearViewPreferences` / `cto.updateLinearViewPreferences`). Active
+  is Todo and In Progress; Backlog is its own tab.
 - An old server (404) keeps today's behavior; a failed read keeps the last answer.
 
 ## Database: native SQLite + pure-SQL CRR

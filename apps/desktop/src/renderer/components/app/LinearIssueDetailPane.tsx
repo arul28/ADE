@@ -17,7 +17,9 @@ import { Button } from "../ui/Button";
 import { LinearStateIcon } from "../lanes/linearBrand";
 import { LinearConflictBadge } from "./LinearIssueBrowserRows";
 import { LinearIssueView } from "../issues/LinearIssueView";
-import type { BrowserIssue, LinearIssueEdit } from "./linearIssueBrowserModel";
+import { isNormalizedIssue, type BrowserIssue, type LinearIssueEdit } from "./linearIssueBrowserModel";
+import { LinearIssueAdeStatusCell, type LinearIssueAdeStatus } from "./linear/adeStatus";
+import { LinearPrChips } from "./linear/LinearPrChips";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
 
 function openIssueUrl(url: string | null | undefined): void {
@@ -80,6 +82,7 @@ export function LinearIssueDetails({
   showBranchPreview,
   onIssueAction,
   conflict,
+  adeStatus = null,
   onLaunch,
   onEdit,
   editPending,
@@ -96,6 +99,8 @@ export function LinearIssueDetails({
   showBranchPreview: boolean;
   onIssueAction: (issue: BrowserIssue) => void | Promise<void>;
   conflict?: IssueConflict | null;
+  /** Lanes, chats and PR checks ADE knows for this issue (from every connected machine). */
+  adeStatus?: LinearIssueAdeStatus | null;
   onLaunch?: (issues: BrowserIssue[], options: { laneOnly?: boolean }) => void;
   onEdit?: (issue: BrowserIssue, edit: LinearIssueEdit) => void;
   editPending?: boolean;
@@ -145,7 +150,8 @@ export function LinearIssueDetails({
               ) : (
                 <span className="font-mono text-[11px] text-muted-fg/55">{issue.identifier}</span>
               )}
-              {conflict ? <LinearConflictBadge conflict={conflict} /> : null}
+              {adeStatus ? <LinearIssueAdeStatusCell status={adeStatus} /> : conflict ? <LinearConflictBadge conflict={conflict} /> : null}
+              {isNormalizedIssue(issue) ? <LinearPrChips issue={issue} status={adeStatus} /> : null}
             </>
           )}
         />

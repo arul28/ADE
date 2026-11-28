@@ -28,6 +28,8 @@ export type LinearCatalogState = {
   type: string;
   teamId: string;
   teamKey: string;
+  /** Linear `WorkflowState.position`: order within the team's workflow. Absent from older brains. */
+  position?: number | null;
 };
 
 export type LinearIngressSource = "relay" | "local-webhook" | "reconciliation";
@@ -185,8 +187,47 @@ export type LinearIssueRef = {
   stateType: string;
 };
 
+/**
+ * A GitHub/GitLab pull request Linear has linked to an issue, read from the
+ * issue's attachments (`sourceType` "github"/"gitlab" with a `/pull/` or
+ * `/merge_requests/` url; issue links are not pull requests).
+ */
+export type LinearIssuePullRequest = {
+  url: string;
+  /** PR number, from `metadata.number` or the url. */
+  number: number | null;
+  title: string;
+  /** `metadata.draft` wins over an open status. Unknown when Linear sent no status. */
+  status: "open" | "draft" | "merged" | "closed" | "unknown";
+  /** "owner/name", from `metadata.repoLogin`/`repoName` or the url. */
+  repo: string | null;
+  branch: string | null;
+  /** Linear's link kind ("closes", "contributes", ...). */
+  linkKind: string | null;
+  updatedAt: string | null;
+};
+
 export type NormalizedLinearIssue = {
   id: string;
+  /** Linear's issue number within its team (`issue.number`). */
+  number?: number | null;
+  /** Pull requests linked to the issue in Linear. Absent on reads that did not ask for attachments. */
+  pullRequests?: LinearIssuePullRequest[];
+  /**
+   * ADE's own links on the issue (its `oauthClient` attachments with
+   * `metadata.laneId` / `sessionId`). Absent on reads that did not ask for attachments.
+   */
+  adeLinks?: Array<{ laneId: string | null; sessionId: string | null }>;
+  projectMilestoneId?: string | null;
+  projectMilestoneName?: string | null;
+  /** Agent the issue is delegated to (Linear `issue.delegate`), e.g. an ADE or Cursor agent. */
+  delegateId?: string | null;
+  delegateName?: string | null;
+  delegateAvatarUrl?: string | null;
+  /** Linear manual order within a group (`issue.sortOrder`); lower is higher in the list. */
+  sortOrder?: number | null;
+  /** Manual order among the parent's sub-issues (`issue.subIssueSortOrder`). */
+  subIssueSortOrder?: number | null;
   identifier: string;
   title: string;
   description: string;
