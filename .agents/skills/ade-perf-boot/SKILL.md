@@ -1,6 +1,6 @@
 ---
 name: ade-perf-boot
-description: Performance patterns discovered for ADE's cold launch and "main
+description: Performance patterns discovered for DAEX's cold launch and "main
   screen" surfaces — welcome / project picker, recent projects list, project
   open flow, remote runtime connect, iOS pairing. Read before editing files in
   apps/desktop/src/main/main.ts, the App shell (apps/desktop/src/renderer/components/app/**),
@@ -15,7 +15,7 @@ metadata:
 
 # ade-perf-boot
 
-Patterns discovered for ADE's cold launch and main-screen surfaces. Each entry has run-traced provenance — do not delete entries without explicit user approval.
+Patterns discovered for DAEX's cold launch and main-screen surfaces. Each entry has run-traced provenance — do not delete entries without explicit user approval.
 
 ## Scope
 
