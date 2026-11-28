@@ -19,12 +19,14 @@ export type CloudPlanMoveUp = {
   computerLimit: number;
   /** The plan's hours for bigger computers, when the caller has the plan's facts. */
   includedMilli?: number;
+  /** Shown credits in one Medium-hour unit (`CloudUnitWords.scale`): 1 before Pricing v3. */
+  scale?: number;
 };
 
 /** The question before a paid plan moves up: it charges the difference now. */
 export async function confirmCloudPlanMoveUp(plan: CloudPlanMoveUp): Promise<boolean> {
   const label = CLOUD_PLAN_LABELS[plan.planId];
-  const hours = plan.includedMilli != null ? ` and ${formatCloudHours(plan.includedMilli)} credits a month` : "";
+  const hours = plan.includedMilli != null ? ` and ${formatCloudHours(plan.includedMilli, plan.scale)} credits a month` : "";
   return await confirmDialog({
     title: `Move to ${label}?`,
     message: `${label} is $${plan.priceUsd} a month with ${plan.computerLimit} cloud computers${hours}. You pay the difference for the rest of this month now. Credits you used stay used.`,

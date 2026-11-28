@@ -161,7 +161,7 @@ import type {
   CtoCloudHomeEvent,
   CtoCloudHomeMethod,
 } from "../shared/ctoCloudHome";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus, CloudFreeModelsSeenRequest, CloudFreeModelsState } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudAdProofAnswer, CloudAdSentRequest, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus, CloudFreeModelsSeenRequest, CloudFreeModelsState } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatProofArgs, CloudSavedChatProofResult, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
@@ -14619,8 +14619,10 @@ const adeBridge = {
     setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
       ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
-    setSponsoredConsent: (consent: CloudSponsoredChoice, confirmed?: boolean): Promise<CloudSponsoredState | null> =>
-      ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent, confirmed: confirmed === true }),
+    setSponsoredConsent: (consent: CloudSponsoredChoice, confirmed?: boolean, noticeSeen?: boolean): Promise<CloudSponsoredState | null> =>
+      ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent, confirmed: confirmed === true, noticeSeen: noticeSeen === true }),
+    // Pricing v3's message proof: account level, no pin (`instanceId` names the chat's own computer).
+    sponsoredSent: (input: CloudAdSentRequest): Promise<CloudAdProofAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredSent, input),
     sponsoredSeen: (input: CloudSponsoredSeenRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredSeen, input),
     sponsoredHide: (input: CloudSponsoredHideRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredHide, input),
     sponsoredAd: (input: CloudSponsoredAdRequest): Promise<CloudSponsoredAdAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredAd, input),

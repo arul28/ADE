@@ -10,6 +10,7 @@ import {
   type CloudPhoneView,
 } from "../../../shared/cloudPhone";
 import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudPhonePriceWords } from "../../../shared/cloudAdPriceWords";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { ipcErrorMessage } from "../../lib/format";
 import { isAdeAvailable } from "../../lib/adeAvailability";
@@ -176,9 +177,12 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
   const { status, error: statusError, refresh } = useCloudPhoneStatus(pin, hidden);
   // The account (already read for the header's meter): the iPhone has no
   // minutes of its own and draws from the credits. Account level, no pin.
-  const words = cloudUnitWords(useCloudAccount());
+  const account = useCloudAccount();
+  const words = cloudUnitWords(account);
   const phone = status?.phone ?? null;
   const ready = phone?.state === "ready";
+  // Pricing v3: the phone's price now (and why full) while it runs, else its two prices a minute.
+  const price = cloudPhonePriceWords(account, words, ready);
   const { link, error: linkError } = useCloudPhoneLink(pin, ready ? phone.id : null, hidden);
   const device = cloudPhoneDeviceOf(phone?.device);
   const [error, setError] = useState<unknown>(null);
@@ -228,7 +232,8 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
     family: device === "ipad" ? "ipad" as const : "iphone" as const,
     minutes,
     words,
-    minutesLine: minutes ? cloudPhoneLeftText(minutes.left, words) : null,
+    minutesLine: minutes ? cloudPhoneLeftText(minutes.left, words, price?.text) : null,
+    price,
     off: !phone || phone.state === "ended",
     setError,
     busy,
@@ -243,14 +248,14 @@ type CloudPhoneControl = ReturnType<typeof useCloudPhoneControl>;
  * minutes of its own, so the phone's minutes left are the credits left at
  * its rate.
  */
-function cloudPhoneLeftText(minutesLeft: number, words: CloudUnitWords): string {
+function cloudPhoneLeftText(minutesLeft: number, words: CloudUnitWords, priceText?: string | null): string {
   const perMinute = words.phoneMilliPerMinute / 1000;
-  return `${words.count(Math.floor(minutesLeft * perMinute * 10) / 10)} left, ${words.count(perMinute)} a minute`;
+  return `${words.count(Math.floor(minutesLeft * perMinute * 10) / 10)} left, ${priceText ?? `${words.count(perMinute)} a minute`}`;
 }
 
 /** The one line on top, as the local pane has: a failure, else a fact about the device. */
 function CloudPhoneStrip({ control, failure = control.failure }: { control: CloudPhoneControl; failure?: unknown }) {
-  const { status, phone, minutes, words, off, busy, run, dismiss } = control;
+  const { status, phone, minutes, words, off, busy, run, dismiss, price } = control;
   if (failure) return <AppleDeviceStatusStrip error={failure} onDismiss={dismiss} />;
   if (status?.access === "on" && off) {
     const reason = phone?.endReason ? END_REASONS[phone.endReason] : null;
@@ -260,9 +265,13 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
     // from the account's credits, one balance.
     return (
       <AppleDeviceNoticeStrip
-        sentence={minutes && minutes.left <= 0
-          ? `Your ${BRAND.CLOUD_NAME} credits are used up, and the iPhone uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute.${why}`
-          : `The ${BRAND.CLOUD_NAME} iPhone is off. It uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute while it runs.${why}`}
+        sentence={price
+          ? minutes && minutes.left <= 0
+            ? `Your ${BRAND.CLOUD_NAME} credits are used up. The iPhone: ${price.text}.${why}`
+            : `The ${BRAND.CLOUD_NAME} iPhone is off. While it runs: ${price.text}.${why}`
+          : minutes && minutes.left <= 0
+            ? `Your ${BRAND.CLOUD_NAME} credits are used up, and the iPhone uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute.${why}`
+            : `The ${BRAND.CLOUD_NAME} iPhone is off. It uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute while it runs.${why}`}
         actionLabel={busy === "start" ? "Starting" : "Start"}
         busy={busy === "start"}
         onAction={() => void run("start")}
@@ -282,7 +291,7 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
  */
 function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   const live = useCloudPhoneLive();
-  const { phone, model, busy, run, refresh, pinRef, hidden, words } = control;
+  const { phone, model, busy, run, refresh, pinRef, hidden, words, price } = control;
   // A parked pane neither ticks nor reads.
   const { now, stopAt, warn } = useCloudPhoneIdleCountdown(live, !hidden, true);
   const [keeping, setKeeping] = useState(false);
@@ -308,7 +317,8 @@ function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   };
 
   const left = cloudPhoneMinutesLeft(live, now);
-  const minutesPart = left != null && live.status?.minutes ? ` · ${cloudPhoneLeftText(left, words)}` : "";
+  const minutesPart = (left != null && live.status?.minutes ? ` · ${cloudPhoneLeftText(left, words, price?.text)}` : price ? ` · ${price.text}` : "")
+    + (price?.reason ? ` · ${price.reason}` : "");
   const onFor = phone?.readyAt ? ` · on ${formatPhoneSpan(now - phone.readyAt, false)}` : "";
   if (warn && stopAt != null) {
     // The deadline is this window's estimate (another machine's calls don't

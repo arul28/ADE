@@ -9,6 +9,7 @@ import {
 } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudLaneJobIsLive, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
+import { cloudAdsViewOf, cloudComputerPriceOf, cloudFullPriceReasonLine, cloudPriceNowText, cloudPricingOf } from "../../../shared/cloudAdPriceWords";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { cloudTierOfMachine, cloudTierRateLabel, cloudTiers } from "../../../shared/cloudTiers";
 import { formatAgo } from "../../lib/format";
@@ -125,6 +126,7 @@ export function cloudLaneStatusModel(input: {
 }): CloudLaneStatusModel {
   const { power, box, status, account, now } = input;
   const words = cloudUnitWords(account);
+  const priced = cloudPricingOf(account) != null;
   // A change that runs: the computer won't sleep on its idle clock (the change
   // saves, restarts or replaces it), so the countdown is left out; its line says what happens.
   const changing = input.job != null && cloudLaneJobIsLive(input.job);
@@ -141,7 +143,8 @@ export function cloudLaneStatusModel(input: {
   let sizeText: string | null = null;
   if (box?.resources) {
     const tier = cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account)));
-    const phrase = tier ? cloudTierRateLabel(tier, words) : box.hoursRate != null ? formatCloudHoursRate(box.hoursRate, words) : null;
+    // Under Pricing v3 the "costs now" line says the price (`price` below); the size line keeps to the size.
+    const phrase = priced ? null : tier ? cloudTierRateLabel(tier, words) : box.hoursRate != null ? formatCloudHoursRate(box.hoursRate, words) : null;
     const rate = phrase ? capitalizeCloudPhrase(phrase) : null;
     const size = [tier?.label, `${box.resources.cpu} CPU`, `${box.resources.memoryGb} GB`, rate].filter(Boolean).join(" · ");
     sizeText = changing ? `Now ${size}` : size;
@@ -206,6 +209,19 @@ export function cloudLaneStatusModel(input: {
     } else if (status.memory === "pressure") {
       lines.push({ key: "memory", text: "Memory is running low", tone: "warn", hint: "A bigger size has more memory." });
     }
+  }
+  // Pricing v3: what this computer costs now, first among the lines, and why it has the full price while ads are on.
+  const price = box ? cloudComputerPriceOf(account, box.instanceId) : null;
+  if (price) {
+    const view = cloudAdsViewOf(account);
+    const reason = cloudFullPriceReasonLine(price, view);
+    const priceLines: CloudLaneStatusLine[] = power === "asleep"
+      ? [{ key: "price", text: "Uses nothing while asleep", tone: null, hint: cloudPriceNowText(price, view, words) }]
+      : [
+          { key: "price", text: cloudPriceNowText(price, view, words), tone: null },
+          ...(reason ? [{ key: "price-reason", text: reason, tone: null }] : []),
+        ];
+    lines.unshift(...priceLines);
   }
   return { stateText, job: jobLine, changing, sizeText, disk, hours, lines };
 }

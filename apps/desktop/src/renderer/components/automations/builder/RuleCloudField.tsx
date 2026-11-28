@@ -8,6 +8,7 @@ import { useAdeCloudDraft } from "../../chat/useAdeCloudDraft";
 import { inputCls } from "../designTokens";
 import { cloudLanesBlockedReason, useAutomationFeatureGate } from "../automationFeatureGate";
 import { BRAND } from "../../../../shared/brand";
+import { cloudAdsViewOf, cloudAutomationFullPriceSentence, cloudFullPriceNoticeShows } from "../../../../shared/cloudAdPriceWords";
 
 /**
  * "Run on ADE Cloud", beside "Runs on [machine]": each run makes its lane on
@@ -39,6 +40,9 @@ export function RuleCloudField({
   const pickedSize = value?.sizeId ?? null;
   const defaultTier = cloud.tiers.find((tier) => tier.id === cloud.defaultTier) ?? null;
   const shownTier = pickedSize ?? defaultTier?.id ?? cloud.defaultTier;
+  // Pricing v3: a run uses the full price; said while ads would make a chat cheaper.
+  const adsView = cloudAdsViewOf(cloud.account);
+  const fullPriceLine = on && cloudFullPriceNoticeShows(adsView) ? cloudAutomationFullPriceSentence(adsView) : null;
   const hint = machineBlocked && !on
     ? machineBlocked
     : on
@@ -95,6 +99,7 @@ export function RuleCloudField({
             Nobody watches a run, so it counts as an agent: your agent limits set its largest size and how many new
             computers it may start a day.
           </p>
+          {fullPriceLine ? <p className="text-[10.5px] text-muted-fg/80">{fullPriceLine}</p> : null}
           {!cloudEnabled ? (
             <p className="text-[10.5px] text-amber-300/80">{BRAND.CLOUD_NAME} isn't available on this account. Turn this off to run here.</p>
           ) : null}

@@ -56,7 +56,7 @@ export function CloudGroupHead({
   /** The account, for its words; null before it is read. */
   account?: CloudAccountState | null;
 }) {
-  const totals = cloudGroupTotals(boxes);
+  const totals = cloudGroupTotals(boxes, account);
   const words = cloudUnitWords(account);
   return (
     <div className="ade-cx-section-head ade-cx-cloud-head">
@@ -64,7 +64,7 @@ export function CloudGroupHead({
       {ADE_CLOUD_NAME}
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label={`Checking ${BRAND.CLOUD_NAME}`} /> : null}
       {totals.hoursRate > 0 ? (
-        <span className="ade-cx-cloud-head-facts kit-num" title={`How fast the computers awake now use your ${words.noun}. ${words.unitSentence}`}>
+        <span className="ade-cx-cloud-head-facts kit-num" title={`How fast the computers awake now use your ${words.noun}. ${words.unitSentence}`.trim()}>
           Now: {formatCloudHoursRate(totals.hoursRate, words)}
         </span>
       ) : null}
@@ -192,6 +192,7 @@ export function CloudBoxStrip({
   box,
   catalog,
   words,
+  account = null,
   work,
   pending,
   approvalUrl,
@@ -206,6 +207,8 @@ export function CloudBoxStrip({
   catalog: CloudCatalog;
   /** The account's words for the box's rate. */
   words?: CloudUnitWords;
+  /** The account, for the box's price now under Pricing v3; null before it is read. */
+  account?: CloudAccountState | null;
   work: CloudBoxWork;
   pending: CloudBoxPending | null;
   /** A copy's or move's sign-in link while its new computer waits for the person. */
@@ -220,7 +223,7 @@ export function CloudBoxStrip({
 }) {
   const tone = cloudStateTone(box);
   const stateLabel = box.pastDue ? "Suspended" : CLOUD_STATE_LABELS[box.state];
-  const rate = describeCloudRate(box, words);
+  const rate = describeCloudRate(box, words, account);
   const atRest = box.state === "asleep" || box.state === "stopped";
   const canWake = atRest && !box.pastDue;
   const laneNames = work.lanes.map((lane) => (lane.projectName ? `${lane.name} (${lane.projectName})` : lane.name));

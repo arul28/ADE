@@ -19,6 +19,7 @@ import {
 } from "../../state/cloudPhoneLive";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useTabCopyPin } from "../../state/repositoryScope";
+import { cloudPhonePriceWords } from "../../../shared/cloudAdPriceWords";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -126,7 +127,8 @@ function CloudIphoneDetails({
   const phone = live.status?.phone ?? null;
   const minutes = live.status?.minutes ?? null;
   // The iPhone draws from the account's credits (account level, no pin).
-  const words = cloudUnitWords(useCloudAccount());
+  const account = useCloudAccount();
+  const words = cloudUnitWords(account);
   const [busy, setBusy] = useState<"stop" | "keep" | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (!phone) return null;
@@ -152,6 +154,10 @@ function CloudIphoneDetails({
     { label: "State", value: starting ? (phone.queueUntil ? "Waiting for a free phone" : "Starting") : "On" },
   ];
   if (!starting && phone.readyAt) rows.push({ label: "On for", value: `${formatPhoneSpan(now - phone.readyAt, false)} of ${CLOUD_PHONE_MAX_MINUTES / 60} h at most` });
+  // Pricing v3: what it costs now, and why the full price when ads are on.
+  const price = cloudPhonePriceWords(account, words, phone.state === "ready");
+  if (price) rows.push({ label: phone.state === "ready" ? "Costs now" : "Price", value: price.text });
+  if (price?.reason) rows.push({ label: "", value: price.reason });
   if (left != null && minutes) rows.push({ label: "Credits left", value: `${words.milli(left * words.phoneMilliPerMinute)}, about ${left} min` });
   if (!starting && stopAt != null) {
     rows.push({ label: "Idle stop", value: stopping ? "due now" : `in ${formatPhoneSpan(stopAt - now, warn)} with no input`, warn });
@@ -161,7 +167,7 @@ function CloudIphoneDetails({
     <div className="flex flex-col gap-2.5 p-4 pt-3" data-testid="cloud-iphone-details">
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-sans text-[11.5px]">
         {rows.map((row) => (
-          <div key={row.label} className="contents">
+          <div key={row.label || row.value} className="contents">
             <dt className="text-muted-fg">{row.label}</dt>
             <dd className={cn("min-w-0 text-fg/90 tabular-nums", row.warn && "text-warning")}>{row.value}</dd>
           </div>

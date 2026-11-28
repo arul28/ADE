@@ -1,4 +1,5 @@
 import { useId, useRef, type KeyboardEvent } from "react";
+import { cloudRateText, cloudTierRatePair, type CloudAdsView } from "../../../../shared/cloudAdPriceWords";
 import { Check } from "@phosphor-icons/react";
 import { cloudTierFacts, cloudTierHoldsDisk, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../../shared/cloudTiers";
 import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
@@ -28,6 +29,7 @@ export function CloudSizeCards({
   ariaLabel,
   words = CLOUD_CREDIT_WORDS,
   currentDiskGb = null,
+  priced = null,
 }: {
   tiers: readonly CloudTier[];
   picked: CloudTierId | null;
@@ -45,6 +47,12 @@ export function CloudSizeCards({
    * never shrinks, so a size whose cap is below it says it can't take it.
    */
   currentDiskGb?: number | null;
+  /**
+   * Pricing v3 (the account has `pricing`): the account's ads, so each card
+   * says its two prices ("8 credits an hour with ads · 10 with no ads"). The
+   * object itself is the switch: undefined/null shows today's card.
+   */
+  priced?: { view: CloudAdsView | null } | null;
 }) {
   const idBase = useId();
   const cards = useRef<(HTMLButtonElement | null)[]>([]);
@@ -75,8 +83,15 @@ export function CloudSizeCards({
           const described = [marked ? `${id}-mark` : null, `${id}-rate`, `${id}-specs`, tooSmall ? `${id}-disk` : null].filter(Boolean).join(" ");
           const usesHours = cloudTierUsesHours(tier);
           // Time on this size (Small reads "Unlimited"); the others say how long the hours left last here.
-          const big = usesHours && leftMilli == null ? null : cloudTierHoursAt(tier, leftMilli ?? 0);
-          const under = !usesHours ? `never uses your ${words.noun}` : leftMilli != null ? "left at this size" : facts.rateLine.toLowerCase();
+          // Pricing v3 with ads on: the time at the ad price, what the person pays now (Free's Small: free with ads).
+          const adMilli = priced?.view?.on && priced.view.available ? tier.adMultiplierMilli : null;
+          const freeWithAds = usesHours && adMilli === 0;
+          const atAd = usesHours && adMilli != null && adMilli > 0 && adMilli < tier.multiplierMilli;
+          const big = freeWithAds ? "Free" : usesHours && leftMilli == null ? null : cloudTierHoursAt(atAd ? { multiplierMilli: adMilli } : tier, leftMilli ?? 0);
+          const under = freeWithAds ? "with ads"
+            : !usesHours ? `never uses your ${words.noun}`
+            : leftMilli != null ? atAd ? "left at this size with ads" : "left at this size"
+            : facts.rateLine.toLowerCase();
           return (
             <button
               key={tier.id}
@@ -106,6 +121,9 @@ export function CloudSizeCards({
                   .filter((fact): fact is string => fact != null)
                   .map((fact, at) => <span key={fact}>{at > 0 ? " · " : null}<span className="adecd-sizecard-fact">{fact}</span></span>)}
               </span>
+              {priced ? (
+                <span className="adecd-sizecard-price kit-num" data-face="ui">{cloudRateText(cloudTierRatePair(tier), priced.view, words)}</span>
+              ) : null}
               {tooSmall ? (
                 <span id={`${id}-disk`} className="adecd-sizecard-specs" style={{ color: noticeTone("warning").text }}>
                   Can't hold this computer's {currentDiskGb} GB disk

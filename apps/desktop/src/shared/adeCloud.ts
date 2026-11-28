@@ -58,6 +58,13 @@ export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanGithub, CloudFreePla
 /** Sponsored cards on Free-plan ADE Cloud chats (`gravity.ts`): the account server decides every one. */
 export type {
   CloudSponsoredAd,
+  CloudAdProofAnswer,
+  CloudAdSentRequest,
+  CloudAdsState,
+  CloudComputerPrice,
+  CloudFullPriceReason,
+  CloudPrice,
+  CloudPricingState,
   CloudSponsoredAdAnswer,
   CloudSponsoredAdRequest,
   CloudSponsoredChoice,
@@ -338,7 +345,11 @@ export function cloudSmallUsesHours(catalog: Pick<CloudCatalog, "sizes">): boole
 export function cloudSmallHoursSentence(catalog: Pick<CloudCatalog, "sizes">, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string {
   const rate = cloudSmallRateMilli(catalog) / 1000;
   if (!(rate > 0)) return CLOUD_SMALL_UNLIMITED_SENTENCE;
-  return `Small computers use ${rate === 0.5 ? "half a credit" : words.count(rate)} for each hour awake.`;
+  const uses = rate * words.scale === 0.5 ? "half a credit" : words.count(rate);
+  // Pricing v3: Free's Small is free with ads (its ad rate is 0) and has the full rate with none.
+  const small = catalog.sizes.find((size) => size.tier === "small");
+  if (small?.adMultiplierMilli === 0) return `Small computers are free with ads, and use ${uses} for each hour awake with no ads.`;
+  return `Small computers use ${uses} for each hour awake.`;
 }
 
 /** Android needs a full computer of Medium or bigger. */
@@ -1034,13 +1045,15 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     // Small computers usually never use hours, so they keep working: only the bigger sizes stop.
     // A Free account whose Small uses hours (sponsored cards off) stops every size.
     const bigger = cloudSmallUsesHours(catalog)
-      ? `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ${BRAND.CLOUD_NAME} to keep Small computers unlimited.`
+      ? account.pricing
+        ? `Your cloud computers are stopped until ${resetDate}. Small computers are free while a chat with ads is in use.`
+        : `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ${BRAND.CLOUD_NAME} to keep Small computers unlimited.`
       : `Medium, Large and X-Large computers${account.phone?.access === "on" ? ` and the ${BRAND.CLOUD_NAME} iPhone` : ""} are stopped until ${resetDate}. Small computers keep working.`;
     const plans = cloudCatalogHasMax(catalog)
-      ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
+      ? ` Plus has ${words.num(catalog.plans.plus.includedMilli)} ${noun} a month, Pro ${words.num(catalog.plans.pro.includedMilli)} and Max ${words.num(catalog.plans.max.includedMilli)}.`
       : cloudCatalogHasPro(catalog)
-        ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
-        : ` The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} ${noun} a month.`;
+        ? ` Plus has ${words.num(catalog.plans.plus.includedMilli)} ${noun} a month, and Pro ${words.num(catalog.plans.pro.includedMilli)}.`
+        : ` The paid plan has ${words.num(catalog.plans.paid.includedMilli)} ${noun} a month.`;
     return {
       id: "cloud-hours-zero",
       tone: "warning",

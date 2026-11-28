@@ -1402,6 +1402,8 @@ export function WorkViewArea({
   );
 
   const showingDraft = activeItemId == null;
+  // Stable, so the draft pane's launch callback keeps its identity across renders.
+  const showChatDraft = useCallback(() => onShowDraftKind("chat"), [onShowDraftKind]);
   const listedActiveSession = showingDraft ? null : sessionsById.get(activeItemId) ?? null;
   // The open chat, with its machine, as the list last had it. While that
   // machine reconnects its rows leave the list; the open chat stays open
@@ -1548,6 +1550,7 @@ export function WorkViewArea({
             lanes={lanes}
             onOpenChatSession={onOpenChatSession}
             onLaunchPtySession={onLaunchPtySession}
+            onShowChatDraft={showChatDraft}
             onImportedSession={onImportedSession}
             onOpenExistingImportedSession={onOpenExistingImportedSession}
             onDraftLaneChange={onDraftLaneChange}

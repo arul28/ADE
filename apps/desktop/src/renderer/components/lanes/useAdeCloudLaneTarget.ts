@@ -38,6 +38,8 @@ export function useAdeCloudLaneTarget(open: boolean, originUrl: string | null) {
     setDefaultTier: draft.setDefaultTier,
     /** The account's words (`cloudUnitWords`). */
     words: draft.words,
+    /** Pricing v3: each size shows both prices; null without it. */
+    priced: draft.priced,
     /** The line under the name in a machine list. Each plan allows a number of computers (the limit card says so when it's reached). */
     detail: "A new computer for each lane",
   };

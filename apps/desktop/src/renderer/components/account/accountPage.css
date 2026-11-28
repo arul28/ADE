@@ -541,92 +541,12 @@
 }
 .ade-ah-email { font-size: 13px; opacity: 0.9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-ah-caption { font-size: 11.5px; opacity: 0.7; }
-
-/* The glass card: this computer and each way in. */
-.ade-ah-panel {
-  flex: 0 1 auto;
-  width: min(360px, 48%);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(10, 10, 14, 0.38);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-}
-.ade-ah-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.ade-ah-panel-id { min-width: 0; }
-.ade-ah-panel-eyebrow {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  opacity: 0.68;
-}
-.ade-ah-panel-name {
-  margin-top: 2px;
-  font-size: 14px;
-  font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ade-ah-panel-meta { font-size: 11px; opacity: 0.72; margin-top: -3px; }
-.ade-ah-panel-empty { font-size: 12px; opacity: 0.75; }
-.ade-ah-status {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.12);
-}
-.ade-ah-status i { width: 6px; height: 6px; border-radius: 999px; background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.22); }
-.ade-ah-status[data-tone="idle"] i { background: rgba(255, 255, 255, 0.45); box-shadow: none; }
-.ade-ah-status[data-tone="warn"] i { background: #fbbf24; box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.22); }
-.ade-ah-routes {
-  list-style: none;
-  margin: 0;
-  padding: 5px 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.10);
-}
-.ade-ah-route {
-  display: grid;
-  grid-template-columns: 16px auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  height: 20px;
-  font-size: 11.5px;
-}
-.ade-ah-route-icon { display: inline-flex; opacity: 0.85; }
-.ade-ah-route-name { font-weight: 550; white-space: nowrap; }
-.ade-ah-route-detail {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  opacity: 0.6;
-}
-.ade-ah-route-word { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 11px; opacity: 0.92; }
-.ade-ah-route-word i { width: 6px; height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.35); }
-.ade-ah-route[data-tone="on"] .ade-ah-route-word i { background: #4ade80; }
-.ade-ah-route[data-tone="warn"] .ade-ah-route-word i { background: #fbbf24; }
-.ade-ah-route[data-tone="off"] { opacity: 0.6; }
+.ade-ah-account-id { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ade-ah-account-id .ade-net-mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ade-ah-account-id .ade-acct-icon-btn { color: inherit; width: 22px; height: 22px; }
 
 @container modernpage (max-width: 760px) {
   .ade-ah .kit-hero-row { flex-wrap: wrap; padding: 18px; }
-  .ade-ah-panel { width: 100%; }
 }
 
 /* ── account details ────────────────────────────────────────────────── */
