@@ -99,6 +99,14 @@ export type ModelDescriptor = {
   cliCommand?: string;
   isCliWrapped: boolean;
   deprecated?: boolean;
+  /**
+   * The provider's newer version of this same model (Fable 5.1 -> Fable 5.2).
+   * A chat on this model is offered the newest successor its machine can run
+   * ("A newer version is out", `shared/modelSuccessors.ts`); ADE never
+   * switches by itself. Only a same-line release, never a different tier.
+   * iOS mirrors these pairs by hand (`apps/ios/ADE/Views/Work/WorkModelUpgrade.swift`).
+   */
+  successorId?: string;
   /** Price per million input tokens (USD). Used for cost estimation. */
   inputPricePer1M?: number;
   /** Price per million output tokens (USD). Used for cost estimation. */
@@ -563,6 +571,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-fable-5-api",
     ],
     displayName: "Claude Fable 5.1",
+    successorId: "anthropic/claude-fable-5-2",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
@@ -593,6 +602,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-sonnet-4-6-api",
     ],
     displayName: "Claude Sonnet 5",
+    successorId: "anthropic/claude-sonnet-5-5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
@@ -649,6 +659,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "anthropic/claude-opus-4-7-1m",
     ],
     displayName: "Claude Opus 5",
+    successorId: "anthropic/claude-opus-5-5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
@@ -747,6 +758,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "gpt-6-sol",
     aliases: ["gpt-6-sol"],
     displayName: "GPT-6 Sol",
+    successorId: "openai/gpt-6.1-sol",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 1_050_000,
@@ -791,6 +803,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "gpt-5.6-sol",
     aliases: ["gpt-5.6-sol"],
     displayName: "GPT-5.6 Sol",
+    successorId: "openai/gpt-6-sol",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 372_000,
@@ -813,6 +826,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "gpt-5.6-terra",
     aliases: ["gpt-5.6-terra"],
     displayName: "GPT-5.6 Terra",
+    successorId: "openai/gpt-6.1-terra",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 372_000,
@@ -837,6 +851,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "gpt-5.6-luna",
     aliases: ["gpt-5.6-luna"],
     displayName: "GPT-5.6 Luna",
+    successorId: "openai/gpt-6-luna",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 372_000,
@@ -986,6 +1001,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "gpt-6.1-sol",
     aliases: ["gpt-6.1-sol"],
     displayName: "GPT-6.1 Sol",
+    successorId: "openai/gpt-6.2-sol",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 1_050_000,
@@ -1008,6 +1024,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "gpt-6-astra",
     aliases: ["gpt-6-astra"],
     displayName: "GPT-6 Astra",
+    successorId: "openai/gpt-6.2-astra",
     family: "openai",
     authTypes: ["cli-subscription"],
     contextWindow: 1_050_000,
@@ -1057,6 +1074,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "muse-spark-1.2",
     aliases: ["spark-1.2"],
     displayName: "Muse Spark 1.2",
+    successorId: "muse/muse-spark-1.3",
     family: "muse",
     authTypes: ["cli-subscription", "api-key"],
     contextWindow: 1_000_000,
@@ -1209,6 +1227,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "grok-4.5",
     aliases: ["grok-4.5"],
     displayName: "Grok 4.5",
+    successorId: "xai/grok-4-6",
     family: "xai",
     authTypes: ["cli-subscription"],
     contextWindow: 500_000,

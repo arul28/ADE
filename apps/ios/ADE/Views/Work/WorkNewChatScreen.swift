@@ -744,6 +744,18 @@ struct WorkNewChatScreen: View {
   /// replace it while the user has not picked anything here yet.
   private let openingSelection: WorkComposerPreferences.Selection
   @State private var hostLaunchDefaultsChecked = false
+  /// A newer version of the composer's model the chosen machine runs
+  /// (ADE-300), and that machine's models, read with it. Only suggested:
+  /// ADE never changes the model itself.
+  @State private var modelUpgrade: WorkModelUpgrade?
+  @State private var modelUpgradeAvailable: [String] = []
+  /// An older version picked by hand: its pair is turned down once the
+  /// machine's list is read (`refreshModelUpgrade`).
+  @State private var modelUpgradeHandPicked: String?
+  @State private var modelUpgradeHandPickedScope: String?
+  /// The machine and mode the offer was read for (`modelUpgradeScope`): a
+  /// suggestion from one list never shows, or switches, on another.
+  @State private var modelUpgradeReadScope: String?
   /// The free model ADE started this chat on because nothing is signed in on
   /// the chosen machine. ADE chose it, not the person, so it is never saved as
   /// the remembered model; any pick here clears it.
@@ -1052,8 +1064,25 @@ struct WorkNewChatScreen: View {
             .padding(.horizontal, 20)
         }
 
-        composerBar
+        VStack(spacing: 0) {
+          if let upgrade = shownModelUpgrade {
+            // A tab on the prompt box, inset from its sides.
+            WorkModelUpgradeStrip(
+              upgrade: upgrade,
+              isBusy: busy,
+              onSwitch: { switchToNewerModelVersion(upgrade) },
+              onDismiss: {
+                WorkModelUpgradeMemory.dismiss(upgrade)
+                modelUpgrade = nil
+              }
+            )
+            .padding(.horizontal, 26)
+            .transition(.opacity)
+          }
+          composerBar
+        }
       }
+      .animation(.smooth(duration: 0.2), value: shownModelUpgrade)
       .padding(.bottom, 4)
       // Held landscape on the Duo, the prompt box's bottom lines up with the
       // edge bar's last capsule.
@@ -1159,6 +1188,8 @@ struct WorkNewChatScreen: View {
       selectedLaunchAccountId = nil
     }
     .task { await applyHostLaunchDefaults() }
+    // "A newer version is out" for the composer's model on the chosen machine.
+    .modifier(WorkModelUpgradeRefreshTask(key: modelUpgradeTaskKey) { await refreshModelUpgrade() })
     .task(id: launchAccountsTaskKey) { await loadLaunchAccounts() }
     .sheet(isPresented: $linearIssuePickerPresented) {
       WorkLinearIssuePickerSheet(syncService: syncService, onPick: addLinearLaunchIssue)
@@ -1206,6 +1237,13 @@ struct WorkNewChatScreen: View {
         freeModelsMachine: selectedMachineHost.map { WorkFreeModelsMachine.host($0) } ?? .unreachable,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           modelPickedByPerson = true
+          // An older version picked by hand turns its newer-version pair down.
+          // The picker also reports effort and Fast changes on the current
+          // model; those are not a pick and decline nothing.
+          if option.id != modelId
+            || ((pickedReasoning ?? "") == reasoningEffort && pickedFastMode == codexFastMode) {
+            noteModelHandPicked(option.id)
+          }
           freeDefaultSelection = nil
           selectedPreset = nil
           selectedModelOption = option
@@ -1287,6 +1325,124 @@ struct WorkNewChatScreen: View {
     // Set before the fields change, so the save on change sees it.
     freeDefaultSelection = selection
     applyFreeModelSelection(selection)
+  }
+
+  // MARK: Newer model version (ADE-300)
+
+  private var modelUpgradeTaskKey: String {
+    [modelId, modelUpgradeMachineKey, "\(sessionMode)", selectedPreset?.id ?? ""].joined(separator: "|")
+  }
+
+  /// The machine the chat launches on, by its key: the chosen one, else the
+  /// focused one, so a focus that moves to another host reads that host's list.
+  private var modelUpgradeMachineKey: String {
+    selectedMachineKey ?? syncService.focusedMachineKey ?? "primary"
+  }
+
+  /// ADE Cloud starts chats only in Chat mode: no suggestion for a CLI start there.
+  private var modelUpgradeSupported: Bool {
+    !(isCloudSelected && sessionMode == .cli)
+  }
+
+  /// The machine (the primary one, another, ADE Cloud) and mode the
+  /// composer launches on now.
+  private var modelUpgradeScope: String {
+    "\(modelUpgradeMachineKey)|\(isCloudSelected ? "cloud" : "local")|\(sessionMode)"
+  }
+
+  /// The suggestion while the composer is still on the older version, read
+  /// from the list of the machine and mode it launches on now.
+  private var shownModelUpgrade: WorkModelUpgrade? {
+    guard modelUpgradeSupported, let modelUpgrade, modelUpgrade.fromModelId == modelId, selectedPreset == nil,
+          modelUpgradeReadScope == modelUpgradeScope else { return nil }
+    return modelUpgrade
+  }
+
+  /// Reads the chosen machine's models and suggests the newest version of
+  /// the composer's model it runs, unless that pair was turned down. Chat
+  /// and CLI alike: the CLI launches with the composer's model too.
+  @MainActor
+  private func refreshModelUpgrade() async {
+    let from = modelId
+    let scope = modelUpgradeScope
+    guard modelUpgradeSupported, selectedPreset == nil, workModelNewerVersionName(from) != nil else {
+      modelUpgrade = nil
+      return
+    }
+    guard let available = await modelUpgradeCandidates(), !Task.isCancelled,
+          modelId == from, modelUpgradeScope == scope else {
+      if !Task.isCancelled { modelUpgrade = nil }
+      return
+    }
+    modelUpgradeAvailable = available
+    if let picked = modelUpgradeHandPicked {
+      if picked != from || modelUpgradeHandPickedScope != scope {
+        // Another model or machine since the pick: it no longer answers this one.
+        modelUpgradeHandPicked = nil
+      } else if WorkModelUpgradeMemory.notePicked(from, available: available) {
+        // Kept until a newer version is listed and the answer recorded.
+        modelUpgradeHandPicked = nil
+      }
+    }
+    modelUpgrade = WorkModelUpgradeMemory.suggestion(for: from, available: available)
+    modelUpgradeReadScope = scope
+  }
+
+  /// A model picked by hand: when it is an older version, its pair is turned
+  /// down, now if it is the one the strip offers for, else once the list is read.
+  private func noteModelHandPicked(_ pickedId: String) {
+    guard workModelNewerVersionName(pickedId) != nil else {
+      modelUpgradeHandPicked = nil
+      return
+    }
+    if let shown = shownModelUpgrade, shown.fromModelId == pickedId {
+      WorkModelUpgradeMemory.dismiss(shown)
+      modelUpgrade = nil
+      modelUpgradeHandPicked = nil
+    } else {
+      modelUpgradeHandPicked = pickedId
+      modelUpgradeHandPickedScope = modelUpgradeScope
+    }
+  }
+
+  /// The models the chosen machine runs, from its own list. Nil for another
+  /// machine: the phone holds no list for it, so nothing is suggested there.
+  @MainActor
+  private func modelUpgradeCandidates() async -> [String]? {
+    if isCloudSelected {
+      await cloudLaunches.loadCatalogIfNeeded(using: syncService)
+      return cloudProviderEntry?.models.map(\.id)
+    }
+    guard selectedMachineKey == nil,
+          let catalog = try? await syncService.getChatModelCatalog(mode: "cached") else { return nil }
+    return workAvailableCatalogModelIds(catalog, mode: sessionMode == .cli ? .cli : .chat)
+  }
+
+  /// Switch: the same change a pick in the picker makes.
+  private func switchToNewerModelVersion(_ upgrade: WorkModelUpgrade) {
+    guard !busy, modelId == upgrade.fromModelId, shownModelUpgrade == upgrade else { return }
+    modelPickedByPerson = true
+    modelUpgradeHandPicked = nil
+    // A saved Custom harness still loading must not land over the switch.
+    restoredPresetId = nil
+    freeDefaultSelection = nil
+    selectedPreset = nil
+    selectedModelOption = nil
+    modelId = upgrade.toModelId
+    // Keep the thinking level when the newer version has it, read from the
+    // list the successor came from: ADE Cloud's, or the machine's.
+    if !reasoningEffort.isEmpty {
+      if isCloudSelected {
+        if let cloudModel = cloudProviderEntry?.models.first(where: { $0.id == upgrade.toModelId }),
+           !cloudModel.reasoningTiers.contains(reasoningEffort) {
+          reasoningEffort = cloudModel.defaultReasoningEffort ?? ""
+        }
+      } else if let entry = WorkModelMentionDirectory.shared.entry(for: upgrade.toModelId),
+                !entry.reasoningTiers.isEmpty, !entry.reasoningTiers.contains(reasoningEffort) {
+        reasoningEffort = entry.defaultEffort ?? ""
+      }
+    }
+    modelUpgrade = nil
   }
 
   /// A free model's composer selection: OpenCode, its default mode, no effort.
@@ -2816,8 +2972,23 @@ struct WorkNewChatPreviewHost: View {
   /// layout fixes are about, provable with no pairing.
   let usesGatewayModelFixture: Bool
 
-  init(usesGatewayModelFixture: Bool = false, freeModelsFixture: Bool = false) {
+  init(usesGatewayModelFixture: Bool = false, freeModelsFixture: Bool = false, modelUpgradeFixture: Bool = false) {
     self.usesGatewayModelFixture = usesGatewayModelFixture
+    if modelUpgradeFixture {
+      // `new-chat-model-upgrade`: remembered on Fable 5.1 while the machine
+      // also lists Fable 5.2, so the page suggests 5.2.
+      WorkComposerPreferences.save(
+        provider: "claude",
+        modelId: "anthropic/claude-fable-5-1",
+        runtimeMode: "default",
+        reasoningEffort: "high",
+        codexFastMode: false
+      )
+      if let catalog = WorkNewChatPreviewFixtures.fableCatalog() {
+        SyncMenuSafePublisher.shared.service.seedPreviewChatModelCatalog(catalog)
+        WorkModelMentionDirectory.shared.record(catalog: catalog)
+      }
+    }
     if freeModelsFixture {
       // A new person's computer: nothing signed in, so the page starts on the
       // free default and never saves it as the remembered model.
@@ -2883,6 +3054,17 @@ enum WorkNewChatPreviewFixtures {
     let raw = """
     {"fetchedAt":"2026-10-02T00:00:00.000Z","groups":[{"key":"opencode","displayName":"OpenCode","providers":[{"key":"opencode-go","displayName":"OpenCode Go","badgeColor":"#4D6BFE","modelCount":1,"subsections":[{"key":"opencode-go","label":"OpenCode Go","models":[{"id":"opencode/opencode-go/deepseek-v4.1-flash","runtimeModelId":"deepseek-v4.1-flash","provider":"opencode","providerKey":"opencode-go","groupKey":"opencode","displayName":"DeepSeek V4.1 Flash","description":"DeepSeek V4.1 Flash (OpenCode)","isDefault":false,"family":"opencode","supportsReasoning":true,"supportsTools":true,"isAvailable":true}]}]}]}]}
     """
+    return try? JSONDecoder().decode(AgentChatModelCatalog.self, from: Data(raw.utf8))
+  }
+
+  /// A machine listing Fable 5.1 and Fable 5.2, in the wire's JSON shape.
+  static func fableCatalog() -> AgentChatModelCatalog? {
+    func row(_ id: String, _ name: String) -> String {
+      #"{"id":"anthropic/\#(id)","runtimeModelId":"\#(id)","provider":"claude","providerKey":"anthropic","groupKey":"claude","displayName":"\#(name)","isDefault":false,"family":"anthropic","reasoningEfforts":[{"effort":"low","description":""},{"effort":"medium","description":""},{"effort":"high","description":""}],"isAvailable":true}"#
+    }
+    let raw = ##"{"fetchedAt":"2026-11-28T00:00:00.000Z","groups":[{"key":"claude","displayName":"Claude","providers":[{"key":"anthropic","displayName":"Anthropic","badgeColor":"#D97757","modelCount":2,"subsections":[{"key":"anthropic","label":"Anthropic","models":["##
+      + row("claude-fable-5-2", "Claude Fable 5.2") + "," + row("claude-fable-5-1", "Claude Fable 5.1")
+      + "]}]}]}]}"
     return try? JSONDecoder().decode(AgentChatModelCatalog.self, from: Data(raw.utf8))
   }
 

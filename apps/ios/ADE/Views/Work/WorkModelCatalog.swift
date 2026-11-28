@@ -1259,7 +1259,7 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
   return keys
 }
 
-private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
+func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "opus", "opus-5.5", "opus-5-5",
        "claude-opus-5-5", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5-api",
@@ -1382,7 +1382,7 @@ private func workIsCodexNamedEffortFamily(_ canonicalId: String?) -> Bool {
   workCodexFamilySortPriority(canonicalId) != nil
 }
 
-private func workCanonicalCodexRegistryId(for raw: String) -> String? {
+func workCanonicalCodexRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "astra", "gpt-6.2-astra", "openai/gpt-6.2-astra":
     return "openai/gpt-6.2-astra"
