@@ -34,6 +34,13 @@ import { machineCopiesGoneStatements } from "../accountProjects/store";
 export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   DB: D1Database;
   AGENT37_API_KEY?: string;
+  /**
+   * Which ADE Cloud server this Worker is: `production` or `development`
+   * (unset reads as production). Two servers can share one provider key, so
+   * every computer one makes carries this as `ade_env`, and each adopts by
+   * request tag only its own (`isOwnEnvironment`).
+   */
+  CLOUD_ENVIRONMENT?: string;
   /** Secret. The provider's status webhook signing secret (`whsec_…`, `computerStatus.ts`). Unset: the webhook answers 503. */
   AGENT37_WEBHOOK_SECRET?: string;
   /** `1`: ADE Cloud makes no new computers or launches (the owner's kill switch); existing computers keep working. */
@@ -117,6 +124,21 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
 
 /** The deployed production Worker, where a missing secret or an email that can't be sent is a failure, not a setup. */
 export const isProduction = (env: Pick<CloudEnv, "SENTRY_ENVIRONMENT">): boolean => env.SENTRY_ENVIRONMENT?.trim() === "production";
+
+/** The metadata key naming the server that made a computer (`CLOUD_ENVIRONMENT`), written by the server on every create and copy. */
+export const CLOUD_ENV_METADATA = "ade_env";
+const PRODUCTION_CLOUD = "production";
+/** This Worker's ADE Cloud server. Unset is production, so the deployed server and tests need no setting. */
+export const cloudEnvironmentOf = (env: Pick<CloudEnv, "CLOUD_ENVIRONMENT">): string => env.CLOUD_ENVIRONMENT?.trim() || PRODUCTION_CLOUD;
+export const isProductionCloud = (env: Pick<CloudEnv, "CLOUD_ENVIRONMENT">): boolean => cloudEnvironmentOf(env) === PRODUCTION_CLOUD;
+/**
+ * A provider computer this server made, read from its tag. A computer made
+ * before the tag counts as production's. The provider's list holds every
+ * server's computers when they share a key: a match by request tag that
+ * skipped this would let one server adopt, then sleep or delete, another's.
+ */
+export const isOwnEnvironment = (env: Pick<CloudEnv, "CLOUD_ENVIRONMENT">, instance: Pick<CloudInstance, "metadata">): boolean =>
+  (instance.metadata[CLOUD_ENV_METADATA]?.trim() || PRODUCTION_CLOUD) === cloudEnvironmentOf(env);
 
 /** What a function needs that only touches the tables. */
 export type CloudDb = Pick<CloudEnv, "DB">;

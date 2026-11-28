@@ -878,6 +878,41 @@ describe("ADE Cloud account", () => {
     await run();
   });
 
+  // Two servers can hold one provider key (a test on the development server):
+  // the provider's list then holds both servers' computers, and a match by
+  // request tag must never adopt the other's, which this server would then
+  // sleep, stop or delete. A computer made before the tag is production's.
+  const ENVIRONMENT_CASES = [
+    ["another server's computer, on production", undefined, "development", false],
+    ["an untagged computer, on production", undefined, undefined, true],
+    ["an untagged computer, on the development server", "development", undefined, false],
+    ["its own computer, on the development server", "development", "development", true],
+  ] as const;
+  const ADOPTERS: Array<[string, (body: Record<string, unknown>) => Promise<unknown>]> = [
+    ["the tick", () => harness.tick()],
+    ["a repeated create", (body) => harness.send(OWNER, "POST", "/cloud/instances", body)],
+    ["the computer list", () => harness.send(OWNER, "GET", "/cloud/instances")],
+  ];
+  it.each(ADOPTERS.flatMap(([path, adopt]) => ENVIRONMENT_CASES.map(([label, server, tag, adopted]) => [path, label, server, tag, adopted, adopt] as const)))(
+    "%s adopts by request tag only this server's computers: %s",
+    async (_path, _label, server, tag, adopted, adopt) => {
+      seedAccount(harness, OWNER);
+      harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+      harness.env.CLOUD_ENVIRONMENT = server;
+      // The client's own `ade_env` never reaches the provider: the tag is the server's.
+      const body = { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_request_id: "req-env", ade_env: "spoofed" } };
+      harness.net.once.push({ match: /POST .*\/instances$/, reply: harness.net.reply({ error: { code: "upstream_timeout" } }, 504) });
+      expect((await harness.send(OWNER, "POST", "/cloud/instances", body)).status).toBe(504);
+      expect(providerCalls(harness, /POST .*\/instances$/)[0]?.body?.metadata).toEqual(expect.objectContaining({ ade_request_id: "req-env", ade_env: server ?? "production" }));
+
+      provide(harness, "envid1234567", "running", { ade_request_id: "req-env", ...(tag ? { ade_env: tag } : {}) });
+      await adopt(body);
+
+      expect(harness.rows("select user_id from cloud_computers where instance_id = 'envid1234567'")).toEqual(adopted ? [{ user_id: OWNER }] : []);
+      expect(harness.rows("select instance_id from cloud_computers where instance_id like 'pending:%'")).toHaveLength(adopted ? 0 : 1);
+    },
+  );
+
   // Money: extra disk, plan changes and the owner's limit (docs/plans/ade-cloud-plans-and-disk.md).
   const MONEY_ENV = { STRIPE_PRO_PRICE_ID: "price_pro" };
   /** Each plan's own extra-hours price (Cloud 7); `price_extra` stays the first, graduated one older subscriptions hold. */

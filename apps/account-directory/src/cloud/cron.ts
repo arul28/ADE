@@ -32,7 +32,10 @@ import {
   groupByUser,
   hoursState,
   isOutOfHours,
+  isOwnEnvironment,
   isPendingId,
+  isProductionCloud,
+  cloudEnvironmentOf,
   MOVE_GRACE_MS,
   liveUsedMilli,
   logCloud,
@@ -251,9 +254,10 @@ function adoptPending(
   live: TickComputer[],
 ): void {
   // The tag comes from the client: one that matches a computer already in a row
-  // adopts nothing, and that reservation times out like any other.
+  // adopts nothing, and that reservation times out like any other. Another
+  // server's computer (a provider key shared for a test) is never adopted.
   const instance = computer.request_id
-    ? instances.find((entry) => entry.metadata.ade_request_id === computer.request_id && !taken.has(entry.id))
+    ? instances.find((entry) => entry.metadata.ade_request_id === computer.request_id && !taken.has(entry.id) && isOwnEnvironment(env, entry))
     : undefined;
   if (instance) {
     taken.add(instance.id);
@@ -513,11 +517,15 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
     return;
   }
   const alerts: string[] = [];
-  if (billing.balanceUsd != null && billing.balanceUsd < WALLET_ALERT_USD) {
-    alerts.push(`The Agent 37 wallet is at $${billing.balanceUsd.toFixed(2)}, under $${WALLET_ALERT_USD}.`);
+  // The wallet is the provider key's, shared by any server that holds it: production alone tells the owner about it.
+  if (isProductionCloud(env)) {
+    if (billing.balanceUsd != null && billing.balanceUsd < WALLET_ALERT_USD) {
+      alerts.push(`The Agent 37 wallet is at $${billing.balanceUsd.toFixed(2)}, under $${WALLET_ALERT_USD}.`);
+    }
+    if (!billing.autoTopUpEnabled) alerts.push("Automatic top-up is off on the Agent 37 wallet.");
   }
-  if (!billing.autoTopUpEnabled) alerts.push("Automatic top-up is off on the Agent 37 wallet.");
-  const awake = instances.filter((instance) => instance.status === "running").length;
+  // This server's computers only: another server's awake ones are its own to report.
+  const awake = instances.filter((instance) => instance.status === "running" && isOwnEnvironment(env, instance)).length;
   if (billing.instanceLimit != null && awake >= billing.instanceLimit * AWAKE_LIMIT_ALERT_FRACTION) {
     alerts.push(`${awake} computers are awake, against a limit of ${billing.instanceLimit}.`);
   }
@@ -527,7 +535,8 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   logCloud("cloud.owner_alert", { alerts });
   if (now - lastAlert < OWNER_ALERT_REPEAT_MS) return;
   await writeSetting(env, "owner_alert_at", String(now), now);
-  await sendCloudEmail(env, { owner: true, subject: "ADE Cloud needs attention", text: alerts.join("\n") });
+  const server = isProductionCloud(env) ? "" : ` (${cloudEnvironmentOf(env)})`;
+  await sendCloudEmail(env, { owner: true, subject: `ADE Cloud${server} needs attention`, text: alerts.join("\n") });
 }
 
 /**

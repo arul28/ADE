@@ -114,11 +114,14 @@ import {
   reportCloudFailure,
   PENDING_TIMEOUT_MS,
   AWAKE_CAP_COUNT_SQL,
+  CLOUD_ENV_METADATA,
   adoptionStatements,
+  cloudEnvironmentOf,
   ComputerCloseError,
   deleteComputer,
   goneFromProviderStatements,
   isOutOfHoursFor,
+  isOwnEnvironment,
   isPendingId,
   listComputers,
   liveUsedMilli,
@@ -615,7 +618,7 @@ async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: str
   }
   // The first answer was lost, or the provider is still making it: its tag finds it.
   const instance = (await provider.listInstances())
-    .find((entry) => entry.metadata.ade_request_id === requestId && entry.status !== "deleted");
+    .find((entry) => entry.metadata.ade_request_id === requestId && entry.status !== "deleted" && isOwnEnvironment(env, entry));
   if (instance) {
     const [adopted] = await env.DB.batch(adoptionStatements(env, { pendingId: row.instance_id, instance, machineKey: instance.metadata.ade_machine_key ?? null, now, reason: "create_replayed" }));
     if (adopted?.meta.changes === 1) {
@@ -634,9 +637,10 @@ async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: str
 const providerMadeNothing = (error: unknown): boolean =>
   error instanceof CloudProviderError && error.status >= 400 && error.status < 500;
 
-const withRequestId = (metadata: Record<string, string>): { metadata: Record<string, string>; requestId: string } => {
+/** The create's tags: its request id (the client's, or a new one) and this server's environment, which no client sets. */
+const withRequestId = (env: CloudEnv, metadata: Record<string, string>): { metadata: Record<string, string>; requestId: string } => {
   const requestId = metadata.ade_request_id || crypto.randomUUID();
-  return { metadata: { ...metadata, ade_request_id: requestId }, requestId };
+  return { metadata: { ...metadata, ade_request_id: requestId, [CLOUD_ENV_METADATA]: cloudEnvironmentOf(env) }, requestId };
 };
 
 const onlyWakePorts = (ports: unknown): Array<{ port: number; label: string }> | null => {
@@ -717,7 +721,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const { account, computers, outOfHoursFor } = await getAccountContext(env, userId, now);
   const isMove = body.moveFromInstanceId !== undefined;
   const action = isMove ? "move" : "create";
-  const { metadata, requestId } = withRequestId(clientMetadata);
+  const { metadata, requestId } = withRequestId(env, clientMetadata);
   const { track, refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: originOf(clientMetadata), key: requestId, refusedAction: action, now });
   // The owner's kill switch (a move replaces a computer, so it still runs) and the hourly limit.
   const newWork = await newWorkRefusal(env, userId, isMove ? "move" : "create", now, waitUntil);
@@ -878,7 +882,7 @@ export async function forkComputer(env: CloudEnv, computer: ComputerRow, provide
   if (!planned.ok) return refused(planned.response);
   const { account, size, diskGb, track, refuse } = planned.plan;
 
-  const { metadata, requestId } = withRequestId(metadataIn);
+  const { metadata, requestId } = withRequestId(env, metadataIn);
   const name = computerName(body.name);
   const reservation = await reserveComputer(env, account, {
     size,
@@ -1520,7 +1524,7 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
   if (laneUpdates.length) await env.DB.batch(laneUpdates);
   for (const instance of all) {
     const pendingId = pendingRequestIds.get(instance.metadata.ade_request_id ?? "");
-    if (pendingId && !owned.has(instance.id)) {
+    if (pendingId && !owned.has(instance.id) && isOwnEnvironment(env, instance)) {
       const [adopted] = await env.DB.batch(adoptionStatements(env, { pendingId, instance, machineKey: instance.metadata.ade_machine_key ?? null, now, reason: "create_adopted" }));
       if (adopted?.meta.changes === 1) {
         owned.add(instance.id);
@@ -1693,8 +1697,10 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   "PUT metadata": async (request, env, computer, provider) => {
     const body = await readJson(request);
-    const metadata = body ? stringMap(body.metadata, MAX_METADATA_ENTRIES) : null;
-    if (!metadata) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+    const sent = body ? stringMap(body.metadata, MAX_METADATA_ENTRIES) : null;
+    if (!sent) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+    // The environment tag is the server's: a client can't move its computer to another server.
+    const metadata: Record<string, string> = { ...sent, [CLOUD_ENV_METADATA]: cloudEnvironmentOf(env) };
     await provider.setInstanceMetadata(computer.instance_id, metadata);
     const machineKey = metadata.ade_machine_key ?? null;
     const statements: D1PreparedStatement[] = [];

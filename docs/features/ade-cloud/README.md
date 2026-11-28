@@ -1257,6 +1257,14 @@ sign-in was signed out where it came from. The account is the email
   computer that request made (200), before any check. A reservation with no
   computer yet answers 409 `create_in_progress`; one older than 15 minutes is
   released. The reserve insert allows one live row per account and request id.
+- The server writes `ade_env` (its `CLOUD_ENVIRONMENT`: `production` or
+  `development`) on every create, copy and metadata write, over any value a
+  client sent. The matches by request tag (the minute tick, a repeated create,
+  the computer list) adopt only a computer of their own server, and an
+  untagged one counts as production's. So two servers can share one provider
+  key: each reads the other's computers in the list but never takes them. Only
+  production sends the owner the provider wallet's alerts, and the awake-limit
+  alert counts its own server's computers.
 - The desktop keeps one record per lane launch in
   `<userData>/cloud-lane-launches/<launchId>.json` until its cleanup is done;
   a brain keeps its own in `<machine ADE folder>/cloud-lane-launches/`.
