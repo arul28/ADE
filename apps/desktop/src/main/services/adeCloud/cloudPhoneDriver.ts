@@ -115,7 +115,7 @@ export type CloudPhoneRunInput = {
   xcode?: string;
 };
 
-/** A build on build runners for the account, with no phone (`buildFirst`). `job` names it for its log. */
+/** A build on build runners for the account, with no phone (`buildOnRunner`). `job` names it for its log. */
 export type CloudPhoneBuilt =
   | { ok: true; version: string; seconds: number; job: string }
   | { ok: false; answer: CloudPhoneToolAnswer; job: string | null };
@@ -163,9 +163,9 @@ export type CloudPhoneDriver = {
    * `nearlyDone` is called once, when only packing the built app is left, so
    * a phone can start alongside.
    */
-  buildFirst?(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void): Promise<CloudPhoneBuilt | "phone_builds">;
-  /** Installs a build `buildFirst` made (`seconds` null: one made earlier, used again) and, unless `launch` is false, launches it with `env`: the answer and its bundle id. */
-  installBuilt?(phone: CloudPhoneHeld, built: { version: string; seconds: number | null }, input: { env?: string; launch: boolean }): Promise<{ answer: CloudPhoneToolAnswer; bundleId: string | null }>;
+  buildOnRunner?(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void): Promise<CloudPhoneBuilt | "phone_builds">;
+  /** Installs a build `buildOnRunner` made (`seconds` null: one made earlier, used again; `prebuilt`: an app built elsewhere) and, unless `launch` is false, launches it with `env`: the answer and its bundle id. */
+  installBuilt?(phone: CloudPhoneHeld, built: { version: string; seconds: number | null }, input: { env?: string; launch: boolean; prebuilt?: boolean }): Promise<{ answer: CloudPhoneToolAnswer; bundleId: string | null }>;
   /** A build's log by its job (`CloudPhoneBuilt.job`), for the account. */
   buildLog?(account: string | null, job: string): Promise<CloudPhoneBuildLog>;
 };
@@ -182,3 +182,6 @@ export const joinAnswers = (answers: readonly CloudPhoneToolAnswer[]): CloudPhon
 });
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A build's id on the provider's runners (`CloudPhoneBuilt.job`): a UUID. */
+export const BUILD_JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

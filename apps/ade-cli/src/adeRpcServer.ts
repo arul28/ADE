@@ -4341,9 +4341,10 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
 const CLOUD_PHONE_SPEND_ACTIONS: ReadonlySet<string> = new Set(CLOUD_PHONE_SPEND_ACTION_NAMES);
 
 /**
- * Cloud iPhone actions that spend nothing but answer for the calling chat
- * (what its phones used, a build it started): stamped with the caller's chat,
- * never taken from the arguments, and with no person-or-agent decision.
+ * Cloud iPhone actions that spend no credits but read the calling chat: what
+ * its phones used (`getStatus`, `stop`), and plan mode's refusal of a build
+ * (`build`). Stamped with the caller's chat, never taken from the arguments,
+ * with no person-or-agent decision.
  */
 const CLOUD_PHONE_CHAT_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "stop", "build"]);
 
@@ -7280,7 +7281,11 @@ async function runTool(args: {
             },
       };
     }
-    if (domain === "cloud_phone" && CLOUD_PHONE_CHAT_ACTIONS.has(action) && !argsList && !hasScalarArg) {
+    if (domain === "cloud_phone" && CLOUD_PHONE_CHAT_ACTIONS.has(action)) {
+      // Object arguments only: a positional one would carry a stamp of the caller's own making past this.
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `cloud_phone.${action} requires object arguments.`);
+      }
       const { approval: _ignoredApproval, ...phoneArgs } = rawObjectArgs;
       const chatSessionId = stampedChatSessionIdOf(session, callerCtx);
       scopedObjectArgs = { ...phoneArgs, ...(chatSessionId ? { approval: { chatSessionId } } : {}) };

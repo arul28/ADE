@@ -11,11 +11,13 @@ from a chat's Tools menu. The launch plan is `docs/plans/ade-cloud-iphone-launch
 
 Server: `apps/account-directory/src/cloud/phones.ts` (routes, credits, the
 guard), one record per provider behind `phoneProvider.ts` (`phoneNomac.ts`,
-`phoneRevyl.ts` for Revyl's workspaces and calls), `phoneRoute.ts` (which
+`phoneRevyl.ts` for Revyl's phones and calls, with `phoneRevylWorkspace.ts`
+for its workspaces and `phoneRevylBuild.ts` for its builds), `phoneRoute.ts` (which
 provider: the lock, the router, failover), `phoneViewerPage.ts` (the
 viewer page for Revyl's stream) and `phoneBeta.ts` (the owner's beta list).
 Brain:
-`apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`, with one driver
+`apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts` (what goes up
+is packed by `cloudPhonePack.ts`), with one driver
 per provider (`cloudPhoneDriver.ts`, `cloudPhoneNomacDriver.ts`,
 `cloudPhoneRevylDriver.ts`, `cloudPhoneScreenText.ts`).
 CLI: `apps/ade-cli/src/cliCloudIphone.ts`. Shapes:
@@ -172,7 +174,7 @@ both used, without changing anything an agent or a person sees.
   it never uses Revyl's AI-priced targeting. `launch` uploads the packed
   checkout and builds it on Revyl's runners before any phone starts (about
   60 s for a small app; the ADE iOS app, about 90 s with its packages cached).
-  Every build names its Xcode image: `REVYL_BUILD_IMAGE` in `phoneRevyl.ts`
+  Every build names its Xcode image: `REVYL_BUILD_IMAGE` in `phoneRevylBuild.ts`
   (`ios-macos-26-xcode-27.2`, Revyl's newest; Revyl's own default is 27.0),
   which the Worker var `CLOUD_PHONE_REVYL_IMAGE` moves without a release, or
   the version a build names (`--xcode 27.1`, one of `REVYL_XCODE_IMAGES`).
@@ -187,7 +189,11 @@ both used, without changing anything an agent or a person sees.
   `ade apple build-log`. `installApp` sends a prebuilt `.app` through the
   same runner. Launch arguments and env values (`relaunch -- …`, `--env`)
   go with Revyl's launch as `launch_arguments` (one token each) and
-  `launch_env`; the app restarts with them for that launch only. A recording's
+  `launch_env`; the app restarts with them for that launch only. NoMac's launch
+  of an installed app takes the arguments (joined) and refuses `--env` with a
+  sentence (it takes env values only with a build). A brain from before this
+  sends no `launchValues` on its start, so a start that needs `launchEnv` never
+  lands it on a Revyl phone it would then refuse: it is told to update ADE. A recording's
   id is kept on the phone row (`recording_ref`), so any brain of the account
   can stop it. Revyl's phone has no time limit or spend cap of its own:
   `stop_at` is set at start, capped at `CLOUD_PHONE_MAX_MINUTES`, and the
@@ -195,10 +201,13 @@ both used, without changing anything an agent or a person sees.
 - **Builds before the phone.** A Revyl build belongs to the account, not to
   a phone: its claim is a `cloud_phone_builds` row (migration 0074), one
   running build per account (Revyl's runners bill ADE), claimed in one write.
-  A claim whose start never got Revyl's answer lapses after 5 minutes; one
-  whose answer was lost (`unknown`) holds 30 minutes; a build Revyl took holds
-  until a `build.status` read says it ended (asked once when it is in the
-  way), which writes what it ran (`seconds`). With a Revyl phone up, a build
+  A claim whose start never got Revyl's answer lapses after 6 minutes (it ran
+  nothing); one whose answer was lost (`unknown`) holds 30 minutes and counts
+  as running till then; a build Revyl took holds until a `build.status` read
+  says it ended (asked once when it is in the way; a job Revyl no longer has,
+  404, ended too), which writes what it ran (`seconds`), or two hours at most.
+  A build counts at most its longest (`REVYL_BUILD_MAX_SECONDS`, 900 s), so no
+  claim holds an account's builds, or grows its Revyl spend, for good. With a Revyl phone up, a build
   runs as it always did. With none (or a NoMac one), `build.upload_url` and
   `build.start` are held to what a new phone's start is held to
   (`buildRefusal` in `phones.ts`: the pause, the credits, the free-use cap,
@@ -211,8 +220,13 @@ both used, without changing anything an agent or a person sees.
   (`revylSpentMicros`: phones and builds, at the same rate). The brain
   (`buildBeforePhone` in `cloudPhoneService.ts`) builds first for `launch`,
   `install` and `build`, starts the phone only for a build that worked (as
-  its build step passes, while the app is packed), and stops a phone it
-  started for a build that then failed. A server from before this names no
+  its build step passes, while the app is packed), and stops a phone that
+  start made (never one already up, nor one it found running) when the build
+  then failed or its follow-up threw. A failed build's answer says what it
+  cost in phone minutes. With a Revyl phone held, the build keeps it awake, so
+  a long build is never installed on a fresh phone by building again.
+  `build` spends no credits, so it skips the agents' spending guard; a chat in
+  plan mode is still refused (`cloudPhonePlanGuard` in `registry.ts`). A server from before this names no
   `toolchains` on `GET /cloud/phone`; the brain then builds on the phone, as
   before. Each project keeps its last build that worked (in the brain's
   memory, 12 hours, 50 projects, keyed by the source's paths, sizes and

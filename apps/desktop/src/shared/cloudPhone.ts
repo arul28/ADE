@@ -133,7 +133,8 @@ export type CloudPhoneStatusView = Omit<CloudPhoneState, "phone"> & {
   /**
    * For a chat's call: the minutes this period of the phones that chat's
    * calls drove on this brain, in the server's own count (one phone two chats
-   * drove counts for each). Absent when the chat drove none here.
+   * drove counts for each), among the period's newest phones the server lists
+   * (`CLOUD_PHONE_RECENT_SHOWN`). Absent when the chat drove none here.
    */
   chatUse?: { minutes: number; phones: number };
 };

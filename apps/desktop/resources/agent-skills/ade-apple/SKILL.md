@@ -206,7 +206,8 @@ while you edit code and read screenshots. Before you start one:
    a deep link, never a code change and a rebuild per variant:
    - `ade apple relaunch --bundle-id <id> -- -UseFixture grouped -Flag YES`
      (each token after `--` is one launch argument; `--env KEY=VALUE` adds env
-     values; both are for that launch only),
+     values where the phone takes them with a launch; both are for that launch
+     only),
    - `ade apple open-url 'myapp://fixture?state=empty'`,
    - `ade apple appearance dark|light`, `ade apple content-size ax-xl`,
      `ade apple control location 37.77,-122.42`.

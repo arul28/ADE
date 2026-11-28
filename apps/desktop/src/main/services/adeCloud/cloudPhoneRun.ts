@@ -17,6 +17,8 @@ export type CloudPhoneRun<P> = {
   account: string | null;
   /** The agent chat whose call started it; null when a person, a terminal, or a reuse did. */
   chatSessionId: string | null;
+  /** This brain took a phone that was already running (another machine's, or one it lost track of), rather than starting it. */
+  reused: boolean;
   readyAt: number | null;
   lastActivityAt: number | null;
   /** When this brain took it: a status read sent before then can't have seen it. */

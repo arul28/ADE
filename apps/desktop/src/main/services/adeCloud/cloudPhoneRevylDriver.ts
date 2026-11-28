@@ -32,6 +32,10 @@ type Raw = { status: number; type: string | null; body: Buffer };
 type Command = { first: boolean };
 const command = (): Command => ({ first: true });
 
+/** A call that installs, launches or hands back a large file waits this long. */
+const SLOW_CALL_MS = 150_000;
+/** While a build runs with a phone up, the phone is touched this often so its idle stop doesn't come first. */
+const BUILD_KEEP_AWAKE_MS = 60_000;
 /** A build is followed this long, read this often. */
 const BUILD_WAIT_MS = 15 * 60_000;
 const BUILD_POLL_MS = 2_000;
@@ -94,6 +98,12 @@ function refusalOf(raw: Raw): { code: string; message: string } {
   return { code, message };
 }
 
+/** A refusal from the server or Revyl, as the error a command answers with. */
+function refusedError(raw: Raw): CloudPhoneError {
+  const { code, message } = refusalOf(raw);
+  return new CloudPhoneError(message || `The cloud iPhone answered ${raw.status}.`, code);
+}
+
 /** A device action's own answer: `{ success, error }`. */
 function actionFailure(raw: Raw): string | null {
   if (raw.status >= 400) return refusalOf(raw).message || `the phone answered ${raw.status}`;
@@ -106,7 +116,7 @@ function actionFailure(raw: Raw): string | null {
  * Env values for a launch: `KEY=VALUE`, several split by spaces, commas or
  * lines (a value may hold them too, until the next `KEY=`).
  */
-export function envValues(text: string | undefined): Record<string, string> {
+function envValues(text: string | undefined): Record<string, string> {
   const values: Record<string, string> = {};
   for (const part of (text ?? "").trim().split(/[\s,]+(?=[A-Za-z_][A-Za-z0-9_]*=)/)) {
     const eq = part.indexOf("=");
@@ -182,10 +192,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   async function callJson(phone: CloudPhoneHeld, action: string, body?: Record<string, unknown>, options: { query?: Record<string, string>; timeoutMs?: number; cmd?: Command } = {}): Promise<Record<string, unknown>> {
     const raw = await call(phone, action, body, options);
-    if (raw.status >= 400) {
-      const { code, message } = refusalOf(raw);
-      throw new CloudPhoneError(message || `The cloud iPhone answered ${raw.status}.`, code);
-    }
+    if (raw.status >= 400) throw refusedError(raw);
     return parseJson(raw) ?? {};
   }
 
@@ -233,7 +240,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   /** A device action; its own failure is a sentence, never a throw. */
   async function act(phone: CloudPhoneHeld, name: string, body: Record<string, unknown> = {}, cmd?: Command): Promise<string | null> {
-    return actionFailure(await call(phone, `proxy.${name}`, body, { cmd, timeoutMs: name === "install" ? 150_000 : undefined }));
+    return actionFailure(await call(phone, `proxy.${name}`, body, { cmd, timeoutMs: name === "install" ? SLOW_CALL_MS : undefined }));
   }
 
   /** Where a step's element is: a point, or the element found on the screen. */
@@ -396,10 +403,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   async function accountJson(account: string | null, action: string, body: Record<string, unknown>, options: Parameters<typeof accountCall>[3] = {}): Promise<Record<string, unknown>> {
     const raw = await accountCall(account, action, body, options);
-    if (raw.status >= 400) {
-      const { code, message } = refusalOf(raw);
-      throw new CloudPhoneError(message || `The cloud iPhone answered ${raw.status}.`, code);
-    }
+    if (raw.status >= 400) throw refusedError(raw);
     return parseJson(raw) ?? {};
   }
 
@@ -410,10 +414,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   async function uploadSource(account: string | null, packed: { file: string; size: number }, builds: readonly CloudPhoneBuildNeed[] | undefined): Promise<string | "phone_builds"> {
     const raw = await accountCall(account, "build.upload_url", { file_size: packed.size }, { builds });
     if (buildsOnPhone(raw)) return "phone_builds";
-    if (raw.status >= 400) {
-      const { code, message } = refusalOf(raw);
-      throw new CloudPhoneError(message || `The cloud iPhone answered ${raw.status}.`, code);
-    }
+    if (raw.status >= 400) throw refusedError(raw);
     const link = parseJson(raw) ?? {};
     const url = link.upload_url;
     const fields = link.upload_fields as Record<string, unknown> | undefined;
@@ -514,7 +515,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   /** Builds for the account on Revyl's runner, with no phone: the build's version, its errors, or `phone_builds`. */
-  async function buildFirst(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void): Promise<CloudPhoneBuilt | "phone_builds"> {
+  async function buildOnRunner(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void): Promise<CloudPhoneBuilt | "phone_builds"> {
     const key = await uploadSource(account, input.project, input.builds);
     if (key === "phone_builds") return key;
     const raw = await accountCall(account, "build.start", {
@@ -527,13 +528,10 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
       ...(input.cacheKey ? { cache_key: input.cacheKey } : {}),
       ...(input.lockfiles?.length ? { lockfiles: input.lockfiles } : {}),
       ...(input.xcode ? { xcode: input.xcode } : {}),
-    }, { timeoutMs: 150_000, builds: input.builds });
+    }, { timeoutMs: SLOW_CALL_MS, builds: input.builds });
     // Moved between the upload and the start (the route changed): the phone builds.
     if (buildsOnPhone(raw)) return "phone_builds";
-    if (raw.status >= 400) {
-      const { code, message } = refusalOf(raw);
-      throw new CloudPhoneError(message || `The cloud iPhone answered ${raw.status}.`, code);
-    }
+    if (raw.status >= 400) throw refusedError(raw);
     const job = parseJson(raw)?.build_job_id;
     if (typeof job !== "string") throw new CloudPhoneError("The cloud iPhone didn't start the build.", "build_failed");
     return followBuild(account, job, input.prebuilt ? "Installing the app" : "Building the app", nearlyDone);
@@ -541,12 +539,30 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   /** Installs a built version into the live phone; its bundle id, or why not. */
   async function installVersion(phone: CloudPhoneHeld, version: string, cmd?: Command): Promise<{ bundleId: string | null; failure: string | null }> {
-    const raw = await call(phone, "build.install", { version_id: version }, { timeoutMs: 150_000, cmd });
+    const raw = await call(phone, "build.install", { version_id: version }, { timeoutMs: SLOW_CALL_MS, cmd });
     const body = parseJson(raw);
     return {
       bundleId: typeof body?.bundle_id === "string" ? body.bundle_id : null,
       failure: actionFailure(raw),
     };
+  }
+
+  /**
+   * Work that runs with a phone up but makes no call to it (a build): the
+   * phone is touched every minute meanwhile, so its idle stop doesn't come
+   * first and the build isn't installed on a fresh phone by building again.
+   */
+  async function whileAwake<T>(phone: CloudPhoneHeld, work: () => Promise<T>): Promise<T> {
+    const awake = setInterval(() => {
+      void call(phone, "proxy.health").catch((error: unknown) => {
+        ctx.logger?.warn?.("cloud_phone.build_keep_awake_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+    }, BUILD_KEEP_AWAKE_MS);
+    try {
+      return await work();
+    } finally {
+      clearInterval(awake);
+    }
   }
 
   /** A launch's own values: its argument tokens and env values, as Revyl's launch takes them. */
@@ -557,11 +573,15 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   /** Installs a build into the phone and, unless told not to, launches it: the answer, and its first screen. */
-  async function installBuilt(phone: CloudPhoneHeld, built: { version: string; seconds: number | null }, input: { env?: string; launch: boolean }): Promise<{ answer: CloudPhoneToolAnswer; bundleId: string | null }> {
+  async function installBuilt(phone: CloudPhoneHeld, built: { version: string; seconds: number | null }, input: { env?: string; launch: boolean; prebuilt?: boolean }): Promise<{ answer: CloudPhoneToolAnswer; bundleId: string | null }> {
     const done = built.seconds == null ? "Used the last build that worked (the source hasn't changed since)" : `Built in ${built.seconds} s`;
     const installed = await installVersion(phone, built.version, command());
-    if (installed.failure) return { answer: textAnswer(`${done}, but installing it failed: ${installed.failure}.`, true), bundleId: installed.bundleId };
-    if (!input.launch) return { answer: textAnswer(`${done} and installed ${installed.bundleId ?? "the app"}.`), bundleId: installed.bundleId };
+    if (installed.failure) {
+      return { answer: textAnswer(input.prebuilt ? `Installing the app failed: ${installed.failure}.` : `${done}, but installing it failed: ${installed.failure}.`, true), bundleId: installed.bundleId };
+    }
+    if (!input.launch) {
+      return { answer: textAnswer(input.prebuilt ? `Installed ${installed.bundleId ?? "the app"}.` : `${done} and installed ${installed.bundleId ?? "the app"}.`), bundleId: installed.bundleId };
+    }
     if (!installed.bundleId) return { answer: textAnswer(`${done} and installed. Launch it with ade apple relaunch --bundle-id <id>.`), bundleId: null };
     const launched = await act(phone, "launch", { bundle_id: installed.bundleId, ...launchValues({ env: input.env }) });
     if (launched) return { answer: textAnswer(`${done} and installed ${installed.bundleId}, but launching it failed: ${launched}.`, true), bundleId: installed.bundleId };
@@ -626,7 +646,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
     async run(phone, input) {
       // A build belongs to the account: with this phone up it runs as one with none, then goes on it.
-      const built = await buildFirst(phone.account, input);
+      const built = await whileAwake(phone, () => buildOnRunner(phone.account, input));
       if (built === "phone_builds") throw new CloudPhoneError("This cloud iPhone couldn't start the build. Try again.", "build_failed");
       if (!built.ok) return built.answer;
       return (await installBuilt(phone, built, { ...(input.env ? { env: input.env } : {}), launch: true })).answer;
@@ -634,15 +654,13 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
     async install(phone, input) {
       // A `.app` goes up like a project, and Revyl's runner takes it as the build's app.
-      const built = await buildFirst(phone.account, { project: input.app, name: "app", prebuilt: true });
+      const built = await whileAwake(phone, () => buildOnRunner(phone.account, { project: input.app, name: "app", prebuilt: true }));
       if (built === "phone_builds") throw new CloudPhoneError("This cloud iPhone couldn't take the app. Try again.", "build_failed");
       if (!built.ok) return { answer: built.answer, bundleId: null };
-      const installed = await installVersion(phone, built.version);
-      if (installed.failure) return { answer: textAnswer(`Installing the app failed: ${installed.failure}.`, true), bundleId: installed.bundleId };
-      return { answer: textAnswer(`Installed ${installed.bundleId ?? "the app"}.`), bundleId: installed.bundleId };
+      return installBuilt(phone, built, { launch: false, prebuilt: true });
     },
 
-    buildFirst,
+    buildOnRunner,
     installBuilt,
 
     async buildLog(account, job) {
@@ -790,7 +808,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
         return { answer: textAnswer("Recording. Stop it with ade apple record stop."), video: null };
       }
       // The server knows the running recording's id (Revyl names it only at its start).
-      const raw = await call(phone, "proxy.stop_screen_recording", {}, { cmd: command(), timeoutMs: 150_000 });
+      const raw = await call(phone, "proxy.stop_screen_recording", {}, { cmd: command(), timeoutMs: SLOW_CALL_MS });
       if (raw.status === 404 && refusalOf(raw).code === "not_recording") return { answer: textAnswer("No recording is running on this cloud iPhone.", true), video: null };
       if (raw.status >= 400 || raw.type?.includes("json")) {
         return { answer: textAnswer(`Stopping the recording failed: ${actionFailure(raw) ?? refusalOf(raw).message}.`, true), video: null };

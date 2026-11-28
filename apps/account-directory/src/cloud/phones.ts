@@ -76,7 +76,8 @@ import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { CLOUD_PLANS } from "./plans";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
-import { forgetRevylAccount, isRevylBuildAction, routeRevylBuild } from "./phoneRevyl";
+import { forgetRevylAccount } from "./phoneRevyl";
+import { isRevylBuildAction, routeRevylBuild } from "./phoneRevylBuild";
 import { PHONE_PROVIDERS, abilityWords, buildGaps, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, recordBuildGap, revylLimitEndsAt, revylLimitMicros, revylMinutesLeft, revylSpentMicros, routeForBuilds, routeOf, startOnRoute, type PhoneRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
@@ -612,6 +613,21 @@ function startRefusal(context: PhoneContext): { code: string; message: string } 
 }
 
 /**
+ * Why the account may not start a new phone now (or a build that spends like
+ * one), or null: the pause, the owner's free-use cap (`freeCap`: a new free
+ * phone is refused as a new free computer is, never naming why), then the
+ * credits. `reason` names it for the caller's log line and PostHog.
+ */
+async function newPhoneRefusal(env: CloudEnv, context: PhoneContext, now: number, { freeCap, waitUntil }: { freeCap: boolean; waitUntil?: CloudWaitUntil }): Promise<{ reason: string; answer: Response } | null> {
+  if (env.CLOUD_PHONES_PAUSED?.trim() === "1") return { reason: "paused", answer: fail("phone_paused", "New ADE Cloud iPhones are paused for a moment. Try again soon.", 503) };
+  if (freeCap && await freeCapRefuses(env, context.account, now, waitUntil)) {
+    return { reason: "free_cap", answer: fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503) };
+  }
+  const credits = startRefusal(context);
+  return credits ? { reason: credits.code, answer: fail(credits.code, credits.message, 402, { minutes: minutesOf(context.usage) }) } : null;
+}
+
+/**
  * `/cloud/phone`, `/cloud/phone/view` and `/cloud/phone/call` for a signed-in
  * caller (`routes.ts` checked the sign-in and the owner's block first).
  */
@@ -728,8 +744,13 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
   if (!body) return fail("bad_request", "That request could not be read.", 400);
   let device = readDevice(body.device);
   if (device === null) return fail("bad_request", `device is one of ${CLOUD_PHONE_DEVICES.join(", ")}.`, 400);
-  const drives = clientDrives(body.providers);
   const needs = cloudPhoneAbilitiesOf(body.needs);
+  // A brain from before Revyl took launch values (no `launchValues`) refuses them on a Revyl phone itself, after the
+  // phone started: for a start that needs them it can't drive Revyl, so it is told to update before any phone starts.
+  const drivesAny = clientDrives(body.providers);
+  const drives = needs.includes("launchEnv") && body.launchValues !== true
+    ? (provider: CloudPhoneProvider) => provider !== "revyl" && drivesAny(provider)
+    : drivesAny;
   const builds = cloudPhoneBuildNeedsOf(body.builds);
   const missing = body.missing && typeof body.missing === "object" && !Array.isArray(body.missing) ? body.missing as { phoneId?: unknown; need?: unknown } : null;
   if (missing && typeof missing.phoneId === "string" && missing.phoneId.length <= 200 && isCloudPhoneBuildNeed(missing.need) && body.attach !== true) {
@@ -776,9 +797,8 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason }, reason, now);
       return answer;
     };
-    if (env.CLOUD_PHONES_PAUSED?.trim() === "1") return refused(fail("phone_paused", "New ADE Cloud iPhones are paused for a moment. Try again soon.", 503), "paused");
-    const credits = startRefusal(context);
-    if (credits) return refused(fail(credits.code, credits.message, 402, { minutes: minutesOf(context.usage) }), credits.code);
+    const held = await newPhoneRefusal(env, context, now, { freeCap: false });
+    if (held) return refused(held.answer, held.reason);
     const swap = await routeOfStart(env, userId, context, plan, picked, free, drives, now);
     const usable = swap instanceof Response ? swap : routeForBuilds(env, swap.route, { builds, gapped, needs, free, drives });
     if (usable instanceof Response) return refused(usable, await refusalCode(usable));
@@ -795,20 +815,11 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     reused = false;
   }
   if (!session) {
-    if (env.CLOUD_PHONES_PAUSED?.trim() === "1") {
-      captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: "paused" }, "paused", now);
-      return fail("phone_paused", "New ADE Cloud iPhones are paused for a moment. Try again soon.", 503);
-    }
-    // The owner's free-use cap refuses a new free phone as it refuses a new free computer (never naming why).
-    if (await freeCapRefuses(env, context.account, now, waitUntil)) {
-      captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: "free_cap" }, "free_cap", now);
-      return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
-    }
-    const refusal = startRefusal(context);
+    const refusal = await newPhoneRefusal(env, context, now, { freeCap: true, waitUntil });
     if (refusal) {
-      logCloud("cloud.phone_start_refused", { userId, code: refusal.code, left: context.usage.left, used: context.usage.used });
-      captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: refusal.code }, refusal.code, now);
-      return fail(refusal.code, refusal.message, 402, { minutes: minutesOf(context.usage) });
+      logCloud("cloud.phone_start_refused", { userId, code: refusal.reason, left: context.usage.left, used: context.usage.used });
+      captureCloudPhone(env, waitUntil, userId, { step: "refused", plan, reason: refusal.reason }, refusal.reason, now);
+      return refusal.answer;
     }
     // What this phone may use: the credits left, then extra credits, and never more than one phone's longest.
     // A live phone its provider couldn't answer for now may still be running: a start now could add a
@@ -954,12 +965,10 @@ async function routePhoneCall(request: Request, env: CloudEnv, userId: string, p
  * runner time counts in the paid plan's Revyl limit (`revylSpentMicros`).
  */
 async function buildRefusal(env: CloudEnv, userId: string, body: Record<string, unknown>, picked: CloudPhoneProvider | null, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
-  if (env.CLOUD_PHONES_PAUSED?.trim() === "1") return fail("phone_paused", "New ADE Cloud iPhones are paused for a moment. Try again soon.", 503);
   const context = await phoneContext(env, userId, now);
   if (context instanceof Response) return context;
-  const credits = startRefusal(context);
-  if (credits) return fail(credits.code, credits.message, 402, { minutes: minutesOf(context.usage) });
-  if (await freeCapRefuses(env, context.account, now, waitUntil)) return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
+  const refusal = await newPhoneRefusal(env, context, now, { freeCap: true, waitUntil });
+  if (refusal) return refusal.answer;
   const free = accountRules(context.account) === "free";
   const drives = clientDrives(body.providers);
   const builds = cloudPhoneBuildNeedsOf(body.builds);

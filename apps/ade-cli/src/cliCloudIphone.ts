@@ -126,7 +126,8 @@ function relaunchCall(args: Args, label: string): Call {
   const env = flag(args, "--env");
   return {
     action: "control",
-    args: { action: "launch", ...(app ? { app } : {}), ...(args.afterDashes.length ? { args: args.afterDashes } : {}), ...(env ? { env } : {}) },
+    // The tokens, and joined as `value` too: a brain from before `args` reads only that.
+    args: { action: "launch", ...(app ? { app } : {}), ...(args.afterDashes.length ? { args: args.afterDashes, value: args.afterDashes.join(" ") } : {}), ...(env ? { env } : {}) },
     timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS,
     label,
   };
