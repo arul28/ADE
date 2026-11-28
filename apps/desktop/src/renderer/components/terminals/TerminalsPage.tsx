@@ -137,6 +137,7 @@ import {
   seedCrossMachineOptimisticChatSession,
   useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
+import { useLifecycleDecoratedSlices } from "../../state/sessionLifecycleOptimism";
 import { writeClientLayout } from "../ui/clientLayoutStore";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 import { plainErrorText } from "../../lib/plainError";
@@ -353,7 +354,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // silently — the reported "mass delete does nothing". Every bulk RPC now
   // carries the owning machine's pin (see `resolveSessionRuntimePin`), so the
   // contract that kept them out no longer applies.
-  const crossMachineSlices = useRetainedCrossMachineSlices();
+  // Painted like the rows the sidebar shows, so a bulk action right after a
+  // settle or snooze sees the row as the user does.
+  const crossMachineSlices = useLifecycleDecoratedSlices(useRetainedCrossMachineSlices());
   const selectableSessionsById = useMemo(() => {
     const byId = new Map<string, TerminalSessionSummary>();
     for (const session of selectableSessions) byId.set(session.id, session);

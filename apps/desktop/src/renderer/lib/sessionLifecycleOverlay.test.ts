@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { TerminalSessionSummary } from "../../../../shared/types";
-import { isSessionSnoozed } from "../../../../shared/sessionCanonicalState";
+import type { TerminalSessionSummary } from "../../shared/types";
+import { isSessionSnoozed } from "../../shared/sessionCanonicalState";
 import {
   OPTIMISTIC_TTL_MS,
   RECONCILE_GRACE_MS,
   SessionLifecycleOverlay,
-} from "../sessionLifecycleOverlay";
-import { sessionLifecycleSupported } from "../sessionLifecycleSupport";
+} from "./sessionLifecycleOverlay";
 
 function row(overrides: Partial<TerminalSessionSummary> & { id: string }): TerminalSessionSummary {
   return overrides as TerminalSessionSummary;
@@ -116,7 +115,7 @@ describe("SessionLifecycleOverlay", () => {
     expect(overlay.reconcile([row({ id: "s1" })]).rolledBack).toEqual(["s1"]);
   });
 
-  it("rolls back on reject and ignores a stale token from a superseded write", () => {
+  it("layers a second action over the first, and a failed write drops only its own columns", () => {
     const overlay = new SessionLifecycleOverlay();
     const first = overlay.begin("s1", { snoozedUntil: "2026-07-26T10:00:00.000Z" });
     const second = overlay.begin("s1", { snoozedUntil: "2026-07-26T18:00:00.000Z" });
@@ -127,31 +126,22 @@ describe("SessionLifecycleOverlay", () => {
 
     overlay.reject("s1", second);
     expect(overlay.size).toBe(0);
+
+    // Settle, then Undo before either lands: the Undo writes only `settledAt`,
+    // so the host's stale "active" pin must not show through the settle's clear.
+    const host = row({ id: "s2", settleOverride: "active" });
+    const settle = overlay.begin("s2", { settledAt: "2026-07-26T10:00:00.000Z", settleOverride: null });
+    overlay.begin("s2", { settledAt: null });
+    expect(overlay.decorate(host)).toMatchObject({ settledAt: null, settleOverride: null });
+
+    // The settle aborts (the Undo moved the row): only its columns go back.
+    overlay.reject("s2", settle);
+    expect(overlay.decorate(host)).toMatchObject({ settledAt: null, settleOverride: "active" });
   });
 
   it("returns the original list untouched when nothing is pending", () => {
     const overlay = new SessionLifecycleOverlay();
     const rows = [row({ id: "s1" })];
     expect(overlay.decorateAll(rows)).toBe(rows);
-  });
-});
-
-describe("sessionLifecycleSupported", () => {
-  it("requires the per-row settle/snooze/wake actions the controls issue", () => {
-    expect(sessionLifecycleSupported([])).toBe(false);
-    expect(sessionLifecycleSupported(
-      ["work.listSessions", "session.snoozeSession"].map((action) => ({
-        action,
-        scope: "project" as const,
-        policy: { viewerAllowed: true },
-      })),
-    )).toBe(false);
-    expect(sessionLifecycleSupported(
-      ["session.settleSession", "session.snoozeSession", "session.wakeSession"].map((action) => ({
-        action,
-        scope: "project" as const,
-        policy: { viewerAllowed: true },
-      })),
-    )).toBe(true);
   });
 });

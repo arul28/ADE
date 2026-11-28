@@ -465,10 +465,12 @@ Browser `window.ade` adapter:
     `readTranscriptTail`, passes its pin through `assertWebRuntimePinRoutable`.
     `project.ts` leaves `gitOriginUrl` out of `listRecent`, so it starts no
     pinned reads that this adapter cannot serve.
-- `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts` -
-  the optimistic overlay for settle, snooze and wake. A
-  `SessionLifecyclePatch` holds only `settledAt`, `settleOverride`,
-  `snoozedUntil`, `snoozedAt`, `wokeAt` and `wokeReason`. It retires when
+- `apps/desktop/src/renderer/lib/sessionLifecycleOverlay.ts` - the optimistic
+  overlay for settle, snooze and wake, shared with the desktop Work tab
+  (`state/sessionLifecycleOptimism.ts`). A `SessionLifecyclePatch` holds
+  `settledAt`, `settleOverride`, `snoozedUntil`, `snoozedAt`, `wokeAt` and
+  `wokeReason`, plus the attention columns a needs-you settle clears (painted,
+  never compared). A second action on a row layers over the first. It retires when
   **reconciled** (a host row shows the intent; the match compares set or
   cleared, because the host owns timestamps), **rejected** (the row snaps
   back with the error) or **expired** (a hard TTL).
@@ -814,7 +816,8 @@ Tests:
 - `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts`,
   `runtimePinGuard.test.ts` (the pin boundary), `federated.test.ts`
   (restoration, binding pins, adapter changes),
-  `sessionLifecycleOverlay.test.ts` and `appleDevice.test.ts`.
+  `sessionLifecycleSupport.test.ts` and `appleDevice.test.ts`; the overlay's
+  own tests are `renderer/lib/sessionLifecycleOverlay.test.ts`.
 - `apps/desktop/src/renderer/webclient/workspace/__tests__/WebMachineSessionManager.test.ts` -
   the four-client pool, parking and auth-failure cleanup.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/webClientShell.test.tsx` -
@@ -1115,7 +1118,7 @@ directly.
   preference before `window.ade` shows it. A 401 may force one token refresh.
   Machine fallback acks with the snapshot owner and item revision; an account
   switch rejects stale opens and acks until a new snapshot loads.
-- **Lifecycle writes** (settle, snooze, wake) use `sessionLifecycleOverlay.ts`
+- **Lifecycle writes** (settle, snooze, wake) use `lib/sessionLifecycleOverlay.ts`
   and `sessionLifecycleSupport.ts`.
 - **GitHub status.** A connection change does not call `github.getStatus`,
   because headless GitHub discovery can touch git, the GitHub CLI and the

@@ -28,6 +28,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
+import { decorateLifecycleSlices, useLifecycleRowDecorator } from "./sessionLifecycleOptimism";
 import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import type {
   AgentChatSession,
@@ -3505,7 +3506,16 @@ export function useCrossMachineLaneUnion(
   }, [localSessions]);
   const localLanes = useAppStore((state) => state.lanes);
   const projectBinding = useAppStore((state) => state.projectBinding);
-  const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const rawMachines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  // A settle, snooze or wake pressed on another machine's row reads on its card
+  // and menu at once, as it does in the filing (`sessionLifecycleOptimism`).
+  const decorateLifecycle = useLifecycleRowDecorator();
+  const machines = useMemo(() => {
+    const slices = Object.values(rawMachines);
+    const shown = decorateLifecycleSlices(slices, decorateLifecycle);
+    if (shown === slices) return rawMachines;
+    return Object.fromEntries(Object.keys(rawMachines).map((machineId, index) => [machineId, shown[index]!]));
+  }, [decorateLifecycle, rawMachines]);
   // Marker names follow the lane index: a freed lane computer stops being named at once.
   const { computers: cloudLaneComputers } = useAdeCloudLaneComputers();
   useCrossMachineLaneSync(active);

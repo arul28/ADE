@@ -20,9 +20,14 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 import { chatTerminalFromSummary } from "./infra/registries";
 import { stableCacheKey } from "./infra/cacheKey";
 import {
+  CLEAR_WOKE_LIFECYCLE_PATCH,
   SessionLifecycleOverlay,
+  settleLifecyclePatch,
+  snoozeLifecyclePatch,
+  unsettleLifecyclePatch,
+  wakeLifecyclePatch,
   type SessionLifecyclePatch,
-} from "./sessionLifecycleOverlay";
+} from "../../lib/sessionLifecycleOverlay";
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import { previewRowsFromTranscript } from "../../components/terminals/terminalPreviewRows";
@@ -410,11 +415,11 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         sessionId,
         ...(opts?.outcome ? { outcome: opts.outcome } : {}),
         ...(opts?.dismissPendingInput ? { dismissPendingInput: true } : {}),
-      }, sessionId, settlePatch());
+      }, sessionId, settleLifecyclePatch({ dismissPendingInput: opts?.dismissPendingInput === true }));
     },
     unsettle: async (sessionId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.unsettle", pin, infra);
-      await lifecycleCall("session.unsettleSession", { sessionId }, sessionId, UNSETTLE_PATCH);
+      await lifecycleCall("session.unsettleSession", { sessionId }, sessionId, unsettleLifecyclePatch());
     },
     // The Work list sends one batch per machine, each with that machine's pin
     // (`SessionListPane` groups the rows). The federated surface hands a
@@ -427,13 +432,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.settleSessions",
         { sessionIds },
         sessionIds,
-        settlePatch(),
+        settleLifecyclePatch(),
         appliedToId,
       )) ?? [];
     },
     unsettleMany: async (sessionIds: string[], pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.unsettleMany", pin, infra);
-      await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, UNSETTLE_PATCH);
+      await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, unsettleLifecyclePatch());
     },
     snoozeSession: async (sessionId: string, untilIso: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.snoozeSession", pin, infra);
@@ -441,7 +446,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.snoozeSession",
         { sessionId, untilIso },
         sessionId,
-        snoozePatch(untilIso),
+        snoozeLifecyclePatch(untilIso),
         appliedToAll,
       ));
     },
@@ -451,7 +456,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.wakeSession",
         { sessionId, ...(reason ? { reason } : {}) },
         sessionId,
-        wakePatch(reason),
+        wakeLifecyclePatch(normalizeWakeReason(reason)),
         appliedToAll,
       ));
     },
@@ -460,7 +465,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.snoozeSessions",
         { sessionIds, untilIso },
         sessionIds,
-        snoozePatch(untilIso),
+        snoozeLifecyclePatch(untilIso),
         appliedToId,
       )) ?? [],
     wakeSessions: async (sessionIds: string[], reason?: string) =>
@@ -468,7 +473,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.wakeSessions",
         { sessionIds, ...(reason ? { reason } : {}) },
         sessionIds,
-        wakePatch(reason),
+        wakeLifecyclePatch(normalizeWakeReason(reason)),
         appliedToId,
       )) ?? [],
     setSettleOverride: async (
@@ -523,7 +528,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.clearWokeMarker",
         { sessionId },
         sessionId,
-        CLEAR_WOKE_PATCH,
+        CLEAR_WOKE_LIFECYCLE_PATCH,
         appliedToAll,
       ));
     },
@@ -806,48 +811,6 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     terminal: terminal as AdeNamespace<"terminal">,
   };
 }
-
-/**
- * The optimistic column writes, mirroring exactly what the host's
- * `sessionService` does for each command. Instants the HOST stamps are filled in
- * with the browser clock and reconciled by PRESENCE, never by value — the
- * machine's instant is the real one. The snooze deadline is the exception: the
- * client computes it and the host echoes it back, so it reconciles by value.
- */
-
-/** Host: `settled_at = coalesce(settled_at, now)`, `settle_override = null`. */
-function settlePatch(): SessionLifecyclePatch {
-  return { settledAt: new Date().toISOString(), settleOverride: null };
-}
-
-/**
- * Host: `settled_at = null`, and it clears a `"settled"` override only. An
- * `"active"` pin survives, so this patch deliberately leaves the column alone
- * rather than claiming a clear the machine may not make.
- */
-const UNSETTLE_PATCH: SessionLifecyclePatch = { settledAt: null };
-
-/** Host: sets both snooze columns and drops any previous woke marker. */
-function snoozePatch(untilIso: string): SessionLifecyclePatch {
-  return {
-    snoozedUntil: untilIso,
-    snoozedAt: new Date().toISOString(),
-    wokeAt: null,
-    wokeReason: null,
-  };
-}
-
-/** Host: clears both snooze columns and records why the row came back. */
-function wakePatch(reason?: string): SessionLifecyclePatch {
-  return {
-    snoozedUntil: null,
-    snoozedAt: null,
-    wokeAt: new Date().toISOString(),
-    wokeReason: normalizeWakeReason(reason),
-  };
-}
-
-const CLEAR_WOKE_PATCH: SessionLifecyclePatch = { wokeAt: null, wokeReason: null };
 
 const WAKE_REASONS = new Set<SessionWakeReason>(["timer", "needs_you", "error", "turn_complete", "manual"]);
 

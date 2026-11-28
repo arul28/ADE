@@ -22,6 +22,20 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { machineErrorText } from "../../lib/machineErrorText";
 import { sendWithCloudWakeMark } from "../../state/cloudSavedChatsSync";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
+import {
+  SupersededLifecycleWriteError,
+  withOptimisticLifecycle,
+  type LifecycleWriteAction,
+} from "../../state/sessionLifecycleOptimism";
+import {
+  CLEAR_WOKE_LIFECYCLE_PATCH,
+  settleLifecyclePatch,
+  settleOverrideLifecyclePatch,
+  snoozeLifecyclePatch,
+  unsettleLifecyclePatch,
+  wakeLifecyclePatch,
+  type SessionLifecyclePatch,
+} from "../../lib/sessionLifecycleOverlay";
 
 /**
  * One place for every write the Work tab's menus make against a session: the
@@ -34,6 +48,49 @@ import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
  */
 
 const UNDO_TOAST_MS = 5_000;
+
+/**
+ * Every lifecycle write below goes through here: the row shows the change at
+ * once, the write still goes to the session's own machine by its pin, and a
+ * failed write puts the row back before the caller reports it. Snooze, wake,
+ * keep-active and the woke clear answer `false` when the machine changed
+ * nothing (the row was already woken, say), which puts the row back too.
+ */
+function lifecycleWrite<T extends boolean | void>(
+  action: LifecycleWriteAction,
+  sessionId: string,
+  patch: SessionLifecyclePatch,
+  pin: OpenProjectBinding | null | undefined,
+  write: (target: OpenProjectBinding) => Promise<T>,
+): Promise<T> {
+  return withOptimisticLifecycle([sessionId], patch, () => withChatPin(pin, write), {
+    action,
+    applied: (result) => (result === false ? [] : [sessionId]),
+  });
+}
+
+const settleWrite = (
+  sessionId: string,
+  options: { dismissPendingInput?: boolean } | undefined,
+  pin?: OpenProjectBinding | null,
+) =>
+  lifecycleWrite("settle", sessionId, settleLifecyclePatch(options ?? {}), pin, (target) =>
+    window.ade.sessions.settle(sessionId, options, target));
+
+const snoozeWrite = (sessionId: string, untilIso: string, pin?: OpenProjectBinding | null) =>
+  lifecycleWrite("snooze", sessionId, snoozeLifecyclePatch(untilIso), pin, (target) =>
+    window.ade.sessions.snoozeSession(sessionId, untilIso, target));
+
+const wakeWrite = (sessionId: string, pin?: OpenProjectBinding | null) =>
+  lifecycleWrite("wake", sessionId, wakeLifecyclePatch("manual"), pin, (target) =>
+    window.ade.sessions.wakeSession(sessionId, "manual", target));
+
+const unsettleWrite = (
+  session: Pick<TerminalSessionSummary, "id" | "settleOverride">,
+  pin?: OpenProjectBinding | null,
+) =>
+  lifecycleWrite("unsettle", session.id, unsettleLifecyclePatch(session.settleOverride), pin, (target) =>
+    window.ade.sessions.unsettle(session.id, target));
 
 /** What pinning does, said where the user pins and where a pin shows. */
 export const SESSION_PIN_TOOLTIP = "Keep this chat at the top of its lane and of the Work list, on every machine";
@@ -64,6 +121,13 @@ export async function renameSession(
  * few seconds later.
  */
 function reportFailure(action: string, sessionId: string, error: unknown, retry?: () => void): void {
+  // The user acted on the row again before this write finished; the row shows
+  // that later action, and a "failed" toast (with a Try again that would undo
+  // it) would be wrong.
+  if (error instanceof SupersededLifecycleWriteError) {
+    console.info(`[sessionLifecycle] ${action} replaced by a later action`, { sessionId });
+    return;
+  }
   console.error(`[sessionLifecycle] ${action} failed`, { sessionId, error });
   showToast({
     // A retry that fails again replaces this toast instead of stacking a second.
@@ -88,7 +152,7 @@ export async function snoozeSessionForDuration(
 ): Promise<void> {
   const untilIso = snoozeDeadlineIso(key, nowMs);
   try {
-    await withChatPin(pin, (target) => window.ade.sessions.snoozeSession(session.id, untilIso, target));
+    await snoozeWrite(session.id, untilIso, pin);
   } catch (error) {
     reportFailure("Snooze", session.id, error);
     return;
@@ -100,8 +164,7 @@ export async function snoozeSessionForDuration(
     actions: [{
       label: "Undo",
       onClick: () => {
-        const wake = withChatPin(pin, (target) => window.ade.sessions.wakeSession(session.id, "manual", target));
-        void wake
+        void wakeWrite(session.id, pin)
           .catch((error: unknown) => reportFailure("Undo snooze", session.id, error));
       },
     }],
@@ -109,7 +172,7 @@ export async function snoozeSessionForDuration(
 }
 
 export type BulkLifecycleTarget = {
-  session: Pick<TerminalSessionSummary, "id">;
+  session: Pick<TerminalSessionSummary, "id"> & Partial<Pick<TerminalSessionSummary, "settleOverride">>;
   pin?: OpenProjectBinding | null;
 };
 
@@ -126,10 +189,13 @@ async function runBulkLifecycle(
   write: (target: BulkLifecycleTarget) => Promise<unknown>,
 ): Promise<BulkLifecycleTarget[]> {
   const results = await Promise.allSettled(targets.map(write));
-  const failedIndex = results.findIndex((result) => result.status === "rejected");
+  // A row the user acted on again mid-write is not a failure (see `reportFailure`).
+  const failed = (result: PromiseSettledResult<unknown>): result is PromiseRejectedResult =>
+    result.status === "rejected" && !(result.reason instanceof SupersededLifecycleWriteError);
+  const failedIndex = results.findIndex(failed);
   if (failedIndex >= 0) {
     const failure = results[failedIndex] as PromiseRejectedResult;
-    const failedCount = results.filter((result) => result.status === "rejected").length;
+    const failedCount = results.filter(failed).length;
     reportFailure(
       targets.length > 1 ? `${action} (${failedCount} of ${targets.length})` : action,
       targets[failedIndex]!.session.id,
@@ -154,7 +220,7 @@ export async function snoozeSessionsForDuration(
 ): Promise<void> {
   if (!targets.length) return;
   const untilIso = snoozeDeadlineIso(key, nowMs);
-  const snoozed = await runBulkLifecycle("Snooze", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.snoozeSession(session.id, untilIso, target)));
+  const snoozed = await runBulkLifecycle("Snooze", targets, ({ session, pin }) => snoozeWrite(session.id, untilIso, pin));
   if (!snoozed.length) return;
   showToast({
     // Unique per batch: two batches snoozed to the same deadline each keep
@@ -168,7 +234,7 @@ export async function snoozeSessionsForDuration(
 
 /** Wake every snoozed row in a selection. */
 export async function wakeSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
-  await runBulkLifecycle("Wake", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.wakeSession(session.id, "manual", target)));
+  await runBulkLifecycle("Wake", targets, ({ session, pin }) => wakeWrite(session.id, pin));
 }
 
 /**
@@ -177,7 +243,7 @@ export async function wakeSessions(targets: ReadonlyArray<BulkLifecycleTarget>):
  * out, and none of these writes carries `dismissPendingInput`.
  */
 export async function settleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
-  const settled = await runBulkLifecycle("Settle", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.settle(session.id, undefined, target)));
+  const settled = await runBulkLifecycle("Settle", targets, ({ session, pin }) => settleWrite(session.id, undefined, pin));
   if (!settled.length) return;
   showToast({
     id: `session-settle-bulk:${++bulkToastSeq}`,
@@ -201,7 +267,7 @@ export async function setSessionsPinned(
 
 /** Lift the settle on every settled row in a selection. */
 export async function unsettleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
-  await runBulkLifecycle("Unsettle", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.unsettle(session.id, target)));
+  await runBulkLifecycle("Unsettle", targets, ({ session, pin }) => unsettleWrite(session, pin));
 }
 
 /** Wake a snoozed row right now (the user asked, so the reason is "manual"). */
@@ -210,7 +276,7 @@ export async function wakeSessionNow(
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
   try {
-    await withChatPin(pin, (target) => window.ade.sessions.wakeSession(session.id, "manual", target));
+    await wakeWrite(session.id, pin);
   } catch (error) {
     reportFailure("Wake", session.id, error);
   }
@@ -226,7 +292,8 @@ export async function setSessionSettleOverride(
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
   try {
-    await withChatPin(pin, (target) => window.ade.sessions.setSettleOverride(session.id, override, target));
+    await lifecycleWrite("settle_override", session.id, settleOverrideLifecyclePatch(override), pin, (target) =>
+      window.ade.sessions.setSettleOverride(session.id, override, target));
   } catch (error) {
     reportFailure(override === "active" ? "Keep active" : "Settle", session.id, error);
   }
@@ -245,7 +312,7 @@ export async function settleSession(
     ? { dismissPendingInput: true }
     : undefined;
   try {
-    await withChatPin(pin, (target) => window.ade.sessions.settle(session.id, options, target));
+    await settleWrite(session.id, options, pin);
   } catch (error) {
     reportFailure("Settle", session.id, error, () => { void settleSession(session, pin); });
   }
@@ -257,11 +324,11 @@ export async function settleSession(
  * reported instead of swallowed.
  */
 export async function unsettleSession(
-  session: Pick<TerminalSessionSummary, "id" | "settledAt">,
+  session: Pick<TerminalSessionSummary, "id" | "settledAt"> & Partial<Pick<TerminalSessionSummary, "settleOverride">>,
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
   try {
-    await withChatPin(pin, (target) => window.ade.sessions.unsettle(session.id, target));
+    await unsettleWrite(session, pin);
   } catch (error) {
     reportFailure("Unsettle", session.id, error, () => { void unsettleSession(session, pin); });
   }
@@ -275,7 +342,7 @@ export function clearSessionWokeMarker(
   const clear = window.ade.sessions?.clearWokeMarker;
   if (!clear) return;
   if (!pin) return;
-  void clear(sessionId, pin)
+  void lifecycleWrite("clear_woke", sessionId, CLEAR_WOKE_LIFECYCLE_PATCH, pin, (target) => clear(sessionId, target))
     .catch((error: unknown) => {
       console.error("[sessionLifecycle] clearWokeMarker failed", { sessionId, error });
     });

@@ -38,6 +38,8 @@ import {
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
+import { SupersededLifecycleWriteError, withOptimisticLifecycle } from "../../state/sessionLifecycleOptimism";
+import { settleLifecyclePatch, unsettleLifecyclePatch } from "../../lib/sessionLifecycleOverlay";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneCloudMarker } from "./LaneMachineMarker";
@@ -1041,9 +1043,13 @@ function reportSettleFailures(
   groups: SettleMachineGroup[],
   results: PromiseSettledResult<unknown>[],
 ): void {
-  const failed = groups.filter((_, index) => results[index]?.status === "rejected");
+  // A machine whose rows the user acted on again mid-write did not fail; the
+  // rows show that later action (`SupersededLifecycleWriteError`).
+  const isFailure = (result: PromiseSettledResult<unknown> | undefined): result is PromiseRejectedResult =>
+    result?.status === "rejected" && !(result.reason instanceof SupersededLifecycleWriteError);
+  const failed = groups.filter((_, index) => isFailure(results[index]));
   if (!failed.length) return;
-  const firstError = (results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason;
+  const firstError = (results.find(isFailure) as PromiseRejectedResult).reason;
   console.error(`[SessionListPane] ${action} failed`, {
     machines: failed.map((group) => group.machineName),
     error: firstError,
@@ -1844,7 +1850,14 @@ export const SessionListPane = React.memo(function SessionListPane({
       machineName: settleMachineName(pin),
       ids: items.map((session) => session.id),
     }));
-    const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.settleMany(group.ids, group.pin)));
+    // Each row shows settled at once; a machine that refuses a row (or fails)
+    // puts it back. `settleMany` answers with the ids it changed.
+    const results = await Promise.allSettled(groups.map((group) => withOptimisticLifecycle(
+      group.ids,
+      settleLifecyclePatch(),
+      () => window.ade.sessions.settleMany(group.ids, group.pin),
+      { action: "settle", applied: (changed) => changed },
+    )));
     const settledGroups: SettleMachineGroup[] = [];
     results.forEach((result, index) => {
       if (result.status === "fulfilled" && result.value.length > 0) {
@@ -1860,7 +1873,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     const groups = settleUndo?.groups ?? [];
     if (!groups.length) return;
     setSettleUndo(null);
-    const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.unsettleMany(group.ids, group.pin)));
+    const results = await Promise.allSettled(groups.map((group) => withOptimisticLifecycle(
+      group.ids,
+      unsettleLifecyclePatch(),
+      () => window.ade.sessions.unsettleMany(group.ids, group.pin),
+      { action: "unsettle" },
+    )));
     rereadForeignMachines(groups);
     reportSettleFailures("Undo settle", groups, results);
   }, [rereadForeignMachines, settleUndo]);
