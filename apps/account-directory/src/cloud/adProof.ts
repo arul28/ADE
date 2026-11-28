@@ -1,9 +1,9 @@
 import type { CloudWaitUntil } from "./analytics";
-import { cloudNetworkOf, countAdProof, noteCloudNetworkProof, noteUnverified } from "./adPrice";
+import { adContextFor, cloudNetworkOf, computerRatesMilli, countAdProof, noteCloudNetworkProof, noteUnverified } from "./adPrice";
 import type { CloudAdProofAnswer } from "./contract";
 import { blockedReason, freeModelAdGate, honorGpc, ownCloudComputer, ownLivePhone, type GravityEnv } from "./gravity";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, shortString } from "./http";
-import { utcDay } from "./plans";
+import { utcDay, type CloudSize } from "./plans";
 import { readCloudSettings } from "./settings";
 import { readConsent, requestNetwork, sponsoredRequester, yesHolds } from "./sponsoredConsent";
 import { adTerms, pricingV3Mode, pricingV3Reaches } from "./sponsoredSwitch";
@@ -101,10 +101,7 @@ async function proveSent(
   }
   if (network === "cloud") await noteCloudNetworkProof(env, account, asn, now, waitUntil);
   const saved = instanceId ? place === "here" : (await chatPlace(env, userId, input.chatId, null)) === "here";
-  // One message counts once, whether its chat was saved when it came or after (its two ids).
-  const either = await env.DB.prepare("select 1 as hit from cloud_ad_proofs where user_id = ? and chat_id = ? and turn_id in (?, ?)")
-    .bind(userId, input.chatId, `msg:${input.messageId}`, `new:${input.messageId}`).first<{ hit: number }>();
-  if (either) return refused("repeat");
+  if (await messageCounted(env, userId, input.messageId)) return refused("repeat");
   if (saved) return countAdProof(env, account, { chatId: input.chatId, turnId: `msg:${input.messageId}`, kind: "sent", freeModel, ...targets }, now);
   const cap = instanceId ? UNSAVED_CHAT_PROOFS_A_DAY.computer : UNSAVED_CHAT_PROOFS_A_DAY.phone;
   if ((await unsavedProofsToday(env, userId, targets, now)) >= cap) return refused("not_cloud");
@@ -131,7 +128,67 @@ export async function handleSent(request: Request, env: GravityEnv, userId: stri
   return json(await proveSent(env, request, account, { instanceId: body.instanceId, phoneId: body.phoneId, ...ids }, now, waitUntil));
 }
 
-const proofIds = (chatValue: unknown, messageValue: unknown): { chatId: string; messageId: string } | null => {
+/**
+ * One message counts once, whatever chat id it came under: a chat saved after
+ * it came (`new:` then `msg:`), or a new lane's first message, counted at its
+ * launch under the launch id, then sent again by the app under its chat's.
+ */
+async function messageCounted(env: GravityEnv, userId: string, messageId: string): Promise<boolean> {
+  const hit = await env.DB.prepare("select 1 as hit from cloud_ad_proofs where user_id = ? and turn_id in (?, ?) limit 1")
+    .bind(userId, `msg:${messageId}`, `new:${messageId}`).first<{ hit: number }>();
+  return hit != null;
+}
+
+/** A person's first message that makes a new computer (`routes.ts` `createComputer`): its proof, before the computer exists. */
+export type FirstMessageProof = { request: Request; chatId: string; messageId: string };
+
+/**
+ * Pricing v3: the rate a new computer of `size` starts at when `proof` (a
+ * person's first message: a launch's, or an app's create with `adProof`) will
+ * count for it: its ad rate. Null when it won't (Pricing v3 or ads not
+ * reaching the account, ads off, no ads here, the network of the account's own
+ * computers, a message already counted), so the create checks hours at the
+ * full rate as before. Never fails the create.
+ */
+export async function firstMessageRate(env: GravityEnv, account: AccountRow, size: CloudSize, proof: FirstMessageProof, now: number, waitUntil?: CloudWaitUntil): Promise<number | null> {
+  try {
+    const settings = await readCloudSettings(env);
+    if ((await pricingV3Mode(env, settings)) === "off") return null;
+    const { ctx } = await adContextFor(env, account);
+    if (!ctx.v3) return null;
+    const who = sponsoredRequester(proof.request);
+    if (await blockedReason(env, account, who.country, undefined, true)) return null;
+    const consent = await honorGpc(env, account, await readConsent(env, account.user_id), who, now);
+    if (!yesHolds(env, consent, who) || consent.notice_seen_at == null) return null;
+    if (await messageCounted(env, account.user_id, proof.messageId)) return null;
+    const asn = requestNetwork(proof.request);
+    const network = await cloudNetworkOf(env, account.user_id, asn, now);
+    if (network === "own") {
+      await noteUnverified(env, account, { instanceId: null, phoneId: null }, asn, now, waitUntil);
+      return null;
+    }
+    if (network === "cloud") await noteCloudNetworkProof(env, account, asn, now, waitUntil);
+    return computerRatesMilli({ type: size.type, cpu: size.cpu, memory_gb: size.memoryGb, multiplier_milli: size.multiplierMilli, ad_full_milli: null }, ctx).adMilli;
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.first_message_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return null;
+  }
+}
+
+/**
+ * The new computer was made: `proof` counts for it, for the whole window (the
+ * server holds the message, so no short window for a chat it never saw), and
+ * it goes to the price with ads from its first minute. Never fails the create.
+ */
+export async function proveFirstMessage(env: GravityEnv, account: AccountRow, instanceId: string, proof: FirstMessageProof, now: number): Promise<void> {
+  try {
+    await countAdProof(env, account, { chatId: proof.chatId, turnId: `msg:${proof.messageId}`, kind: "sent", freeModel: false, instanceId, phoneId: null }, now);
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.first_message_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
+export const proofIds = (chatValue: unknown, messageValue: unknown): { chatId: string; messageId: string } | null => {
   const chatId = shortString(chatValue, 160);
   const messageId = shortString(messageValue, 150);
   return chatId && ROW_ID.test(chatId) && messageId && ROW_ID.test(messageId) ? { chatId, messageId } : null;

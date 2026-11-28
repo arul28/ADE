@@ -420,6 +420,12 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   wakes at 0 credits at the price with ads: through the chat queue
   (`POST /cloud/chats/.../messages`, a person's send), or
   `POST /cloud/instances/:id/start` with `adProof: { chatId, messageId }`. A
+  new lane's first message is its new computer's proof the same way, counted
+  at the create, before its hours check and for the price from the first
+  minute, with the whole window: a person's server launch (its first message,
+  under the launch id), or the app's `POST /cloud/instances` with `adProof`.
+  One message id counts once on any chat id, so the app's later `/sent` of it
+  is a repeat. An automation's or agent's launch has no such proof. A
   wake for an outside agent stays refused at 0 credits; a CLI session or an
   automation started later puts it at the full price, and the zero stop
   stops it. The credits emails (`hoursWarnings.ts`) say so on Free with ads

@@ -1,5 +1,5 @@
 import { freeSmallWayOut, noteActivityReport, noteOutsideAgentWork, syncComputerPrice, wakeRateMilli } from "./adPrice";
-import { proveWakeMessage } from "./adProof";
+import { firstMessageRate, proofIds, proveFirstMessage, proveWakeMessage } from "./adProof";
 import { authenticate } from "../callerToken";
 import { liveUsedWithPhones } from "./credits";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
@@ -697,7 +697,10 @@ const onlyWakePorts = (ports: unknown): Array<{ port: number; label: string }> |
 async function handleCreate(request: Request, env: CloudEnv, userId: string, provider: CloudProvider, ctx: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  return createAnswerOf(await createComputer(env, userId, provider, { body }, ctx));
+  // Pricing v3: the app makes a new lane's computer for a person's first message (`adProof`, as on `/start`).
+  const raw = body.adProof && typeof body.adProof === "object" ? body.adProof as Record<string, unknown> : null;
+  const ids = raw ? proofIds(raw.chatId, raw.messageId) : null;
+  return createAnswerOf(await createComputer(env, userId, provider, { body, ...(ids ? { adProof: { request, ...ids } } : {}) }, ctx));
 }
 
 /**
@@ -757,7 +760,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
     return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
   }
-  const { account, computers, outOfHoursFor } = await getAccountContext(env, userId, now);
+  const { account, computers, outOfHoursFor, outOfHoursAt } = await getAccountContext(env, userId, now);
   const isMove = body.moveFromInstanceId !== undefined;
   const action = isMove ? "move" : "create";
   const { metadata, requestId } = withRequestId(env, clientMetadata);
@@ -768,8 +771,12 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   // An outside agent (ADE MCP) on the free plan: a create, a move and a new lane's launch alike.
   const outside = outsideAgentRefusal(account, isOutsideAgentMetadata(clientMetadata));
   if (outside) return refused(refuse(outside));
+  // Pricing v3: a person's first message for it (never an agent's or an automation's) is its proof,
+  // so it starts at the price with ads, and the hours check reads that price (Free's Small: 0).
+  const firstProof = extras.adProof && !isMove && !clientMetadata.ade_made_by_agent ? extras.adProof : null;
+  const adRate = firstProof ? await firstMessageRate(env as GravityEnv, account, size, firstProof, now, waitUntil) : null;
   // Only the size being made: a Small computer never uses hours.
-  const empty = outOfHoursFor(size.multiplierMilli);
+  const empty = adRate != null ? outOfHoursAt(adRate) : outOfHoursFor(size.multiplierMilli);
   if (empty) return refused(refuse(empty));
   // The owner's cap limits free use only: a paid account is never refused here.
   if (await freeCapRefuses(env, account, now, waitUntil)) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
@@ -827,6 +834,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     await enforceBlockAfterCreate(env, provider, userId, instance.id, Date.now());
     // Pricing v3: a computer an outside agent made runs its work at the full price (`adPrice.ts`).
     if (isOutsideAgentMetadata(clientMetadata)) await noteOutsideAgentWork(env as GravityEnv, { instance_id: instance.id, user_id: userId }, Date.now());
+    if (firstProof && adRate != null) await proveFirstMessage(env as GravityEnv, account, instance.id, firstProof, Date.now());
     track({ action, tier: tierOf(size) });
     return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets) };
   } catch (error) {

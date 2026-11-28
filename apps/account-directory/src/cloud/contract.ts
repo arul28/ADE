@@ -10,7 +10,8 @@
  *   GET    /cloud/account                      CloudAccountState
  *   GET    /cloud/templates/:name              { exists }
  *   GET    /cloud/instances                    { data: CloudInstance[] }
- *   POST   /cloud/instances                    CloudInstance (create)
+ *   POST   /cloud/instances                    CloudInstance (create; Pricing v3: { adProof: { chatId, messageId } }: a new lane's computer made for a
+ *                                                            person's first message, counted as its proof, so it starts at the price with ads and a Small on Free with ads is made at 0 credits)
  *   GET    /cloud/instances/:id                CloudInstance
  *   DELETE /cloud/instances/:id                { deleted: true }
  *   POST   /cloud/instances/:id/sleep          { status }
