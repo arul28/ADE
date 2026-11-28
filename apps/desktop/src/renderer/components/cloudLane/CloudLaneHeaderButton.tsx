@@ -3,13 +3,15 @@ import { ArrowSquareOut, CheckCircle, Clock, Cloud, Cpu, ListChecks, Moon, Pulse
 import { idleCleanupWhen, type CloudIdleCleanupEntry } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { useCloudAccount } from "../../state/cloudAccountStore";
+import { useAppStore } from "../../state/appStore";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
 import { useCloudLaneComputer, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
-import { useChatMachineWake } from "../chat/useChatMachineWake";
-import { useChatRuntimeScope } from "../chat/ChatRuntimeScope";
+import { ChatMachineWakeProvider, useChatMachineWake } from "../chat/useChatMachineWake";
+import { ChatRuntimeScopeProvider, useChatRuntimeScope } from "../chat/ChatRuntimeScope";
 import { useAnchoredActionMenu, type AnchoredActionMenu } from "../remoteTargets/MachineActionsMenu";
-import { callCloudMachineAction, confirmCloudSleep } from "../remoteTargets/useCloudBoxActions";
+import { callCloudMachineAction, confirmCloudSleep, type CloudSleepRunning } from "../remoteTargets/useCloudBoxActions";
 import { refreshCloudMachines, useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
@@ -41,10 +43,11 @@ import { BRAND } from "../../../shared/brand";
  * the chat) when the chat's machine is this computer asleep, else the
  * account's wake by id. Nothing for a lane that isn't on ADE Cloud.
  *
- * `turnRunning`: this chat's turn is running, so Sleep asks first (sleep
- * freezes the computer, and the turn may fail), as Sleep does everywhere.
+ * `turnRunning`: this chat's turn (or, with `runningKind: "session"`, this CLI
+ * session) is running, so Sleep asks first (sleep freezes the computer, and
+ * the work may fail), as Sleep does everywhere.
  */
-export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string | null; turnRunning: boolean }) {
+export function CloudLaneHeaderButton({ laneId, turnRunning, runningKind = "chats" }: { laneId: string | null; turnRunning: boolean; runningKind?: CloudSleepRunning }) {
   const computer = useCloudLaneComputer(laneId);
   const account = useCloudAccount();
   const machine = useChatMachineWake();
@@ -106,12 +109,40 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
           power={power}
           idle={idle}
           turnRunning={turnRunning}
+          runningKind={runningKind}
           onWake={() => void wakeNow()}
           onSize={() => setSizing(true)}
         />
       ) : null}
       {sizing ? <CloudTierChangeDialog instanceId={computer.instanceId} laneName={name} onClose={() => setSizing(false)} /> : null}
     </>
+  );
+}
+
+/**
+ * The cloud button for a CLI session or shell on a cloud lane, in its header
+ * (`CliSessionWorkSurfaceHeader`): the chat's own button and menu, given the
+ * scope a chat pane gives it. `runtimePin` is the session's machine (the Work
+ * row's pin; null for the tab's own machine), so the menu's Wake connects the
+ * session's machine, never the tab's. Nothing for a lane that isn't on
+ * ADE Cloud, and nothing is mounted (no scope, no watch) until it is.
+ */
+export function SessionCloudLaneButton({ session, runtimePin }: { session: Pick<TerminalSessionSummary, "laneId" | "status" | "runtimeState">; runtimePin: OpenProjectBinding | null }) {
+  const laneId = session.laneId ?? null;
+  const computer = useCloudLaneComputer(laneId);
+  const boundBinding = useAppStore((state) => state.projectBinding);
+  if (!computer) return null;
+  return (
+    <ChatRuntimeScopeProvider pin={runtimePin} binding={runtimePin ?? boundBinding} laneId={laneId} sessionId={null}>
+      <ChatMachineWakeProvider>
+        {/* What this computer costs now (a later change) shows here, next to its cloud button. */}
+        <CloudLaneHeaderButton
+          laneId={laneId}
+          turnRunning={session.status === "running" && session.runtimeState === "running"}
+          runningKind="session"
+        />
+      </ChatMachineWakeProvider>
+    </ChatRuntimeScopeProvider>
   );
 }
 
@@ -130,6 +161,7 @@ function CloudLaneStatusMenu({
   power,
   idle,
   turnRunning,
+  runningKind,
   onWake,
   onSize,
 }: {
@@ -139,6 +171,7 @@ function CloudLaneStatusMenu({
   power: CloudLanePower;
   idle: CloudIdleCleanupEntry | null;
   turnRunning: boolean;
+  runningKind: CloudSleepRunning;
   onWake: () => void;
   onSize: () => void;
 }) {
@@ -162,7 +195,7 @@ function CloudLaneStatusMenu({
 
   const sleepNow = () => {
     forgetCloudComputerStatus(computer.instanceId);
-    void sleepLaneComputer(computer.instanceId, name, turnRunning ? 1 : 0);
+    void sleepLaneComputer(computer.instanceId, name, turnRunning ? 1 : 0, runningKind);
   };
 
   return (
@@ -326,8 +359,8 @@ export async function keepLaneComputer(instanceId: string, name: string): Promis
  * Sleep (the chat header, Manage lane): the shared confirm, which asks when
  * chats run there, the IPC call, a toast either way, then the list read again.
  */
-export async function sleepLaneComputer(instanceId: string, name: string, runningChats: number): Promise<void> {
-  if (!(await confirmCloudSleep(`${name}'s computer`, runningChats))) return;
+export async function sleepLaneComputer(instanceId: string, name: string, running: number, what: CloudSleepRunning = "chats"): Promise<void> {
+  if (!(await confirmCloudSleep(`${name}'s computer`, running, what))) return;
   const result = await callCloudMachineAction({ instanceId, action: "sleep" });
   if (result?.ok) {
     showToast({ tone: "info", title: `${name}'s computer is going to sleep.` });

@@ -246,8 +246,8 @@ struct CloudLaneStateLines: View {
   }
 }
 
-/// A cloud chat's computer in its header: asleep, waking or awake, as the
-/// desktop chat header's cloud button shows it. Its menu says the state and,
+/// A cloud lane's computer in a chat's or terminal's header: asleep, waking
+/// or awake, as the desktop header's cloud button shows it. Its menu says the state and,
 /// while asleep, offers Wake now. Reading it never wakes anything; a failed
 /// wake, a refusal or a deleted computer stay lines at the top
 /// (`CloudLaneStateLines`), so this shows nothing for those.
@@ -255,6 +255,8 @@ struct CloudLaneHeaderStateButton: View {
   let fleetKey: String?
   /// On the side rail's toolbar (a labelled item), not the glass header.
   var inToolbar = false
+  /// In a terminal's top bar: a message there doesn't wake the computer.
+  var inTerminal = false
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
@@ -287,7 +289,7 @@ struct CloudLaneHeaderStateButton: View {
   private func menu(_ shown: Shown, fleetKey: String) -> some View {
     Menu {
       if shown.asleep {
-        Section("Asleep · you're reading the saved copy. Sending a message wakes it too.") {
+        Section(inTerminal ? "Asleep · wake it to use this terminal." : "Asleep · you're reading the saved copy. Sending a message wakes it too.") {
           Button {
             ADEHaptics.light()
             wake(fleetKey)
@@ -297,7 +299,7 @@ struct CloudLaneHeaderStateButton: View {
         }
       } else {
         Section("\(shown.word) on \(Brand.cloudName)") {
-          Label(shown.word == "Waking" ? "Waking this chat's computer…" : "This chat's computer is up", systemImage: shown.symbol)
+          Label(shown.word == "Waking" ? "Waking this lane's computer…" : "This lane's computer is up", systemImage: shown.symbol)
         }
       }
     } label: {
@@ -312,7 +314,7 @@ struct CloudLaneHeaderStateButton: View {
     .accessibilityIdentifier("Work.Chat.Header.CloudState")
   }
 
-  /// A doing action: wakes the chat's computer. A failure shows as the
+  /// A doing action: wakes the lane's computer. A failure shows as the
   /// wake-failed line (`cloudWakeFailure`), the only banner left in a chat.
   private func wake(_ fleetKey: String) {
     let sync = syncService

@@ -7,6 +7,7 @@ import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { formatToolTypeLabel, primarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
 import { sessionStatusDot } from "../../lib/terminalAttention";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
+import { SessionCloudLaneButton } from "../cloudLane/CloudLaneHeaderButton";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
@@ -321,6 +322,7 @@ export function CliSessionWorkSurfaceHeader({
         <>
           {leadingTrailingAction}
           <ClaudeLoginHeaderAction session={session} runtimePin={runtimePin} />
+          <SessionCloudLaneButton session={session} runtimePin={runtimePin} />
           <CliSurfaceTrailingActions
             session={session}
             stopping={stopping}

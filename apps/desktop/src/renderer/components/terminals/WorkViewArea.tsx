@@ -754,6 +754,7 @@ function ClosedCliSessionSurface({
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
           onOpenFullView={onOpenFullView}
+          runtimePin={runtimePin}
           leadingTrailingAction={agentCli ? <CliActionsToggle /> : undefined}
         />
       ) : null}
