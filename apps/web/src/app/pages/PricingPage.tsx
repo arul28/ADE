@@ -43,7 +43,8 @@ import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES, MARKETING_SCREENS } from "
 import { captureMarketingFeature } from "../../lib/marketingAnalyticsBrowser";
 import { PLAN_CTAS } from "../../lib/planLinks";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
-import { AD_PRICE_RULE_SENTENCE, usePricingView, type Machine, type PricingView } from "../../lib/pricingView";
+import { V3_CREDIT_SCALE, adPriceOf, adPriceRuleSentence, creditUnitSentence, usePricingView, type Machine, type PricingView } from "../../lib/pricingView";
+import { useSiteOfferSettled } from "../../lib/siteOffer";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** Each plan's tower over its card: more floors and more lights for a bigger plan. */
@@ -93,11 +94,14 @@ const panel = "rounded-[24px] border border-white/[0.08] bg-[#100e22]";
  */
 export function PricingPage() {
   useDocumentTitle(`${BRAND.CLOUD_NAME} Pricing`);
+  // The prices wait for the server's answer (at most a short hold, `siteOffer.ts`), so they never change under the reader.
+  const settled = useSiteOfferSettled();
+  const view = usePricingView();
   return (
     <Page>
       <div
         className="overflow-x-clip text-white"
-        style={{ background: "linear-gradient(180deg, var(--color-night) 0%, #1b1440 24%, #120e2b 46%, #0c0a1a 72%, #0a0a0f 100%)" }}
+        style={{ background: "linear-gradient(180deg, var(--color-night) 0%, #1b1440 24%, #120e2b 46%, #0c0a1a 72%, #0a0a0f 100%)", visibility: settled ? undefined : "hidden" }}
       >
         <PricingHero />
         <RateSection />
@@ -105,7 +109,7 @@ export function PricingPage() {
         <DetailsSection />
         <section aria-labelledby="soon-title" className={cn(wrap, sectionGap)}>
           <SectionTitle id="soon-title" title="Coming soon" />
-          <ComingSoon className="mt-8" />
+          <ComingSoon className="mt-8" hide={view.mac ? ["mac"] : undefined} />
         </section>
         <FaqSection />
         <section className={cn(wrap, "pb-[clamp(72px,8vw,112px)] pt-[clamp(56px,6vw,88px)] text-center")}>
@@ -162,7 +166,7 @@ function PricingHero() {
         <p className="mx-auto mt-8 max-w-[48rem] text-center text-[14px] leading-[1.6] text-white/45">
           {view.v3 ? (
             <>
-              Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE} {view.ads ? AD_PRICE_RULE_SENTENCE : null}
+              Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE}{view.ads ? ` ${adPriceRuleSentence(view.ads)}` : null}
             </>
           ) : (
             <>
@@ -253,44 +257,54 @@ function PlanAllowance({ plan, free, view }: { plan: PricingPlan; free: boolean;
       </div>
     );
   }
-  const smallFreeHere = !free || view.withAds;
   return (
     <div className="mt-6 border-t border-white/[0.08] pt-5">
       <ul>
-        {smallFreeHere ? (
-          <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value="Unlimited" unit={free ? "free with ads" : "free"} free />
+        {!free ? (
+          <AllowanceRow name={SMALL_SIZE.label} detail={`Linux, ${SMALL_SIZE.specs}`} value="Unlimited" unit="free" free even tall={view.ads != null} />
+        ) : view.withAds ? (
+          <AllowanceRow name={SMALL_SIZE.label} detail={`Linux, ${SMALL_SIZE.specs}`} value="Unlimited" unit="free with ads" free even tall note={`${formatCount(view.freeSmall.struck ?? 0)} ${UNIT.many} an hour with no ads`} />
         ) : (
-          <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value={formatCount(view.freeSmall.now)} unit={`${UNIT.many} an hour`} stacked />
+          <AllowanceRow name={SMALL_SIZE.label} detail={`Linux, ${SMALL_SIZE.specs}`} value={formatCount(view.freeSmall.now)} unit={`${UNIT.many} an hour`} stacked even tall={view.ads != null} note={view.ads ? "Free with ads" : undefined} />
         )}
       </ul>
-      <p className="mt-5 flex items-baseline gap-2">
-        <span className="font-display text-[34px] leading-none text-white tabular-nums">{formatCount(view.credits(plan.hours))}</span>
-        <span className="text-[15px] text-white/70">{UNIT.many} a month</span>
+      <p className="mt-5 flex items-baseline gap-2 whitespace-nowrap">
+        <span className="font-display text-[32px] leading-none text-white tabular-nums">{formatCount(view.credits(plan.hours))}</span>
+        <span className="text-[14px] text-white/70">{UNIT.many} a month</span>
       </p>
       <p className="mt-1 text-[13px] text-white/45">{view.withAds ? "With ads, enough for up to" : "Enough for up to"}</p>
       <ul className="mt-1">
-        {view.machines.map((machine) => (
-          <AllowanceRow
-            key={machine.id}
-            name={machine.name}
-            detail={machine.kind === "linux" ? machine.specs : machine.use}
-            value={formatCount(view.timeOn(plan.hours, machine))}
-            unit={machine.per === "hour" ? "h" : "min"}
-            without={view.timeOnFull(plan.hours, machine)}
-            phone={machine.kind === "iphone"}
-            mac={machine.kind === "mac"}
-          />
-        ))}
+        {view.machines.map((machine) => {
+          const time = view.timeOn(plan.hours, machine);
+          const without = view.timeOnFull(plan.hours, machine);
+          // One rule for the Mac and iPhone rows: whole hours (rounded down) when the plan gives 2 hours or
+          // more at the full price, minutes below that; both figures of a row in the same unit.
+          const inHours = machine.per === "hour" || (without ?? time) >= 120;
+          const shown = (minutesOrHours: number) => formatCount(machine.per === "minute" && inHours ? Math.floor(minutesOrHours / 60) : minutesOrHours);
+          return (
+            <AllowanceRow
+              key={machine.id}
+              name={machine.kind === "linux" ? (HOURLY_SIZES.find((size) => size.id === machine.id)?.label ?? machine.name) : machine.name}
+              detail={machine.kind === "linux" ? `Linux, ${machine.specs}` : machine.kind === "mac" ? machine.specs : machine.use}
+              value={shown(time)}
+              unit={inHours ? "h" : "min"}
+              note={without == null ? undefined : `${shown(without)} with no ads`}
+              phone={machine.kind === "iphone"}
+              mac={machine.kind === "mac"}
+              even
+            />
+          );
+        })}
       </ul>
     </div>
   );
 }
 
-/** The Free card's small print about Small under Pricing v3: what it costs with and with no ads, or only its price where there are no ads. */
+/** The Free card's small print about Small under Pricing v3. */
 function freeSmallNote(view: PricingView): string {
   const rate = `${formatCount(view.freeSmall.struck ?? view.freeSmall.now)} ${UNIT.many} an hour`;
-  if (!view.ads) return `Small is free on every paid plan, and ${rate} on Free.`;
-  return view.withAds ? `Small is free with ads on. With no ads, ${rate}.` : `Small is ${rate} with no ads, and free with ads on.`;
+  if (!view.ads) return `Small is ${rate} on Free, and free on every paid plan.`;
+  return `With ads, Small computers are free, and bigger ones cost ${view.ads.discountPct}% less.`;
 }
 
 /** One machine in a plan's allowance: its name and specs, then how much of it the plan gets. */
@@ -303,7 +317,9 @@ function AllowanceRow({
   phone,
   mac,
   stacked,
-  without,
+  note,
+  even,
+  tall,
 }: {
   name: string;
   detail: string;
@@ -314,13 +330,17 @@ function AllowanceRow({
   mac?: boolean;
   /** The unit under the value, as a free row has it. */
   stacked?: boolean;
-  /** The same allowance with no ads, shown small under it while ads are on. */
-  without?: number | null;
+  /** A small line under the value: the same allowance with no ads, while ads are on. */
+  note?: string;
+  /** A fixed value column, so the rows of the four cards wrap alike and read across. */
+  even?: boolean;
+  /** The height of the Free card's Small row with its note, on every card, so the rows under it stay level. */
+  tall?: boolean;
 }) {
   return (
-    <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 list-none">
+    <li className={cn("grid items-center py-2 list-none", tall && "min-h-[92px]", even ? "grid-cols-[minmax(0,1fr)_92px] gap-x-2" : "grid-cols-[minmax(0,1fr)_auto] gap-x-3")}>
       <span className="min-w-0">
-        <span className="flex items-center gap-1.5 text-[15px] text-white/90">
+        <span className={cn("flex items-center gap-1.5 text-[15px] text-white/90", even && "whitespace-nowrap")}>
           {phone ? <Smartphone className="h-3.5 w-3.5 shrink-0 text-[#fdba74]" /> : null}
           {mac ? <AppleMark className="h-3.5 w-3.5 shrink-0 text-white/80" /> : null}
           {name}
@@ -330,7 +350,7 @@ function AllowanceRow({
       <span className="text-right">
         <span className={cn("font-display leading-none tabular-nums", free ? "text-[19px] text-[color:var(--color-lamp)]" : stacked ? "text-[19px] text-white" : "text-[22px] text-white")}>{value}</span>
         <span className={cn("block text-[12px] text-white/45", !free && !stacked && "inline pl-1")}>{unit}</span>
-        {without != null ? <span className="block text-[11.5px] leading-tight text-white/40 tabular-nums">{formatCount(without)} with no ads</span> : null}
+        {note ? <span className={cn("block text-[11.5px] leading-tight text-white/40 tabular-nums", note.length <= 18 && "whitespace-nowrap")}>{note}</span> : null}
       </span>
     </li>
   );
@@ -357,7 +377,7 @@ function RateSection() {
     <section aria-labelledby="rates-title" id="rates" className={cn(wrap, sectionGap, "scroll-mt-16")}>
       <SectionTitle id="rates-title" title={UNIT.rateTitle}>
         {view.v3
-          ? `Bigger computers${view.machines.some((machine) => machine.kind === "mac") ? ", the Mac" : ""} and the iPhone use ${UNIT.many} only while they run. Your ${UNIT.many} start over each month.`
+          ? `Bigger computers${view.mac ? ", the Mac" : ""} and the iPhone use ${UNIT.many} only while they run. Your ${UNIT.many} start over each month.${view.withAds ? " With ads on, each costs " + view.ads!.discountPct + "% less." : ""}`
           : <>Bigger computers and the iPhone use {UNIT.many} only while they run. Your {UNIT.many} start over each month.</>}
       </SectionTitle>
       <SizesStrip className="mt-8" view={view} />
@@ -379,15 +399,30 @@ function PlanFinder() {
   const [hoursEach, setHoursEach] = useState(120);
   const [sizeId, setSizeId] = useState<PricingSize["id"]>(SMALL_SIZE.id);
   const [phoneMinutes, setPhoneMinutes] = useState(0);
+  const [macMinutes, setMacMinutes] = useState(0);
   const reported = useRef(false);
+  const view = usePricingView();
 
   const size = PRICING_SIZES.find((entry) => entry.id === sizeId) ?? SMALL_SIZE;
-  const needed = Math.round(computers * hoursEach * size.rate + phoneMinutes * PHONE_CREDITS_PER_MINUTE);
-  const usesUnits = needed > 0;
+  const machineOf = (id: string) => view.machines.find((machine) => machine.id === id);
+  const phone = machineOf("iphone")!;
+  const mac = machineOf("mac");
+  // Everything here is in the stored unit (Medium-hours); `view.credits` turns it into the credits shown.
+  const sizeRate = size.rate > 0 ? (machineOf(size.id)?.storedRate ?? size.rate) : 0;
+  const exact = computers * hoursEach * sizeRate + phoneMinutes * phone.storedRate + (mac ? macMinutes * mac.storedRate : 0);
+  const needed = view.v3 ? exact : Math.round(exact);
+  // Free's Small with no ads uses credits there, and only there.
+  const freeSmallHours = view.v3 && size.rate === 0 ? computers * hoursEach * view.freeSmallStoredRate : 0;
   const rivals = rivalBills(computers * hoursEach, size);
-  const suggestion = suggestPlan(needed, computers);
+  const suggestion = suggestPlan(needed, computers, { freeExtraHours: freeSmallHours });
   const best = suggestion?.pick;
   const other = suggestion?.other ?? null;
+  const onFreeSmall = freeSmallHours > 0 && best?.plan.priceUsd === 0;
+  const shownNeeded = view.credits(needed + (onFreeSmall ? freeSmallHours : 0));
+  const usesUnits = shownNeeded > 0;
+  const count = (stored: number) => view.creditsLabel(view.credits(stored));
+  const fullMonth = view.withAds ? exactFull(view, computers, hoursEach, size, phoneMinutes, macMinutes) : needed;
+  const extraCost = (plan: PricingPlan) => (view.v3 ? `${view.extraPrice(plan)}` : `${formatCents(plan.extraHourCents ?? 0)} each`);
 
   const change = (apply: () => void) => {
     apply();
@@ -449,12 +484,24 @@ function PlanFinder() {
               })}
             </div>
           </fieldset>
+          {mac ? (
+            <Slider
+              id="finder-mac"
+              label="Mac minutes a month"
+              value={macMinutes}
+              min={0}
+              max={minutesMax(mac)}
+              step={PHONE_MINUTES_STEP}
+              display={`${formatCount(macMinutes)} min`}
+              onChange={(value) => change(() => setMacMinutes(value))}
+            />
+          ) : null}
                       <Slider
               id="finder-phone"
               label="iOS Simulator minutes a month"
               value={phoneMinutes}
               min={0}
-              max={PHONE_MINUTES_MAX}
+              max={view.v3 ? minutesMax(phone) : PHONE_MINUTES_MAX}
               step={PHONE_MINUTES_STEP}
               display={`${formatCount(phoneMinutes)} min`}
               onChange={(value) => change(() => setPhoneMinutes(value))}
@@ -466,11 +513,12 @@ function PlanFinder() {
             <p className="text-[14px] text-white/55">
               {usesUnits ? (
                 <>
-                  About <span className="font-semibold text-white">{UNIT.count(needed)}</span> of your plan a month
+                  About <span className="font-semibold text-white">{view.creditsLabel(shownNeeded)}</span> of your plan a month
                 </>
               ) : (
                 <>
-                  <span className="font-semibold text-white">No {UNIT.many}:</span> {size.machine}es never use them
+                  <span className="font-semibold text-white">No {UNIT.many}:</span>{" "}
+                  {!view.v3 ? `${size.machine}es never use them` : freeSmallHours > 0 ? `${size.machine}es are free on paid plans` : view.withAds ? `${size.machine}es are free with ads on` : `${size.machine}es are free on paid plans`}
                 </>
               )}
             </p>
@@ -483,13 +531,16 @@ function PlanFinder() {
                 </p>
                 <p className="mt-4 text-[15px] leading-[1.6] text-white/65">
                   {!usesUnits
-                    ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)}, and ${size.machine}es never use your ${UNIT.many}.`
+                    ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)}, and ${size.machine}es ${!view.v3 ? "never use" : best.plan.priceUsd > 0 ? "on it never use" : "with ads on never use"} your ${UNIT.many}.`
                     : best.extraHours > 0
-                      ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)} and ${UNIT.count(best.plan.hours)}. The other ${UNIT.count(best.extraHours)} cost ${formatCents(best.plan.extraHourCents ?? 0)} each, with ${UNIT.extra} turned on.`
+                      ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)} and ${count(best.plan.hours)}. The other ${count(best.extraHours)} cost ${extraCost(best.plan)}, with ${UNIT.extra} turned on.`
                       : best.plan.priceUsd === 0
-                        ? `That fits in the free ${UNIT.count(best.plan.hours)}, on ${cloudComputersPhrase(best.plan.computerLimit)}.`
-                        : `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)} and ${UNIT.count(best.plan.hours)}, ${best.spareHours > 0 ? `so ${UNIT.count(best.spareHours)} ${best.spareHours === 1 ? "is" : "are"} left over` : "just enough"}.`}
+                        ? `That fits in the free ${count(best.plan.hours)}, on ${cloudComputersPhrase(best.plan.computerLimit)}.`
+                        : `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)} and ${count(best.plan.hours)}, ${view.credits(best.spareHours) > 0 ? `so ${count(best.spareHours)} ${view.credits(best.spareHours) === 1 ? "is" : "are"} left over` : "just enough"}.`}
                 </p>
+                {view.withAds && view.credits(fullMonth) > view.credits(needed) ? (
+                  <p className="mt-2 text-[13px] leading-[1.55] text-white/45">That is with ads on. With no ads, the same month needs {view.creditsLabel(view.credits(fullMonth))}.</p>
+                ) : null}
                 {other ? (
                   <p className="mt-2 text-[14px] leading-[1.6] text-white/45">
                     {other.extraHours > 0
@@ -533,6 +584,19 @@ function PlanFinder() {
 
 /** The iOS Simulator slider's range: a month of the biggest plan's credits, in steps a thumb can land on. */
 const PHONE_MINUTES_STEP = 25;
+const BIGGEST_PLAN_HOURS = Math.max(...PRICING_PLANS.map((plan) => plan.hours));
+/** A minute machine's slider range at its full price, so it stays put when the ads control moves. */
+const minutesMax = (machine: Machine): number => {
+  const fullStored = (machine.price.struck ?? machine.price.now) / V3_CREDIT_SCALE;
+  return Math.floor(BIGGEST_PLAN_HOURS / fullStored / PHONE_MINUTES_STEP) * PHONE_MINUTES_STEP;
+};
+
+/** The finder's month at full prices, for the line under it while ads are on (Free's Small aside). */
+function exactFull(view: PricingView, computers: number, hours: number, size: PricingSize, phoneMinutes: number, macMinutes: number): number {
+  const full = (machine: Machine | undefined) => (machine ? (machine.price.struck ?? machine.price.now) / V3_CREDIT_SCALE : 0);
+  const machine = (id: string) => view.machines.find((entry) => entry.id === id);
+  return computers * hours * (size.rate > 0 ? full(machine(size.id)) : 0) + phoneMinutes * full(machine("iphone")) + macMinutes * full(machine("mac"));
+}
 const PHONE_MINUTES_MAX = Math.floor(Math.max(...PRICING_PLANS.map((plan) => plan.hours)) / PHONE_CREDITS_PER_MINUTE / PHONE_MINUTES_STEP) * PHONE_MINUTES_STEP;
 
 /**
@@ -664,11 +728,24 @@ function CheckList({ accent, items }: { accent: Accent; items: string[] }) {
 
 /** Past the plan: paid plans buy more of the unit after use; Free stops instead. */
 function ExtraCard() {
+  const view = usePricingView();
   const most = Math.max(...PAID_PLANS.map((plan) => plan.extraHourCents ?? 0));
   const onePrice = EXTRA_PRICES.length === 1 ? EXTRA_PRICES[0]! : null;
   return (
     <DetailCard accent={AMBER} icon={Clock} title={UNIT.extraTitle} note={`Paid plans can go past their ${UNIT.many}, if you turn it on.`}>
-      {onePrice != null ? (
+      {view.v3 && onePrice != null ? (
+        <>
+          <p className="flex flex-wrap items-baseline gap-x-2">
+            <span className="font-display text-[56px] leading-none" style={{ color: AMBER.color }}>
+              {formatUsd((onePrice * (1000 / V3_CREDIT_SCALE)) / 100)}
+            </span>
+            <span className="text-[15px] text-white/55">for each 1,000 {UNIT.many} once your plan's run out</span>
+          </p>
+          <div className="mt-6">
+            <CheckList accent={AMBER} items={[`On ${listNames(PAID_PLANS.map((plan) => plan.name))}`, "Billed after use", `Turn it on in ${BRAND.CLOUD_NAME} settings`]} />
+          </div>
+        </>
+      ) : onePrice != null ? (
         <>
           <p className="flex flex-wrap items-baseline gap-x-2">
             <span className="font-display text-[56px] leading-none" style={{ color: AMBER.color }}>
@@ -698,13 +775,19 @@ function ExtraCard() {
         </ul>
       )}
       <p className="mt-5 text-[13.5px] leading-[1.5] text-white/45">
-        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working in the US with sponsored cards and a {BRAND.CLOUD_NAME} chat there each week.
+        {view.v3 ? (
+          view.ads ? `On Free, work that uses ${UNIT.many} pauses until next month instead. Small stays free with ads on.` : `On Free, work that uses ${UNIT.many}, Small included, pauses until next month instead.`
+        ) : (
+          <>On Free, {UNIT.spenders} pause until next month instead. Small computers keep working in the US with sponsored cards and a {BRAND.CLOUD_NAME} chat there each week.</>
+        )}
       </p>
     </DetailCard>
   );
 }
 
 function FreePlanCard() {
+  const view = usePricingView();
+  if (view.v3) return <FreePlanCardV3 view={view} />;
   const rules = [
     `A GitHub account at least ${days(FREE_RULES.githubMinAgeDays)} old`,
     "Newer account? Add a card to start now. It is not charged.",
@@ -718,6 +801,33 @@ function FreePlanCard() {
       </p>
       <p className="mt-1 text-[14px] text-white/50">
         {cloudComputersPhrase(FREE_PLAN.computerLimit)} · {UNIT.count(FREE_PLAN.hours)} a month for {UNIT.spenders}
+      </p>
+      <div className="mt-5">
+        <CheckList accent={MINT} items={rules} />
+      </div>
+    </DetailCard>
+  );
+}
+
+/** The free plan's card under Pricing v3: Small is free with ads where there are ads; elsewhere the month's credits lead. */
+function FreePlanCardV3({ view }: { view: PricingView }) {
+  const freeCredits = view.creditsLabel(view.credits(FREE_PLAN.hours));
+  const smallRate = `${formatCount(view.freeSmall.struck ?? view.freeSmall.now)} ${UNIT.many} an hour`;
+  const rules = [
+    `A GitHub account at least ${days(FREE_RULES.githubMinAgeDays)} old`,
+    "Newer account? Add a card to start now. It is not charged.",
+    "One free plan for each GitHub account, and for each computer you use it from",
+    `Invite a friend: you both get ${formatCount(view.inviteCredits)} ${UNIT.extra} that never expire, for up to ${INVITE_RULES.rewardLimit} friends`,
+  ];
+  return (
+    <DetailCard accent={MINT} icon={Gift} title="The free plan" note="You never pay to start.">
+      <p className="font-display text-[34px] leading-[1.05]" style={{ color: MINT.color }}>
+        {view.ads ? "Unlimited Small with ads" : `${freeCredits} a month`}
+      </p>
+      <p className="mt-1 text-[14px] text-white/50">
+        {view.ads
+          ? `${cloudComputersPhrase(FREE_PLAN.computerLimit)} · ${freeCredits} a month for ${view.spenders}`
+          : `${cloudComputersPhrase(FREE_PLAN.computerLimit)} · for every size${view.mac ? ", the Mac" : ""} and the iPhone · Small uses ${smallRate} on Free`}
       </p>
       <div className="mt-5">
         <CheckList accent={MINT} items={rules} />
@@ -785,6 +895,8 @@ function CleanupPanel() {
 }
 
 function FaqSection() {
+  const view = usePricingView();
+  if (view.v3) return <FaqSectionV3 view={view} />;
   return (
     <section aria-labelledby="faq-title" className={cn(wrap, "pb-10", sectionGap)}>
       <div className="max-w-[880px]">
@@ -836,6 +948,88 @@ function FaqSection() {
             {ADS_FREE_PLAN_SENTENCE} A sponsored card is labeled "Sponsored". An agent may also recommend a sponsored
             tool when you need one; nothing is installed unless you ask. {BRAND.NAME} asks you once before the first sponsored
             card, and you can change your answer in Settings › {BRAND.CLOUD_NAME}.
+          </FaqItem>
+          <FaqItem question={`Do I need ${BRAND.CLOUD_NAME} to use ${BRAND.NAME}?`}>
+            No. The {BRAND.NAME} app costs nothing and runs your agents on your own computers. {BRAND.CLOUD_NAME} adds computers in the
+            cloud when you want agents to keep working with your laptop closed.
+          </FaqItem>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** The questions under Pricing v3. Where the visitor's country has no ads, nothing here mentions ads. */
+function FaqSectionV3({ view }: { view: PricingView }) {
+  const ads = view.ads;
+  const medium = view.machines.find((machine) => machine.id === "medium")!;
+  const smallRate = `${formatCount(view.freeSmall.struck ?? view.freeSmall.now)} ${UNIT.many} an hour`;
+  // A Medium-hour at the full price and at the ad price, in shown credits; Free's month in hours of each.
+  const mediumFull = medium.price.struck ?? medium.price.now;
+  const mediumAd = ads ? adPriceOf(mediumFull, ads.discountPct) : null;
+  const freeCredits = view.credits(FREE_PLAN.hours);
+  const onePrice = EXTRA_PRICES.length === 1 ? PAID_PLANS[0] : null;
+  const extraPrice = onePrice ? `${view.extraPrice(onePrice)} on every paid plan` : listNames(PAID_PLANS.map((plan) => `${view.extraPrice(plan)} on ${plan.name}`));
+  return (
+    <section aria-labelledby="faq-title" className={cn(wrap, "pb-10", sectionGap)}>
+      <div className="max-w-[880px]">
+        <SectionTitle id="faq-title" title="Questions" />
+        <div className="mt-6 divide-y divide-white/[0.08] border-y border-white/[0.08]">
+          <FaqItem question="How do I pick a plan?">
+            Press its button: {BRAND.NAME}'s web app signs you in and takes you to checkout. Or pick one in the {BRAND.NAME} app, in
+            Settings under {BRAND.CLOUD_NAME}. Free needs no credit card.
+          </FaqItem>
+          {ads ? (
+            <FaqItem question="What do ads change?">
+              Only the price. With ads on, a chat that uses {BRAND.CLOUD_NAME} shows an ad under each reply, and {BRAND.CLOUD_NAME} costs{" "}
+              {ads.discountPct}% less: a Medium computer uses {formatCount(mediumAd ?? mediumFull)} {UNIT.many} an hour instead of{" "}
+              {formatCount(mediumFull)}, so your {UNIT.many} last longer. Small is free on every
+              plan with ads on. Your plan's price and its {UNIT.many} stay the same. {adPriceRuleSentence(ads)} Chats on your own computer that use
+              nothing from {BRAND.CLOUD_NAME} never show ads. {BRAND.NAME} tells you before the first ad, and you turn ads on or off at any
+              time in Settings › {BRAND.CLOUD_NAME}; with ads off, the full price starts the next minute.
+            </FaqItem>
+          ) : null}
+          <FaqItem question="Are Small computers really unlimited?">
+            {ads
+              ? `On every paid plan, yes: they never use your ${UNIT.many}. On Free they are free with ads on, and use ${smallRate} with no ads.`
+              : `On every paid plan, yes: they never use your ${UNIT.many}. On Free, Small uses ${smallRate}.`}{" "}
+            Each one counts toward your plan's cloud computers, and it sleeps when work stops. {CLOUD_SMALL_FAIR_USE_SENTENCE}
+          </FaqItem>
+          <FaqItem question="What is a credit?">
+            {creditUnitSentence(view)} Free's {view.creditsLabel(freeCredits)} last
+            {mediumAd
+              ? ` up to ${formatCount(Math.floor(freeCredits / mediumAd))} hours on a Medium with ads, ${formatCount(Math.floor(freeCredits / mediumFull))} with no ads`
+              : ` up to ${formatCount(Math.floor(freeCredits / mediumFull))} hours on a Medium`}
+            .
+            A computer that is asleep uses no {UNIT.many}, and your {UNIT.many} start over each month.
+          </FaqItem>
+          <FaqItem question={`What happens when my ${UNIT.many} run out?`}>
+            On Free, work that uses {UNIT.many} stops until next month, or until you pick a paid plan
+            {ads ? `; Small stays free with ads on` : ""}. On a paid plan, turn on {UNIT.extra} in Settings and your agents keep working:
+            extra {UNIT.many} cost {extraPrice}, billed after use. With {UNIT.extra} off, work on the bigger sizes stops at your plan's {UNIT.many}.
+          </FaqItem>
+          <FaqItem question="Can I change plans or cancel?">
+            Yes, any time in Settings › {BRAND.CLOUD_NAME}. A bigger plan starts right away, and you pay the difference for the
+            rest of the month. A smaller plan, or cancelling, starts when your month ends. If you have more cloud
+            computers than the new plan allows, {BRAND.NAME} asks which to keep, and pushes the others' work to their branches
+            before it frees them.
+          </FaqItem>
+          <FaqItem question="How many cloud computers can I have?">
+            {COMPUTER_LIMITS_LINE}, asleep or not{view.mac ? ", and a Mac counts as one" : ""}. At the limit, free up a computer from another lane (the lane and its
+            chats stay, and it gets a new computer the next time you send a message there), delete a lane, or move to a
+            bigger plan.
+          </FaqItem>
+          <FaqItem question={`Can agents outside ${BRAND.NAME} use ${BRAND.CLOUD_NAME}?`}>
+            On {listNames(OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}, yes: an agent connected through {BRAND.NAME} MCP can
+            start work on {BRAND.CLOUD_NAME}.
+            {NO_OUTSIDE_AGENT_PLANS.length > 0 ? ` On ${listNames(NO_OUTSIDE_AGENT_PLANS.map((plan) => plan.name))}, it can't.` : ""}
+          </FaqItem>
+          <FaqItem question="What happens to computers I don't use?">
+            After {days(FREE_PLAN.idleDays)} unused on Free, or {days(PAID_IDLE_DAYS)} on a paid plan, {BRAND.NAME} deletes the
+            computer. You get an email first. Before it deletes anything, {BRAND.NAME} commits the work and pushes it to the
+            task's branch. Files git ignores, such as .env or a local database, are never pushed, so they are not kept;
+            the email lists them. The task and its chats stay, and your next message makes a new computer from the
+            branch.
           </FaqItem>
           <FaqItem question={`Do I need ${BRAND.CLOUD_NAME} to use ${BRAND.NAME}?`}>
             No. The {BRAND.NAME} app costs nothing and runs your agents on your own computers. {BRAND.CLOUD_NAME} adds computers in the

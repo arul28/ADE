@@ -10,6 +10,7 @@
  * both together.
  */
 import { CLOUD_SMALL_UNLIMITED_SHORT, INVITE_RULES, UNIT } from "./cloudPricing";
+import type { PricingView } from "./pricingView";
 import { BRAND } from "../../../desktop/src/shared/brand";
 
 /** `CLOUD_INVITE_CODE_LENGTH` (8) characters of `CLOUD_INVITE_ALPHABET` (no 0/O/1/I/L); `parseCloudInviteCode` reads a code the same way. */
@@ -34,6 +35,18 @@ export const FREE_OFFER = CLOUD_SMALL_UNLIMITED_SHORT;
 const INVITE_REWARD_HOURS = INVITE_RULES.rewardHours;
 /** "10 extra cloud credits for bigger computers". */
 export const INVITE_REWARD_LINE = `${INVITE_REWARD_HOURS} extra cloud ${INVITE_REWARD_HOURS === 1 ? UNIT.one : UNIT.many} for ${UNIT.spenders}`;
+/** The reward line for the visitor's prices: Pricing v3 shows its credits (ten times as many, the same hours). */
+export function inviteRewardLine(view: PricingView): string {
+  if (!view.v3) return INVITE_REWARD_LINE;
+  return `${view.inviteCredits} extra cloud ${view.inviteCredits === 1 ? UNIT.one : UNIT.many} for ${view.spenders}`;
+}
+
+/** "Unlimited Small computers come free", true for the visitor's prices: under Pricing v3, on paid plans (and on Free with ads where there are ads). */
+export function freeOfferLine(view: PricingView, where = ""): string {
+  if (!view.v3) return `${FREE_OFFER}${where} come free.`;
+  return `${FREE_OFFER}${where} come free on paid plans${view.ads ? ", and on Free with ads" : ""}.`;
+}
+
 /** Days after signing up that a friend's code can still be entered. */
 export const INVITE_ENTER_DAYS = INVITE_RULES.enterDays;
 

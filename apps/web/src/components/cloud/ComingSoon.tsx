@@ -23,11 +23,12 @@ const ITEMS = [
   },
 ] as const;
 
-/** The ADE Cloud computers and tools that are on the way, a card each. */
-export function ComingSoon({ className }: { className?: string }) {
+/** The ADE Cloud computers and tools that are on the way, a card each; `hide` leaves out the ones already here (the Mac, once it is open to all). */
+export function ComingSoon({ className, hide }: { className?: string; hide?: ReadonlyArray<(typeof ITEMS)[number]["id"]> }) {
+  const items = hide ? ITEMS.filter((item) => !hide.includes(item.id)) : ITEMS;
   return (
-    <div className={cn("grid gap-4 md:grid-cols-2 lg:grid-cols-3", className)}>
-      {ITEMS.map((item) => (
+    <div className={cn("grid gap-4 md:grid-cols-2", items.length === 3 ? "lg:grid-cols-3" : "lg:grid-cols-2", className)}>
+      {items.map((item) => (
         <div
           key={item.id}
           className="relative overflow-hidden rounded-[24px] border border-white/[0.08] bg-[linear-gradient(160deg,rgba(124,58,237,0.14),rgba(18,15,46,0.4)_55%)] p-6 sm:p-7"

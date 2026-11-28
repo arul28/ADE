@@ -15,13 +15,10 @@
  */
 import { useMemo } from "react";
 import {
-  FREE_PLAN,
   HOURLY_SIZES,
   INVITE_RULES,
   PHONE_CREDITS_PER_MINUTE,
-  PRICING_PLANS,
   SMALL_NO_ADS_RATE,
-  SMALL_SIZE,
   formatCount,
   type PricingPlan,
   type PricingSize,
@@ -30,10 +27,10 @@ import { useAdsOn, useSiteOffer, type SiteAds, type SiteOffer } from "./siteOffe
 import { BRAND } from "../../../desktop/src/shared/brand";
 
 /**
- * Pricing v3's numbers that the server's plan files do not carry yet. The
- * server lane ("the ad price on the server") owns them; when its catalog
- * exports them (`creditScale`, the iPhone's and the Mac's milli-credits a
- * minute, the ad rounding), these read from there instead.
+ * Pricing v3's numbers. The server's `plans.ts` exports the same ones on the
+ * ad price lane (`CREDIT_SCALE`, `PHONE_MILLI_PER_MINUTE_V3`,
+ * `MAC_MILLI_PER_MINUTE`, `adRateMilli`); this branch sits beside that one, so
+ * these read from there once the two are stacked.
  */
 /** Shown credits for each stored Medium-hour. */
 export const V3_CREDIT_SCALE = 10;
@@ -42,8 +39,8 @@ const V3_PHONE_HOURS_PER_MINUTE = 0.5;
 /** Stored Medium-hours a minute of the cloud Mac uses: 500 milli-credits. */
 const V3_MAC_HOURS_PER_MINUTE = 0.5;
 
-/** The ad price of a full price in whole shown credits: `pct` less, rounded. */
-export const adPriceOf = (full: number, pct: number): number => Math.round((full * (100 - pct)) / 100);
+/** The ad price of a full price in whole shown credits: `pct` less, rounded down, as the server's `adRateMilli` (`plans.ts`) does. */
+export const adPriceOf = (full: number, pct: number): number => Math.floor((full * (100 - pct)) / 100 + 1e-9);
 
 /** A price as shown: what it costs now, and the full price struck beside it while ads are on (null with no ads). */
 export type ShownPrice = { now: number; struck: number | null };
@@ -87,9 +84,11 @@ export type PricingView = {
   freeSmallStoredRate: number;
   /** An invite's reward in shown credits. */
   inviteCredits: number;
+  /** The cloud Mac is on the page. */
+  mac: boolean;
+  /** What uses the plan's credits: "bigger computers, the Mac and the iPhone". */
+  spenders: string;
 };
-
-const machineName = (size: PricingSize) => size.machine;
 
 function sizeMachine(size: PricingSize, scale: number, ads: SiteAds | null, withAds: boolean): Machine {
   const full = Math.round(size.rate * scale);
@@ -97,7 +96,7 @@ function sizeMachine(size: PricingSize, scale: number, ads: SiteAds | null, with
   const now = withAds ? ad : full;
   return {
     id: size.id,
-    name: machineName(size),
+    name: size.machine,
     specs: size.specs,
     use: size.use,
     per: "hour",
@@ -142,7 +141,7 @@ export function pricingViewFor(offer: SiteOffer, adsOnChoice: boolean): PricingV
     if (!v3) return null;
     // A stored Medium-hour costs `extraHourCents`; 1,000 shown credits are 1,000 / scale of them.
     const usd = (plan.extraHourCents * (1000 / scale)) / 100;
-    return `$${Number.isInteger(usd) ? usd : usd.toFixed(2)} for 1,000`;
+    return `$${Number.isInteger(usd) ? usd : usd.toFixed(2)} for 1,000 credits`;
   };
 
   return {
@@ -158,6 +157,10 @@ export function pricingViewFor(offer: SiteOffer, adsOnChoice: boolean): PricingV
     extraPrice,
     freeSmallStoredRate: freeSmall.now / scale,
     inviteCredits: credits(INVITE_RULES.rewardHours),
+    mac: machines.some((machine) => machine.kind === "mac"),
+    spenders: machines.some((machine) => machine.kind === "mac")
+      ? `bigger computers, the ${BRAND.CLOUD_NAME} Mac and the ${BRAND.CLOUD_NAME} iPhone`
+      : `bigger computers and the ${BRAND.CLOUD_NAME} iPhone`,
   };
 }
 
@@ -173,8 +176,38 @@ export function adsSentence(ads: SiteAds): string {
   return `A chat that uses ${BRAND.CLOUD_NAME} shows an ad under each reply. With ads on, ${BRAND.CLOUD_NAME} costs ${ads.discountPct}% less.`;
 }
 
-/** When the ad price counts, in one line for the small print. */
-export const AD_PRICE_RULE_SENTENCE =
-  `The ad price counts while you use a ${BRAND.CLOUD_NAME} chat on that computer, and for an hour after. Agent CLI sessions in a terminal and automations use the full price.`;
+/**
+ * The ad window in the apps' words (`copy.md`, "Full price: no chat in use
+ * for an hour"): "5 minutes" to "45 minutes", "an hour", "90 minutes",
+ * "2 hours" to "12 hours", "a day"; null for anything else.
+ */
+function windowWords(minutes: number): string | null {
+  if (minutes >= 5 && minutes <= 45 && minutes % 5 === 0) return `${minutes} minutes`;
+  if (minutes === 60) return "an hour";
+  if (minutes === 90) return "90 minutes";
+  if (minutes >= 120 && minutes <= 720 && minutes % 60 === 0) return `${minutes / 60} hours`;
+  if (minutes === 1440) return "a day";
+  return null;
+}
 
-export { FREE_PLAN, PRICING_PLANS, SMALL_SIZE };
+/** When the ad price counts, in one line for the small print. */
+export function adPriceRuleSentence(ads: SiteAds): string {
+  const window = windowWords(ads.windowMinutes);
+  return `The ad price counts while you use a ${BRAND.CLOUD_NAME} chat on that computer, and for ${window ?? "a while"} after. CLI sessions and automations always use the full price.`;
+}
+
+/**
+ * What a credit buys, under Pricing v3: "A Medium computer uses 10 credits an
+ * hour, and the DAEX Cloud iPhone 5 a minute. Small computers on paid plans use none."
+ */
+export function creditUnitSentence(view: PricingView): string {
+  const medium = view.machines.find((machine) => machine.id === "medium");
+  const phone = view.machines.find((machine) => machine.kind === "iphone");
+  const mac = view.machines.find((machine) => machine.kind === "mac");
+  const full = (machine: Machine | undefined) => formatCount(machine ? (machine.price.struck ?? machine.price.now) : 0);
+  const minutes = mac && phone && full(mac) === full(phone)
+    ? `the ${BRAND.CLOUD_NAME} Mac and iPhone ${full(phone)} a minute each`
+    : `${mac ? `the ${BRAND.CLOUD_NAME} Mac ${full(mac)} a minute, ` : ""}the ${BRAND.CLOUD_NAME} iPhone ${full(phone)} a minute`;
+  return `A Medium computer uses ${full(medium)} credits an hour, and ${minutes}. Small computers on paid plans use none.`;
+}
+

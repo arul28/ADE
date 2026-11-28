@@ -1,7 +1,7 @@
 import { ArrowRight, Clapperboard, Laptop, MousePointerClick, Smartphone } from "lucide-react";
 import { PHONE_CREDITS_PER_MINUTE, PRICING_SIZES, formatCount } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
-import type { PricingView } from "../../lib/pricingView";
+import { adPriceOf, type Machine, type PricingView } from "../../lib/pricingView";
 import { AppleMark } from "../home/marks";
 import { LINKS } from "../../lib/links";
 import { BRAND } from "../../../../desktop/src/shared/brand";
@@ -53,6 +53,7 @@ export function SizesStrip({ className, view }: { className?: string; view?: Pri
               {tile.rate}
             </span>
             <span className="mt-1 block text-[13px] text-white/50">{tile.per}</span>
+            {tile.note ? <span className="mt-1 block text-[12px] leading-[1.4] text-white/40">{tile.note}</span> : null}
           </div>
           <div className="col-start-1 row-start-2 mt-1 lg:row-start-3 lg:mt-5">
             <p className="text-[14px] text-white/80">{tile.spec}</p>
@@ -64,7 +65,7 @@ export function SizesStrip({ className, view }: { className?: string; view?: Pri
   );
 }
 
-type Tile = { id: string; name: string; rate: string; struck?: string | null; per: string; spec: string; use: string; phone: boolean; mac?: boolean };
+type Tile = { id: string; name: string; rate: string; struck?: string | null; per: string; note?: string; spec: string; use: string; phone: boolean; mac?: boolean };
 
 function todayTiles(): Tile[] {
   return [
@@ -81,17 +82,29 @@ function todayTiles(): Tile[] {
   ];
 }
 
+/**
+ * The words under a rate, in the app's price forms (`copy.md`): "credits an
+ * hour with ads" beside the struck full price, "credits an hour · 8 with ads"
+ * with no ads where there are ads, and only "credits an hour" elsewhere.
+ */
+function priceWords(view: PricingView, machine: Machine): string {
+  const unit = `${machine.price.now === 1 ? "credit" : "credits"} a${machine.per === "hour" ? "n hour" : " minute"}`;
+  if (!view.ads) return unit;
+  if (view.withAds) return `${unit} with ads`;
+  const ad = adPriceOf(machine.price.now, view.ads.discountPct);
+  return ad === machine.price.now ? unit : `${unit} · ${formatCount(ad)} with ads`;
+}
+
 function v3Tiles(view: PricingView): Tile[] {
   const small = PRICING_SIZES.find((size) => size.rate === 0)!;
   const freeSmallRate = view.freeSmall.struck ?? view.freeSmall.now;
   const smallTile: Tile = {
     id: small.id,
-    name: small.machine,
+    name: small.label,
     rate: "Free",
-    per: view.ads
-      ? `on paid plans, and on Free with ads. ${formatCount(freeSmallRate)} credits an hour on Free with no ads.`
-      : `on paid plans. ${formatCount(freeSmallRate)} credits an hour on Free.`,
-    spec: `${small.cpu} CPUs, ${small.memoryGb} GB`,
+    per: view.ads ? "on paid plans, and on Free with ads" : "on paid plans",
+    note: `${formatCount(freeSmallRate)} credits an hour on Free${view.ads ? " with no ads" : ""}`,
+    spec: `Linux, ${small.cpu} CPUs, ${small.memoryGb} GB`,
     use: small.use,
     phone: false,
   };
@@ -99,11 +112,11 @@ function v3Tiles(view: PricingView): Tile[] {
     smallTile,
     ...view.machines.map((machine) => ({
       id: machine.id,
-      name: machine.kind === "linux" ? machine.name : machine.name,
+      name: machine.kind === "linux" ? (PRICING_SIZES.find((size) => size.id === machine.id)?.label ?? machine.name) : machine.name,
       rate: formatCount(machine.price.now),
       struck: machine.price.struck != null ? formatCount(machine.price.struck) : null,
-      per: `${machine.price.now === 1 ? "credit" : "credits"} a${machine.per === "hour" ? "n hour" : " minute"}`,
-      spec: machine.specs,
+      per: priceWords(view, machine),
+      spec: machine.kind === "linux" ? `Linux, ${machine.specs.replace(", Docker and Android", "")}` : machine.specs,
       use: machine.use,
       phone: machine.kind === "iphone",
       mac: machine.kind === "mac",

@@ -4,7 +4,9 @@ import { UNIT } from "../../lib/cloudPricing";
 import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { CloudLockup } from "../cloud/CloudMark";
 import { CloudIphoneBand } from "../cloud/CloudIphone";
-import { CloudCharts, CloudSources } from "./CloudCharts";
+import { AdsControl } from "../cloud/AdsControl";
+import { usePricingView } from "../../lib/pricingView";
+import { CloudCharts, CloudSources, smallOfferSentence } from "./CloudCharts";
 
 /**
  * ADE Cloud on the home page, right under the hero. It picks a fight: three
@@ -14,6 +16,7 @@ import { CloudCharts, CloudSources } from "./CloudCharts";
  * `lib/cloudCompetitors.ts` with their sources.
  */
 export function CloudSection() {
+  const view = usePricingView();
   return (
     <section id="ade-cloud" aria-labelledby="ade-cloud-title" className="relative scroll-mt-16 overflow-hidden">
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-[520px]" style={{ background: "radial-gradient(60% 100% at 50% 0%, rgba(124,58,237,0.16), transparent 70%)" }} />
@@ -23,11 +26,18 @@ export function CloudSection() {
           <h2 id="ade-cloud-title" className="mt-5 font-display text-white" style={{ fontSize: "clamp(30px, 3.4vw, 46px)", lineHeight: 1.1 }}>
             Cloud computers for your agents.
             <br className="hidden md:block" />{" "}
-            <span className="text-white/45">{UNIT.smallUnlimited}</span>
+            <span className="text-white/45">{view.v3 ? smallOfferSentence(view) : UNIT.smallUnlimited}</span>
           </h2>
         </div>
 
-        <CloudCharts />
+        {view.ads ? (
+          <>
+            <AdsControl view={view} align="start" className="mt-8" />
+            <CloudCharts className="mt-8" />
+          </>
+        ) : (
+          <CloudCharts />
+        )}
 
         <div className="mt-6 flex flex-wrap items-start justify-between gap-x-8 gap-y-3">
           <CloudSources />

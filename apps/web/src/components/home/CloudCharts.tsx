@@ -2,6 +2,7 @@ import { Fragment, useState, type ReactNode } from "react";
 import { ADE_MEDIUM, ADE_SMALL, CAPY_CHECKED_ON, CHECKED_ON, NO_CLOUD, RIVALS, adeMediumMonthly, adeSmallMonthly } from "../../lib/cloudCompetitors";
 import { CLOUD_SMALL_FAIR_USE_SENTENCE, FREE_PLAN, PRICING_PLANS, UNIT, cloudComputersPhrase, formatCount, formatUsd } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
+import { usePricingView, type PricingView } from "../../lib/pricingView";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /*
@@ -16,19 +17,39 @@ import { BRAND } from "../../../../desktop/src/shared/brand";
 const ADE_LOGO = "/images/home/ade-icon.png";
 const panel = "rounded-[20px] border border-white/[0.08] bg-[#0f0e16]";
 
-export function CloudCharts() {
+export function CloudCharts({ className }: { className?: string }) {
+  const view = usePricingView();
   return (
-    <div className="mt-12 grid gap-3 lg:grid-cols-3">
-      <PerHourChart className="lg:col-span-2" />
-      <FreeHoursChart />
-      <BillChart className="lg:col-span-2" />
+    <div className={cn("grid gap-3 lg:grid-cols-3", className ?? "mt-12")}>
+      <PerHourChart className="lg:col-span-2" view={view} />
+      <FreeHoursChart view={view} />
+      <BillChart className="lg:col-span-2" view={view} />
       <NoCloudCard />
     </div>
   );
 }
 
+/**
+ * Stored hours one Medium hour uses at the price now and at the full price,
+ * and one Small hour on Free (Pricing v3 with no ads; 0 otherwise).
+ */
+function adeRates(view: PricingView): { medium: number; mediumFull: number; freeSmall: number; freeSmallFull: number } {
+  const medium = view.machines.find((machine) => machine.id === "medium")!;
+  const scale = medium.price.now / medium.storedRate;
+  return {
+    medium: medium.storedRate,
+    mediumFull: (medium.price.struck ?? medium.price.now) / scale,
+    freeSmall: view.v3 ? view.freeSmallStoredRate : 0,
+    freeSmallFull: view.v3 ? (view.freeSmall.struck ?? view.freeSmall.now) / scale : 0,
+  };
+}
+
+/** " · with ads" on an ADE bar that shows the ad price, so a screenshot of the chart is honest on its own. */
+const withAdsTag = (view: PricingView): string => (view.withAds ? " · with ads" : "");
+
 /** Where every competitor number comes from; it closes the ADE Cloud section. */
 export function CloudSources({ className }: { className?: string }) {
+  const view = usePricingView();
   return (
     <details className={cn("group max-w-[82ch] text-[13px] leading-relaxed text-white/45", className)}>
       <summary className="focus-ring inline-flex cursor-pointer list-none items-center gap-1 rounded text-white/55 hover:text-white/80 [&::-webkit-details-marker]:hidden">
@@ -38,7 +59,7 @@ export function CloudSources({ className }: { className?: string }) {
       Prices from each vendor's own pricing page on {CHECKED_ON}, except Capy's on {CAPY_CHECKED_ON}, for the computer only;
       model use is extra, except that Capy's plans include some model usage and its credits pay for tokens. Values marked ≈ are our
       arithmetic from that page. Free hours count only hours that come back every month, so one-time credits (Replicas, Superconductor)
-      count as none. Apps with a cloud but no published price are left out. {BRAND.CLOUD_NAME}: {UNIT.smallUnlimited} Each plan has a
+      count as none. Apps with a cloud but no published price are left out. {BRAND.CLOUD_NAME}: {view.v3 ? smallOfferSentence(view) : UNIT.smallUnlimited}{view.withAds ? ` Its bars marked "with ads" show the ad price, with the full price struck through.` : ""} Each plan has a
       number of cloud computers ({FREE_PLAN.name} has {cloudComputersPhrase(FREE_PLAN.computerLimit)}). {CLOUD_SMALL_FAIR_USE_SENTENCE} Apps from{" "}
       <a href="https://ademark.dev" target="_blank" rel="noreferrer" className="underline decoration-white/25 underline-offset-2 hover:text-white/75">
         ademark.dev
@@ -51,7 +72,7 @@ export function CloudSources({ className }: { className?: string }) {
 
 function Chart({ title, metric, children, control, className }: { title: string; metric: string; children: ReactNode; control?: ReactNode; className?: string }) {
   return (
-    <figure className={cn(panel, "flex flex-col p-5 sm:p-7", className)}>
+    <figure className={cn(panel, "flex min-w-0 flex-col p-5 sm:p-7", className)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <figcaption>
           <h3 className="text-[16px] font-semibold text-white">{title}</h3>
@@ -72,7 +93,23 @@ function Mark({ src, name, size = 28, className }: { src: string; name: string; 
   );
 }
 
-type Bar = { id: string; name: string; sub: string; logo: string; source?: string; value: number; label: string; ade: boolean };
+type Bar = { id: string; name: string; sub: string; logo: string; source?: string; value: number; label: string; ade: boolean; /** The full price, struck before the label, on an ADE bar that shows the ad price. */ struck?: string };
+
+/** The struck full price before a bar's value. */
+function Struck({ value }: { value?: string }) {
+  if (!value) return null;
+  return (
+    <s className="mr-1.5 font-normal text-white/40 decoration-white/50">
+      <span className="sr-only">Full price </span>
+      {value}
+    </s>
+  );
+}
+
+/** Under Pricing v3, the Small offer in one sentence: free on paid plans, and on Free with ads where there are ads. */
+export function smallOfferSentence(view: PricingView): string {
+  return view.ads ? "Unlimited free Small computers on paid plans, and on Free with ads." : "Unlimited free Small computers on every paid plan.";
+}
 
 /** Best first: ascending for prices, descending for free hours; ADE wins a tie. */
 function sortBars(bars: Bar[], higherIsBetter = false): Bar[] {
@@ -89,7 +126,10 @@ function CompactBarRow({ bar, max }: { bar: Bar; max: number }) {
           <span className={cn("block truncate text-[14px]", bar.ade ? "font-semibold text-white" : "text-white/85")}>{bar.name}</span>
           {bar.sub ? <span className="block truncate text-[12px] text-white/45">{bar.sub}</span> : null}
         </span>
-        <span className={cn("font-mono text-[14px] tabular-nums", bar.ade ? "font-semibold text-[#ffc861]" : "text-white/75")}>{bar.label}</span>
+        <span className={cn("font-mono text-[14px] tabular-nums", bar.ade ? "font-semibold text-[#ffc861]" : "text-white/75")}>
+          <Struck value={bar.struck} />
+          {bar.label}
+        </span>
       </div>
       <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.05]">
         <div
@@ -134,6 +174,7 @@ function BarRow({ bar, max }: { bar: Bar; max: number }) {
           className={cn("absolute whitespace-nowrap pl-3 font-mono text-[14px] tabular-nums transition-[left] duration-500 ease-out", bar.ade ? "font-semibold text-[#ffc861]" : "text-white/80")}
           style={{ left: `${width}%` }}
         >
+          <Struck value={bar.struck} />
           {bar.label}
         </span>
       </div>
@@ -145,17 +186,20 @@ function BarRow({ bar, max }: { bar: Bar; max: number }) {
 const WORKLOADS = [100, 300, 1000];
 
 /** An ADE row's bill: its value and label, and the plan it runs on. */
-function adeBillBar(id: string, size: { label: string; machine: string }, cost: ReturnType<typeof adeMediumMonthly>): Bar[] {
+function adeBillBar(id: string, size: { label: string; machine: string }, cost: ReturnType<typeof adeMediumMonthly>, full?: ReturnType<typeof adeMediumMonthly>, tag = ""): Bar[] {
   if (!cost) return [];
-  return [{ id, name: `${BRAND.CLOUD_NAME} ${size.label}`, sub: `${size.machine} · ${cost.plan.name} plan`, logo: ADE_LOGO, value: cost.costUsd, label: formatUsd(cost.costUsd), ade: true }];
+  const struck = full && full.costUsd !== cost.costUsd ? formatUsd(full.costUsd) : undefined;
+  return [{ id, name: `${BRAND.CLOUD_NAME} ${size.label}`, sub: `${size.machine} · ${cost.plan.name} plan${struck ? tag : ""}`, logo: ADE_LOGO, value: cost.costUsd, label: formatUsd(cost.costUsd), ade: true, struck }];
 }
 
 /** 1. A month's bill for the hours picked, on each vendor's cheapest plan that runs them. */
-function BillChart({ className }: { className?: string }) {
+function BillChart({ className, view }: { className?: string; view: PricingView }) {
   const [hours, setHours] = useState(300);
+  const rates = adeRates(view);
+  const tag = withAdsTag(view);
   const bars = sortBars([
-    ...adeBillBar("ade-small", ADE_SMALL, adeSmallMonthly(hours)),
-    ...adeBillBar("ade-medium", ADE_MEDIUM, adeMediumMonthly(hours)),
+    ...adeBillBar("ade-small", ADE_SMALL, adeSmallMonthly(hours, rates.freeSmall), view.withAds ? adeSmallMonthly(hours, rates.freeSmallFull) : undefined, tag),
+    ...adeBillBar("ade-medium", ADE_MEDIUM, adeMediumMonthly(hours, rates.medium), view.withAds ? adeMediumMonthly(hours, rates.mediumFull) : undefined, tag),
     ...RIVALS.flatMap((rival): Bar[] => {
       const value = rival.monthlyUsd?.(hours);
       if (value == null) return [];
@@ -222,11 +266,35 @@ function BillChart({ className }: { className?: string }) {
 }
 
 /** 2. Cloud hours a month that cost nothing, most first; the apps with none share one line. ADE's Small has no end. */
-function FreeHoursChart() {
+function FreeHoursChart({ view }: { view: PricingView }) {
+  const rates = adeRates(view);
+  const tag = withAdsTag(view);
+  const hoursAt = (rate: number) => Math.floor(FREE_PLAN.hours / rate + 1e-9);
+  // Under Pricing v3 with no ads, Free's Small uses credits too: its free hours are the month's credits on Small.
+  const smallFree = rates.freeSmall > 0 ? hoursAt(rates.freeSmall) : Number.POSITIVE_INFINITY;
+  const mediumFree = view.v3 ? hoursAt(rates.medium) : FREE_PLAN.hours;
   const bars = sortBars(
     [
-      { id: "ade-small", name: `${BRAND.CLOUD_NAME} ${ADE_SMALL.label}`, sub: "No card", logo: ADE_LOGO, value: Number.POSITIVE_INFINITY, label: "Unlimited", ade: true },
-      { id: "ade-medium", name: `${BRAND.CLOUD_NAME} ${ADE_MEDIUM.label}`, sub: "No card", logo: ADE_LOGO, value: FREE_PLAN.hours, label: `${formatCount(FREE_PLAN.hours)} h`, ade: true },
+      {
+        id: "ade-small",
+        name: `${BRAND.CLOUD_NAME} ${ADE_SMALL.label}`,
+        sub: `No card${view.withAds ? tag : ""}`,
+        logo: ADE_LOGO,
+        value: smallFree,
+        label: Number.isFinite(smallFree) ? `${formatCount(smallFree)} h` : "Unlimited",
+        ade: true,
+        struck: view.withAds && rates.freeSmallFull > 0 ? `${formatCount(hoursAt(rates.freeSmallFull))} h` : undefined,
+      },
+      {
+        id: "ade-medium",
+        name: `${BRAND.CLOUD_NAME} ${ADE_MEDIUM.label}`,
+        sub: `No card${view.withAds ? tag : ""}`,
+        logo: ADE_LOGO,
+        value: mediumFree,
+        label: `${formatCount(mediumFree)} h`,
+        ade: true,
+        struck: view.withAds ? `${formatCount(hoursAt(rates.mediumFull))} h` : undefined,
+      },
       ...RIVALS.filter((rival) => rival.freeHours).map((rival): Bar => ({
         id: rival.id,
         name: rival.name,
@@ -266,13 +334,18 @@ function FreeHoursChart() {
 }
 
 /** 3. What one cloud hour costs, cheapest first; each row says what kind of rate it is. ADE's Small costs nothing an hour. */
-function PerHourChart({ className }: { className?: string }) {
+function PerHourChart({ className, view }: { className?: string; view: PricingView }) {
   const cents = (value: number) => (value === 0 ? "0¢" : `${value < 10 ? value.toFixed(1) : Math.round(value)}¢`);
+  const rates = adeRates(view);
+  const smallPlans = !view.v3 || view.withAds ? "Every plan" : "Paid plans";
   const bars = sortBars([
-    { id: "ade-small", name: `${BRAND.NAME} ${ADE_SMALL.label}`, sub: `Every plan · ${ADE_SMALL.machine}`, logo: ADE_LOGO, value: 0, label: cents(0), ade: true },
+    { id: "ade-small", name: `${BRAND.NAME} ${ADE_SMALL.label}`, sub: `${smallPlans} · ${ADE_SMALL.machine}`, logo: ADE_LOGO, value: 0, label: cents(0), ade: true },
     ...PRICING_PLANS.filter((plan) => plan.priceUsd > 0).map((plan): Bar => {
-      const value = (plan.priceUsd * 100) / plan.hours;
-      return { id: `ade-${plan.id}`, name: `${BRAND.NAME} ${plan.name} · ${ADE_MEDIUM.label}`, sub: `$${plan.priceUsd} plan average · ${ADE_MEDIUM.machine}`, logo: ADE_LOGO, value, label: cents(value), ade: true };
+      // The plan's price over the Medium hours its credits buy, at the price now.
+      const value = (plan.priceUsd * 100 * rates.medium) / plan.hours;
+      const full = (plan.priceUsd * 100 * rates.mediumFull) / plan.hours;
+      const struck = view.withAds && cents(full) !== cents(value) ? cents(full) : undefined;
+      return { id: `ade-${plan.id}`, name: `${BRAND.NAME} ${plan.name} · ${ADE_MEDIUM.label}`, sub: `$${plan.priceUsd} plan average${struck ? withAdsTag(view) : ""} · ${ADE_MEDIUM.machine}`, logo: ADE_LOGO, value, label: cents(value), ade: true, struck };
     }),
     ...RIVALS.map((rival): Bar => ({
       id: rival.id,
