@@ -112,7 +112,8 @@ struct CloudNewComputerSizeMenu: View {
           } label: {
             Label {
               Text(tier.label)
-              Text("\(tier.specs.joined(separator: ", ")). \(tier.hoursLine(leftMilli: pick.leftMilli, words: pick.words)).")
+              // At the price paid now, as every size list counts it.
+              Text("\(tier.specs.joined(separator: ", ")). \(tier.atPriceNow(cloudPricing()).hoursLine(leftMilli: pick.leftMilli, words: pick.words)).")
             } icon: {
               Image(systemName: tier.id == currentId ? "checkmark" : tier.symbol)
             }
