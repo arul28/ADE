@@ -2691,15 +2691,18 @@ final class WorkComposerSuggestionController: ObservableObject {
   /// File rows an `@` query lists, awake or asleep.
   static let fileSuggestionLimit = 20
 
+  /// A folder's token ends in `/`, as desktop writes it (`chipFromPath`), so
+  /// the chip reads back as a folder (`WorkChipPathDetector`).
   nonisolated static func fileSuggestion(path: String, isDirectory: Bool) -> WorkComposerSuggestion {
     let name = (path as NSString).lastPathComponent
     let dir = (path as NSString).deletingLastPathComponent
+    let token = isDirectory && !path.hasSuffix("/") ? "\(path)/" : path
     return WorkComposerSuggestion(
       id: "file:\(path)",
       kind: .at,
       title: name.isEmpty ? path : name,
       subtitle: dir.isEmpty ? (isDirectory ? "Folder" : nil) : dir,
-      insertText: "@\(path)",
+      insertText: "@\(token)",
       isDirectory: isDirectory
     )
   }

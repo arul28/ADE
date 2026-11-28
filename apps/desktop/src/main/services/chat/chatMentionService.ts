@@ -568,19 +568,25 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
    * Every candidate of each kind but machines, unranked: the rows an ADE Cloud
    * computer saves before it rests (`cloudMentionSnapshot.ts`), so its chats'
    * menus read the same while it sleeps. People get a full read (the rest save
-   * can wait); a kind that fails is left out, as the menu leaves it out.
+   * can wait). A kind whose read throws (the chat, lane or terminal roster) is
+   * left out and the answer is `complete: false`, so the rest save keeps the
+   * menu it saved before. A people source that answers "failed" is left out
+   * as the live menu leaves it out: a broken sign-in fails every read, and
+   * would otherwise hold the whole saved menu back.
    */
-  const listMentionSnapshotRows = async (): Promise<ChatMentionSuggestion[]> => {
+  const listMentionSnapshotRows = async (): Promise<{ rows: ChatMentionSuggestion[]; complete: boolean }> => {
     const kinds = CHAT_MENTION_KINDS.filter((kind) => kind !== "machine");
+    let complete = true;
     const perKind = await Promise.all(kinds.map(async (kind) => {
       try {
         return kind === "person" ? await buildPersonCandidates({}, true) : await candidateBuildersByKind[kind]({});
       } catch (error) {
+        complete = false;
         deps.logger?.warn?.("chat mention snapshot rows failed for kind", { kind, error });
         return [] as ChatMentionSuggestion[];
       }
     }));
-    return perKind.flat();
+    return { rows: perKind.flat(), complete };
   };
 
   // -------------------------------------------------------------------------

@@ -230,12 +230,13 @@ describe("createCloudRestSave capsules", () => {
 });
 
 describe("createCloudRestSave @ menu", () => {
-  it("saves each project's @ menu once, again only after it changes, and tries again after a refused upload", async () => {
+  it("saves each project's @ menu once and again only after it changes; a refused, unkept or partial save keeps the menu saved before and tries again", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-mentions-"));
     fs.mkdirSync(path.join(root, ".git"));
     fs.writeFileSync(path.join(root, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/acme/widgets.git\n');
     const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-mentions-lane-"));
     let title = "upload-fix";
+    let complete = true;
     const runtime = {
       projectId: "project-1",
       projectRoot: root,
@@ -246,7 +247,7 @@ describe("createCloudRestSave @ menu", () => {
           { id: "lane-1", laneType: "worktree", worktreePath: worktree },
         ],
       },
-      agentChatService: { listMentionSnapshotRows: async () => [{ kind: "lane", id: "lane-1", title }] },
+      agentChatService: { listMentionSnapshotRows: async () => ({ rows: [{ kind: "lane", id: "lane-1", title }], complete }) },
       fileService: {
         listQuickOpenPaths: vi.fn(async () => [
           { path: "src", score: 99, isDirectory: true },
@@ -255,12 +256,13 @@ describe("createCloudRestSave @ menu", () => {
       },
     } as unknown as AdeRuntime;
     let refuse = false;
+    let kept = false;
     const saved: Array<{ projectKey: string; snapshot: Record<string, unknown> }> = [];
     const api = {
       putMentionSnapshot: vi.fn(async (_machine: string, body: { projectKey: string; snapshot: Record<string, unknown> }) => {
         if (refuse) throw new Error("ADE Cloud has no such computer.");
         saved.push(body);
-        return { ok: true, kept: false };
+        return { ok: true, kept };
       }),
       putGitSummary: async () => ({ kept: false }),
       putEventWakes: async () => null,
@@ -290,12 +292,22 @@ describe("createCloudRestSave @ menu", () => {
     await save();
     expect(api.putMentionSnapshot).toHaveBeenCalledTimes(1);
 
+    // A roster that failed to read never replaces the menu saved before.
     title = "upload-fix-2";
+    complete = false;
+    await save();
+    expect(api.putMentionSnapshot).toHaveBeenCalledTimes(1);
+    complete = true;
     refuse = true;
     await save();
     refuse = false;
+    // The server already holds a newer copy (the clock went back): not recorded, so it goes again.
+    kept = true;
     await save();
-    expect(api.putMentionSnapshot).toHaveBeenCalledTimes(3);
-    expect(saved.map((body) => (body.snapshot.rows as Array<{ title: string }>)[0]!.title)).toEqual(["upload-fix", "upload-fix-2"]);
+    kept = false;
+    await save();
+    await save();
+    expect(api.putMentionSnapshot).toHaveBeenCalledTimes(4);
+    expect(saved.map((body) => (body.snapshot.rows as Array<{ title: string }>)[0]!.title)).toEqual(["upload-fix", "upload-fix-2", "upload-fix-2"]);
   });
 });

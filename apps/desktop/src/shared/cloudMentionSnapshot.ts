@@ -115,10 +115,56 @@ export function readCloudMentionSnapshot(value: unknown): CloudMentionSnapshot |
   return { version: CLOUD_MENTION_SNAPSHOT_VERSION, savedAt, rows, files };
 }
 
+/** UTF-8 bytes of a string, as the upload counts them, without encoding it. */
+function utf8Bytes(value: string): number {
+  let bytes = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code < 0xdc00 && i + 1 < value.length) {
+      bytes += 4;
+      i += 1;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+/** What one value adds to the JSON body: its escaped form and a comma. */
+const jsonBytes = (value: unknown): number => utf8Bytes(JSON.stringify(value)) + 1;
+
+/** The rows' share of the copy; file names fill the rest. */
+const ROW_BUDGET_BYTES = Math.floor(CLOUD_MENTION_SNAPSHOT_MAX_BYTES * 0.4);
+/** A lane entry's own JSON (`"id":{"files":[],"directories":[],"truncated":false}`) past its names. */
+const LANE_ENTRY_BYTES = 64;
+
 /**
- * The copy a computer saves: its rows (capped per kind) and each lane's file
- * names in browse order (shallowest first, folders with them), cut to fit
- * `CLOUD_MENTION_SNAPSHOT_MAX_BYTES`.
+ * Rows that fit `ROW_BUDGET_BYTES`, in their order. Past it, kinds take turns
+ * (each in its own order), so one long kind can't push the others out.
+ */
+function fitRows(rows: ChatMentionSuggestion[]): ChatMentionSuggestion[] {
+  const costs = rows.map(jsonBytes);
+  if (costs.reduce((sum, cost) => sum + cost, 0) <= ROW_BUDGET_BYTES) return rows;
+  const byKind = new Map<string, number[]>();
+  rows.forEach((row, index) => byKind.set(row.kind, [...(byKind.get(row.kind) ?? []), index]));
+  const queues = [...byKind.values()];
+  const keep = new Set<number>();
+  let used = 0;
+  for (let turn = 0; queues.some((queue) => turn < queue.length); turn += 1) {
+    for (const queue of queues) {
+      const index = queue[turn];
+      if (index === undefined || used + costs[index]! > ROW_BUDGET_BYTES) continue;
+      used += costs[index]!;
+      keep.add(index);
+    }
+  }
+  return rows.filter((_, index) => keep.has(index));
+}
+
+/**
+ * The copy a computer saves: its rows (capped per kind and in bytes) and each
+ * lane's file names in browse order (shallowest first, folders with them),
+ * cut so its JSON stays within `CLOUD_MENTION_SNAPSHOT_MAX_BYTES` as UTF-8.
  */
 export function buildCloudMentionSnapshot(args: {
   savedAt: number;
@@ -126,18 +172,18 @@ export function buildCloudMentionSnapshot(args: {
   /** By lane id; each list already in browse order (`quickOpen` with an empty query). */
   files: Record<string, FilesQuickOpenItem[]>;
 }): CloudMentionSnapshot {
-  const base = readCloudMentionSnapshot({ version: CLOUD_MENTION_SNAPSHOT_VERSION, savedAt: args.savedAt, rows: args.rows, files: {} });
-  const snapshot: CloudMentionSnapshot = base ?? { version: CLOUD_MENTION_SNAPSHOT_VERSION, savedAt: args.savedAt, rows: [], files: {} };
-  let budget = CLOUD_MENTION_SNAPSHOT_MAX_BYTES - JSON.stringify(snapshot).length;
+  const read = readCloudMentionSnapshot({ version: CLOUD_MENTION_SNAPSHOT_VERSION, savedAt: args.savedAt, rows: args.rows, files: {} });
+  const snapshot: CloudMentionSnapshot = { version: CLOUD_MENTION_SNAPSHOT_VERSION, savedAt: args.savedAt, rows: fitRows(read?.rows ?? []), files: {} };
+  const budget = CLOUD_MENTION_SNAPSHOT_MAX_BYTES - utf8Bytes(JSON.stringify(snapshot));
   const lanes = Object.entries(args.files).filter(([laneId]) => isChatMentionId(laneId)).slice(0, MAX_LANES);
-  // An even share per lane first, so one huge lane can't leave the others empty.
+  // An even share per lane, so one huge lane can't leave the others empty.
   const share = lanes.length ? Math.floor(budget / lanes.length) : 0;
   for (const [laneId, items] of lanes) {
     const entry: CloudMentionSnapshotFiles = { files: [], directories: [], truncated: false };
-    let used = 64;
+    let used = LANE_ENTRY_BYTES + jsonBytes(laneId);
     for (const item of items) {
       if (!item.path || item.path.length > MAX_PATH) continue;
-      const cost = item.path.length + 4;
+      const cost = jsonBytes(item.path);
       if (used + cost > share) {
         entry.truncated = true;
         break;
@@ -146,7 +192,6 @@ export function buildCloudMentionSnapshot(args: {
       (item.isDirectory ? entry.directories : entry.files).push(item.path);
     }
     snapshot.files[laneId] = entry;
-    budget -= used;
   }
   return snapshot;
 }

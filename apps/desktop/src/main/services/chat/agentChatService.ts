@@ -86068,7 +86068,7 @@ ${schedule.prompt}`
     args: ChatMentionSuggestArgs = {},
   ): Promise<ChatMentionSuggestResult> => chatMentionService.listChatMentionSuggestions(args);
   /** The menu's rows an ADE Cloud computer saves before it rests (`cloudMentionSnapshot.ts`). */
-  const listMentionSnapshotRows = (): Promise<ChatMentionSuggestion[]> => chatMentionService.listMentionSnapshotRows();
+  const listMentionSnapshotRows = (): Promise<{ rows: ChatMentionSuggestion[]; complete: boolean }> => chatMentionService.listMentionSnapshotRows();
 
   /**
    * Expand `@chat:` / `@lane:` / `@term:` chips into `<ade-mention>` pointer

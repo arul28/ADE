@@ -777,7 +777,8 @@ final class CloudAtRestStore: ObservableObject {
     #endif
     let started = generation
     let read = Task { () -> CloudMentionSnapshot? in
-      guard let client = await sync.cloudServerClient() else { return held?.snapshot }
+      // An answer for the last account (a sign-out meanwhile) never reaches the menu.
+      guard let client = await sync.cloudServerClient() else { return started == generation ? held?.snapshot : nil }
       do {
         let answer = try await client.mentionSnapshot(
           machineKey: machineKey, projectKey: projectKey, laneId: laneId, since: held?.snapshot?.savedAt
@@ -793,7 +794,7 @@ final class CloudAtRestStore: ObservableObject {
       } catch {
         // A failed read keeps what the phone holds and asks again on the next query.
         cloudAtRestLog.error("cloud_at_rest read=mention_snapshot failed error=\(String(describing: error), privacy: .public)")
-        return held?.snapshot
+        return started == generation ? held?.snapshot : nil
       }
     }
     mentionReads[key] = read

@@ -7,7 +7,7 @@ import { CLOUD_PATHS } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { openText, sealText, userKeys } from "./seal";
 import { callingComputer, readCappedJson, segmentsAfter } from "./sessionCopies";
-import { logCloud, type CloudEnv } from "./store";
+import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
 /**
  * The `@` menu an ADE Cloud computer saves when it rests
@@ -18,14 +18,21 @@ import { logCloud, type CloudEnv } from "./store";
  *   GET /cloud/mentions/:machine?project=&lane=&since=                  any of the person's clients
  *
  * One copy per (computer, project). Names and file paths are the person's:
- * the copy is gzipped, then sealed with the account's key. An older save
- * (by the computer's `savedAt`) never replaces a newer one. A read with
+ * the copy is gzipped, then sealed with the account's key. A save replaces
+ * the copy only when its `savedAt` (the computer's clock) is strictly newer,
+ * so a client holding one saved time never misses a change. Only the
+ * computer writes: a browser (`Origin`) is refused. A read with
  * `since` equal to the saved time answers `{ unchanged: true }`, so a client
  * downloads the copy once per sleep; `lane` keeps only that lane's files.
+ * A computer keeps its newest `MAX_PROJECTS_PER_COMPUTER` copies. A deleted
+ * saved chat leaves the copies that list it, and a deleted computer (lane not
+ * kept) takes its copies with it.
  */
 
 const BODY_OVERHEAD_BYTES = 16 * 1024;
 const MAX_PROJECT_KEY = 300;
+/** Copies one computer keeps, newest first: a lane computer opens one project. */
+const MAX_PROJECTS_PER_COMPUTER = 8;
 
 const notFound = () => fail("not_found", "ADE Cloud has no saved menu for that computer.", 404);
 const unavailable = () => fail("unavailable", "Saved menus aren't available right now. Try again soon.", 503);
@@ -49,31 +56,55 @@ async function gunzip(bytes: Uint8Array): Promise<Uint8Array | null> {
   }
 }
 
+async function sealSnapshot(aes: CryptoKey, userId: string, machineKey: string, projectKey: string, snapshot: CloudMentionSnapshot): Promise<string> {
+  return await sealText(aes, snapshotAad(userId, machineKey, projectKey), await gzip(new TextEncoder().encode(JSON.stringify(snapshot))));
+}
+
+async function openSnapshot(aes: CryptoKey, userId: string, machineKey: string, projectKey: string, sealed: string): Promise<CloudMentionSnapshot | null> {
+  const opened = await openText(aes, snapshotAad(userId, machineKey, projectKey), sealed);
+  const unzipped = opened ? await gunzip(opened) : null;
+  try {
+    return unzipped ? readCloudMentionSnapshot(JSON.parse(new TextDecoder().decode(unzipped))) : null;
+  } catch {
+    return null;
+  }
+}
+
 const projectKeyOf = (value: unknown): string | null =>
   typeof value === "string" && value.trim() && value.trim().length <= MAX_PROJECT_KEY ? value.trim() : null;
 
-async function handlePut(request: Request, env: CloudEnv, userId: string, machineKey: string, now: number): Promise<Response> {
+async function handlePut(request: Request, env: CloudEnv, userId: string, namedMachineKey: string, now: number): Promise<Response> {
+  // Only the computer writes its menu: a browser page (it sends `Origin`) can read it, never write it.
+  if (request.headers.get("origin") != null) return fail("not_found", "ADE Cloud has no such computer.", 404);
   const body = await readCappedJson(request, CLOUD_MENTION_SNAPSHOT_MAX_BYTES + BODY_OVERHEAD_BYTES);
   if (!body.ok) {
     return body.tooLarge ? fail("snapshot_too_large", "That menu is too large to save.", 413) : fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   }
   const computer = await callingComputer(env, request, userId, body.value.instanceId);
   // Only the computer itself saves its menu, under its own key.
-  if (!computer || computer.machine_key?.toLowerCase() !== machineKey.toLowerCase()) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  if (!computer?.machine_key || computer.machine_key.toLowerCase() !== namedMachineKey.toLowerCase()) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  // Stored, sealed and deleted under the computer's own key, whatever case the path used.
+  const machineKey = computer.machine_key;
   const projectKey = projectKeyOf(body.value.projectKey);
   const snapshot = readCloudMentionSnapshot(body.value.snapshot);
   if (!projectKey || !snapshot) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
-  const sealed = await sealText(keys.aes, snapshotAad(userId, machineKey, projectKey), await gzip(new TextEncoder().encode(JSON.stringify(snapshot))));
-  const written = await env.DB.prepare(`
+  const sealed = await sealSnapshot(keys.aes, userId, machineKey, projectKey, snapshot);
+  const [written] = await env.DB.batch([env.DB.prepare(`
     insert into cloud_mention_snapshots (user_id, machine_key, project_key, instance_id, sealed, saved_at, updated_at)
     values (?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id, machine_key, project_key) do update set
       instance_id = excluded.instance_id, sealed = excluded.sealed, saved_at = excluded.saved_at, updated_at = excluded.updated_at
-    where excluded.saved_at >= cloud_mention_snapshots.saved_at
-  `).bind(userId, machineKey, projectKey, computer.instance_id, sealed, snapshot.savedAt, now).run();
-  return json({ ok: true, kept: (written.meta?.changes ?? 0) === 0 });
+    where excluded.saved_at > cloud_mention_snapshots.saved_at
+  `).bind(userId, machineKey, projectKey, computer.instance_id, sealed, snapshot.savedAt, now),
+  // Its newest few: a computer can't grow the account's rows without end by naming new projects.
+  env.DB.prepare(`
+    delete from cloud_mention_snapshots where user_id = ? and machine_key = ? and project_key not in (
+      select project_key from cloud_mention_snapshots where user_id = ? and machine_key = ? order by updated_at desc, project_key limit ?
+    )
+  `).bind(userId, machineKey, userId, machineKey, MAX_PROJECTS_PER_COMPUTER)]);
+  return json({ ok: true, kept: (written?.meta?.changes ?? 0) === 0 });
 }
 
 async function handleGet(url: URL, env: CloudEnv, userId: string, machineKey: string, now: number): Promise<Response> {
@@ -86,14 +117,7 @@ async function handleGet(url: URL, env: CloudEnv, userId: string, machineKey: st
   if (Number.isFinite(since) && since === row.saved_at) return json({ unchanged: true, savedAt: row.saved_at });
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
-  const opened = await openText(keys.aes, snapshotAad(userId, machineKey, projectKey), row.sealed);
-  const unzipped = opened ? await gunzip(opened) : null;
-  let snapshot: CloudMentionSnapshot | null = null;
-  try {
-    snapshot = unzipped ? readCloudMentionSnapshot(JSON.parse(new TextDecoder().decode(unzipped))) : null;
-  } catch {
-    snapshot = null;
-  }
+  let snapshot = await openSnapshot(keys.aes, userId, machineKey, projectKey, row.sealed);
   if (!snapshot) {
     logCloud("cloud.mention_snapshot_unreadable", { userId, machineKey });
     return fail("snapshot_unreadable", "This saved menu can't be read right now.", 503);
@@ -101,6 +125,35 @@ async function handleGet(url: URL, env: CloudEnv, userId: string, machineKey: st
   const laneId = url.searchParams.get("lane")?.trim();
   if (laneId) snapshot = { ...snapshot, files: snapshot.files[laneId] ? { [laneId]: snapshot.files[laneId]! } : {} };
   return json({ snapshot });
+}
+
+/**
+ * A deleted saved chat leaves every menu its computer saved (the computer may
+ * never save again). The saved time moves on by 1 ms, so a client holding the
+ * old copy downloads it again, and the computer's next save is still newer.
+ * Never throws: the chat's delete is done.
+ */
+export async function dropChatFromMentionSnapshots(env: CloudEnv, userId: string, machineKey: string, chatId: string, now: number): Promise<void> {
+  try {
+    const rows = (await env.DB.prepare("select project_key, sealed, saved_at from cloud_mention_snapshots where user_id = ? and machine_key = ?")
+      .bind(userId, machineKey).all<SnapshotRow & { project_key: string }>()).results ?? [];
+    if (!rows.length) return;
+    const keys = await userKeys(env, userId, now);
+    if (!keys) return;
+    for (const row of rows) {
+      const snapshot = await openSnapshot(keys.aes, userId, machineKey, row.project_key, row.sealed);
+      const kept = snapshot?.rows.filter((entry) => !(entry.kind === "chat" && entry.id === chatId));
+      if (!snapshot || !kept || kept.length === snapshot.rows.length) continue;
+      const next: CloudMentionSnapshot = { ...snapshot, savedAt: row.saved_at + 1, rows: kept };
+      // Only the copy read: a save the computer made meanwhile is its own newer answer.
+      await env.DB.prepare(`
+        update cloud_mention_snapshots set sealed = ?, saved_at = ?, updated_at = ?
+        where user_id = ? and machine_key = ? and project_key = ? and saved_at = ?
+      `).bind(await sealSnapshot(keys.aes, userId, machineKey, row.project_key, next), next.savedAt, now, userId, machineKey, row.project_key, row.saved_at).run();
+    }
+  } catch (error) {
+    reportCloudFailure("cloud.mention_snapshot_chat_drop_failed", { userId, machineKey, message: error instanceof Error ? error.message : "unknown" });
+  }
 }
 
 /** The saved menus of one computer go with its lane (a cloud computer holds one lane). */

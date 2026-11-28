@@ -1562,6 +1562,7 @@ export const CLOUD_BLOCKED_READ_ROUTES = [
   "/cloud/chats",
   "/cloud/sessions",
   "/cloud/git",
+  "/cloud/mentions",
   "/cloud/lanes/without-computer",
   "/cloud/automations",
   "/cloud/launches",

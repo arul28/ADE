@@ -765,23 +765,35 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       const key = projectKey(runtime);
       if (!chat?.listMentionSnapshotRows || !key) continue;
       mentionTasks.push(async () => {
-        if (!idle()) return;
+        // Every read waits no longer than the save's own end. A late or failed read
+        // keeps the menu already saved, and the next save tries again.
+        const timeLeft = () => deadline - Date.now();
+        if (!idle() || timeLeft() <= 0) return;
         try {
-          const rows = await chat.listMentionSnapshotRows();
+          const read = await withinMs(chat.listMentionSnapshotRows(), timeLeft());
+          // A kind that failed to read: only a first save goes out without it.
+          if (!read || (!read.complete && state.mentions?.[key] != null)) return;
+          const lanes = await runtimeLanes(runtime);
+          if (!lanes) return;
           // The computer's lane; its main checkout only when it has no other (lane lists leave it out).
-          const lanes = (await runtimeLanes(runtime) ?? []).filter((lane) => lane.worktreePath && fs.existsSync(lane.worktreePath));
-          const ownLanes = lanes.filter((lane) => lane.laneType !== "primary");
+          const present = lanes.filter((lane) => lane.worktreePath && fs.existsSync(lane.worktreePath));
+          const ownLanes = present.filter((lane) => lane.laneType !== "primary");
           const files: Record<string, FilesQuickOpenItem[]> = {};
-          for (const lane of ownLanes.length ? ownLanes : lanes) {
-            if (!idle()) return;
-            files[lane.id] = await runtime.fileService?.listQuickOpenPaths({ workspaceId: lane.id, limit: MENTION_FILES_READ }).catch(() => []) ?? [];
+          for (const lane of ownLanes.length ? ownLanes : present) {
+            if (!idle() || timeLeft() <= 0) return;
+            const listed = runtime.fileService
+              ? await withinMs(runtime.fileService.listQuickOpenPaths({ workspaceId: lane.id, limit: MENTION_FILES_READ }), timeLeft())
+              : [];
+            if (!listed) return;
+            files[lane.id] = listed;
           }
-          const snapshot = buildCloudMentionSnapshot({ savedAt: Date.now(), rows, files });
+          const snapshot = buildCloudMentionSnapshot({ savedAt: Date.now(), rows: read.rows, files });
           const { savedAt: _savedAt, ...shape } = snapshot;
           const hash = createHash("sha256").update(JSON.stringify(shape)).digest("hex");
-          if (state.mentions?.[key] === hash) return;
-          await api.putMentionSnapshot(machineKey, { instanceId, projectKey: key, snapshot });
-          (state.mentions ??= {})[key] = hash;
+          if (state.mentions?.[key] === hash || !idle() || timeLeft() <= 0) return;
+          const answer = await api.putMentionSnapshot(machineKey, { instanceId, projectKey: key, snapshot }, { timeoutMs: timeLeft() });
+          // `kept`: the server holds a newer copy (this computer's clock went back), so this one is tried again.
+          if (!answer.kept) (state.mentions ??= {})[key] = hash;
         } catch (error) {
           logger.warn("cloud.rest_save_mentions_failed", { error: errorText(error) });
         }

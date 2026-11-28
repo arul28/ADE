@@ -2195,8 +2195,15 @@ One busy list, `decideCloudBusy` in
   `CloudAtRestStore.mentionSnapshot`, with Swift twins of both rankers
   (`WorkChatMentionMenuRanker`, `CloudMentionSnapshotMenu`). A client
   downloads the copy once per sleep: it asks again at most every 30 s, with
-  the saved time it holds, and the server answers "unchanged". Until the
-  copy arrives, and for a computer from before this (no copy saved), the
+  the saved time it holds, and the server answers "unchanged". A copy it
+  holds answers at once while it is checked; the first read waits at most
+  800 ms. A save goes out only when every roster read worked (a failed read
+  keeps the copy saved before) and within the rest save's own time; the
+  copy is cut to fit its cap as UTF-8, rows first to 40%. A deleted saved
+  chat leaves the copies that list it, and a computer deleted with its lane
+  takes its copies. A deleted computer's chat lists no files: it continues
+  on a new computer through the account queue, which takes text only. Until
+  the copy arrives, and for a computer from before this (no copy saved), the
   menu shows what it showed before: the computer's saved chats, lanes and
   open PRs from its Work slice (`chatMentionClientRows.ts`; on the phone
   `restingCloudChatMentionRows`, with no PRs and no files). Ignored files

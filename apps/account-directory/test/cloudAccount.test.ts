@@ -2012,6 +2012,8 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect([blockedAccount.status, ((await blockedAccount.json()) as { blocked?: boolean }).blocked]).toEqual([200, true]);
     expect(await (await harness.send(OWNER, "GET", "/cloud/access")).json()).toEqual({ enabled: false, readOnly: true, reason: expect.any(String) });
     expect((await harness.send(OWNER, "GET", "/cloud/lanes/without-computer")).status).toBe(200);
+    // Saved @ menus read like saved chats: nothing saved here, so not found, not refused.
+    expect((await harness.send(OWNER, "GET", "/cloud/mentions/key-a?project=github.com%2Facme%2Fweb")).status).toBe(404);
     for (const [method, url] of [["POST", `/cloud/instances/${INSTANCE}/start`], ["GET", "/cloud/instances"], ["POST", "/cloud/chats/key/chat/messages"], ["DELETE", "/cloud/chats/key/chat"], ["POST", "/cloud/integrations/linear/query"], ["PUT", "/cloud/limits"]] as const) {
       const refused = await harness.send(OWNER, method, url, method === "GET" ? undefined : {});
       expect([url, refused.status, ((await refused.json()) as { error?: { code?: string } }).error?.code]).toEqual([url, 403, "account_blocked"]);
@@ -3363,8 +3365,14 @@ describe("ADE Cloud without a computer", () => {
     expect(stored!.sealed).not.toContain("secret-plan");
     expect(stored!.sealed).not.toContain("upload-fix");
 
-    // A late save from before the last one changes nothing.
+    // A late save from before the last one, or one at the same time, changes nothing.
     expect(await (await save(INSTANCE, "key-a", NOW - 1, "stale")).json()).toEqual({ ok: true, kept: true });
+    expect(await (await save(INSTANCE, "key-a", NOW, "stale")).json()).toEqual({ ok: true, kept: true });
+    // ADE Web (a trusted page) can read the menu, never write it.
+    harness.env.WEB_CLIENT_ORIGIN = "https://app.ade.test";
+    expect((await harness.send(OWNER, "PUT", "/cloud/mentions/key-a", { instanceId: INSTANCE, projectKey: project, snapshot: menu(NOW + 5, "stale") }, { origin: "https://app.ade.test" })).status).toBe(404);
+    expect((await harness.send(OWNER, "GET", `/cloud/mentions/key-a?project=${encodeURIComponent(project)}`, undefined, { origin: "https://app.ade.test" })).status).toBe(200);
+    delete harness.env.WEB_CLIENT_ORIGIN;
     const first = await read(`&lane=${LANE}`);
     expect(first.body).toEqual({
       snapshot: {
@@ -3378,15 +3386,38 @@ describe("ADE Cloud without a computer", () => {
     // The client holds that copy: the next read downloads nothing.
     expect((await read(`&lane=${LANE}&since=${NOW}`)).body).toEqual({ unchanged: true, savedAt: NOW });
 
+    // A deleted saved chat leaves the menu, and a client holding the old copy downloads it again.
+    const withChat = { ...menu(NOW + 10, "upload-fix"), rows: [{ kind: "chat", id: "c1", title: "Deploy notes" }, { kind: "lane", id: LANE, title: "upload-fix" }] };
+    await harness.send(OWNER, "PUT", "/cloud/mentions/key-a", { instanceId: INSTANCE, projectKey: project, snapshot: withChat });
+    expect((await savePart(INSTANCE, "key-a", 1, "{}\n")).status).toBe(200);
+    expect((await harness.send(OWNER, "DELETE", "/cloud/chats/key-a/c1")).status).toBe(200);
+    const afterDelete = await read(`&lane=${LANE}&since=${NOW + 10}`);
+    expect(afterDelete.body).toMatchObject({ snapshot: { savedAt: NOW + 11, rows: [{ kind: "lane", id: LANE, title: "upload-fix" }] } });
+    // The computer's own next save is still newer than that change; a path in another case files it under its own key.
+    expect(await (await save(INSTANCE, "KEY-A", NOW + 12, "upload-fix")).json()).toEqual({ ok: true, kept: false });
+    expect(harness.rows("select machine_key from cloud_mention_snapshots")).toEqual([{ machine_key: "key-a" }]);
+
     // Deleting the lane's saved chats deletes the menu its computer saved.
     expect((await harness.send(OWNER, "DELETE", `/cloud/chats/key-a/lanes/${LANE}`)).status).toBe(200);
     expect((await read("")).status).toBe(404);
 
     // And deleting the account's saved data does too.
-    await save(INSTANCE, "key-a", NOW + 1, "upload-fix");
+    await save(INSTANCE, "key-a", NOW + 13, "upload-fix");
     expect((await read("")).status).toBe(200);
     await deleteAllAccountChats(harness.env, OWNER);
     expect(harness.rows("select machine_key from cloud_mention_snapshots")).toEqual([]);
+
+    // One computer keeps its newest 8 projects' menus, however many it names.
+    for (let index = 0; index < 10; index += 1) {
+      clock = NOW + 100 + index;
+      await harness.send(OWNER, "PUT", "/cloud/mentions/key-a", { instanceId: INSTANCE, projectKey: `github.com/acme/p${index}`, snapshot: menu(NOW + 100, "x") });
+    }
+    expect((harness.rows("select project_key from cloud_mention_snapshots order by project_key") as Array<{ project_key: string }>).map((row) => row.project_key))
+      .toEqual([2, 3, 4, 5, 6, 7, 8, 9].map((index) => `github.com/acme/p${index}`));
+
+    // Deleting the computer with its lane (not freeing it) takes its menus.
+    expect((await harness.send(OWNER, "DELETE", `/cloud/instances/${INSTANCE}`)).status).toBe(200);
+    expect(harness.rows("select project_key from cloud_mention_snapshots")).toEqual([]);
   });
 
   it("a message to a resting chat is kept once and sent once: a refused send stores nothing, two claims race and one wins, only it finishes the message, its checked settings go sealed to the computer only", async () => {
