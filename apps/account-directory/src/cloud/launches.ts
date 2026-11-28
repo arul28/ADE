@@ -47,6 +47,7 @@ import { noteComputerJoin } from "./sponsoredSmall";
 import { FILE_ID, handleGetFile, handlePutFile, r2KeyOf, r2PrefixOf } from "./launchFiles";
 import {
   LAUNCH_COMPUTER_DELETED,
+  PENDING_TIMEOUT_MS,
   deleteComputer,
   isOutOfHoursFor,
   listComputers,
@@ -189,6 +190,8 @@ const JOIN_REFUSED = "This computer can't join with that code.";
 const JOIN_NEVER_FINISHED = "The new computer couldn't sign in.";
 /** How often a spent join code may join again: a brain whose earlier sign-in didn't finish, never a link mint without end. */
 const MAX_REJOINS = 5;
+/** What a person's start shows when nothing was made for it (`failUnjoinedLaunches`); Retry starts it again under the same id. */
+const LAUNCH_MADE_NOTHING = "ADE Cloud couldn't make this lane's computer. Try again.";
 /** The computer joined before its launch's create finished: it asks again in a moment. */
 const joinNotReady = () => fail("join_not_ready", "The computer is still being set up.", 409);
 /** The stages before which a cancel still deletes the computer: nothing of the agent ran yet. */
@@ -1486,7 +1489,7 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
   const row = await readLaunch(env, launchId);
   if (!row?.join_hash || !sameDigest(await sha256Hex(nonce), row.join_hash)) return fail("join_refused", JOIN_REFUSED, 403);
   const { now } = deps;
-  // The create's answer was lost and no retried start adopted the computer yet: its code is right, its window not open.
+  // The create's answer was lost and no adoption (the minute tick, or a retried start) linked the computer yet: its code is right, its window not open.
   if (row.state === "making" && !row.instance_id) return joinNotReady();
   if (row.join_expires_at == null || row.join_expires_at <= now) return fail("join_expired", "This computer's join code expired. Cancel the launch and start it again.", 410);
   const joinExpiresAt = row.join_expires_at;
@@ -1587,6 +1590,14 @@ export async function computersJoiningLaunches(env: CloudEnv, now: number): Prom
 const JOIN_GIVE_UP_GRACE_MS = 15 * 60_000;
 /** Most never-joined launches one tick ends; the rest wait for the next. */
 const UNJOINED_PER_TICK = 20;
+/**
+ * A person's start that made nothing is ended this long after its start (or
+ * its Retry). A start that is only slow holds its reservation until the tick
+ * adopts its computer or, after `PENDING_TIMEOUT_MS` with nothing made,
+ * releases it; only then, and never while a reservation or computer of its
+ * request is left, is it ended.
+ */
+const MADE_NOTHING_AFTER_MS = PENDING_TIMEOUT_MS + 5 * 60_000;
 /**
  * How long a launch may wait on a provider sign-in before the server ends it
  * and deletes its computer. The computer gives up a little sooner by itself
@@ -1709,6 +1720,47 @@ export async function failUnjoinedLaunches(
     } catch (error) {
       reportCloudFailure("cloud.launch_continue_failed_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     }
+  }
+  // A person's start that made nothing: still `making`, no computer, and no
+  // reservation or computer of its request left (the tick released it, or the
+  // Worker stopped before reserving). Failed, so its card offers Retry instead
+  // of "making" for a week.
+  const unmade = (await env.DB.prepare(`
+    select * from cloud_launches l
+    where l.state = 'making' and l.instance_id is null and l.kind in ('chat', 'lane') and l.updated_at <= ?
+      and not exists (select 1 from cloud_computers c where c.user_id = l.user_id and c.request_id = l.launch_id and c.deleted_at is null)
+    limit ?
+  `).bind(now - MADE_NOTHING_AFTER_MS, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+  for (const row of unmade) {
+    // Claimed against the same rule: a start that reserved or linked a computer since this read is left alone.
+    const failed = await env.DB.prepare(`
+      update cloud_launches set state = 'failed', error = ?, updated_at = ?
+      where launch_id = ? and state = 'making' and instance_id is null and updated_at <= ?
+        and not exists (select 1 from cloud_computers c where c.user_id = cloud_launches.user_id and c.request_id = cloud_launches.launch_id and c.deleted_at is null)
+    `).bind(LAUNCH_MADE_NOTHING, now, row.launch_id, now - MADE_NOTHING_AFTER_MS).run();
+    if ((failed.meta?.changes ?? 0) !== 1) continue;
+    ended += 1;
+    logCloud("cloud.launch_made_nothing", { userId: row.user_id, launchId: row.launch_id });
+    try {
+      const latest = await readLaunch(env, row.launch_id);
+      if (latest && deps.onProgress) await deps.onProgress(recordOf(latest, now));
+    } catch (error) {
+      reportCloudFailure("cloud.launch_made_nothing_follow_failed", { launchId: row.launch_id, code: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+  // A start cancelled before its computer was linked (the cancel found none
+  // to delete): an adoption linked that computer since
+  // (`lostStartLinkStatement`), and it goes now. Never one that joined: only a
+  // computer with no machine key whose launch's join code was never used.
+  const leftByCancel = (await env.DB.prepare(`
+    select l.* from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
+    where l.state = 'cancelled' and l.kind in ('chat', 'lane') and l.join_used_at is null and c.deleted_at is null and c.machine_key is null
+    limit ?
+  `).bind(UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+  for (const row of leftByCancel) {
+    await deleteLaunchComputer(env, provider, row, now).catch((error: unknown) => {
+      reportCloudFailure("cloud.launch_cancel_delete_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    });
   }
   return ended;
 }

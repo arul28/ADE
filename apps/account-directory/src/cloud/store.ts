@@ -2,7 +2,7 @@ import * as Sentry from "@sentry/cloudflare";
 import { PHONE_CREDIT_MILLI_AT_SQL } from "./credits";
 import type { CallerTokenEnv } from "../callerToken";
 import { cloudflareTransientKindOfText } from "../cloudflareTransient";
-import { CLOUD_INTEGRATION_REQUESTS_PER_MINUTE, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanId } from "./contract";
+import { CLOUD_INTEGRATION_REQUESTS_PER_MINUTE, CLOUD_LAUNCH_JOIN_TTL_MS, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanId } from "./contract";
 import { readClerkUser, type CloudEmailEnv } from "./email";
 import {
   CLOUD_PLANS,
@@ -985,7 +985,33 @@ export function adoptionStatements(
       insert into cloud_power_log (instance_id, user_id, action, reason, created_at)
       select ?, user_id, 'start', ?, ? from cloud_computers where instance_id = ? and status_changed_at = ?
     `).bind(instance.id, reason, now, instance.id, now),
+    lostStartLinkStatement(env, instance.id, now),
   ];
+}
+
+/**
+ * A person's start (a `chat` or `lane` launch) whose create answer was lost,
+ * most often because the client went away mid-start (a phone in the
+ * background, a closed tab) and the Worker stopped with it while the provider
+ * still made the computer. Whichever path adopts that computer (the tick, the
+ * list, a repeated start) links the launch to it here, in the adoption's batch,
+ * as a repeated start always did: its join window opens and it is `joining`,
+ * so the computer, still asking to join (`join_not_ready`, up to 10 minutes),
+ * joins and the launch runs to its end with no client. The join hash stays the
+ * one the start's claim wrote, the code the computer holds. A start cancelled
+ * meanwhile is linked too, keeping `cancelled`, so its computer goes with it
+ * (`failUnjoinedLaunches`). A create that answered links its own launch after
+ * this (`onMade`); server copies and moves (`machine`) bind their own.
+ */
+function lostStartLinkStatement(env: CloudEnv, instanceId: string, now: number): D1PreparedStatement {
+  return env.DB.prepare(`
+    update cloud_launches set instance_id = ?,
+      join_expires_at = case when state = 'making' then ? else join_expires_at end,
+      state = case when state = 'making' then 'joining' else state end,
+      updated_at = ?
+    where instance_id is null and state in ('making', 'cancelled') and kind in ('chat', 'lane')
+      and (launch_id, user_id) in (select request_id, user_id from cloud_computers where instance_id = ? and deleted_at is null)
+  `).bind(instanceId, now + CLOUD_LAUNCH_JOIN_TTL_MS, now, instanceId);
 }
 
 export function groupByUser<T extends { user_id: string }>(rows: T[]): Map<string, T[]> {

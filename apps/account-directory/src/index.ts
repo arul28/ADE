@@ -260,7 +260,9 @@ export default Sentry.withSentry(sentryOptions, {
         // with their files. One indexed read when none is due.
         settle("cloud_launches", () => expireCloudLaunches(env)),
         // Launches whose computer never signed in: the computer deleted, the
-        // launch failed (an automation's run follows). One indexed read when none.
+        // launch failed (an automation's run follows). Also a start that made
+        // no computer, and the computer a cancel left behind. Indexed reads
+        // when none.
         settle("cloud_launches_unjoined", async () => {
           const key = env.AGENT37_API_KEY?.trim();
           await failUnjoinedLaunches(env, {
