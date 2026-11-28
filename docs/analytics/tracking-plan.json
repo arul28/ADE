@@ -1,5 +1,5 @@
 {
-  "$comment": "ADE's analytics tracking plan. Every event any ADE surface sends to PostHog is listed here; scripts/check-analytics-tracking-plan.mjs fails CI when code, this file, and scripts/posthog/dashboard-spec.mjs disagree. See docs/analytics/README.md.",
+  "$comment": "DAEX's analytics tracking plan. Every event any DAEX surface sends to PostHog is listed here; scripts/check-analytics-tracking-plan.mjs fails CI when code, this file, and scripts/posthog/dashboard-spec.mjs disagree. See docs/analytics/README.md.",
   "version": 1,
   "common_properties": {
     "desktop_policy": [
@@ -65,7 +65,7 @@
       ],
       "owner": "apps/desktop/src/main/main.ts",
       "source": "desktop_policy",
-      "purpose": "An ADE client opened; first_open marks a client's first ever open.",
+      "purpose": "A DAEX client opened; first_open marks a client's first ever open.",
       "properties": [
         "entry_point",
         "source",
@@ -448,7 +448,7 @@
       ],
       "owner": "apps/ade-cli/src/services/runtime/resourcePressureMonitor.ts",
       "source": "desktop_policy",
-      "purpose": "One per resource-pressure episode on this machine (memory, swap, a database write-ahead log, or the brain's own CPU), from the machine brain's five-minute sample: what ran short, how badly, the Android emulator count bucket, whether a developer's brain ran beside the installed one, and ADE's busiest table. Deduped per kind for six hours, four a day.",
+      "purpose": "One per resource-pressure episode on this machine (memory, swap, a database write-ahead log, or the brain's own CPU), from the machine brain's five-minute sample: what ran short, how badly, the Android emulator count bucket, whether a developer's brain ran beside the installed one, and DAEX's busiest table. Deduped per kind for six hours, four a day.",
       "properties": [
         "kind",
         "severity",
@@ -764,7 +764,7 @@
       ],
       "owner": "apps/account-directory/src/signupAnalytics.ts",
       "source": "server",
-      "purpose": "A new ADE account, from Clerk's user.created webhook. Mirrors Clerk (the source of truth for accounts); reconciled weekly by scripts/analytics/reconcile-signups.mjs.",
+      "purpose": "A new DAEX account, from Clerk's user.created webhook. Mirrors Clerk (the source of truth for accounts); reconciled weekly by scripts/analytics/reconcile-signups.mjs.",
       "properties": [
         "signup_method",
         "client",
@@ -779,7 +779,7 @@
       ],
       "owner": "apps/account-directory/src/welcomeEmail.ts",
       "source": "server",
-      "purpose": "The day-2 getting-started email went to a new account (once per account), on the account's distinct id. variant: start (no computer yet: offers the browser on ADE Cloud or the desktop app) or first_chat (a computer of its own or in ADE Cloud).",
+      "purpose": "The day-2 getting-started email went to a new account (once per account), on the account's distinct id. variant: start (no computer yet: offers the browser on DAEX Cloud or the desktop app) or first_chat (a computer of its own or in DAEX Cloud).",
       "properties": [
         "variant",
         "client",
@@ -793,7 +793,7 @@
       ],
       "owner": "apps/account-directory/src/signupAnalytics.ts",
       "source": "server",
-      "purpose": "An ADE account was deleted, from Clerk's user.deleted webhook.",
+      "purpose": "A DAEX account was deleted, from Clerk's user.deleted webhook.",
       "properties": [
         "client",
         "interactive"
