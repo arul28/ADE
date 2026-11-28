@@ -405,12 +405,17 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   `unverified`. No ban.
 - **Full-price work** (`fullPriceWork` on the brain's activity report, sent on
   change with no new poll; `noteFullPriceWork`):
-  - `cli_session`: an agent CLI session is alive on the computer (any of the 13
+  - `cli_session`: an agent CLI session is alive on the computer: any of the 13
     providers launched by DAEX, or one started by hand in a shell and found by
-    its process name). Chat CLIs (`*-chat` rows) count as their chat.
+    its process name (`AGENT_CLI_PROCESS_NAMES`: claude, codex, cursor-agent,
+    agent, droid, opencode, muse). Chat CLIs (`*-chat` rows) count as their chat.
   - `automation`: an automation's chat has work in hand.
   - `outside_agent`: an outside agent (DAEX MCP) sent a message through the
     account queue; cleared at the computer's next idle report.
+  - Not detected (a decision: that process list also decides what keeps a
+    computer awake): Pi, Qwen, Kimi, Grok, Copilot, Devin and Antigravity
+    started by hand in a plain shell. They send no proof, so the computer goes
+    to the full price when its window ends, unless a chat's proofs keep it open.
   - Not detected: an outside agent on a live link straight to the brain, and a
     chat's own scheduled turns. Neither sends a proof, so the computer goes to
     the full price when its window ends.
