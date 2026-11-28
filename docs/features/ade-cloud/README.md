@@ -1265,6 +1265,18 @@ sign-in was signed out where it came from. The account is the email
   key: each reads the other's computers in the list but never takes them. Only
   production sends the owner the provider wallet's alerts, and the awake-limit
   alert counts its own server's computers.
+- A server launch (`POST /cloud/launches`) whose create answer was lost (the
+  client went away, the provider timed out) stays `making` while the provider
+  makes the computer. Whichever adoption takes that computer (the minute tick,
+  the list, a repeated start) links the launch to it in the same batch
+  (`lostStartLinkStatement` in `store.ts`): the launch is `joining`, and the
+  computer joins and runs the first message with no client. A start cancelled
+  meanwhile is linked too, and the cron deletes that computer unless it
+  checked in or its join code was used. A start that made nothing (no computer
+  and no reservation of its request, 20 minutes after it) is failed, so its
+  card offers Retry. The web app follows a start whose answer was lost (no
+  answer or a 5xx) by its id, and shows the error with Retry only when the
+  server has no such launch (404).
 - The desktop keeps one record per lane launch in
   `<userData>/cloud-lane-launches/<launchId>.json` until its cleanup is done;
   a brain keeps its own in `<machine ADE folder>/cloud-lane-launches/`.

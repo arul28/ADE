@@ -2,8 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
-import { retryAccountCloudLaunch, startAccountCloudChat, useAccountCloudLaunches } from "./accountCloudLaunches";
+import { refreshAccountCloudLaunches, retryAccountCloudLaunch, startAccountCloudChat, useAccountCloudLaunches } from "./accountCloudLaunches";
 import { refreshAccountProjectList } from "./accountProjectListClient";
+import { CloudApiError } from "../../shared/cloudApiClient";
 
 const originalAde = globalThis.window.ade;
 
@@ -96,5 +97,41 @@ describe("account cloud launch files", () => {
     const sent = start.mock.calls[0]![0] as unknown as { chat: { attachments: Array<{ name: string; sizeBytes: number; contentType: string }> } };
     expect(sent.chat.attachments.map((entry) => [entry.name, entry.sizeBytes, entry.contentType])).toEqual([["one.png", 4, "image/png"], ["two.png", 2, "image/png"]]);
     expect(uploads.every((fileId) => fileId.endsWith(launchId.slice(0, 8)))).toBe(true);
+  });
+});
+
+/** A web start whose answer never came: the server may have kept it and makes the computer without the tab. */
+describe("account cloud launch whose start answer was lost", () => {
+  const noAnswer = new CloudApiError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
+  it.each<[string, CloudApiError, "kept" | "missing", { state: string | null; startError: string | null; read: boolean }]>([
+    ["a gateway timeout, for a start the server kept: the card follows the launch", new CloudApiError("ADE Cloud had a problem.", "http_524", 524), "kept", { state: "joining", startError: null, read: true }],
+    ["no answer, for a start the server kept: the card follows the launch", noAnswer, "kept", { state: "joining", startError: null, read: true }],
+    ["no answer, for a start the server never got: its error, with Retry", noAnswer, "missing", { state: null, startError: noAnswer.message, read: true }],
+    ["a refusal: its error at once, and nothing is read", new CloudApiError("You're using all 3 of your cloud computers.", "computer_limit", 409), "kept", { state: null, startError: "You're using all 3 of your cloud computers.", read: false }],
+  ])("%s", async (_label, error, server, expected) => {
+    const status = vi.fn(async (launchId: string) => {
+      if (server === "missing") throw new CloudApiError("Not found.", "not_found", 404);
+      return { launchId, state: "joining", stages: [], updatedAt: 2 };
+    });
+    globalThis.window.ade = {
+      cloudLaunches: {
+        start: vi.fn(async () => { throw error; }),
+        active: vi.fn(async () => ({ launches: [] })),
+        status,
+        messages: vi.fn(async () => ({ messages: [] })),
+      },
+      account: { status: vi.fn(async () => ({ userId: "user-a" })) },
+      project: { accountList: vi.fn(async () => ({ state: "ready", projects: [] })) },
+    } as unknown as typeof window.ade;
+    await refreshAccountProjectList({ force: true });
+    const { result } = renderHook(() => useAccountCloudLaunches());
+
+    const launchId = await startAccountCloudChat({ origin: "https://github.com/acme/app", provider: "claude", modelId: "claude-sonnet-5-5", prompt: "fix it" });
+    refreshAccountCloudLaunches();
+
+    const entry = () => result.current.entries.find((candidate) => candidate.launchId === launchId);
+    await waitFor(() => expect([entry()?.record?.state ?? null, entry()?.startError ?? null]).toEqual([expected.state, expected.startError]));
+    if (expected.read) expect(status).toHaveBeenCalledWith(launchId);
+    else expect(status).not.toHaveBeenCalledWith(launchId);
   });
 });
