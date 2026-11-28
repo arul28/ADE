@@ -22,6 +22,7 @@ import type { AdeCloudTrayAction, AdeCloudTrayNotice } from "./useAdeCloudDraft"
 import { LaneMoveControl } from "../laneMove/LaneMoveControl";
 import type { LaneMoveSource } from "../laneMove/laneMoveModel";
 import { BRAND } from "../../../shared/brand";
+import { capitalizeCloudPhrase } from "../../../shared/adeCloud";
 import { CLOUD_MAC_UNSUPPORTED } from "../../../../../account-directory/src/cloud/contract";
 import { CLOUD_MAC_NAME, cloudMachineAllows, cloudMacRateText, cloudMacShapeText, cloudMacTimeAt, type CloudComputerOs, type CloudMacOffer } from "../../../shared/cloudMac";
 
@@ -78,7 +79,7 @@ export function CloudSizeButton({
         forceEnabled
         content={mac ? {
           label: "Computer: Mac",
-          description: `${cloudMacShapeText(mac)}. ${capitalize(cloudMacRateText(mac, words))}. ${mac.keeps}`,
+          description: `${cloudMacShapeText(mac)}. ${capitalizeCloudPhrase(cloudMacRateText(mac, words))}. ${mac.keeps}`,
         } : {
           label: macShown ? `Computer: Linux · ${label}` : `Computer size: ${label}`,
           description: current && currentFacts
@@ -159,7 +160,7 @@ export function CloudSizeButton({
               </div>
               {mac.summary ? <p className="m-0 mt-1.5 text-[10.5px] leading-snug text-muted-fg/70">{mac.summary}</p> : null}
               <p className="m-0 mt-1 text-[10.5px] leading-snug text-muted-fg/70">
-                <span className="font-medium text-fg/80">{capitalize(cloudMacRateText(mac, words))}</span>, by the whole minute. {mac.keeps}
+                <span className="font-medium text-fg/80">{capitalizeCloudPhrase(cloudMacRateText(mac, words))}</span>, by the whole minute. {mac.keeps}
               </p>
             </div>
           ) : null}
@@ -229,8 +230,6 @@ export function CloudSizeButton({
     </DropdownMenu.Root>
   );
 }
-
-const capitalize = (text: string): string => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
 
 /** The tray's icon size and flex gap, in px (cloudBrand.css .adec-tray). */
 const TRAY_ICON_PX = 14;

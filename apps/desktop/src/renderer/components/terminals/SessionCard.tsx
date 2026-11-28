@@ -1,5 +1,5 @@
 import React from "react";
-import { adeCloudLaneForBindingNow } from "../../state/adeCloudLaneIndex";
+import { adeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
@@ -761,7 +761,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   const statusClockMs = useTurnStallClock(statusClockSessions);
   // A Mac starts; it never sleeps. Read once while waking (no subscription per row).
   const presentation = wakingSince
-    ? adeCloudLaneForBindingNow(runtimePin)?.os === "mac" ? STARTING_STATUS_PRESENTATION : WAKING_STATUS_PRESENTATION
+    ? adeCloudLaneForBinding(runtimePin)?.os === "mac" ? STARTING_STATUS_PRESENTATION : WAKING_STATUS_PRESENTATION
     : sessionStatusDisplay(sessionAttentionInput, {
     snoozed,
     woke: !snoozed && Boolean(wokeMarker),

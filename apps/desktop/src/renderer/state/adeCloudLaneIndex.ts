@@ -223,7 +223,7 @@ export type AdeCloudLaneOfBinding = {
  * machine. A lane computer's remote target carries the computer's id as its
  * host name; a launch made in this window also names its binding.
  */
-function adeCloudLaneForBinding(
+export function adeCloudLaneForBinding(
   binding: OpenProjectBinding | null | undefined,
   computers: readonly AdeCloudLaneComputer[] = state.computers,
 ): AdeCloudLaneOfBinding | null {
@@ -245,11 +245,6 @@ function adeCloudLaneForBinding(
     }
   }
   return null;
-}
-
-/** `adeCloudLaneForBinding` read once, for a render that already re-runs (a list row while it wakes). */
-export function adeCloudLaneForBindingNow(binding: OpenProjectBinding | null | undefined): AdeCloudLaneOfBinding | null {
-  return adeCloudLaneForBinding(binding);
 }
 
 /** `adeCloudLaneForBinding` for a component: it follows the index as reads arrive. */
