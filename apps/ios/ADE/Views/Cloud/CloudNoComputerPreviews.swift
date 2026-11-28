@@ -74,7 +74,7 @@ enum CloudNoComputerPreviews {
           messageId: "m2",
           state: "waiting_for_sign_in",
           text: "Now update the changelog.",
-          signIn: CloudNoComputerFixtureData.decode(#"{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://claude.ai/oauth/authorize","needsPastedCode":true,"reason":"Open the sign-in page, approve, then paste the code it shows."}"#)
+          signIn: CloudNoComputerFixtureData.decode(#"{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://example.com/sign-in/fake","needsPastedCode":true}"#)
         ),
       ]))
     case "duo-cloud-deleting-soon":
@@ -98,6 +98,8 @@ enum CloudNoComputerPreviews {
       return AnyView(CloudLaneLaunchCardFixture())
     case "duo-cloud-new-chat-refused":
       return AnyView(CloudNewChatFixture(refusal: "This account has no \(Brand.cloudName) credits left this period. Your lanes and chats stay readable."))
+    case let name where name.hasPrefix("duo-cloud-sign-in-"):
+      return CloudSignInFixture.view(String(name.dropFirst("duo-cloud-sign-in-".count)))
     case "duo-cloud-models":
       return AnyView(CloudModelsFixture())
     case "duo-cloud-lanes":
@@ -138,7 +140,7 @@ enum CloudNoComputerFixtureData {
       fields = #""state":"failed","error":"GitHub refused the clone: the repository is private and the computer has no access.""#
     default:
       stages = #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"}]"#
-      fields = #""state":"waiting_for_sign_in","signIn":{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://claude.ai/oauth/authorize","needsPastedCode":true,"reason":"Open the sign-in page, approve, then paste the code it shows."}"#
+      fields = #""state":"waiting_for_sign_in","signIn":{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://example.com/sign-in/fake","needsPastedCode":true}"#
     }
     let record = #"{"launchId":"l_\#(state)",\#(fields),"projectOrigin":"github.com/octocat/hello-world","laneName":"Fix the README typo","instanceId":"i_\#(state)","stages":\#(stages),"request":{"chat":{"provider":"claude","modelId":"anthropic/claude-sonnet-4-5","prompt":"Fix the README typo"}}}"#
     return AccountCloudLaunchStore.Entry(
@@ -151,6 +153,90 @@ enum CloudNoComputerFixtureData {
       startError: nil,
       body: nil
     )
+  }
+}
+
+/// The first provider sign-in of a cloud start (`duo-cloud-sign-in-<variant>`),
+/// each with a fake link and a fake code: `claude` (every way out, nothing
+/// charged), `devin` (a changed page, a Medium computer's charge), `device`,
+/// `api_key`, `old` (an older server: no new field), `ended` (failed in the
+/// step, with the end note) on the launch card; `checking`, `refused` and
+/// `accepted` (the code box after a send) as the step alone.
+private enum CloudSignInFixture {
+  @MainActor
+  static func view(_ variant: String) -> AnyView? {
+    let soon = Date().timeIntervalSince1970 * 1000 + 30 * 60_000 + 30_000
+    let ways = #""freeModel":{"modelId":"ade/free-coder","label":"DAEX Free Coder"},"ownComputer":true"#
+    let free = #""charge":{"free":true,"sentence":"Nothing is charged if you cancel here."}"#
+    let claude = #"{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://example.com/sign-in/fake","needsPastedCode":true,"expiresAt":\#(soon),\#(ways),\#(free)}"#
+    switch variant {
+    case "claude":
+      return card(signIn: claude, provider: "claude")
+    case "devin":
+      return card(signIn: #"{"provider":"devin","label":"Devin","kind":"url_paste","jobId":"j2","url":"https://example.com/sign-in/fake","needsPastedCode":true,"reason":"The sign-in page changed. Open it again.","expiresAt":\#(soon - 12 * 60_000),"charge":{"free":false,"sentence":"This Medium computer uses credits while it waits."}}"#, provider: "devin")
+    case "device":
+      return card(signIn: #"{"provider":"codex","label":"Codex","kind":"device","jobId":"j3","url":"https://example.com/device/fake","userCode":"FAKE-1234","expiresAt":\#(soon),\#(free)}"#, provider: "codex")
+    case "api_key":
+      return card(signIn: #"{"provider":"qwen","label":"Qwen","kind":"api_key","signInId":"qwen","reason":"Save your Qwen API key. \#(Brand.cloudName) keeps it for every cloud computer.",\#(free)}"#, provider: "qwen")
+    case "old":
+      return card(signIn: #"{"provider":"claude","label":"Claude","kind":"url_paste","jobId":"j1","url":"https://example.com/sign-in/fake","needsPastedCode":true}"#, provider: "claude")
+    case "ended":
+      return card(signIn: nil, provider: "claude", fields: #""state":"failed","error":"The sign-in wasn't done in time, so the chat didn't start.","endNote":"Nothing was charged for the wait.""#)
+    case "checking":
+      return step(claude, .checking)
+    case "refused":
+      return step(claude, .refused("That code didn't work. Open sign-in again and paste the new code."))
+    case "accepted":
+      return step(claude, .accepted)
+    default:
+      return nil
+    }
+  }
+
+  /// The launch card, as the chat's page shows it.
+  @MainActor
+  private static func card(signIn: String?, provider: String, fields: String? = nil) -> AnyView {
+    let stages = signIn == nil
+      ? #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"},{"id":"agent","status":"failed"}]"#
+      : #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"}]"#
+    let state = fields ?? #""state":"waiting_for_sign_in","signIn":\#(signIn ?? "null")"#
+    let record = #"{"launchId":"l_sign_in",\#(state),"projectOrigin":"github.com/octocat/hello-world","laneName":"Fix the README typo","instanceId":"i_sign_in","stages":\#(stages),"request":{"chat":{"provider":"\#(provider)","prompt":"Fix the README typo"}}}"#
+    let entry = AccountCloudLaunchStore.Entry(
+      launchId: "sign-in", origin: "github.com/octocat/hello-world", prompt: "Fix the README typo",
+      provider: provider, modelId: nil, record: CloudNoComputerFixtureData.decode(record), startError: nil, body: nil
+    )
+    return AnyView(frame {
+      WorkCloudLaunchSetupCard(entry: entry)
+    }
+    .task {
+      AccountCloudLaunchStore.shared.seedPreview(catalog: CloudNoComputerFixtureData.catalog, catalogError: nil, entries: [entry])
+    })
+  }
+
+  /// The step alone, after a code was sent.
+  @MainActor
+  private static func step(_ signIn: String, _ codeState: CloudSignInStepDetail.CodeState) -> AnyView {
+    AnyView(frame {
+      VStack(alignment: .leading, spacing: 10) {
+        Label("Sign in to Claude to start the chat", systemImage: "person.badge.key")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        CloudSignInStepDetail(signIn: CloudNoComputerFixtureData.decode(signIn), instanceId: "i_sign_in", launchId: "l_sign_in", codeState: codeState)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .adeGlassCard(cornerRadius: 16, padding: 14)
+    })
+  }
+
+  @MainActor
+  private static func frame<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    NavigationStack {
+      ScrollView {
+        content().padding(16)
+      }
+      .adeScreenBackground()
+      .navigationTitle("New chat")
+    }
   }
 }
 
