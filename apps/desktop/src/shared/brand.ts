@@ -21,22 +21,16 @@ export const BRAND = Object.freeze({
   /** The name the product had before; for "formerly ADE" notes and search. */
   FORMER_NAME,
   /** First mention in onboarding, release notes and the site. */
-  INTRO_NAME: (NAME as string) === FORMER_NAME ? NAME : `${NAME} (formerly ${FORMER_NAME})`,
+  INTRO_NAME: `${NAME} (formerly ${FORMER_NAME})`,
 
   /** Primary CLI command. */
   CLI: "daex",
   /** The old command; stays installed as a permanent alias. */
   LEGACY_CLI: "ade",
 
-  DOMAIN: "daex.dev",
   /** Old domain. Sign-in and API hosts stay here while released clients call them. */
   LEGACY_DOMAIN: "ade-app.dev",
-  SITE_URL: "https://daex.dev",
 
-  /** Deep link scheme for new links (`daex://`). */
-  URL_SCHEME: "daex",
-  /** Old deep link scheme; accepted forever (`ade://`). */
-  LEGACY_URL_SCHEME: "ade",
   /**
    * Every scheme the apps register with the OS and every link parser accepts.
    * Desktop: `build.protocols` in apps/desktop/package.json and
@@ -51,9 +45,6 @@ export const BRAND = Object.freeze({
    * The iOS copy is `Brand.linkSchemeForNewLinks`.
    */
   LINK_SCHEME_FOR_NEW_LINKS: "daex",
-
-  NPM_SCOPE: "@daex-dev",
-  LEGACY_NPM_SCOPE: "@ade-dev",
 
   /** Feature names. */
   CLOUD_NAME: `${NAME} Cloud`,

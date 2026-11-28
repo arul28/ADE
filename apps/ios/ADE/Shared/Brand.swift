@@ -16,7 +16,7 @@ public enum Brand {
     /// The name the product had before; for "formerly ADE" notes.
     public static let formerName = "ADE"
     /// First mention in onboarding and What's New.
-    public static let introName = name == formerName ? name : "\(name) (formerly \(formerName))"
+    public static let introName = "\(name) (formerly \(formerName))"
     /// Primary CLI command, for copy that tells the user what to type.
     public static let cliName = "daex"
     public static let siteURL = URL(string: "https://daex.dev")!

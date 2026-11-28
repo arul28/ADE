@@ -21097,7 +21097,7 @@ function findSettings(query: string): { query: string; results: SettingsFindRow[
     const access = settingAgentAccess(entry.id);
     return {
       path: settingsEntryLabel(entry),
-      link: `${BRAND.URL_SCHEME}://settings/${entry.id}`,
+      link: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://settings/${entry.id}`,
       onlyUser: access.agent === "owner-only" ? access.explanation : null,
     };
   });
@@ -21108,7 +21108,7 @@ function findSettings(query: string): { query: string; results: SettingsFindRow[
     // from a word inside a longer question.
     const names = [place.id, place.label.toLowerCase(), ...place.keywords];
     if (names.some((name) => name.split(" ").every((part) => words.has(part)))) {
-      rows.push({ path: place.label, link: `${BRAND.URL_SCHEME}://open/${place.id}`, onlyUser: null });
+      rows.push({ path: place.label, link: `${BRAND.LINK_SCHEME_FOR_NEW_LINKS}://open/${place.id}`, onlyUser: null });
     }
   }
   return { query, results: rows };

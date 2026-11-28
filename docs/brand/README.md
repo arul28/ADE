@@ -35,9 +35,11 @@ BRAND.INTRO_NAME;                    // "DAEX (formerly ADE)"
 `Run ${BRAND.CLI} code`;             // "Run daex code"
 ```
 
-It also has `FORMER_NAME`, `BETA_NAME`, `LEGACY_CLI`, `DOMAIN`,
-`LEGACY_DOMAIN`, `SITE_URL`, `URL_SCHEME`, `LEGACY_URL_SCHEME`, `NPM_SCOPE`
-and `LEGACY_NPM_SCOPE`.
+It also has `FORMER_NAME`, `BETA_NAME`, `LEGACY_CLI`, `LEGACY_DOMAIN`,
+`LINK_SCHEMES` and `LINK_SCHEME_FOR_NEW_LINKS` (the one scheme new links use).
+Matchers that accept the old or new product name in text build from
+`PRODUCT_NAME_PATTERN` (`apps/desktop/src/shared/brandNames.ts`); the link
+scheme helpers are in `apps/desktop/src/shared/deeplinkSchemes.ts`.
 
 Swift: `apps/ios/ADE/Shared/Brand.swift` (in the app, widget and App Clip
 targets). `Brand.name`, `Brand.formerName`, `Brand.introName`,
