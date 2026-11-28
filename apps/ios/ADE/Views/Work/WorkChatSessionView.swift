@@ -2328,7 +2328,7 @@ struct WorkChatSessionView: View {
   /// while ADE Cloud holds a message, or after a failed or stopped turn.
   var sponsoredSlotTurn: CloudSponsoredTurn? {
     guard sponsoredChatShowsCards, !showsStreamingStatus, cloudHeld?.messages.isEmpty ?? true,
-          let turn = cloudSponsoredLastFinishedTurn(transcript), turn.isFresh() else { return nil }
+          let turn = cloudSponsoredLastFinishedTurn(transcript, pausedRecovery: sponsoredFreeModels != nil), turn.isFresh() else { return nil }
     return turn
   }
 

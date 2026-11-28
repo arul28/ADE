@@ -644,15 +644,23 @@ let cloudSponsoredPickVariant = "sponsored_pick"
 /// Nil while a turn runs, after a failed or stopped turn, when the person
 /// already wrote again, or when the reply carries a Sponsored pick (one
 /// Gravity card is enough). Mirrors `lastFinishedTurn`.
-func cloudSponsoredLastFinishedTurn(_ events: [WorkChatEnvelope]) -> CloudSponsoredTurn? {
+/// `pausedRecovery` (a DAEX Free Models chat): a turn the account server
+/// refused because no ad showed for a long time (`free_models_no_cards`)
+/// still gets its ad, under the person's request alone. That ad request is
+/// what lets the models run again (the desktop's `lastFinishedTurn` does the same).
+func cloudSponsoredLastFinishedTurn(_ events: [WorkChatEnvelope], pausedRecovery: Bool = false) -> CloudSponsoredTurn? {
   var doneIndex: Int?
   var doneTurnId = ""
+  var refusedForAds = false
   scan: for index in events.indices.reversed() {
     switch events[index].event {
     case .userMessage:
       return nil
     case .done(let status, _, _, let turnId, _, _, _):
-      guard status == "completed" else { return nil }
+      if status != "completed" {
+        guard pausedRecovery, cloudSponsoredTurnRefusedForAds(events, doneIndex: index, turnId: turnId) else { return nil }
+        refusedForAds = true
+      }
       doneIndex = index
       doneTurnId = turnId
       break scan
@@ -681,12 +689,37 @@ func cloudSponsoredLastFinishedTurn(_ events: [WorkChatEnvelope]) -> CloudSponso
   }
   let answer = cloudSponsoredTail(reply.reversed().joined())
   let asked = cloudSponsoredTail(request)
-  guard !answer.isEmpty, !asked.isEmpty else { return nil }
+  guard !asked.isEmpty, !answer.isEmpty || refusedForAds else { return nil }
   return CloudSponsoredTurn(
     turnId: doneTurnId,
     finishedAt: workActivityTimestamp(events[doneIndex].timestamp),
-    messages: [CloudSponsoredMessage(role: "user", content: asked), CloudSponsoredMessage(role: "assistant", content: answer)]
+    messages: answer.isEmpty
+      ? [CloudSponsoredMessage(role: "user", content: asked)]
+      : [CloudSponsoredMessage(role: "user", content: asked), CloudSponsoredMessage(role: "assistant", content: answer)]
   )
+}
+
+/// The turn ending at `doneIndex` failed with the account server's no-ads refusal (`free_models_no_cards`).
+private func cloudSponsoredTurnRefusedForAds(_ events: [WorkChatEnvelope], doneIndex: Int, turnId: String) -> Bool {
+  var index = doneIndex - 1
+  while index >= 0 {
+    switch events[index].event {
+    case .userMessage:
+      return false
+    case .error(let message, let detail, let errorTurnId, _, _):
+      let own = errorTurnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if own.isEmpty || turnId.isEmpty || own == turnId {
+        let text = [message, detail ?? ""].joined(separator: " ")
+        if text.contains("free_models_no_cards") || text.range(of: "Free Models are paid for by the", options: .caseInsensitive) != nil {
+          return true
+        }
+      }
+    default:
+      break
+    }
+    index -= 1
+  }
+  return false
 }
 
 /// The end of a message within the server's limit, counted as it counts
@@ -1035,6 +1068,9 @@ final class CloudSponsoredStore: ObservableObject {
       lastSeenTracking[key] = nil
       return
     }
+    // These models need the hashed email the tracking answer allows on the iPhone, before
+    // the first reply: ask Apple's question here once, not only at the first ad.
+    _ = await CloudSponsoredTracking.askOnce()
     let device = CloudSponsoredDevice.current
     lastSeenTracking[key] = device.tracking
     do {

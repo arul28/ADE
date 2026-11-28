@@ -282,6 +282,8 @@ export function createFreeModelsRelay(deps: FreeModelsRelayDeps): FreeModelsRela
 
     try {
       let token = await deps.accessToken().catch(() => null);
+      // OpenCode hung up, or the chat was released, while the token was read: nothing goes out.
+      if (res.destroyed || registration.released) return;
       if (!token) {
         sendError(res, 401, "ade_sign_in_required", ADE_FREE_MODELS_SIGN_IN_MESSAGE);
         return;
@@ -296,7 +298,7 @@ export function createFreeModelsRelay(deps: FreeModelsRelayDeps): FreeModelsRela
           sendError(res, 401, "ade_sign_in_required", ADE_FREE_MODELS_SIGN_IN_MESSAGE);
           return;
         }
-        if (res.destroyed) return;
+        if (res.destroyed || registration.released) return;
         upstream = await sendUpstream(url, route.method, headersFor(token), body, track);
       }
       const responseHeaders: http.OutgoingHttpHeaders = {};
