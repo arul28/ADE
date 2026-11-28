@@ -11,6 +11,7 @@
  *
  * iOS mirrors these rules in `WorkFreeModels.swift`; keep the two together.
  */
+import { BRAND } from "./brand";
 import { ADE_FREE_MODELS_SOURCE_ID, ADE_FREE_OPENCODE_PROVIDER_ID, adeFreeModelByAlias } from "./adeFreeModels";
 import { modelOnlyRunsInOpenCode } from "./harnessRoutes";
 
@@ -27,7 +28,7 @@ export type FreeModelSourceId = "opencode-zen" | typeof ADE_FREE_MODELS_SOURCE_I
 
 export const FREE_MODEL_SOURCE_LABELS: Record<string, string> = {
   "opencode-zen": "OpenCode Zen",
-  [ADE_FREE_MODELS_SOURCE_ID]: "ADE Free Models",
+  [ADE_FREE_MODELS_SOURCE_ID]: `${BRAND.NAME} Free Models`,
 };
 
 export function freeModelSourceLabel(source: FreeModelSourceId): string {

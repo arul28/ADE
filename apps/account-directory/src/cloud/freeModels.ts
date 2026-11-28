@@ -100,16 +100,16 @@ const openAiError = (code: string, message: string, status: number, type = "inva
   json({ error: { message, type, code } }, status);
 
 const MESSAGES: Record<CloudFreeModelsErrorCode, string> = {
-  free_models_off: "ADE Free Models aren't available right now.",
-  free_models_consent: "Turn on ADE Free Models in ADE first.",
-  free_models_country: "ADE Free Models are available only in the US and Canada for now.",
-  free_models_not_watched: "ADE Free Models run only while you have this chat open in ADE. Open the chat to continue.",
-  free_models_limit: "You've used ADE Free Models a lot in a short time. Try again in a minute.",
-  free_models_unknown_model: "That isn't one of the ADE Free Models.",
-  free_models_too_large: "This request is too large for ADE Free Models (8 MB at most).",
-  free_models_unavailable: "ADE Free Models couldn't answer just now. Try again soon.",
-  free_models_locked: "Add a card (no charge) in ADE to unlock ADE Free Models.",
-  free_models_no_cards: "ADE Free Models are paid for by the sponsored cards in your chats. Open this chat in ADE and let a card show to keep going.",
+  free_models_off: "DAEX Free Models aren't available right now.",
+  free_models_consent: "Turn on DAEX Free Models in DAEX first.",
+  free_models_country: "DAEX Free Models are available only in the US and Canada for now.",
+  free_models_not_watched: "DAEX Free Models run only while you have this chat open in DAEX. Open the chat to continue.",
+  free_models_limit: "You've used DAEX Free Models a lot in a short time. Try again in a minute.",
+  free_models_unknown_model: "That isn't one of the DAEX Free Models.",
+  free_models_too_large: "This request is too large for DAEX Free Models (8 MB at most).",
+  free_models_unavailable: "DAEX Free Models couldn't answer just now. Try again soon.",
+  free_models_locked: "Add a card (no charge) in DAEX to unlock DAEX Free Models.",
+  free_models_no_cards: "DAEX Free Models are paid for by the ads in your chats. Open this chat in DAEX and let an ad show to keep going.",
 };
 const STATUS: Record<CloudFreeModelsErrorCode, number> = {
   free_models_off: 403,
@@ -126,7 +126,7 @@ const STATUS: Record<CloudFreeModelsErrorCode, number> = {
 };
 
 /** A slowed account's 429 (`free_models_no_cards`), which OpenCode shows while it waits. */
-const SLOWED_MESSAGE = "Cards pay for ADE Free Models. Keep this chat on screen so a card can show; until then they run slower.";
+const SLOWED_MESSAGE = "Ads pay for DAEX Free Models. Keep this chat on screen so an ad can show; until then they run slower.";
 
 /** `/cloud/free-models/*`, or null for any other path. */
 export async function routeFreeModels(request: Request, path: string, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
@@ -306,7 +306,7 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
   const consent = await readFreeConsent(env, userId);
   if (!freeYesHolds(consent, MACHINE)) return refuse("free_models_consent");
   const chatId = shortString(request.headers.get(CLOUD_FREE_MODELS_CHAT_HEADER), 160);
-  if (!chatId || !isChatId(chatId)) return refuse("free_models_not_watched", "ADE Free Models run only in an ADE chat.");
+  if (!chatId || !isChatId(chatId)) return refuse("free_models_not_watched", "DAEX Free Models run only in a DAEX chat.");
   const readViewer = () => env.DB.prepare("select ip, ua, os, tracking, country, seen_at from cloud_free_model_viewers where user_id = ? and chat_id = ?")
     .bind(userId, chatId).first<ViewerRow>();
   const [found, chat, meter] = await Promise.all([
@@ -323,8 +323,8 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
   const emailHash = hashedEmailFor(viewer, consent.email_hash);
   if (!emailHash) {
     return refuse("free_models_consent", consent.email_hash
-      ? "ADE Free Models need tracking allowed for ADE on the iPhone watching this chat (iOS Settings > Privacy > Tracking)."
-      : "ADE couldn't read your account's email when you turned on ADE Free Models. Turn them off and on again in ADE.");
+      ? "DAEX Free Models need tracking allowed for DAEX on the iPhone watching this chat (iOS Settings > Privacy > Tracking)."
+      : "DAEX couldn't read your account's email when you turned on DAEX Free Models. Turn them off and on again in DAEX.");
   }
   // No card asked for in too long: paused, or slowed to a few calls a minute across every chat.
   const throttle = throttleOf(meter, now);
@@ -335,9 +335,9 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
   }
   const day = utcDay(now);
   if (!(await takeRequest(env, userId, "free_models", now))) return refuse("free_models_limit");
-  if (!(await takeRequest(env, ALL, "free_models_all", now))) return refuse("free_models_limit", "ADE Free Models are busy right now. Try again in a minute.");
+  if (!(await takeRequest(env, ALL, "free_models_all", now))) return refuse("free_models_limit", "DAEX Free Models are busy right now. Try again in a minute.");
   if (!(await countUnder(env, day, userId, "fm_request", ACCOUNT_DAILY_REQUESTS))) {
-    return refuse("free_models_limit", "You've used today's ADE Free Models. They come back at midnight UTC.");
+    return refuse("free_models_limit", "You've used today's DAEX Free Models. They come back at midnight UTC.");
   }
 
   const read = await readBoundedBody(request, MAX_REQUEST_BYTES).catch(() => null);
@@ -593,7 +593,7 @@ async function upstreamRefusal(upstream: Response, model: AdeFreeModel, refuse: 
   if (status === 429 && code === "provider_rate_limited") {
     return openAiError("provider_rate_limited", "The model's provider is busy. Try again in a moment.", 429, "rate_limit_error");
   }
-  if (status === 429) return refuse("free_models_limit", "You've reached ADE Free Models' limit for now. Try again later.");
+  if (status === 429) return refuse("free_models_limit", "You've reached DAEX Free Models' limit for now. Try again later.");
   if (status === 403 && code === "unsupported_country_region_territory") return refuse("free_models_country");
   if (status === 413) return refuse("free_models_too_large");
   if ((status === 400 || status === 422) && CONTEXT_ERROR.test(`${code} ${message}`)) {
@@ -612,5 +612,5 @@ async function upstreamRefusal(upstream: Response, model: AdeFreeModel, refuse: 
   }
   // A request Gravity found wrong (a tool's schema, a parameter): its words help, with anything key-like cut out.
   const words = message.replace(/gr_inf_[A-Za-z0-9_-]+/g, "[key]").replace(/\s+/g, " ").trim().slice(0, 300);
-  return refuse("free_models_unavailable", words ? `ADE Free Models couldn't run this request: ${words}` : MESSAGES.free_models_unavailable, 400);
+  return refuse("free_models_unavailable", words ? `DAEX Free Models couldn't run this request: ${words}` : MESSAGES.free_models_unavailable, 400);
 }

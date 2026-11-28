@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../shared/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CreditCard, GithubLogo, LockSimple } from "@phosphor-icons/react";
 import type { CloudFreeModelsState } from "../../../../shared/adeCloud";
@@ -118,8 +119,8 @@ function AdeFreeModelsUnlockDialog({ onDone }: { onDone: (state: CloudFreeModels
       open
       size="md"
       icon={<LockSimple size={16} weight="duotone" />}
-      title="Unlock ADE Free Models"
-      description="They're free to use. ADE asks for GitHub or a card so each person gets one free account."
+      title={`Unlock ${BRAND.NAME} Free Models`}
+      description={`They're free to use. ${BRAND.NAME} asks for GitHub or a payment card so each person gets one free account.`}
       onOpenChange={(open) => {
         if (!open) finish(null);
       }}

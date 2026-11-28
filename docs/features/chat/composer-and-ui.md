@@ -487,19 +487,19 @@ it.
   (`agentToolDemand.ts`).
 - Every read and download goes to the composer's machine (remote:
   `ai.pinnedToolStatus` / `ai.pinnedToolDownload`).
-- **ADE Free Models.** Gravity's hosted models (`shared/adeFreeModels.ts`,
+- **DAEX Free Models.** Gravity's hosted models (`shared/adeFreeModels.ts`,
   ids `opencode/ade-free/<alias>`), free because their chats show sponsored
-  cards, on any plan. They come from the account (`CloudAccountState.freeModels`),
-  not the machine, so every machine, ADE Cloud and the web list them under
-  **ADE Free Models** with the **Ad-supported** badge while `available`.
+  ads, on any plan. They come from the account (`CloudAccountState.freeModels`),
+  not the machine, so every machine, DAEX Cloud and the web list them under
+  **DAEX Free Models** with the **Ad-supported** badge while `available`.
   Only the Work chat composer offers them; never in CLI mode, a subagent's
   composer, a parallel set, Cursor Cloud or the CTO. They run in OpenCode on
   the chat's machine. Outside the US and Canada they are not listed.
   - **Consent.** The first pick opens `AdeFreeModelsConsentDialog.tsx`
-    (cards, what Gravity receives, US and Canada only). The answer is per
+    (ads, what Gravity receives, US and Canada only). The answer is per
     account (`PUT /cloud/free-models/consent`).
-  - **Cards.** `SponsoredReplySlot` with `freeModelChat` shows a card per
-    finished reply once the answer is `granted`, with no ADE Cloud computer
+  - **Ads.** `SponsoredReplySlot` with `freeModelChat` shows an ad per
+    finished reply once the answer is `granted`, with no DAEX Cloud computer
     (`instanceId: null`). Never in a subagent view.
   - **Watched only.** `useFreeModelViewer` reports the open chat
     (`POST /cloud/free-models/seen`) at once and every 4 minutes while
@@ -515,11 +515,11 @@ it.
   - **Slowed and paused.** `freeModels.throttle` shows one line on the
     prompt box (`AdeFreeModelsComposerNote.tsx`); a refused turn
     (`free_models_locked`, `free_models_no_cards`, `adeFreeModelsRefusal.ts`)
-    reads plainly in the transcript, and a reply refused for no cards still
-    asks for its card so the chat can run again (`lastFinishedTurn`).
-  - **Account level.** Consent, the viewer report and card requests take no
+    reads plainly in the transcript, and a reply refused for no ads still
+    asks for its ad so the chat can run again (`lastFinishedTurn`).
+  - **Account level.** Consent, the viewer report and ad requests take no
     pin; only the chat's launch and turns go to its machine.
-- **ADE Cloud drafts.** A new chat on ADE Cloud lists `GET /cloud/models`
+- **DAEX Cloud drafts.** A new chat on DAEX Cloud lists `GET /cloud/models`
   (free rows carry `free: { source, badge }`). The picker gets
   `openCodeAssumed`, so the tab's machine is never probed, and the sign-in
   check never asks for a key for a free model.

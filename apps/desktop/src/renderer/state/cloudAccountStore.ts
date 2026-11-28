@@ -115,7 +115,7 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, co
  */
 export async function setCloudFreeModelsConsent(consent: CloudSponsoredConsent): Promise<CloudFreeModelsState> {
   const set = window.ade?.cloud?.setFreeModelsConsent;
-  if (!set) throw new Error("ADE can't save that here.");
+  if (!set) throw new Error(`${BRAND.NAME} can't save that here.`);
   const current = generation;
   let next: CloudFreeModelsState | null;
   try {
@@ -124,7 +124,7 @@ export async function setCloudFreeModelsConsent(consent: CloudSponsoredConsent):
     if (current === generation) refreshCloudAccount();
     throw error;
   }
-  if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
+  if (!next) throw new Error(`${BRAND.NAME} couldn't reach your account. Try again in a moment.`);
   // Another account signed in meanwhile: this answer was the old account's.
   if (current === generation) {
     if (account) publish({ ...account, freeModels: next });

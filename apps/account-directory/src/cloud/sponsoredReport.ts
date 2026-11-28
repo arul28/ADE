@@ -143,9 +143,9 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
     const accounts = await env.DB.prepare("select count(*) as total from cloud_sponsored_days where day = ? and kind = 'fm_request' and user_id <> ? and count > 0")
       .bind(day, ALL).first<{ total: number }>();
     lines.push(
-      `ADE Free Models (${inference.mode}${inference.live ? ", live" : ", test ads"}): ${n("fm_request")} requests from ${accounts?.total ?? 0} accounts; `
+      `DAEX Free Models (${inference.mode}${inference.live ? ", live" : ", test ads"}): ${n("fm_request")} requests from ${accounts?.total ?? 0} accounts; `
       + `${n("fm_input_tokens")} tokens in (${n("fm_cached_input_tokens")} cached), ${n("fm_output_tokens")} out; `
-      + `cards ${n("fm_ad")} asked, ${n("fm_ad_fill")} filled; with no cards, ${n("fm_slowed")} accounts slowed and ${n("fm_paused")} paused; `
+      + `ads ${n("fm_ad")} asked, ${n("fm_ad_fill")} filled; with no ads, ${n("fm_slowed")} accounts slowed and ${n("fm_paused")} paused; `
       + `refused ${refused.length ? refused.join(", ") : "none"}.`,
     );
   }

@@ -67,7 +67,7 @@ func cloudFreeGithubHoldLine(_ account: CloudPhoneAccount) -> String? {
   guard account.plan == "free", let github = account.freePlan?.github,
         let state = github.state, state != "ok", let line = cloudFreeGithubLine(account) else { return nil }
   guard state == "too_new", github.canUnlockWithCard != false else { return line }
-  return "\(line) You can start them sooner from ADE on your computer."
+  return "\(line) You can start them sooner from \(Brand.name) on your computer."
 }
 
 /// "December 13", in UTC like the server and the desktop, so every screen names the same day.

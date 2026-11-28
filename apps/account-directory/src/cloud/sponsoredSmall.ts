@@ -186,7 +186,7 @@ export async function smallLookTripwire(env: GravityEnv, account: AccountRow, as
       kind: "small_cloud_look",
       userId: account.user_id,
       subject: "DAEX Cloud: free Small kept free from a DAEX Cloud computer's network",
-      reason: "A US card request in a cloud chat that keeps this Free account's Small computers free came from the network DAEX Cloud computers call from, not from a phone or laptop. It may be a script on a cloud computer keeping Small free with nobody watching. Nothing was refused: it still counts.",
+      reason: "A US ad request in a cloud chat that keeps this Free account's Small computers free came from the network DAEX Cloud computers call from, not from a phone or laptop. It may be a script on a cloud computer keeping Small free with nobody watching. Nothing was refused: it still counts.",
       counts: { Network: `AS${network}`, "Its computers on that network": seen.own, "DAEX Cloud computers that joined from it (30 days)": seen.joined, "Its Small computers": seen.smalls },
       step: "small_cloud_look",
       abuse: true,
@@ -244,7 +244,7 @@ export async function smallCloudLookAlarms(env: GravityEnv, now: number): Promis
     limit ?
   `).bind(freeLookSince(now), mode, mode, now - JOINED_NETWORK_MS, SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, TRIPWIRE_REPORT_LIMIT).all<{ user_id: string; looked_asn: number }>();
   return (rows.results ?? []).map((row) =>
-    `Free account ${row.user_id}: its Small stays free through US card requests from a DAEX Cloud computer's network (AS${row.looked_asn}), not a phone or laptop. Block it: ${blockCommand(env, row.user_id, "small_cloud_look")}`);
+    `Free account ${row.user_id}: its Small stays free through US ad requests from a DAEX Cloud computer's network (AS${row.looked_asn}), not a phone or laptop. Block it: ${blockCommand(env, row.user_id, "small_cloud_look")}`);
 }
 
 /** The rate a computer of `size` runs at for this account: Small's is 0, or `SMALL_NO_CARDS_RATE_MILLI`. */

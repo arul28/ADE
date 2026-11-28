@@ -948,12 +948,12 @@ Writes have two more minute budgets per account in the same table
 - `settings`, 120: `PUT /cloud/limits`, `PUT /cloud/instances/:id/event-wakes`
   and `PUT /account/lanes`.
 
-## ADE Free Models
+## DAEX Free Models
 
 `src/cloud/freeModels.ts` (migration `0071`) is an OpenAI-compatible proxy
 to Gravity's hosted models for OpenCode's `ade-free` provider, on any plan
-and machine, paid for by the sponsored cards in those chats. Details and
-every rule: `docs/features/ade-cloud/README.md` (ADE Free Models).
+and machine, paid for by the ads in those chats. Details and
+every rule: `docs/features/ade-cloud/README.md` (DAEX Free Models).
 
 | Route | What it does |
 | --- | --- |
@@ -969,7 +969,7 @@ Minute budgets (`takeRequest`): `free_models` 50 per account,
 
 Configuration: the secret `GRAVITY_INFERENCE_KEY` (Gravity's `gr_inf_` key,
 `wrangler secret put GRAVITY_INFERENCE_KEY [--env production]`; also needs
-`GRAVITY_API_KEY` for the cards), the var `GRAVITY_INFERENCE` (the highest
+`GRAVITY_API_KEY` for the ads), the var `GRAVITY_INFERENCE` (the highest
 the instant `gravity_inference` setting may go: unset or `off` is a hard
 off, `testers`, `all`), `GRAVITY_INFERENCE_COUNTRIES` (default `US,CA`) and
 `GRAVITY_INFERENCE_BASE` (default `https://inference.trygravity.ai/v1`).

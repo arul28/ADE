@@ -498,7 +498,7 @@ struct WorkModelPickerSheet: View {
         let result = await cloudSaveFreeModelsConsent(CloudSponsoredState.granted)
         switch result {
         case .success(let state):
-          guard state.granted else { return "ADE couldn't save that. Try again." }
+          guard state.granted else { return "\(Brand.name) couldn't save that. Try again." }
           consentModel = nil
           select(model: model, consentConfirmed: true)
           return nil

@@ -256,7 +256,7 @@ export function parseRegistration(body: Record<string, unknown>): CloudAutomatio
  * so an unattended run can't use one: refused when the rule is saved, and a
  * run of a rule saved before is failed before anything is made.
  */
-const FREE_MODEL_AUTOMATION_REFUSAL = "ADE Free Models run only while you have the chat open, so an ADE Cloud automation can't use one. Pick another model for this rule.";
+const FREE_MODEL_AUTOMATION_REFUSAL = "DAEX Free Models run only while you have the chat open, so a DAEX Cloud automation can't use one. Pick another model for this rule.";
 
 /** The stored spec, put through the registration's own checks; null (logged) when it isn't one. */
 function specOf(row: RuleRow): CloudAutomationSpec | null {

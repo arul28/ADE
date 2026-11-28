@@ -14,6 +14,7 @@
  * token (nothing reached Gravity then), and no answer under a status
  * OpenCode would retry on its own.
  */
+import { BRAND } from "../../../shared/brand";
 import http from "node:http";
 import https from "node:https";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -203,7 +204,7 @@ export function createFreeModelsRelay(deps: FreeModelsRelayDeps): FreeModelsRela
     // A web page can reach 127.0.0.1 too; OpenCode never sends an Origin.
     if (req.headers.origin) {
       req.resume();
-      sendError(res, 403, "forbidden", "This endpoint is for ADE's own OpenCode.");
+      sendError(res, 403, "forbidden", `This endpoint is for ${BRAND.NAME}'s own OpenCode.`);
       return;
     }
     const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
@@ -223,14 +224,14 @@ export function createFreeModelsRelay(deps: FreeModelsRelayDeps): FreeModelsRela
     const route = ROUTES[match![2]!];
     if (!route || req.method !== route.method) {
       req.resume();
-      sendError(res, 404, "not_found", "ADE Free Models serve only chat completions and the model list.");
+      sendError(res, 404, "not_found", `${BRAND.NAME} Free Models serve only chat completions and the model list.`);
       return;
     }
     let body: Buffer | null = null;
     if (route.method === "POST") {
       body = await readBody(req);
       if (!body) {
-        sendError(res, 413, "free_models_too_large", "This request is too large for ADE Free Models.");
+        sendError(res, 413, "free_models_too_large", `This request is too large for ${BRAND.NAME} Free Models.`);
         return;
       }
     } else {
@@ -238,14 +239,14 @@ export function createFreeModelsRelay(deps: FreeModelsRelayDeps): FreeModelsRela
     }
     const base = deps.baseUrl();
     if (!base) {
-      sendError(res, NO_RETRY_STATUS, "free_models_unavailable", "This ADE has no account server to reach.");
+      sendError(res, NO_RETRY_STATUS, "free_models_unavailable", `This ${BRAND.NAME} has no account server to reach.`);
       return;
     }
     let url: URL;
     try {
       url = new URL(`${base.replace(/\/+$/, "")}${route.path}`);
     } catch {
-      sendError(res, NO_RETRY_STATUS, "free_models_unavailable", "This ADE has no account server to reach.");
+      sendError(res, NO_RETRY_STATUS, "free_models_unavailable", `This ${BRAND.NAME} has no account server to reach.`);
       return;
     }
 
@@ -316,7 +317,7 @@ export function createFreeModelsRelay(deps: FreeModelsRelayDeps): FreeModelsRela
         chatId: registration.chatId,
         error: error instanceof Error ? error.message : String(error),
       });
-      sendError(res, NO_RETRY_STATUS, "free_models_unreachable", "ADE couldn't reach its account server. Check your connection and try again.");
+      sendError(res, NO_RETRY_STATUS, "free_models_unreachable", `${BRAND.NAME} couldn't reach its account server. Check your connection and try again.`);
     }
   };
 
@@ -365,7 +366,7 @@ export function createFreeModelsRelay(deps: FreeModelsRelayDeps): FreeModelsRela
     available: () => deps.signedIn() && Boolean(deps.baseUrl()),
     register: async (chatId) => {
       const id = chatId.trim();
-      if (!id) throw new Error("An ADE Free Models chat needs an id.");
+      if (!id) throw new Error(`A ${BRAND.NAME} Free Models chat needs an id.`);
       const apiKey = randomBytes(32).toString("base64url");
       const registration: Registration = { chatId: id, secretHash: sha256(apiKey), inflight: new Set(), released: false };
       const set = registrations.get(id) ?? new Set<Registration>();

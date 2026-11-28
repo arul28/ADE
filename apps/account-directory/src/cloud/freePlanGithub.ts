@@ -404,15 +404,15 @@ export async function freeModelsLockOf(env: CloudEnv, account: AccountRow): Prom
 export function freeModelsLockSentence(reason: CloudFreeModelsLock["reason"], oldEnoughAt: number | null = null): string {
   switch (reason) {
     case "no_github":
-      return "ADE Free Models need a GitHub account at least 30 days old, or a card. Connect GitHub, or add a card (no charge) to unlock them.";
+      return "DAEX Free Models need a GitHub account at least 30 days old, or a payment card. Connect GitHub, or add a card (no charge) to unlock them.";
     case "too_new":
       return oldEnoughAt != null
-        ? `Your GitHub account is new, so ADE Free Models unlock on ${formatCloudFreeGithubDay(oldEnoughAt)}. Add a card (no charge) to unlock them now.`
-        : "Your GitHub account is new, so ADE Free Models unlock when it is 30 days old. Add a card (no charge) to unlock them now.";
+        ? `Your GitHub account is new, so DAEX Free Models unlock on ${formatCloudFreeGithubDay(oldEnoughAt)}. Add a card (no charge) to unlock them now.`
+        : "Your GitHub account is new, so DAEX Free Models unlock when it is 30 days old. Add a card (no charge) to unlock them now.";
     case "used":
-      return "This GitHub account already unlocked ADE Free Models on another ADE account. Add a card (no charge) to unlock them here.";
+      return "This GitHub account already unlocked DAEX Free Models on another DAEX account. Add a card (no charge) to unlock them here.";
     case "checking":
-      return "Checking your GitHub account… ADE Free Models unlock once that's done.";
+      return "Checking your GitHub account… DAEX Free Models unlock once that's done.";
   }
 }
 

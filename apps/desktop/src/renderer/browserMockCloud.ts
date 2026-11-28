@@ -435,16 +435,16 @@ function mockGithub(kind: string | null, now: number): Record<string, unknown> |
 function mockFreeModelsLock(kind: string | null, now: number): CloudFreeModelsLock | null {
   const at = now + 19 * DAY;
   if (kind === "locked-too-new" || kind === "locked-on") {
-    return { reason: "too_new", oldEnoughAt: at, githubLogin: "octo-new", canUnlockWithCard: true, sentence: `Your GitHub account is new, so ADE Free Models unlock on ${formatCloudFreeGithubDay(at)}. Add a card (no charge) to unlock them now.` };
+    return { reason: "too_new", oldEnoughAt: at, githubLogin: "octo-new", canUnlockWithCard: true, sentence: `Your GitHub account is new, so ${BRAND.NAME} Free Models unlock on ${formatCloudFreeGithubDay(at)}. Add a card (no charge) to unlock them now.` };
   }
   if (kind === "locked-no-github") {
-    return { reason: "no_github", oldEnoughAt: null, githubLogin: null, canUnlockWithCard: true, sentence: "ADE Free Models need a GitHub account at least 30 days old, or a card. Connect GitHub, or add a card (no charge) to unlock them." };
+    return { reason: "no_github", oldEnoughAt: null, githubLogin: null, canUnlockWithCard: true, sentence: `${BRAND.NAME} Free Models need a GitHub account at least 30 days old, or a payment card. Connect GitHub, or add a card (no charge) to unlock them.` };
   }
   if (kind === "locked-used") {
-    return { reason: "used", oldEnoughAt: null, githubLogin: "octo-shared", canUnlockWithCard: true, sentence: "This GitHub account already unlocked ADE Free Models on another ADE account. Add a card (no charge) to unlock them here." };
+    return { reason: "used", oldEnoughAt: null, githubLogin: "octo-shared", canUnlockWithCard: true, sentence: `This GitHub account already unlocked ${BRAND.NAME} Free Models on another ${BRAND.NAME} account. Add a card (no charge) to unlock them here.` };
   }
   if (kind === "checking") {
-    return { reason: "checking", oldEnoughAt: null, githubLogin: null, canUnlockWithCard: false, sentence: "Checking your GitHub account… ADE Free Models unlock once that's done." };
+    return { reason: "checking", oldEnoughAt: null, githubLogin: null, canUnlockWithCard: false, sentence: `Checking your GitHub account… ${BRAND.NAME} Free Models unlock once that's done.` };
   }
   return null;
 }

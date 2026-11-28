@@ -39,7 +39,7 @@ let workAdeFreeModelsSource = "ade-free"
 
 private let workFreeModelSourceLabels: [String: String] = [
   "opencode-zen": "OpenCode Zen",
-  workAdeFreeModelsSource: "ADE Free Models",
+  workAdeFreeModelsSource: "\(Brand.name) Free Models",
 ]
 
 func workFreeModelSourceLabel(_ source: String) -> String {
@@ -791,7 +791,7 @@ struct WorkFreeModelsConsentSheet: View {
     .presentationDragIndicator(.visible)
     .interactiveDismissDisabled(busy)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("ADE Free Models and sponsored cards")
+    .accessibilityLabel("\(Brand.name) Free Models and ads")
   }
 
   private func fact(_ symbol: String, _ text: String) -> some View {
@@ -956,7 +956,7 @@ struct WorkFreeModelsLockSheet: View {
     .presentationDetents([.medium, .large])
     .presentationDragIndicator(.visible)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("ADE Free Models are locked")
+    .accessibilityLabel("\(Brand.name) Free Models are locked")
     // Read once on open (the copy may be old), then cheaply while it waits.
     .task {
       SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)

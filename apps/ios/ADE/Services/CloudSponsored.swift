@@ -164,7 +164,7 @@ struct CloudFreeModelsState: Decodable, Equatable {
   static let paused = "paused"
 
   /// The calm line a throttled chat shows above its prompt box (the desktop's words).
-  static let throttleLine = "Cards pay for ADE Free Models. Keep this chat on screen so a card can show."
+  static let throttleLine = "Ads pay for \(Brand.name) Free Models. Keep this chat on screen so an ad can show."
 
   /// This model is listed but the GitHub rule holds it: picking it opens the lock sheet.
   func isLocked(_ modelId: String) -> Bool {
@@ -179,8 +179,8 @@ struct CloudFreeModelsState: Decodable, Equatable {
 
   /// What the one-time sheet says, as the server's terms say it
   /// (`CLOUD_FREE_MODELS_TERMS_VERSION`).
-  static let sheetTitle = "ADE Free Models show sponsored cards"
-  static let sheetLead = "These models are free because each chat that uses one shows sponsored cards."
+  static let sheetTitle = "\(Brand.name) Free Models show ads"
+  static let sheetLead = "These models are free because each chat that uses one shows ads."
   static let sheetReceives = "Gravity, our ad partner, receives the recent messages in these chats, your IP address and a hashed copy of your account email, and keeps a license to what is sent."
   static let sheetRegion = "Available in the US and Canada only."
 }
@@ -228,7 +228,7 @@ struct CloudFreeModelsLock: Decodable, Equatable {
   var isChecking: Bool { reason == Self.checking }
 
   /// The sheet's title.
-  var title: String { isChecking ? "Checking your GitHub account…" : "ADE Free Models are locked" }
+  var title: String { isChecking ? "Checking your GitHub account…" : "\(Brand.name) Free Models are locked" }
 
   /// What holds them: the server's sentence (`freeModelsLockSentence`)
   /// without its "add a card" part, which the phone says on its own line in
@@ -237,36 +237,36 @@ struct CloudFreeModelsLock: Decodable, Equatable {
   var reasonLine: String {
     switch reason {
     case Self.noGithub:
-      return "ADE Free Models need a GitHub account at least 30 days old. Connect GitHub to unlock them."
+      return "\(Brand.name) Free Models need a GitHub account at least 30 days old. Connect GitHub to unlock them."
     case Self.tooNew:
       if let oldEnoughAt {
-        return "Your GitHub account is new, so ADE Free Models unlock on \(cloudFreeGithubDay(oldEnoughAt))."
+        return "Your GitHub account is new, so \(Brand.name) Free Models unlock on \(cloudFreeGithubDay(oldEnoughAt))."
       }
-      return "Your GitHub account is new, so ADE Free Models unlock when it is 30 days old."
+      return "Your GitHub account is new, so \(Brand.name) Free Models unlock when it is 30 days old."
     case Self.used:
-      return "This GitHub account already unlocked ADE Free Models on another ADE account."
+      return "This GitHub account already unlocked \(Brand.name) Free Models on another \(Brand.name) account."
     case Self.checking:
-      return "ADE Free Models unlock once that's done."
+      return "\(Brand.name) Free Models unlock once that's done."
     default:
-      return sentence.isEmpty ? "ADE Free Models are locked for this account." : sentence
+      return sentence.isEmpty ? "\(Brand.name) Free Models are locked for this account." : sentence
     }
   }
 
   /// The row's short second line in the picker.
   var rowLine: String {
-    isChecking ? "Checking your GitHub account…" : canUnlockWithCard ? "Locked · unlock in ADE on your computer" : "Locked"
+    isChecking ? "Checking your GitHub account…" : canUnlockWithCard ? "Locked · unlock in \(Brand.name) on your computer" : "Locked"
   }
 
   /// One line for the chat that runs one (its next request is refused).
   var chatLine: String {
-    isChecking ? "Checking your GitHub account…" : canUnlockWithCard ? "ADE Free Models are locked. \(cloudCardElsewhereLine)" : reasonLine
+    isChecking ? "Checking your GitHub account…" : canUnlockWithCard ? "\(Brand.name) Free Models are locked. \(cloudCardElsewhereLine)" : reasonLine
   }
 }
 
 /// Where a locked account unlocks: ADE on a computer or the web app. The
 /// phone never names a card or links to one (App Store 3.1.1, as the rest of
 /// the phone's plan copy), so this says where, not how.
-let cloudCardElsewhereLine = "You can unlock them in ADE on your computer."
+let cloudCardElsewhereLine = "You can unlock them in \(Brand.name) on your computer."
 
 /// The places a sponsored card can show (`CloudSponsoredFormat`), one per
 /// account at a time. Each is display only: nothing of a card reaches the agent.
@@ -546,7 +546,7 @@ extension CloudServerClient {
 func cloudSaveFreeModelsConsent(_ consent: String) async -> Result<CloudFreeModelsState, CloudSponsoredSaveFailure> {
   let generation = AccountCloudStore.shared.generation
   guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
-    return .failure(CloudSponsoredSaveFailure(message: "Sign in to ADE, then try again."))
+    return .failure(CloudSponsoredSaveFailure(message: "Sign in to \(Brand.name), then try again."))
   }
   do {
     let state = try await client.setFreeModelsConsent(consent)
@@ -567,7 +567,7 @@ func cloudSaveFreeModelsConsent(_ consent: String) async -> Result<CloudFreeMode
     case .refused(_, let message), .server(_, .some(let message)):
       return .failure(CloudSponsoredSaveFailure(message: message))
     default:
-      return .failure(CloudSponsoredSaveFailure(message: "ADE couldn't save that. Try again."))
+      return .failure(CloudSponsoredSaveFailure(message: "\(Brand.name) couldn't save that. Try again."))
     }
   }
 }

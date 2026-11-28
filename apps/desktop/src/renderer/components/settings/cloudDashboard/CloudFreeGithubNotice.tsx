@@ -86,7 +86,7 @@ export function cloudFreeGithubHoldTitle(hold: CloudFreeGithubHoldFacts, purpose
   const who = hold.githubLogin ? `Your GitHub account ${hold.githubLogin}` : "Your GitHub account";
   switch (hold.reason) {
     case "no_github":
-      return purpose === "credits" ? "Free credits need GitHub" : "Add a card to unlock ADE Free Models";
+      return purpose === "credits" ? "Free credits need GitHub" : `Add a card to unlock ${BRAND.NAME} Free Models`;
     case "too_new":
       return `${who} is new`;
     case "used":
@@ -106,8 +106,8 @@ export function cloudFreeGithubHoldDetail(hold: CloudFreeGithubHoldFacts, purpos
   }
   if (purpose === "free-models") {
     return hold.reason === "checking"
-      ? "ADE Free Models unlock once the check is done. It runs again in a few minutes."
-      : "Add a card (no charge) to unlock ADE Free Models.";
+      ? `${BRAND.NAME} Free Models unlock once the check is done. It runs again in a few minutes.`
+      : `Add a card (no charge) to unlock ${BRAND.NAME} Free Models.`;
   }
   return cloudFreeGithubSentence(hold.reason, { oldEnoughAt: hold.oldEnoughAt, plusIncludedMilli: plusIncludedMilli ?? 0 }) ?? "";
 }
@@ -172,11 +172,11 @@ export function useCloudFreeUnlock({ purpose, toast = true, onUnlocked }: {
   onUnlocked?: () => void;
 }): { busy: boolean; addCard: () => Promise<CloudFreeUnlockOutcome> } {
   const [busy, setBusy] = useState(false);
-  const what = purpose === "credits" ? "Your free credits" : "ADE Free Models";
+  const what = purpose === "credits" ? "Your free credits" : `${BRAND.NAME} Free Models`;
   const addCard = useCallback(async (): Promise<CloudFreeUnlockOutcome> => {
     const open = window.ade?.cloud?.openFreeUnlock;
     if (!open) {
-      showToast({ tone: "error", title: "Couldn't open the card page", message: "Add a card in ADE on your computer or in the web app." });
+      showToast({ tone: "error", title: "Couldn't open the card page", message: `Add a card in ${BRAND.NAME} on your computer or in the web app.` });
       return "failed";
     }
     setBusy(true);

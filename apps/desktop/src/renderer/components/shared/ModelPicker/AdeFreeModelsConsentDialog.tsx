@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../shared/brand";
 import { useState } from "react";
 import { ChatsCircle, Eye, Gift, GlobeHemisphereWest, ShareNetwork } from "@phosphor-icons/react";
 import type { CloudSponsoredConsent } from "../../../../shared/adeCloud";
@@ -16,13 +17,13 @@ import { Dialog, openDialog } from "../../ui/dialog";
  */
 
 const FACTS: ReadonlyArray<{ icon: typeof Eye; text: string; fine?: boolean }> = [
-  { icon: Eye, text: "Each chat that uses them shows a sponsored card after a finished reply, on any computer and any plan." },
+  { icon: Eye, text: "Each chat that uses them shows an ad after a finished reply, on any computer and any plan." },
   {
     icon: ShareNetwork,
-    text: "To run them, ADE sends Gravity, the partner that hosts them, your recent messages in these chats, your IP address and a hashed copy of your account email. Gravity keeps a license to use what is sent.",
+    text: `To run them, ${BRAND.NAME} sends Gravity, the partner that hosts them, your recent messages in these chats, your IP address and a hashed copy of your account email. Gravity keeps a license to use what is sent.`,
   },
-  { icon: ChatsCircle, text: "They answer only while you have the chat open in ADE, so automations and the CLI can't use them." },
-  { icon: GlobeHemisphereWest, text: "Only in the US and Canada. Sponsored cards are for people 18 or older.", fine: true },
+  { icon: ChatsCircle, text: `They answer only while you have the chat open in ${BRAND.NAME}, so automations and the CLI can't use them.` },
+  { icon: GlobeHemisphereWest, text: "Only in the US and Canada. Ads are for people 18 or older.", fine: true },
 ];
 
 function AdeFreeModelsConsentDialog({ onDone }: { onDone: (granted: boolean) => void }) {
@@ -42,8 +43,8 @@ function AdeFreeModelsConsentDialog({ onDone }: { onDone: (granted: boolean) => 
       open
       size="md"
       icon={<Gift size={16} weight="duotone" />}
-      title="Use ADE Free Models?"
-      description="These models are free because sponsored cards pay for them."
+      title={`Use ${BRAND.NAME} Free Models?`}
+      description="These models are free because ads pay for them."
       dismissible={busy === null}
       onOpenChange={(open) => {
         if (!open && busy === null) onDone(false);

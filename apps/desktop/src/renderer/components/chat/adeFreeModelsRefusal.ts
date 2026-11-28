@@ -1,3 +1,4 @@
+import { BRAND } from "../../../shared/brand";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 
 /**
@@ -12,8 +13,8 @@ import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentatio
  */
 export type AdeFreeModelsRefusal = "locked" | "no_cards";
 
-const LOCKED = [/free_models_locked/, /to unlock ADE Free Models/i];
-const NO_CARDS = [/free_models_no_cards/, /ADE Free Models are paid for by the sponsored cards/i];
+const LOCKED = [/free_models_locked/, /to unlock (?:ADE|DAEX) Free Models/i];
+const NO_CARDS = [/free_models_no_cards/, /(?:ADE|DAEX) Free Models are paid for by the (?:sponsored cards|ads)/i];
 
 export function adeFreeModelsRefusalOf(...texts: Array<string | null | undefined>): AdeFreeModelsRefusal | null {
   const text = texts.filter((part): part is string => typeof part === "string" && part.length > 0).join("\n");
@@ -27,13 +28,13 @@ export function adeFreeModelsRefusalOf(...texts: Array<string | null | undefined
 export function adeFreeModelsRefusalPresentation(refusal: AdeFreeModelsRefusal, technicalDetail: string): ChatErrorPresentation {
   return refusal === "locked"
     ? {
-        title: "ADE Free Models are locked",
+        title: `${BRAND.NAME} Free Models are locked`,
         body: "Add a card (no charge) to unlock them. This chat is kept; retry once they're unlocked.",
         technicalDetail,
       }
     : {
-        title: "ADE Free Models are paused",
-        body: "Cards pay for ADE Free Models. Keep this chat on screen so a card can show, then retry.",
+        title: `${BRAND.NAME} Free Models are paused`,
+        body: `Ads pay for ${BRAND.NAME} Free Models. Keep this chat on screen so an ad can show, then retry.`,
         technicalDetail,
       };
 }

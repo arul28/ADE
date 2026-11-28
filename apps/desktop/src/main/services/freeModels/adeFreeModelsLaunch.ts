@@ -3,15 +3,16 @@
  * launch: the OpenCode provider block that points at this process's relay
  * (`freeModelsRelay.ts`), and the refusals for the places they never run.
  */
+import { BRAND } from "../../../shared/brand";
 import { ADE_FREE_MODELS, ADE_FREE_OPENCODE_PROVIDER_ID, isAdeFreeModelId } from "../../../shared/adeFreeModels";
 
 /** A chat on an ADE Free Model on a machine with no ADE sign-in. */
-export const ADE_FREE_MODELS_SIGN_IN_MESSAGE = "Sign in to ADE to use ADE Free Models.";
+export const ADE_FREE_MODELS_SIGN_IN_MESSAGE = `Sign in to ${BRAND.NAME} to use ${BRAND.NAME} Free Models.`;
 /** An ADE Free Model asked for in a terminal: a terminal can't show the sponsored cards that pay for it. */
-export const ADE_FREE_MODELS_CHAT_ONLY_MESSAGE = "ADE Free Models are chat-only.";
+export const ADE_FREE_MODELS_CHAT_ONLY_MESSAGE = `${BRAND.NAME} Free Models are chat-only.`;
 /** An automation, a scheduled wake or a helper task asked for one: they run only while someone has the chat open. */
 export const ADE_FREE_MODELS_UNWATCHED_MESSAGE =
-  "ADE Free Models run only while you have the chat open in ADE, so automations and scheduled wake-ups can't use them. Pick another model for this one.";
+  `${BRAND.NAME} Free Models run only while you have the chat open in ${BRAND.NAME}, so automations and scheduled wake-ups can't use them. Pick another model for this one.`;
 
 /** The relay registration a provider block is built from. */
 export type AdeFreeProviderEndpoint = { baseURL: string; apiKey: string };
@@ -42,7 +43,7 @@ export type AdeFreeOpenCodeProviderBlock = {
 export function adeFreeOpenCodeProviderBlock(endpoint: AdeFreeProviderEndpoint): AdeFreeOpenCodeProviderBlock {
   return {
     package: "@opencode/ai/providers/openai-compatible",
-    name: "ADE Free Models",
+    name: `${BRAND.NAME} Free Models`,
     settings: { baseURL: endpoint.baseURL, apiKey: endpoint.apiKey },
     models: Object.fromEntries(ADE_FREE_MODELS.map((model) => [model.alias, {
       name: model.displayName,

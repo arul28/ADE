@@ -1,3 +1,4 @@
+import { BRAND } from "../../../shared/brand";
 import { memo, type CSSProperties } from "react";
 import { Gift, LockSimple, PauseCircle } from "@phosphor-icons/react";
 import { useCloudAccount } from "../../state/cloudAccountStore";
@@ -19,7 +20,7 @@ import "./providerSignInSlot.css";
  * doesn't move when it comes and goes.
  */
 
-const THROTTLE_LINE = "Cards pay for ADE Free Models. Keep this chat on screen so a card can show.";
+const THROTTLE_LINE = `Ads pay for ${BRAND.NAME} Free Models. Keep this chat on screen so an ad can show.`;
 
 type Note = {
   kind: "locked" | "checking" | "paused" | "slowed";
@@ -36,12 +37,12 @@ export const AdeFreeModelsComposerNote = memo(function AdeFreeModelsComposerNote
   let note: Note | null = null;
   if (freeModels.locked) {
     note = freeModels.locked.reason === "checking"
-      ? { kind: "checking", long: "Checking your GitHub account… ADE Free Models unlock once that's done.", short: "Checking your GitHub account…" }
-      : { kind: "locked", long: "ADE Free Models are locked on this account. Add a card (no charge) to unlock them.", short: "ADE Free Models are locked." };
+      ? { kind: "checking", long: `Checking your GitHub account… ${BRAND.NAME} Free Models unlock once that's done.`, short: "Checking your GitHub account…" }
+      : { kind: "locked", long: `${BRAND.NAME} Free Models are locked on this account. Add a card (no charge) to unlock them.`, short: `${BRAND.NAME} Free Models are locked.` };
   } else if (freeModels.throttle === "paused") {
-    note = { kind: "paused", long: `Paused. ${THROTTLE_LINE}`, short: "Paused until a card shows." };
+    note = { kind: "paused", long: `Paused. ${THROTTLE_LINE}`, short: "Paused until an ad shows." };
   } else if (freeModels.throttle === "slowed") {
-    note = { kind: "slowed", long: THROTTLE_LINE, short: "Keep this chat on screen for a card." };
+    note = { kind: "slowed", long: THROTTLE_LINE, short: "Keep this chat on screen for an ad." };
   }
   if (!note) return null;
   // Sky like the free models' badge; amber where the next request is refused.
