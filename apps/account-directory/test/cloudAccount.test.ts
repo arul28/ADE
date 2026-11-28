@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_MAC_SHAPE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
@@ -6565,5 +6565,66 @@ describe("sponsored cards", () => {
     clock = NOW + 11 * 60_000;
     expect(await (await index()).json()).toEqual({ pick: null, reason: "nobody_watching" });
     expect(gravityCalls).toHaveLength(1);
+  });
+});
+
+describe("a DAEX Cloud Mac's reads", () => {
+  const MAC = "mac0123456789abcdef0123456789abcdef";
+  const sessionReads: number[] = [];
+
+  beforeEach(() => {
+    sessionReads.length = 0;
+    Object.assign(harness.env, { NOMAC_API_KEY: "nmk_test", MAC_COMPUTERS: "all" });
+    harness.insert("cloud_settings", { key: "mac_computers", value: "all", updated_at: NOW - DAY });
+    seedAccount(harness, OWNER);
+    // A Mac DAEX last saw starting; NoMac has it ready now (its boot already done).
+    seedComputer(harness, {
+      instance_id: MAC, provider: "nomac", os: "mac", type: "mac", cpu: CLOUD_MAC_SHAPE.cpu, memory_gb: CLOUD_MAC_SHAPE.memoryGb, disk_gb: CLOUD_MAC_SHAPE.driveGb,
+      multiplier_milli: 30_000, status: "starting", awake_since: null, last_awake_at: null, mac_state: "starting", mac_state_at: NOW - MINUTE,
+      mac_session_id: "ses_mac", mac_label: `adem:${MAC}`, mac_booted_session: "ses_mac", machine_key: "mk-mac",
+    });
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk-mac", last_seen_at: NOW });
+    const session = { id: "ses_mac", state: "ready", label: `adem:${MAC}`, ready_at: new Date(NOW - 30_000).toISOString(), created_at: new Date(NOW - MINUTE).toISOString() };
+    const network = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith("https://nomac.app/")) return network(input, init);
+      const call = `${init?.method ?? "GET"} ${url.replace("https://nomac.app/api/v1", "")}`;
+      if (call === "GET /mac/sessions/ses_mac") {
+        sessionReads.push(clock);
+        return new Response(JSON.stringify({ session }), { status: 200 });
+      }
+      if (call.startsWith("GET /mac/sessions?")) return new Response(JSON.stringify({ sessions: [session] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 });
+    });
+  });
+
+  // Every app on every device polls the same Mac: a client's read must never cost a provider call per poll,
+  // and it must never be what starts the charge (only the tick and the webhook move a Mac to running).
+  it("a client's read asks NoMac at most once a Mac in 10 s and writes nothing; the tick moves it to running and starts its charge", async () => {
+    const background: Promise<unknown>[] = [];
+    const read = async () => {
+      const answer = await handleCloudRequest(new Request(`https://directory.test/cloud/instances/${MAC}`, { headers: { authorization: `Bearer ${tokens[OWNER]}` } }), harness.env, (work) => { background.push(work); });
+      await Promise.all(background);
+      expect(answer.status).toBe(200);
+      return ((await answer.json()) as { status: string }).status;
+    };
+
+    expect(await read()).toBe("starting");
+    clock += 5_000;
+    expect(await read()).toBe("starting");
+    expect(sessionReads).toEqual([NOW]);
+    expect(computer(harness, MAC)).toMatchObject({ status: "starting", awake_since: null, mac_state: "starting" });
+    // Past the hold: one more read, still no write.
+    clock += 6_000;
+    expect(await read()).toBe("starting");
+    expect(sessionReads).toEqual([NOW, NOW + 11_000]);
+    expect(computer(harness, MAC)).toMatchObject({ status: "starting", awake_since: null });
+
+    // The tick: running from its own time, the charge from there.
+    clock = NOW + MINUTE;
+    harness.exec("update machines set last_seen_at = ? where machine_key = 'mk-mac'", clock);
+    await harness.tick();
+    expect(computer(harness, MAC)).toMatchObject({ status: "running", awake_since: NOW + MINUTE, mac_state: "running" });
   });
 });
