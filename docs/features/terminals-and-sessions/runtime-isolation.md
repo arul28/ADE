@@ -1,154 +1,71 @@
-# Runtime Isolation for Sessions
+# Runtime isolation for sessions
 
-Every interactive terminal and every agent chat session runs *inside a specific lane worktree*. The session
-system encodes that as a hard invariant: `laneId` is required on
-`PtyCreateArgs`, the lane's worktree directory is the only legal
-spawn cwd, and provider continuation will not cross lanes.
+Every project terminal and agent chat runs inside one lane's worktree:
+`laneId` is required on `PtyCreateArgs`, the worktree is the only legal spawn
+cwd, and continuation never crosses lanes. (A projectless personal chat has its
+own scratch-folder terminal; see the [README](./README.md).) The gate runs on
+the machine that holds the lane, so for a remote binding `fs.realpathSync`
+checks the remote filesystem. The renderer never spawns directly.
 
-The lane gate runs inside the **active ADE runtime** for the window's
-project binding (local machine runtime for local-bound windows, SSH-attached
-remote runtime for remote-bound windows). For remote-bound windows
-the lane gate executes on the remote host — `resolveLaneLaunchContext`
-calls `fs.realpathSync` against the remote filesystem and refuses to
-spawn outside the remote worktree. The desktop renderer never bypasses
-the runtime to spawn directly.
+## Source file map
 
-This document covers the gating, diagnostic fallbacks, and per-run
-scoping that makes "which work runs where" a deterministic answer.
+| File | Responsibility |
+|------|----------------|
+| `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` | `resolveLaneLaunchContext`: lane id and requested cwd → a bounded cwd. |
+| `apps/desktop/src/main/services/shared/utils.ts` | `resolvePathWithinRoot`, the shared containment check. |
+| `apps/desktop/src/main/services/pty/ptyService.ts` | Calls the gate on every create; merges the lane env; refuses cross-lane reattach. |
+| `apps/desktop/src/main/services/sessions/sessionService.ts` | `terminal_sessions` rows, joined to `lanes` on reads. |
+| `apps/desktop/src/main/services/shared/providerConfigHomes.ts` | Where provider CLIs keep their homes. |
 
-## Lane gating: `resolveLaneLaunchContext`
-
-File: `apps/desktop/src/main/services/lanes/laneLaunchContext.ts`
-
-Single entry point for "convert `{ laneId, requestedCwd? }` into a
-real, bounded cwd". Used by:
-
-- `ptyService.create` (for every interactive terminal and agent chat
-  PTY)
-
-Behavior:
+## Lane gate: `resolveLaneLaunchContext`
 
 1. Rejects an empty `laneId`.
-2. Calls `laneService.getLaneBaseAndBranch(laneId)` to recover the
-   configured worktree path. Throws if the lane has no worktree
-   configured.
-3. Validates the worktree directory exists on disk
-   (`ensureDirectoryExists`) and resolves it through
-   `fs.realpathSync`. Throws the "unavailable" error if the directory
-   was deleted out from under ADE.
-4. If `requestedCwd` is empty, returns `laneWorktreePath === cwd`.
-5. Otherwise resolves `requestedCwd` against the lane worktree and
-   requires it to stay inside the worktree root via
-   `resolvePathWithinRoot`. Path escapes throw:
-   `Requested cwd '<x>' escapes lane '<laneId>'. ADE only launches
-   work inside the selected lane worktree '<root>'.`
-6. Requires the resolved path to be an existing directory.
+2. Reads the worktree path (`laneService.getLaneBaseAndBranch`); throws when
+   the lane has none.
+3. Checks the folder exists and resolves it with `fs.realpathSync`; a deleted
+   folder throws the "unavailable" error.
+4. No requested cwd → the worktree root.
+5. Otherwise resolves the cwd inside the worktree with `resolvePathWithinRoot`.
+   An escape throws `Requested cwd '<x>' escapes lane '<laneId>'. DAEX only
+   launches work inside the selected lane worktree '<root>'.`
+6. The result must be an existing directory.
 
-Consequence: there is no way for a PTY caller to spawn in the primary
-worktree when a lane is selected, and no way to spawn outside the
-worktree via `..` segments or symlinks.
+So no caller can spawn in the main checkout while a lane is selected, or leave
+the worktree through `..` or a symlink. Worker and subagent launches use the
+same entry points and the same gate.
 
-`resolvePathWithinRoot` (in
-`apps/desktop/src/main/services/shared/utils.ts`) is the shared
-primitive. It resolves, normalizes, and compares against the root
-prefix.
+## Lane environment
 
-## Per-lane runtime env
-
-The lane environment is produced by `laneService.getLaneRuntimeEnv`
-(via `laneEnvironmentService`) and usually includes:
-
-- `PRIMARY_WORKTREE_PATH` — the primary repo root (for lane setup
-  scripts that need to sync from upstream)
-- lane-scoped overrides from `LaneEnvInitConfig.envFiles` (template
-  substitutions like `{{port}}`, `{{hostname}}`)
-- lane template `envVars`
-- port allocations resolved via `portAllocationService`
-- proxy hostname when a proxy route is active
-
-`ptyService.create` merges this env before `args.env`, so individual launches can still override values.
+`createPtyService` takes an optional `getLaneRuntimeEnv`. The desktop main
+process passes one (`main.ts`: `PORT`, `PORT_RANGE_START`, `PORT_RANGE_END`,
+`HOSTNAME`, `PROXY_HOSTNAME` from the port lease and proxy route); the
+brain's `bootstrap.ts` currently passes none, so brain-spawned terminals get no
+extra lane env from it. When present it is merged before `args.env`, so a
+launch can override it. Setup scripts get their own lane variables; see
+[Lanes › runtime](../lanes/runtime.md#setup-script-execution).
 
 ## Session-to-lane binding
 
-Every `terminal_sessions` row stores `lane_id` (NOT NULL, joined to
-`lanes` on every query). The join lives in `sessionService.SESSION_COLUMNS`:
+Every `terminal_sessions` row has a `lane_id`; session reads `join lanes l on
+l.id = s.lane_id`, so rows of a deleted lane never list. Lane panels filter by
+lane. A reattach checks `existingSession.laneId === args.laneId` and otherwise
+throws `Terminal session '<id>' belongs to lane '<other>', not '<laneId>'.`
 
-```sql
-from terminal_sessions s
-join lanes l on l.id = s.lane_id
-```
+A continued session keeps its row (`sessionService.reattach` resets runtime
+fields only), lane, transcript path (append mode) and `resumeMetadata`. A
+provider session id assigned at runtime is backfilled into
+`resumeMetadata.targetId`.
 
-Consequences:
+## What isolation does not cover
 
-- Deleting a lane cascades (lanes own the join); orphan session rows do
-  not appear in `list()`.
-- The session list can be filtered by `laneId`; lane panels do so to
-  show only their sessions.
-- `ptyService.create` validates `existingSession.laneId === args.laneId`
-  when reattaching a runtime. Cross-lane continuation fails with:
-  `Terminal session '<id>' belongs to lane '<otherLaneId>', not '<laneId>'.`
+- **Provider homes and caches** (`~/.claude`, `~/.codex`, `~/.factory`,
+  package caches, the Docker daemon). The PTY inherits `HOME`, so CLIs write to
+  their usual paths. Those paths follow `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+  `FACTORY_HOME_OVERRIDE` and the like, which is why every DAEX read of them goes
+  through `providerConfigHomes.ts`.
+- **Ports:** lane ranges are advisory.
+- **The project database** is shared by all lanes of a project.
+- **Inherited env:** a secret in the parent environment reaches the lane.
 
-## Continuation isolation
-
-A continued session keeps its identity:
-
-- same row (`sessionService.reattach` resets runtime fields, not identity)
-- same `laneId`
-- same `transcriptPath` (opened in append mode)
-- same `resumeMetadata` (so the CLI reconnects to the same Claude
-  session / Codex thread)
-
-If the CLI assigns a new session ID at runtime, `ptyService`
-backfills it into `resumeMetadata.targetId` via the transcript scan
-and/or Claude/Codex local storage lookup.
-
-## Worker scoping
-
-Worker launches use the same `ptyService.create` and
-`agentChatService` entry points as regular chats. Each worker operates
-inside its assigned lane and does not bypass `resolveLaneLaunchContext`,
-which means worker work stays inside the lane's worktree.
-
-## Fallback and diagnostics
-
-`runtimeDiagnosticsService.ts`
-(`apps/desktop/src/main/services/lanes/runtimeDiagnosticsService.ts`)
-aggregates lane runtime health for the Lanes tab and the proxy pane.
-It marks a lane as `degraded` when:
-
-- the proxy server is running but no route exists for this lane
-- the proxy is down entirely
-- fallback mode has been activated (direct port access, bypassing
-  isolation)
-
-Fallback mode is a deliberate opt-out: the user flips a lane into
-"direct port access" when the proxy is misbehaving. Sessions still run
-inside the lane worktree, but hostname-based isolation is off.
-
-## What isolation does NOT cover
-
-- **Shared filesystem locations** — `~/.claude/`, `~/.codex/`,
-  `~/.factory/`, global npm/yarn/pip caches, host-level docker daemon. The
-  PTY inherits `process.env` including `HOME`, so CLIs write to their usual
-  user paths regardless of the lane — and their usual paths are whatever
-  `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `FACTORY_HOME_OVERRIDE` say, which is
-  why every ADE read of those directories goes through
-  `services/shared/providerConfigHomes.ts` instead of a hardcoded default.
-- **Network sockets** — lane port ranges are advisory; commands can bind to any free port unless explicitly constrained.
-- **Shared database** — ADE's own SQLite file is per-project, not per
-  lane. All lanes in a project write into the same `terminal_sessions`
-  table.
-- **Parent-process env leakage** — tools launched by a PTY see the
-  PTY's env plus whatever the OS gives a child process. If you set a
-  secret in the host shell and Electron inherits it, the lane can see
-  it too.
-
-ADE has no stronger isolation (containers, VMs) for lanes. That is
-out of scope for `ptyService` itself.
-
-## Cross-links
-
-- Session lifecycle: [pty-and-sessions.md](./pty-and-sessions.md)
-- Lanes feature (branch/worktree management): [../lanes/](../lanes/)
-- Configuration schema for overlays and templates:
-  [../onboarding-and-settings/configuration-schema.md](../onboarding-and-settings/configuration-schema.md)
+DAEX has no container or VM isolation for lanes. Hostname isolation and
+fallback mode are in [Lanes › runtime](../lanes/runtime.md#runtime-diagnostics).
