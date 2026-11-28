@@ -267,6 +267,7 @@ export type ComputerRow = {
   mac_last_session_at?: number | null;
   mac_metadata_json?: string | null;
   mac_boot_env_json?: string | null;
+  mac_touched_at?: number | null;
 };
 
 export type AccountRow = {

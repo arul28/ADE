@@ -19,9 +19,18 @@ import os from "node:os";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { BRAND } from "../../../shared/brand";
 
-/** Whether this ADE runs on an ADE Cloud computer (the machine template sets the variable). */
+/** A DAEX Cloud Mac's id: `mac` and 32 hex (NoMac's; the account server's `macProvider.ts`). */
+const CLOUD_MAC_ID = /^mac[0-9a-f]{32}$/;
+
+/** Whether this ADE runs on an ADE Cloud computer (the machine template sets the variable): a Linux one or a Mac. */
 export function isAdeCloudComputer(env: NodeJS.ProcessEnv = process.env): boolean {
-  return /^[a-z0-9]{10}$/.test(env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "");
+  const id = env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
+  return /^[a-z0-9]{10}$/.test(id) || CLOUD_MAC_ID.test(id);
+}
+
+/** Whether this ADE runs on a DAEX Cloud Mac (its drive's `boot.sh` sets the id). */
+export function isAdeCloudMac(env: NodeJS.ProcessEnv = process.env): boolean {
+  return CLOUD_MAC_ID.test(env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "");
 }
 
 /**
@@ -39,6 +48,10 @@ export function isAdeCloudComputer(env: NodeJS.ProcessEnv = process.env): boolea
 export function describeAdeCloudComputer(): string | null {
   if (!isAdeCloudComputer()) return null;
   const memoryGb = Math.round(os.totalmem() / 2 ** 30);
+  if (isAdeCloudMac()) {
+    // A Mac has one size and its own simulator: no resize, and `daex apple` runs here, not on a cloud iPhone.
+    return `**DAEX Cloud:** you run on this lane's own DAEX Cloud Mac (macOS, Apple silicon, ${memoryGb} GB memory, Xcode). Keep the repository, build output and caches under \`~/drive\` (the only folder a stop keeps). It stops after a few idle minutes; a running build or test counts as work. \`daex apple\` uses this Mac's own simulator. Device signing and notarization need the person's own Apple account and aren't set up here. Details: **daex-cloud**.`;
+  }
   return `**DAEX Cloud:** you run on this lane's own DAEX Cloud computer (Linux, ${memoryGb} GB memory, no swap). A command that ends with "Killed" ran out of memory: DAEX stopped the biggest process to save the computer. For more memory or disk, \`daex cloud resize --request --size <size> --reason "…"\` asks the user on a card. Details: **daex-cloud**.`;
 }
 

@@ -378,10 +378,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       };
     },
 
-    async reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }> {
+    async reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean; idleMinutes?: number }> {
       // Only the computer's own brain sends it, and that brain has every feature this build lists.
       const body = record(await request("POST", instancePath(id, "booted"), { body: { adeVersion, features: CLOUD_COMPUTER_FEATURES } }));
-      return { sleepWhenIdle: body?.sleepWhenIdle === true };
+      // `idleMinutes`: a DAEX Cloud Mac's own idle wait (CloudBootReportResult); a Linux computer gets none.
+      return { sleepWhenIdle: body?.sleepWhenIdle === true, ...(typeof body?.idleMinutes === "number" ? { idleMinutes: body.idleMinutes } : {}) };
     },
 
     async reportDiskUsage(id, report): Promise<void> {
@@ -390,6 +391,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async reportSustainedCpu(id, report): Promise<void> {
       await request("POST", instancePath(id, "cpu-report"), { body: report });
+    },
+
+    async reportComputerUse(id): Promise<void> {
+      await request("POST", instancePath(id, "use"), { body: {} });
     },
 
     async resizeInstance(id, resources, options): Promise<string> {

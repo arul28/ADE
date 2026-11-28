@@ -29,6 +29,9 @@ alter table cloud_computers add column mac_last_session_at integer;
 -- passes (never the join code, which is computed again from the launch).
 alter table cloud_computers add column mac_metadata_json text;
 alter table cloud_computers add column mac_boot_env_json text;
+-- When the account server last ran a command on the running Mac for its busy
+-- brain (\`/use\`): NoMac's own idle stop counts commands, not a background service.
+alter table cloud_computers add column mac_touched_at integer;
 create index if not exists idx_cloud_computers_provider_live on cloud_computers (provider) where deleted_at is null and provider is not null;
 
 -- Each Mac session, for the owner's cost report and the daily check against

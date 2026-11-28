@@ -103,7 +103,7 @@ import {
   type CloudSize,
 } from "./plans";
 import { CloudProviderError, cloudErrorMessage, type CloudProvider } from "./provider";
-import { createComputerProvider, hiddenMacInstance, isMacRow } from "./macProvider";
+import { createComputerProvider, hiddenMacInstance, isMacRow, touchMac } from "./macProvider";
 import { macIdleStopMinutes, macReaches } from "./macSwitch";
 import {
   accountComputerCount,
@@ -2004,9 +2004,17 @@ function launchDepsFor(request: Request, env: CloudEnv, userId: string, provider
  * calls an idle cleanup's delete off (`cameBack`, `claimDelete`), and marks
  * the use during a save like a person's start (`recordIdleUse`).
  */
-async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response> {
+async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   await env.DB.prepare("update cloud_computers set last_active_at = max(coalesce(last_active_at, 0), ?) where instance_id = ? and deleted_at is null")
     .bind(now, computer.instance_id).run();
+  // A Mac's busy brain: a command keeps NoMac's idle clock from stopping it (`touchMac`). Never holds the answer.
+  if (isMacRow(computer)) {
+    const touch = touchMac(env, computer, now).catch((error: unknown) => {
+      reportCloudFailure("cloud.mac_touch_failed", { message: error instanceof Error ? error.message : "unknown" }, "cloud-mac");
+    });
+    if (waitUntil) waitUntil(touch);
+    else await touch;
+  }
   const refused = await idleUseRefusal(env, computer, now);
   return refused ?? json({ ok: true });
 }
@@ -2240,7 +2248,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     if (!computer) return notFound();
     if (computerRoute.action === "messages") return routeComputerMessages(request, env, computer, computerRoute.rest, now);
     if (computerRoute.rest.length || request.method !== "POST") return notFound();
-    return handleComputerUse(env, computer, now);
+    return handleComputerUse(env, computer, now, waitUntil);
   }
   // Saved chats need no provider: they stay readable when the computer can't be.
   if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {

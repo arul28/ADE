@@ -1,3 +1,4 @@
+import { isAdeCloudMac } from "../adeCloud/cloudComputerRules";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -240,7 +241,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   /** The SDK with adb and the emulator, or the refusal that says what is missing. */
   const requireSdk = async (needs: { emulator: boolean }): Promise<ReadyAndroidSdk> => {
     if (unsupportedReason !== null) throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", unsupportedReason);
-    const onCloud = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim());
+    // A Linux cloud computer (never KVM); a DAEX Cloud Mac reads its own acceleration like any Mac.
+    const onCloud = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim()) && !isAdeCloudMac();
     // A "no acceleration" answer stays cached for minutes; an emulator step reads one older
     // than 30 s again (one check, shared by steps at the same time), so a fixed /dev/kvm works
     // now. A cloud computer never has KVM: no recheck.

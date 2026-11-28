@@ -80,6 +80,10 @@ const MAC_UPKEEP_PER_RUN = 50;
 const MAC_UPKEEP_HOLD_MS = 3 * 60_000;
 /** The most held starts one tick tries again. */
 const MAC_RETRY_PER_TICK = 10;
+/** NoMac's own idle stop: its longest (an hour). A brain gone silent leaves the Mac to it. */
+const MAC_NOMAC_IDLE_SECONDS = 3_600;
+/** A busy brain's use report runs a command on its Mac at most this often (well inside NoMac's hour). */
+const MAC_TOUCH_EVERY_MS = 10 * 60_000;
 /** The boot job's own limit; it returns once the brain answers, usually in seconds. */
 const MAC_BOOT_TIMEOUT_S = 600;
 
@@ -337,8 +341,9 @@ export async function macCreditMinutesLeft(env: CloudEnv, userId: string, now: n
 function limitsFor(minutes: number) {
   return {
     max_duration_seconds: minutes * 60,
-    // As long as the time limit: ADE's own idle stop (5 minutes, the brain's) always comes first.
-    idle_timeout_seconds: minutes * 60,
+    // NoMac's longest. DAEX's own idle stop (the brain's, 5 minutes) comes first; while the brain is busy it
+    // reports use and \`touchMac\` runs a command, which is what NoMac's idle clock counts. This is the backstop.
+    idle_timeout_seconds: Math.min(minutes * 60, MAC_NOMAC_IDLE_SECONDS),
     spend_cap_microunits: String(minutes * MAC_SPEND_CAP_MICROS_PER_MINUTE),
   };
 }
@@ -528,6 +533,26 @@ export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string
   }
   logCloud("cloud.mac_booted", { instanceId: row.instance_id, state: typeof job?.state === "string" ? job.state : null });
   return "booted";
+}
+
+/**
+ * The Mac's brain is busy (\`POST /cloud/instances/:id/use\`): one empty command
+ * at most every \`MAC_TOUCH_EVERY_MS\`, so NoMac's idle clock (commands, SSH,
+ * the desktop; never a background service) doesn't stop it under a long build.
+ * The claim is one conditional update, so two reports at once run one command.
+ */
+export async function touchMac(env: CloudEnv, row: ComputerRow, now: number): Promise<void> {
+  if (!row.mac_session_id || row.mac_state !== "running") return;
+  const claimed = await env.DB.prepare("update cloud_computers set mac_touched_at = ? where instance_id = ? and mac_session_id = ? and coalesce(mac_touched_at, 0) <= ?")
+    .bind(now, row.instance_id, row.mac_session_id, now - MAC_TOUCH_EVERY_MS).run();
+  if ((claimed.meta?.changes ?? 0) !== 1) return;
+  const answer = await call(env, "POST", `/mac/sessions/${encodeURIComponent(row.mac_session_id)}/jobs`, { argv: ["/usr/bin/true"], timeout_seconds: 10 },
+    `ade-mac-touch-${row.mac_session_id}-${now}`);
+  if (answer.status >= 300) {
+    // Given back, so the next report tries again.
+    await env.DB.prepare("update cloud_computers set mac_touched_at = null where instance_id = ? and mac_touched_at = ?").bind(row.instance_id, now).run();
+    reportCloudFailure("cloud.mac_touch_failed", { instanceId: row.instance_id, status: answer.status, code: errorOf(answer).code }, "cloud-mac");
+  }
 }
 
 /** Runs a command on the running Mac as a NoMac job. A stopped Mac has nothing to run it on: `try_again` while it starts. */
