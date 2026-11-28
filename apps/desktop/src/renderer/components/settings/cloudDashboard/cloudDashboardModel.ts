@@ -13,7 +13,7 @@ import {
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../../../../shared/cloudLaneLaunch";
 import { cloudTierHoursAt, cloudTierOfMachine, cloudTierRank, cloudTiers, type CloudTier } from "../../../../shared/cloudTiers";
-import { cloudUnitWords, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { cloudCreditScaleOf, cloudUnitWords, cloudWholeParts, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
 import {
   cloudAdsViewOf,
   cloudComputerPriceOf,
@@ -240,10 +240,12 @@ export function heroBalanceParts(account: CloudAccountState): HeroBarPart[] {
   const computersTotal = Math.max(0, account.hours.usedMilli - phoneTotal);
   // An account without the iPhone (and nothing on it this period) has no iPhone part to show.
   const hasPhone = account.phone?.access === "on" || phoneTotal > 0;
+  // Pricing v3: whole credits that add up (Computers 434 + iPhone 290 + Left 276 = 1,000).
+  const [computersShown, phoneShown, leftShown] = cloudWholeParts([computersTotal, hasPhone ? phoneTotal : 0, left], cloudCreditScaleOf(account));
   return [
-    { key: "computers", label: "Computers", milli: used - phone, shownMilli: computersTotal },
-    ...(hasPhone ? [{ key: "phone" as const, label: "iPhone", milli: phone, shownMilli: phoneTotal }] : []),
-    { key: "left", label: "Left", milli: left, shownMilli: left },
+    { key: "computers", label: "Computers", milli: used - phone, shownMilli: computersShown! },
+    ...(hasPhone ? [{ key: "phone" as const, label: "iPhone", milli: phone, shownMilli: phoneShown! }] : []),
+    { key: "left", label: "Left", milli: left, shownMilli: leftShown! },
   ];
 }
 
@@ -257,12 +259,14 @@ export function heroCreditsWorth(account: CloudAccountState, words: CloudUnitWor
   const medium = cloudTiers(cloudCatalogOf(account)).find((tier) => tier.id === "medium");
   const mediumHours = medium ? cloudTierHoursAt(medium, left).replace(/ h$/, "") : null;
   // "About 0 hours" says nothing: with (nearly) nothing left the hero's own notice says what stops.
-  // Pricing v3 with ads on: both times ("up to 54 hours on a Medium with ads · 43 with no ads").
+  // Pricing v3 with ads on: one clear line on a Medium, both times ("Up to 54 hours on a Medium with ads · 43 with no ads.");
+  // the iPhone's two prices are in the price table.
   const view = cloudAdsViewOf(account);
   const both = medium && view?.on && view.available && medium.adMultiplierMilli != null && medium.adMultiplierMilli > 0 && medium.adMultiplierMilli < medium.multiplierMilli
     ? cloudHoursBothText(left, cloudTierRatePair(medium), view, "a Medium")
     : null;
-  const onMedium = mediumHours && mediumHours !== "0" ? both ?? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
+  if (both && mediumHours && mediumHours !== "0") return `${both.charAt(0).toUpperCase()}${both.slice(1)}.`;
+  const onMedium = mediumHours && mediumHours !== "0" ? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
   const minutes = account.phone?.access === "on" ? Math.floor(left / words.phoneMilliPerMinute) : null;
   const onPhone = minutes ? `${minutes.toLocaleString("en-US")} iPhone ${minutes === 1 ? "minute" : "minutes"}` : null;
   if (onPhone && onMedium) return `About ${onPhone}, or ${onMedium}.`;

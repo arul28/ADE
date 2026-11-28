@@ -22,7 +22,8 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
   const leftMilli = cloudHoursLeftMilli(account);
   const words = cloudUnitWords(account);
   // The Small card already says it is unlimited; the note names Small's rate only when it has one.
-  const smallNote = cloudSmallRateMilli(catalog) > 0 ? ` ${cloudSmallHoursSentence(catalog, words)}` : "";
+  // Pricing v3: each card and the price table give Small's two prices, so the header stays one short line.
+  const smallNote = cloudSmallRateMilli(catalog) > 0 && !cloudPricingOf(account) ? ` ${cloudSmallHoursSentence(catalog, words)}` : "";
   return (
     <section id="cloud-sizes" className="kit-card adecd-card" aria-label="Sizes">
       <header className="kit-card-head">

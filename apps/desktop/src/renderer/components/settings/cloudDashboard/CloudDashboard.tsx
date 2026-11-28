@@ -477,7 +477,9 @@ function CloudHero({
             {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
             {githubLine ? <li data-tone="warn">{githubLine} <button type="button" className="adecd-linkish" onClick={toPlans}>See how</button></li> : null}
             {worth || forecast ? <li>{[worth, forecast].filter(Boolean).join(" ")}</li> : null}
-            {earned > 0 ? <li data-tone="lamp">{`${words.milli(earned)} earned from invites, used after your plan's. They never expire.`}</li> : null}
+            {earned > 0 ? <li data-tone="lamp">{words.scale === 1
+              ? `${words.milli(earned)} earned from invites, used after your plan's. They never expire.`
+              : `${words.milli(earned)} from invites, used after your plan's. They never expire.`}</li> : null}
             {smallRateMilli > 0 ? (
               <li>
                 {`${cloudSmallHoursSentence(catalog, words)} ${cloudTierHoursAt({ multiplierMilli: smallRateMilli }, cloudHoursLeftMilli(account))} left at that size.`}

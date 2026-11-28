@@ -56,9 +56,36 @@ export type CloudUnitWords = {
  */
 export function formatCloudHours(milli: number, scale = 1): string {
   const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  // Pricing v3 (a scale other than 1): balances and used amounts are whole credits, rounded down. Rates keep
+  // their exact value (`count`). A legend whose parts must add up uses `cloudWholeParts`.
+  if (safeScale !== 1) {
+    return Math.floor((Math.max(0, Number.isFinite(milli) ? milli : 0) * safeScale) / 1000).toLocaleString("en-US");
+  }
   // Integer math first: milli x scale stays whole, so 1,000 x 10 never drifts below 10,000.
   const tenths = Math.floor((Math.max(0, Number.isFinite(milli) ? milli : 0) * safeScale) / 100);
   return (tenths / 10).toLocaleString("en-US", { maximumFractionDigits: 1 });
+}
+
+/**
+ * Pricing v3: parts of one total (a balance's used and left) as whole shown
+ * credits that add up to the total's whole credits, by largest remainder.
+ * Thousandths in, thousandths out (each a whole credit at `scale`). At scale
+ * 1 the parts come back as they are.
+ */
+export function cloudWholeParts(parts: readonly number[], scale: number): number[] {
+  if (!Number.isFinite(scale) || scale <= 0 || scale === 1) return [...parts];
+  const unit = 1000 / scale;
+  const safe = parts.map((part) => Math.max(0, Number.isFinite(part) ? part : 0));
+  const total = Math.floor(safe.reduce((sum, part) => sum + part, 0) / unit + 1e-9);
+  const floors = safe.map((part) => Math.floor(part / unit + 1e-9));
+  let short = total - floors.reduce((sum, part) => sum + part, 0);
+  const order = safe.map((part, index) => ({ index, rest: part / unit - floors[index]! })).sort((a, b) => b.rest - a.rest);
+  for (const { index } of order) {
+    if (short <= 0) break;
+    floors[index]! += 1;
+    short -= 1;
+  }
+  return floors.map((whole) => whole * unit);
 }
 
 const plain = (value: number): string => Number(value.toFixed(2)).toLocaleString("en-US");

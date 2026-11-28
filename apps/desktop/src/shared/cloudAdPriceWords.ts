@@ -145,10 +145,12 @@ function windowWords(minutes: number): string | null {
  * shows there). A reason the app doesn't know reads "Full price".
  */
 export function cloudFullPriceReasonLine(
-  price: Pick<CloudPrice, "now" | "reason">,
+  price: Pick<CloudPrice, "now" | "reason"> & Partial<Pick<CloudPrice, "rateMilli" | "otherRateMilli">>,
   view: CloudAdsView | null,
 ): string | null {
   if (!view || !view.on || !view.available || price.now !== "full") return null;
+  // One price (a paid plan's Small, the iPhone started before Pricing v3): the full price costs nothing more, so no reason.
+  if (price.rateMilli != null && price.rateMilli === price.otherRateMilli) return null;
   const reason = price.reason as CloudFullPriceReason | null;
   if (reason === "ads_off" || reason === "no_ads_here") return null;
   switch (reason) {
