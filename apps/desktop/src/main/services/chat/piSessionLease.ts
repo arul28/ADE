@@ -7,7 +7,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { pathKey } from "../shared/pathCompare.ts";
 // @ts-expect-error TS5097: same as above.
 import { AdeExpectedError } from "../../../shared/expectedError.ts";
-import { BRAND } from "../../../shared/brand";
+// @ts-expect-error TS5097: same as above.
+import { BRAND } from "../../../shared/brand.ts";
 
 export type PiSessionLeaseOwner = "sdk" | "cli";
 
