@@ -499,6 +499,14 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   `sponsored` answer and 7-day look, on a paid plan it gets neither. That path
   goes away once the client minimum passes the first build that sends the
   header.
+- **The iPhone app** (`apps/ios/ADE/Views/Cloud/CloudAdPrice.swift`): reads
+  `pricing` only from its own account read (a machine's copy of the account
+  was read from that machine's country). It sends `/sent` only from a chat's
+  composer, for that chat's own computer, and names the cloud iPhone a chat
+  holds as `phoneId` on `/sent` and `/ad`. It asks before starting an agent
+  CLI on a cloud computer while ads are on (open as a chat, or start the CLI at
+  the full price). The Ads switch and the ads notice send `noticeSeen` with
+  the answer. It shows no extra-credits price (App Store rules).
 - **Owner**: `scripts/cloud-owner.mjs ad-price [--days N]` (ad income against
   the discount, by product), also in the daily sponsored report.
 - **Website**: `GET /public/pricing` (no auth, CORS `*`, no-store) says whether
