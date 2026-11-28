@@ -1,6 +1,6 @@
 ---
 name: ios-worker
-description: Implements and tests SwiftUI views, navigation flows, and shared iOS design-system work for ADE
+description: Implements and tests SwiftUI views, navigation flows, and shared iOS design-system work for DAEX
 ---
 
 # iOS Worker

@@ -1,6 +1,6 @@
 # Performance hotspots
 
-Mission-specific performance notes for ADE iOS parity work.
+Mission-specific performance notes for DAEX iOS parity work.
 
 **What belongs here:** known lag sources, hot-path rendering issues, and the kinds of fixes workers should prioritize while preserving behavior.
 

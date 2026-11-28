@@ -27,8 +27,8 @@ Environment variables, external dependencies, and setup notes.
 ## Mission-specific environment notes
 - Mission simulator target: `platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1`
 - Desktop parity work may also touch `apps/desktop/`; `npm` must be available in addition to `xcodebuild`
-- Live synced-behavior validation may launch a local ADE desktop host and pair the simulator against it
-- When ADE desktop is running locally for validation, the observed/default sync host port is `8787`
+- Live synced-behavior validation may launch a local DAEX desktop host and pair the simulator against it
+- When DAEX desktop is running locally for validation, the observed/default sync host port is `8787`
 
 ## Validation baseline
 - The build path is executable locally

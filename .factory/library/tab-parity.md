@@ -1,6 +1,6 @@
 # Tab parity scope
 
-Mission-specific scope guidance for ADE iOS parity work.
+Mission-specific scope guidance for DAEX iOS parity work.
 
 **What belongs here:** per-tab scope decisions, desktop-to-mobile adaptation rules, and boundaries that workers should preserve.
 

@@ -65,7 +65,7 @@ DetailView(item: item)
 - Use `matchedTransitionSource(id:in:)` on the list/grid source and `.navigationTransition(.zoom(sourceID:in:))` on the pushed destination for iOS 26 list-to-detail continuity.
 - When a flow also supports Reduce Motion, keep a simpler fallback path available instead of forcing spring-heavy motion on every transition.
 
-## Shared ADE mobile primitives
+## Shared DAEX mobile primitives
 
 - Reuse `apps/ios/ADE/Views/Components/ADEMobilePrimitives.swift` before adding tab-local glass wrappers.
 - `ADEGlassSection` is the shared section shell for grouped mobile content with consistent spacing and glass treatment.

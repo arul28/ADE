@@ -18,5 +18,5 @@ fi
 
 mkdir -p /tmp/ade-build /tmp/ade-ios-dryrun
 
-echo "Environment ready for ADE iOS parity mission."
+echo "Environment ready for DAEX iOS parity mission."
 echo "Simulator target: iPhone 17 Pro / iOS 26.3.1"

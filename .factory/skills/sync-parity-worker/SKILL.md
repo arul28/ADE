@@ -1,6 +1,6 @@
 ---
 name: sync-parity-worker
-description: Extends ADE desktop sync contracts, shared payloads, and iOS models/services when tab parity requires backend work
+description: Extends DAEX desktop sync contracts, shared payloads, and iOS models/services when tab parity requires backend work
 ---
 
 # Sync parity worker
@@ -11,7 +11,7 @@ NOTE: Startup and cleanup are handled by `worker-base`. This skill defines the W
 
 Use this skill when a feature requires changes outside pure SwiftUI/UI work, including:
 
-- desktop ADE sync-host or main-process service changes under `apps/desktop/src/main/`
+- desktop DAEX sync-host or main-process service changes under `apps/desktop/src/main/`
 - desktop shared contract or payload changes under `apps/desktop/src/shared/`
 - iOS `SyncService.swift`, `RemoteModels.swift`, or `Database.swift`
 - cached projection or hydration changes needed for Work, Files, PRs, Settings, or Lanes parity

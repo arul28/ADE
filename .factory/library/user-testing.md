@@ -9,7 +9,7 @@ Testing surface, tools, setup steps, isolation notes, known quirks.
 ## Testing Surface
 - iOS Simulator (iPhone 17 Pro, iOS 26.3.1)
 - Build + run in simulator via xcodebuild or Xcode
-- App requires pairing with a desktop ADE host for full runtime testing (WebSocket connection)
+- App requires pairing with a desktop DAEX host for full runtime testing (WebSocket connection)
 
 ## Limitations
 - Cannot do full runtime/integration testing without a paired desktop host
@@ -36,7 +36,7 @@ Testing surface, tools, setup steps, isolation notes, known quirks.
 - If desktop/shared sync-host code changed, also run desktop `typecheck`, `test`, and `build`
 
 ### Live synced-behavior validation
-1. Launch local ADE desktop from `apps/desktop/`
+1. Launch local DAEX desktop from `apps/desktop/`
 2. Ensure the desktop app opens the project at `/Users/admin/Projects/ADE/.ade/worktrees/mobile-droid-attempt-bbdcd095`
 3. Wait for the desktop sync host to be available (observed/default local host port is `8787`)
 4. In iOS `Settings`, pair/reconnect the simulator to the desktop host
@@ -50,5 +50,5 @@ Testing surface, tools, setup steps, isolation notes, known quirks.
 - disconnected state → `Settings` → reconnect/pair → return to originating area
 
 ### Accepted limitation
-- If the desktop host is not running, the ADE desktop app cannot be brought up reliably, or simulator pairing is flaky, workers should still validate build/test/simulator-only behavior and continue implementation work instead of spending excessive time on setup recovery
+- If the desktop host is not running, the DAEX desktop app cannot be brought up reliably, or simulator pairing is flaky, workers should still validate build/test/simulator-only behavior and continue implementation work instead of spending excessive time on setup recovery
 - Any assertion that depends on live synced data should then be left unverified and escalated back to the orchestrator so the full live validation pass can happen near the end of the mission
