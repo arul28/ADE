@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import { UNIT } from "../../lib/cloudPricing";
-import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
+import { MARKETING_FEATURES, MARKETING_SCREENS } from "../../lib/marketingAnalytics";
 import { CloudLockup } from "../cloud/CloudMark";
 import { CloudIphoneBand } from "../cloud/CloudIphone";
 import { AdsControl } from "../cloud/AdsControl";
@@ -32,7 +32,7 @@ export function CloudSection() {
 
         {view.ads ? (
           <>
-            <AdsControl view={view} align="start" className="mt-8" />
+            <AdsControl view={view} screen={MARKETING_SCREENS.HOME} align="start" className="mt-8" />
             <CloudCharts className="mt-8" />
           </>
         ) : (

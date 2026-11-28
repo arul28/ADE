@@ -153,7 +153,7 @@ function PricingHero() {
           </a>
         </div>
 
-        {view.ads ? <AdsControl view={view} className="mt-9" /> : null}
+        {view.ads ? <AdsControl view={view} screen={MARKETING_SCREENS.PRICING} className="mt-9" /> : null}
 
         <div className={cn(view.ads ? "mt-[120px]" : "mt-[136px]", "grid gap-x-4 gap-y-[150px] sm:grid-cols-2 xl:grid-cols-4")}>
           {PRICING_PLANS.map((plan) => (

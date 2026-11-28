@@ -1,4 +1,6 @@
 import { cn } from "../../lib/cn";
+import { MARKETING_FEATURES, type MarketingScreen } from "../../lib/marketingAnalytics";
+import { captureMarketingFeature } from "../../lib/marketingAnalyticsBrowser";
 import { setAdsOn } from "../../lib/siteOffer";
 import type { PricingView } from "../../lib/pricingView";
 import { adsSentence } from "../../lib/pricingView";
@@ -8,9 +10,14 @@ import { adsSentence } from "../../lib/pricingView";
  * in one pill, the discount on the first. Renders nothing where the visitor's
  * country has no ads, so the page says nothing about ads there.
  */
-export function AdsControl({ view, align = "center", className }: { view: PricingView; align?: "center" | "start"; className?: string }) {
+export function AdsControl({ view, screen, align = "center", className }: { view: PricingView; screen: MarketingScreen; align?: "center" | "start"; className?: string }) {
   const ads = view.ads;
   if (!ads) return null;
+  const choose = (on: boolean) => {
+    if (on === view.withAds) return;
+    setAdsOn(on);
+    reportChoice(on, screen);
+  };
   const options = [
     { on: true, label: "With ads", note: `${ads.discountPct}% less` },
     { on: false, label: "No ads", note: null },
@@ -24,7 +31,7 @@ export function AdsControl({ view, align = "center", className }: { view: Pricin
         onKeyDown={(event) => {
           if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
           event.preventDefault();
-          setAdsOn(!view.withAds);
+          choose(!view.withAds);
           (event.currentTarget.querySelector(`[data-ads="${String(!view.withAds)}"]`) as HTMLButtonElement | null)?.focus();
         }}
       >
@@ -38,7 +45,7 @@ export function AdsControl({ view, align = "center", className }: { view: Pricin
               aria-checked={active}
               tabIndex={active ? 0 : -1}
               data-ads={String(option.on)}
-              onClick={() => setAdsOn(option.on)}
+              onClick={() => choose(option.on)}
               className={cn(
                 "focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-[14px] font-medium transition-colors",
                 active ? "bg-white text-[#0b0a14]" : "text-white/65 hover:text-white",
@@ -62,4 +69,13 @@ export function AdsControl({ view, align = "center", className }: { view: Pricin
       <p className="max-w-[34rem] text-[14px] leading-[1.55] text-white/55">{adsSentence(ads)} Turn ads off at any time.</p>
     </div>
   );
+}
+
+/** The sides already reported this visit: each side's first choice is sent once (`docs/logging.md`, public marketing site). */
+const reported = new Set<boolean>();
+
+function reportChoice(on: boolean, screen: MarketingScreen): void {
+  if (reported.has(on)) return;
+  reported.add(on);
+  captureMarketingFeature(on ? MARKETING_FEATURES.CHOOSE_AD_PRICES : MARKETING_FEATURES.CHOOSE_NO_ADS_PRICES, screen);
 }
