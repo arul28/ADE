@@ -406,7 +406,10 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   with no saved copy on that computer (a first message, or a chat the server
   has never seen) holds the price with ads for 10 minutes, not the window, and
   counts at most 6 times a UTC day per computer (12 per iPhone session); a
-  saved chat gets the whole window. A DAEX Free Models chat's message counts
+  saved chat gets the whole window. Past that cap the answer is
+  `{counted: false, reason: "not_cloud"}` (the contract has no other word):
+  apps send `/sent` and ignore the answer, and a surface that ever shows a
+  reason must not read `not_cloud` as "this chat doesn't use DAEX Cloud". A DAEX Free Models chat's message counts
   only for the computer that saved it (or the iPhone it holds). `/ad` needs a
   saved copy on that computer; its turn id is the app's word too, but every
   `/ad` asks Gravity for an ad (at most 120 a day per account).
@@ -419,7 +422,10 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   `POST /cloud/instances/:id/start` with `adProof: { chatId, messageId }`. A
   wake for an outside agent stays refused at 0 credits; a CLI session or an
   automation started later puts it at the full price, and the zero stop
-  stops it.
+  stops it. The credits emails (`hoursWarnings.ts`) say so on Free with ads
+  on: "Small computers keep working in chats with ads: send a message to
+  start one." (`freeSmallStartsWithAds`); a paid plan's read that Small
+  doesn't use credits.
 - **Requests that do not count**: a proof from the network of one of the
   account's own cloud computers (its `net_asn`, or one it joined from in the
   last 30 days) is not counted, Gravity is not asked, the owner gets an alert

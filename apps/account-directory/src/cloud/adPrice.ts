@@ -719,6 +719,20 @@ export async function wakeRateMilli(env: GravityEnv, account: AccountRow, comput
   return decidePrice(target, ctx, null, now, { smallLook: isChargedSmall(rates) }).now === "ad" ? rates.adMilli : rates.fullMilli;
 }
 
+/**
+ * Whether Free's Small still starts with no credits left: Pricing v3 and the
+ * ad switch reach the account and its ads are on, so a person's message wakes
+ * it at the price with ads (`routes.ts`). For the credits emails
+ * (`hoursWarnings.ts`). Nothing beyond the settings read at `off`.
+ */
+export async function freeSmallStartsWithAds(env: GravityEnv, account: AccountRow): Promise<boolean> {
+  if (!freeRuleCharges(account)) return false;
+  const settings = await readCloudSettings(env);
+  if ((await pricingV3Mode(env, settings)) === "off") return false;
+  const { ctx } = await adContextFor(env, account, await pricingSwitches(env, settings));
+  return ctx.v3 && ctx.adsReach && ctx.adsOn;
+}
+
 /* ---- What the apps read ---- */
 
 /** Whether this request's country has ads (Gravity's countries; an unknown one, a local run, counts). */

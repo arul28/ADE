@@ -4064,7 +4064,8 @@ export type CloudAdSentRequest = {
  * Why a proof (a message sent, a finished reply's ad request) didn't count:
  * `off` (Pricing v3 doesn't reach the account), `ads_off`, `no_ads_here`,
  * `not_cloud` (not the account's own computer or live iPhone, or not a
- * person's chat there), `repeat` (that message or reply already counted),
+ * person's chat there; also the day's proofs for chats no computer saved yet
+ * used up, so never shown as "doesn't use DAEX Cloud"), `repeat` (that message or reply already counted),
  * `unverified` (from the network of the account's own cloud computers).
  */
 export type CloudAdProofRefusal = "off" | "ads_off" | "no_ads_here" | "not_cloud" | "repeat" | "unverified";
