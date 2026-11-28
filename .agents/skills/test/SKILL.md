@@ -1,6 +1,6 @@
 ---
 name: test
-description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests; the default is zero new tests), then run only the touched test files and harvest the early PR. Also keeps docs/mobile/CLI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
+description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests; the default is zero new tests), then run only the touched test files and harvest the early PR. Also keeps docs/mobile/CLI parity in lockstep, and syncs the published @daex-dev SDK packages when a mirrored DAEX surface changes (mirror-sync only, never scope expansion).'
 ---
 
 # /test — Test Suite Steward
@@ -14,7 +14,7 @@ host, architecture, display, package or cross-device proof. Xvfb/container
 smoke does not prove a native desktop session or installed package lifecycle.
 
 
-You are the test steward for ADE. In the dev loop you run after `/quality`, before `/ship`.
+You are the test steward for DAEX. In the dev loop you run after `/quality`, before `/ship`.
 
 **Your job is NOT "add tests for the new code."** It is to leave the test suite *more truthful and smaller* whenever possible. New tests are a last step, not the goal.
 
@@ -126,7 +126,7 @@ claims, token refresh ordering) that an E2E run cannot reach reliably.
 
 ## Logging and analytics gate (always runs)
 
-`docs/logging.md` is ADE's ground truth for operational logging and PostHog product analytics. Before Pass 1:
+`docs/logging.md` is DAEX's ground truth for operational logging and PostHog product analytics. Before Pass 1:
 
 1. Verify `docs/logging.md` exists and read it in full. A missing file is a failed `/test` run, not an optional docs gap.
 2. Review the entire branch diff for meaningful new user decisions, successful mutations, coarse workflow outcomes, screens, or product-level failure categories on desktop, runtime/API, hosted web, native iOS, and the public site.
@@ -137,7 +137,7 @@ claims, token refresh ordering) that an E2E run cannot reach reliably.
 7. Confirm the change does not increase a global analytics ceiling merely to accommodate a new call site. State the worst-case event volume and the tighter event/key/deduplication limit that contains it.
 8. For `apps/web`, preserve direct browser-to-PostHog capture. Do not add Vercel Functions, Edge Functions, Web Analytics, log drains, or a proxy for product events; Preview and Development should remain unconfigured so internal traffic does not consume quota.
 
-The gate applies even when the branch's main purpose is unrelated to analytics. Future agents should leave ADE with broad, decision-useful coverage and a small, predictable event budget.
+The gate applies even when the branch's main purpose is unrelated to analytics. Future agents should leave DAEX with broad, decision-useful coverage and a small, predictable event budget.
 
 ### Error tracking (Sentry) gate (always runs)
 
@@ -388,7 +388,7 @@ Fix until passing before moving to the next.
 
 ## Parity Passes (4–8)
 
-After the test-suite work above, the parity passes keep docs, iOS, the CLI, the published SDK packages, and ADE MCP in lockstep with the changes on this branch. They are independent of one another and of Passes 1–3.
+After the test-suite work above, the parity passes keep docs, iOS, the CLI, the published SDK packages, and DAEX MCP in lockstep with the changes on this branch. They are independent of one another and of Passes 1–3.
 
 **Triage first. The number of agents is not fixed.** Map the changed paths (`git diff "$TEST_REVIEW_BASE" --name-only` plus untracked files) to the surfaces each pass owns, using the trigger paths in each pass below:
 
@@ -402,35 +402,14 @@ A diff that changes only skills, docs, or tests usually needs no parity agent. A
 
 ## Pass 4: DOCS
 
-The internal docs live under `docs/` with this structure (rebuilt; do NOT confuse with the public Mintlify site at repo root `docs.json` + `*.mdx`):
+The internal docs live under `docs/` (do NOT confuse with the public Mintlify site at repo root `docs.json` + `*.mdx`): `docs/README.md` (navigation map), `docs/PRD.md` (product entry point, links every feature), `docs/ARCHITECTURE.md` (system architecture), and `docs/features/<area>/`.
 
-```
-docs/
-├── README.md                          # navigation map
-├── PRD.md                             # product entry point — links to every feature
-├── ARCHITECTURE.md                    # consolidated system architecture
-├── OPTIMIZATION_OPPORTUNITIES.md      # backlog (append-only)
-└── features/
-    ├── agents/              ├── memory/
-    ├── automations/         ├── onboarding-and-settings/
-    ├── chat/                ├── personal-chats/
-    ├── computer-use/        ├── pull-requests/
-    ├── conflicts/           ├── sync-and-multi-device/
-    ├── context-packs/       ├── terminals-and-sessions/
-    ├── cto/
-    ├── files-and-editor/
-    ├── history/
-    ├── lanes/
-    ├── linear-integration/
-    └── sdk/
-```
-
-Each `features/<name>/` contains a `README.md` (overview + source file map at top) plus 1–4 detail `*.md` files.
+Each `features/<name>/` contains a `README.md` (overview + source file map at top), sometimes with detail `*.md` files.
 
 Spawn a general-purpose agent with this prompt:
 
 ```
-You are the documentation updater for the ADE project.
+You are the documentation updater for the DAEX project.
 
 Analyze all changes on the current branch vs the resolved review base and update relevant internal
 docs under `docs/`. The public Mintlify site (docs.json + root-level .mdx files)
@@ -448,42 +427,14 @@ Step 1: Get changed files
 
 Step 2: Map changed source to internal docs
 
-| Source Directory                                   | Doc Location                                       |
-|----------------------------------------------------|----------------------------------------------------|
-| apps/desktop/src/main/services/projects/           | docs/features/onboarding-and-settings/             |
-| apps/desktop/src/main/services/proof/              | docs/features/proof.md                             |
-| apps/desktop/src/main/services/review/             | docs/features/pull-requests/                       |
-| apps/desktop/src/main/services/prs/                | docs/features/pull-requests/                       |
-| apps/desktop/src/main/services/lanes/              | docs/features/lanes/                               |
-| apps/desktop/src/main/services/memory/             | docs/features/memory/                              |
-| apps/desktop/src/main/services/cto/                | docs/features/cto/ (+ linear-integration/)         |
-| apps/desktop/src/main/services/ai/                 | docs/features/chat/ + features/agents/             |
-| apps/desktop/src/main/services/chat/               | docs/features/chat/                                |
-| apps/desktop/src/main/services/automations/        | docs/features/automations/                         |
-| apps/desktop/src/main/services/computerUse/        | docs/features/computer-use/                        |
-| apps/desktop/src/main/services/context/            | docs/features/context-packs/                       |
-| apps/desktop/src/main/services/conflicts/          | docs/features/conflicts/                           |
-| apps/desktop/src/main/services/files/              | docs/features/files-and-editor/                    |
-| apps/desktop/src/main/services/history/            | docs/features/history/                             |
-| apps/desktop/src/main/services/onboarding/         | docs/features/onboarding-and-settings/             |
-| apps/desktop/src/main/services/pty/                | docs/features/terminals-and-sessions/              |
-| apps/desktop/src/main/services/sessions/           | docs/features/terminals-and-sessions/              |
-| apps/desktop/src/main/services/processes/          | docs/features/terminals-and-sessions/              |
-| apps/desktop/src/main/services/sync/               | docs/features/sync-and-multi-device/               |
-| apps/desktop/src/main/services/config/             | docs/features/onboarding-and-settings/             |
-| apps/desktop/src/main/services/ipc/                | docs/ARCHITECTURE.md (IPC section)                 |
-| apps/desktop/src/main/services/git/                | docs/ARCHITECTURE.md (Git engine section) + lanes/ |
-| apps/desktop/src/preload/                          | docs/ARCHITECTURE.md (IPC contract)                |
-| apps/desktop/src/shared/                           | docs/ARCHITECTURE.md + touching feature's doc      |
-| apps/desktop/src/renderer/components/<area>/       | docs/features/<same-area>/                         |
-| apps/desktop/src/renderer/state/                   | docs/ARCHITECTURE.md (UI framework)                |
-| apps/ade-cli/                                      | docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) + docs/features/agents/ |
-| .github/workflows/                                 | docs/ARCHITECTURE.md (Build/Test/Deploy)           |
-| apps/ios/                                          | docs/features/sync-and-multi-device/ios-companion.md |
-| apps/web/                                          | docs/ARCHITECTURE.md (Apps & Processes)            |
-| packages/sdk/                                      | sdk/*.mdx + packages/sdk/README.md + docs/features/sdk/ |
-| packages/chat-ui/                                  | sdk/chat-ui.mdx + packages/chat-ui/README.md + docs/features/sdk/ |
-| apps/desktop/src/shared/callerMcpServers.ts        | sdk/mcp.mdx + packages/sdk/README.md + docs/features/sdk/ (honesty table) |
+Use the path → doc table in `.agents/skills/context/references/doc-map.md`
+(it maps every source area to its README). Also, for the public SDK tab:
+
+| Source | Docs |
+|---|---|
+| packages/sdk/ | sdk/*.mdx + packages/sdk/README.md + docs/features/sdk/README.md |
+| packages/chat-ui/ | sdk/chat-ui.mdx + packages/chat-ui/README.md + docs/features/sdk/README.md |
+| apps/desktop/src/shared/callerMcpServers.ts | sdk/mcp.mdx + packages/sdk/README.md + docs/features/sdk/README.md (honesty table) |
 
 Step 3: Update docs in place
 - Prefer editing existing docs over creating new ones.
@@ -492,12 +443,12 @@ Step 3: Update docs in place
 - Rewrite prose to reflect current reality (not a changelog of what changed).
 - Remove outdated information.
 - Do NOT add changelog sections, "Updated on X" notes, or dated markers.
-- Do NOT modify docs/OPTIMIZATION_OPPORTUNITIES.md via this agent — it is append-only and human-curated.
 
 Step 4: Run doc validation
   node scripts/validate-docs.mjs
 
-This validator only covers the Mintlify site. For internal docs, self-check:
+It checks Mintlify routes and the links in `docs/**/*.md`. It does not
+check source file maps, so also self-check:
   - Every features/<name>/README.md still has a "Source file map" section.
   - PRD.md links resolve (grep for broken relative links).
 
@@ -511,7 +462,7 @@ Report what docs were updated and what was changed.
 Spawn a general-purpose agent with this prompt:
 
 ```
-You are the mobile parity reviewer for the ADE project.
+You are the mobile parity reviewer for the DAEX project.
 
 Analyze all work on the current branch vs the resolved direct review base, including changes that are
 already under review and any simplifications made during `/finalize`. Determine
@@ -536,12 +487,12 @@ Step 3: Inspect iOS equivalents
 - If the branch adds or changes a host/mobile contract, update Swift Codable
   models and iOS tests as needed.
 - If the branch touches sync hello features, remote command descriptors, host
-  update flows, or any command ADE Mobile invokes, verify the compatibility
+  update flows, or any command the DAEX iPhone app invokes, verify the compatibility
   contract: new iOS builds must still connect to older brains in limited mode,
   missing `features.mobileCompatibility` must not fail the handshake, and
   unsupported actions must be gated locally before queue/send.
 - If the branch changes user-facing behavior that iOS already exposes, update
-  the SwiftUI view using native iOS controls and existing ADE design patterns.
+  the SwiftUI view using native iOS controls and existing DAEX design patterns.
 - If the change is not applicable to iOS, explain why in the report.
 
 Step 4: Apply required iOS updates
@@ -567,10 +518,11 @@ Report:
 
 ## Pass 6: CLI parity
 
-The `apps/ade-cli/` package is the agent-facing surface for ADE. Every desktop
-action should be reachable either through a typed subcommand (`ade lanes …`,
-`ade prs …`, `ade chat …`, `ade tests …`, `ade run …`, `ade proof …`) or
-through the generic `ade actions run <domain.action>` registry exposed by
+The `apps/ade-cli/` package (the `daex` CLI) is the agent-facing surface for
+DAEX. Every desktop action should be reachable either through a typed
+subcommand (`daex lanes …`, `daex prs …`, `daex chat …`, `daex tests …`,
+`daex run …`, `daex proof …`) or through the generic
+`daex actions run <domain.action>` registry exposed by
 `adeRpcServer.ts`. When a feature branch adds, renames, or removes a desktop
 feature, the CLI silently drifts unless someone updates it in the same PR.
 This agent closes that gap.
@@ -578,12 +530,12 @@ This agent closes that gap.
 Spawn a general-purpose agent with this prompt:
 
 ```
-You are the ADE CLI parity reviewer.
+You are the DAEX CLI parity reviewer.
 
-The ADE CLI (apps/ade-cli) is the primary agent-facing interface to the ADE
-desktop app. Its goal is to surface every meaningful action inside ADE
-desktop — either as a typed subcommand or via the generic
-`ade actions run <domain.action>` registry. When desktop changes, the CLI
+The DAEX CLI (`daex`, in apps/ade-cli) is the primary agent-facing interface
+to the DAEX desktop app. Its goal is to surface every meaningful action inside
+DAEX desktop — either as a typed subcommand or via the generic
+`daex actions run <domain.action>` registry. When desktop changes, the CLI
 must change with it. Your job is to detect drift on this branch and patch
 apps/ade-cli/ so the CLI stays in lockstep with desktop.
 
@@ -596,26 +548,27 @@ Step 2: Identify CLI-relevant desktop changes
 Treat anything under these paths as a candidate for new / changed / removed
 CLI surface:
 - apps/desktop/src/main/services/**  (each service is a candidate action
-  domain — lanes, prs, chat, tests, proof, run, git, files,
-  automations, computerUse, context, conflicts, history, memory, onboarding,
-  pty, sessions, processes, sync, config, cto, ai)
+  domain — lanes, prs, chat, tests, git, files, automations,
+  computerUse, conflicts, history, onboarding, pty, sessions, processes,
+  sync, config, cto, ai; the registered domains are in
+  apps/desktop/src/main/services/adeActions/domains.ts)
 - apps/desktop/src/preload/**  and  apps/desktop/src/shared/**  (IPC and
   shared contracts the CLI ultimately calls through)
 - New domains/actions registered with the action registry on either side
 
 Step 3: Map each candidate to the CLI
-- Typed subcommands live in apps/ade-cli/src/cli.ts (~3300 lines), a
+- Typed subcommands live in apps/ade-cli/src/cli.ts (~45,000 lines), a
   case-based dispatcher. Existing cases include lanes, git-status, prs-list,
   chat-list, tests-runs, proof-list, actions-list, action-result, etc.
   Locate the closest existing case block and either extend it or add a
   sibling case alongside it.
 - The RPC + actions-registry surface lives in
-  apps/ade-cli/src/adeRpcServer.ts (~6500 lines), with a no-desktop fallback
+  apps/ade-cli/src/adeRpcServer.ts (~11,000 lines), with a no-desktop fallback
   in apps/ade-cli/src/headlessLinearServices.ts. New service actions usually
-  need wiring in one or both so `ade actions run <domain.action>` resolves
+  need wiring in one or both so `daex actions run <domain.action>` resolves
   them whether or not the desktop socket is up.
 - The user-facing inventory lives in apps/ade-cli/README.md under
-  "CLI surface". Keep it accurate whenever a typed command is added,
+  "CLI surface (selected)". Keep it accurate whenever a typed command is added,
   renamed, or removed.
 
 Step 4: Apply auto-fix edits — scoped to apps/ade-cli/ only
@@ -655,22 +608,22 @@ Report:
 
 ## Pass 7: SDK parity (mirror-sync only — never scope expansion)
 
-`packages/sdk` (`@ade-dev/sdk`) and `packages/chat-ui` (`@ade-dev/chat-ui`) are
-published npm packages that MIRROR a deliberately small subset of real ADE.
-The SDK's scope is frozen by design: when ADE changes something the SDK
-already mirrors, the SDK must be updated to match in the same PR; when ADE
+`packages/sdk` (`@daex-dev/sdk`) and `packages/chat-ui` (`@daex-dev/chat-ui`) are
+published npm packages that MIRROR a deliberately small subset of real DAEX.
+The SDK's scope is frozen by design: when DAEX changes something the SDK
+already mirrors, the SDK must be updated to match in the same PR; when DAEX
 adds something new, the SDK does NOT grow to cover it. "Sync what exists,
 never add what doesn't" is the whole rule.
 
 Spawn a general-purpose agent with this prompt:
 
 ```
-You are the ADE SDK parity reviewer.
+You are the DAEX SDK parity reviewer.
 
-packages/sdk (@ade-dev/sdk) and packages/chat-ui (@ade-dev/chat-ui) are
-published npm packages that mirror a FROZEN subset of real ADE. Your job:
+packages/sdk (@daex-dev/sdk) and packages/chat-ui (@daex-dev/chat-ui) are
+published npm packages that mirror a FROZEN subset of real DAEX. Your job:
 if this branch touched anything that subset mirrors, update the packages to
-match. You must NOT expand the SDK's surface to cover new ADE features —
+match. You must NOT expand the SDK's surface to cover new DAEX features —
 scope expansion is a product decision, not a parity fix. If the branch adds
 a brand-new capability with no existing SDK mirror, report "not mirrored —
 out of SDK scope" and move on.
@@ -684,13 +637,13 @@ Step 2: The mirrored surfaces (the complete inventory — check each against
 the branch diff; most files carry "source of truth" / "mirrored in"
 provenance comments at both ends, grep for those markers too):
 
-| Real ADE source of truth | SDK mirror |
+| Real DAEX source of truth | SDK mirror |
 |---|---|
 | apps/desktop/src/shared/types/chat.ts — AgentChatEventEnvelope/AgentChatEvent, AgentChatCreateArgs (mcpServers, strictMcpConfig), AgentChatSessionSummary (mcpServers/strictMcpConfig/mcpCapability), AgentChatMcpCapability, AgentChatMcpServerConfig | packages/sdk/src/types.ts (hand-copied subset) + normalizers in client.ts |
 | apps/desktop/src/shared/types/personalChats.ts — action list, capability flags, PersonalChatSubscribeEventsArgs/Result | packages/sdk/src/types.ts + personalChats.ts wrapper |
 | apps/desktop/src/shared/callerMcpServers.ts — CALLER_MCP_SUPPORT per-provider levels/residuals, validation rules (name charset, URL schemes, caps, reserved names, unsupported transports) | packages/sdk/src/client.ts TSDoc provider table + test/mockRuntime.ts PROVIDER_MCP_VERDICTS (pins claude/pi) |
-| apps/ade-cli/src/multiProjectRpcServer.ts — ade/initialize handshake, protocolVersion, personalChats.call/subscribeEvents/unsubscribeEvents wire shapes, runtime/event notification shape (scope, projectId:null, eventEpoch/gap) | packages/sdk/src/jsonRpc.ts + eventStream.ts + client.ts |
-| apps/ade-cli embedded profile contract — `ade runtime run --socket <p> --profile embedded` flags, ADE_EMBEDDED_PARENT_PID, sync-off guarantee, withheld machine-authority methods | packages/sdk/src/sidecar.ts + test/live.integration.test.ts |
+| apps/ade-cli/src/multiProjectRpcServer.ts — ade/initialize handshake (frozen wire name), protocolVersion, personalChats.call/subscribeEvents/unsubscribeEvents wire shapes, runtime/event notification shape (scope, projectId:null, eventEpoch/gap) | packages/sdk/src/jsonRpc.ts + eventStream.ts + client.ts |
+| apps/ade-cli embedded profile contract — `daex runtime run --socket <p> --profile embedded` flags, ADE_EMBEDDED_PARENT_PID, sync-off guarantee, withheld machine-authority methods | packages/sdk/src/sidecar.ts + test/live.integration.test.ts |
 | apps/ade-cli/src/lib/trustedWindowsTools.ts — GLOBALROOT alias + canonical/escape checks (byte-identical security logic) | packages/sdk/src/windowsSystemTools.ts |
 | apps/desktop/src/shared/types/chat.ts event envelope semantics consumed by the transcript | packages/chat-ui/src/sdkTypes.ts (view contract) + transcript/transcriptRows.ts (port of chatTranscriptRows.ts) |
 | Binary release URL scheme / SHA256SUMS layout (apps/ade-cli/scripts/install-runtime.sh, apps/web/api/install.ts) | packages/sdk/src/download.ts |
@@ -723,7 +676,7 @@ Step 5: Validate
   node scripts/validate-docs.mjs              # Mintlify routes, including sdk/*
 
 Out of scope:
-- Do NOT add new methods, options, events, or components for new ADE
+- Do NOT add new methods, options, events, or components for new DAEX
   features. Report them as "not mirrored — out of SDK scope".
 - Do NOT touch apps/** (other passes own those). Internal docs under
   docs/features/sdk/ are in scope when the mirrored contract changed.
@@ -738,16 +691,16 @@ Report:
 - typecheck/test/preflight/validate-docs results
 ```
 
-## Pass 8: ADE MCP parity
+## Pass 8: DAEX MCP parity
 
-ADE MCP lets outside agents (claude.ai, Claude desktop, ChatGPT, Grok, Cursor,
-VS Code, scripts) use ADE on every computer of the account
-(`docs/features/ade-mcp/README.md`). Its main tool runs the real `ade` CLI, so
+DAEX MCP lets outside agents (claude.ai, Claude desktop, ChatGPT, Grok, Cursor,
+VS Code, scripts) use DAEX on every computer of the account
+(`docs/features/ade-mcp/README.md`). Its main tool, `daex`, runs the real CLI, so
 a feature with CLI commands (Pass 6) is usually reachable already. This pass
-decides whether that is enough. Most branches end it in one line: "ADE MCP:
+decides whether that is enough. Most branches end it in one line: "DAEX MCP:
 nothing needed — <reason>".
 
-**Triggers:** a new or changed user-facing capability, a new `ade` command, a
+**Triggers:** a new or changed user-facing capability, a new `daex` command, a
 change to chat/lane/PR/machine state an outside agent would read, or anything
 under `apps/ade-cli/src/services/remoteMcp/**`. Do it yourself; it rarely
 needs an agent.
@@ -773,7 +726,7 @@ Answer, in order, and act on each "yes":
 6. **Docs.** `docs/features/ade-mcp/README.md` says what changed.
 
 Record the answers in the summary's Parity block. A capability that should
-reach ADE MCP but can't on this branch (it needs a design call, such as a
+reach DAEX MCP but can't on this branch (it needs a design call, such as a
 live card) is listed for the user, not silently skipped.
 
 Wait for every parity agent you started to complete before moving to Verification.
@@ -828,8 +781,9 @@ After the passes that applied:
    - `unit-main`: `src/main/**/*.test.{ts,tsx}`
    - `unit-renderer`: `src/renderer/**/*.test.{ts,tsx}`
    - `unit-shared`: `src/shared/**/*.test.{ts,tsx}` and `src/preload/**/*.test.{ts,tsx}`
+   - `integration-main`: `src/main/services/__tests__/*.integration.test.{ts,tsx}`
 
-   MCP server tests live in `apps/mcp-server/` and are picked up by its own vitest config. Update workspace config ONLY if you introduce a path outside these globs (you shouldn't — colocated naming makes this automatic).
+   DAEX CLI tests live in `apps/ade-cli/` and are picked up by its own `vitest.config.ts` (CI runs them in 2 shards). Update workspace config ONLY if you introduce a path outside these globs (you shouldn't — colocated naming makes this automatic).
 
 3. **Do not run** typecheck, lint, or the full sharded suite — that's `/finalize`'s job.
 
@@ -854,31 +808,18 @@ finished while this skill ran — and does not wait for the rest.
 
 ## Reference: where tests live & how to run them
 
-**Desktop** (`apps/desktop/`) — Vitest workspace, 3 projects, `node` env, forks pool, 20s timeout:
+**Desktop** (`apps/desktop/`) — Vitest workspace, 4 projects (`unit-main`, `unit-renderer`, `unit-shared`, `integration-main`), `node` env, forks pool, 20s timeout (60s for integration; scaled up on Windows):
 - One file: `cd apps/desktop && npx vitest run <file>`
 - One project: `cd apps/desktop && npx vitest run --project unit-main`
 - Sharded (CI uses 8): `cd apps/desktop && npx vitest run --shard=1/8`
+
+**DAEX CLI** (`apps/ade-cli/`) — one file: `cd apps/ade-cli && npx vitest run <file>`.
 
 **Web** (`apps/web/`) — marketing site, no tests.
 
 ### Feature docs (read for context before adding tests)
 
-| Changed source area | Feature doc |
-|---|---|
-| services/prs/, renderer prs/ | docs/features/pull-requests/ |
-| services/lanes/, renderer lanes/ | docs/features/lanes/ |
-| services/chat/, services/ai/, renderer chat/ | docs/features/chat/ + docs/features/agents/ |
-| services/cto/, renderer cto/ | docs/features/cto/ + docs/features/linear-integration/ |
-| services/memory/ | docs/features/memory/ |
-| services/automations/, renderer automations/ | docs/features/automations/ |
-| services/conflicts/ | docs/features/conflicts/ |
-| services/computerUse/ | docs/features/computer-use/ |
-| services/pty/, sessions/, processes/, renderer terminals/ | docs/features/terminals-and-sessions/ |
-| services/files/, renderer files/ | docs/features/files-and-editor/ |
-| services/sync/, syncRemoteCommandService | docs/features/sync-and-multi-device/ |
-| services/onboarding/, services/config/, renderer settings/ | docs/features/onboarding-and-settings/ |
-| services/history/ | docs/features/history/ |
-| services/context/ | docs/features/context-packs/ |
+Use the path → doc table in `.agents/skills/context/references/doc-map.md`.
 
 Each `README.md` has a "Source file map" and a "gotchas / fragile areas" section. If something is flagged as fragile, that invariant deserves a test.
 
@@ -929,7 +870,7 @@ Parity:
 - Docs: <files updated, or "none required"> — validation PASS / blocked
 - Mobile: <iOS files changed, or "none required"> — validation PASS / blocked
 - CLI: <apps/ade-cli files changed, or "none required"> — typecheck + tests PASS / blocked
-- ADE MCP: <typed tools / views / routing / budget changes, or "nothing needed — <reason>"> — PASS / listed for user
+- DAEX MCP: <typed tools / views / routing / budget changes, or "nothing needed — <reason>"> — PASS / listed for user
 - SDK: <packages/sdk + packages/chat-ui files changed + version bump, or "no mirrored surface touched", with any "not mirrored — out of SDK scope" items listed> — typecheck + tests + preflight PASS / blocked
 - Breaking flag/command/slash renames: <list, or "none">
 
