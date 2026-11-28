@@ -10,6 +10,10 @@
 // --version  the DAEX release on the drive; default "latest".
 // --tools    the agents that release pins, baked on the drive; default
 //            "codex claude-code opencode". "" bakes none.
+// --source   TEST BUILDS ONLY: a branch or tag of the public repository whose
+//            runtime replaces the release's (built on the Mac with
+//            `build:static`), to prove unreleased brain changes on a real Mac.
+//            Never for a production template: production carries a release.
 //
 // It starts one Mac on the named drive (no label, so it is the account's own
 // Mac; the account has no secrets or signing for it to receive), puts
@@ -33,6 +37,7 @@ function arg(name, fallback) {
 const drive = arg("drive", "");
 const version = arg("version", "latest");
 const tools = arg("tools", "codex claude-code opencode");
+const source = arg("source", "");
 const key = process.env.NOMAC_API_KEY?.trim();
 const fail = (message) => {
   console.error(`build-template: ${message}`);
@@ -42,6 +47,8 @@ if (!key) fail("set NOMAC_API_KEY (daex secrets exec --env nomac_key -- …, map
 if (!/^[a-z]{2,12}:template:(stable|beta)$/.test(drive)) fail("--drive is <prefix>:template:<stable|beta>, such as adem:template:stable.");
 if (!/^(latest|v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)$/.test(version)) fail("--version is a release such as 1.2.150, or latest.");
 if (/[^a-z0-9 -]/.test(tools)) fail("--tools takes tool names (a-z, 0-9, -) separated by spaces.");
+if (source && !/^[A-Za-z0-9._\/-]{1,120}$/.test(source)) fail("--source is a branch or tag name.");
+if (source && !drive.startsWith("ademdev:")) fail("--source builds are for the test Worker's drives (ademdev:) only.");
 
 const log = (line) => console.error(`${new Date().toISOString()} ${line}`);
 
@@ -143,6 +150,26 @@ DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 "$daex_bin" --version
 DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 "$HOME/drive/.daex/ade/bin/daex" --version
 rm -rf "$stage"
 `;
+// The branch's runtime in place of the release's, laid out as install.sh lays a release out.
+const fromSource = String.raw`
+set -euo pipefail
+case "$(uname -m)" in arm64|aarch64) target=darwin-arm64 ;; *) target=darwin-x64 ;; esac
+src="$(mktemp -d /tmp/daex-src.XXXXXX)"
+git clone --quiet --depth 1 --branch "${source}" https://github.com/arul28/ADE.git "$src/ADE"
+cd "$src/ADE/apps/ade-cli"
+npm ci --no-audit --no-fund --maxsockets=50 > "$src/npm.log" 2>&1 || { tail -n 40 "$src/npm.log"; exit 1; }
+npm run build:static -- --target "$target" > "$src/build.log" 2>&1 || { tail -n 60 "$src/build.log"; exit 1; }
+bin="$(find dist-static -maxdepth 2 -type f -name "ade-$target" | head -n 1)"
+native="$(find dist-static -maxdepth 2 -type f -name "ade-$target.native.tar.gz" | head -n 1)"
+[ -n "$bin" ] && [ -n "$native" ] || { ls -laR dist-static | head -n 40; echo "no runtime in dist-static"; exit 1; }
+cp "$bin" "$HOME/drive/.daex/ade/bin/ade"; chmod 755 "$HOME/drive/.daex/ade/bin/ade"
+rm -rf "$HOME/drive/.daex/ade/runtime/$target"; mkdir -p "$HOME/drive/.daex/ade/runtime/$target"
+tar -xzf "$native" -C "$HOME/drive/.daex/ade/runtime/$target"
+. "$HOME/drive/.daex/env.sh"
+echo "source ${source} at $(git -C "$src/ADE" rev-parse --short HEAD)"
+DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 "$daex_bin" --version
+rm -rf "$src"
+`;
 const bake = String.raw`
 set -uo pipefail
 . "$HOME/drive/.daex/env.sh"
@@ -190,6 +217,7 @@ try {
   log("the Mac is ready");
   await run("put the scripts", ["mkdir -p \"$HOME/drive/.daex\"", ...["env.sh", "boot.sh", "supervise.sh"].map(putFile)].join(" && "), 60);
   await run("install DAEX", install, 1200);
+  if (source) await run(`build DAEX from ${source}`, fromSource, 3000);
   if (tools.trim()) await run("bake the agents", bake, 1800);
   await run("clean the drive", clean, 120);
   await stop("built");
