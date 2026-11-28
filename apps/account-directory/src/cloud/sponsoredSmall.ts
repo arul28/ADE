@@ -5,7 +5,7 @@ import type { GravityEnv } from "./gravity";
 import { SMALL_NO_CARDS_RATE_MILLI, SMALL_SHAPE, cloudSizeFor, type CloudSize } from "./plans";
 import { readCloudSettings, type CloudSettings } from "./settings";
 import { readConsent, type ConsentRow, type SponsoredRequester } from "./sponsoredConsent";
-import { gravitySwitches, switchReaches } from "./sponsoredSwitch";
+import { gravitySwitches, pricingV3Mode, pricingV3Reaches, switchReaches } from "./sponsoredSwitch";
 import { boughtPlanIdOf, logCloud, reportCloudFailure, restartStretchStatements, shownPlanIdOf, statusGuard, type AccountRow, type ComputerRow } from "./store";
 
 // Free's Small computers: unlimited with sponsored cards, in the US. Where
@@ -16,7 +16,8 @@ import { boughtPlanIdOf, logCloud, reportCloudFailure, restartStretchStatements,
 // otherwise they run at `SMALL_NO_CARDS_RATE_MILLI`. A yes by itself, an open
 // chat with no reply, or a terminal is no look. `gravity.ts` saves the answers
 // and the looks; this module decides the rate, puts computers on it and tells
-// the clients.
+// the clients. Where Pricing v3 reaches the account, the ad price owns Small's
+// rate instead (`adPrice.ts`) and this rule writes nothing.
 //
 // The tripwire: a look comes from the person's app, but a script on
 // their own ADE Cloud computer (a US datacenter, signed in to the account)
@@ -51,6 +52,14 @@ export const smallFreeFrom = (country: string | null): boolean => country == nul
 /** The oldest `looked_at` that still keeps Small free at `now`: a week, plus the refresh's lag, never less. */
 const freeLookSince = (now: number): number => now - SMALL_FREE_LOOK_MS - LOOK_REFRESH_MS;
 
+/**
+ * Until when the account's last US look keeps Free's Small free (null with no
+ * yes or no look). Under Pricing v3 only an older app's card request moves
+ * the look (`gravity.ts`), so an older build's Small stays as free as today.
+ */
+export const smallLookUntil = (consent: Pick<ConsentRow, "consent" | "looked_at"> | null): number | null =>
+  consent?.consent === "granted" && consent.looked_at != null ? consent.looked_at + SMALL_FREE_LOOK_MS + LOOK_REFRESH_MS : null;
+
 /** Whether the account's yes still keeps Small free: a look from the US within `SMALL_FREE_LOOK_MS`. */
 export const lookKeepsSmallFree = (consent: ConsentRow | null, now: number): boolean =>
   consent?.consent === "granted" && consent.looked_at != null && consent.looked_at >= freeLookSince(now);
@@ -68,7 +77,8 @@ export function smallStateOf(account: AccountRow, consent: ConsentRow | null, wh
   return {
     // Cards keep (or would keep) Small free: a no has it use credits.
     smallNeedsCards: true,
-    // A yes whose looks lapsed: Small uses credits until the next ADE Cloud chat opened here.
+    // A yes whose looks lapsed: Small uses credits until the next look (a card asked for under a reply
+    // in one of its cloud chats, from the US); opening a chat or a terminal is not one.
     ...(!free && consent?.consent === "granted" ? { smallNeedsLook: true } : {}),
   };
 }
@@ -85,7 +95,12 @@ export function smallStateOf(account: AccountRow, consent: ConsentRow | null, wh
  * never spends real credits.
  */
 export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, settings?: CloudSettings, now = Date.now()): Promise<boolean> {
-  return SMALL_FREE_WHYS.has(await smallRule(env, account, settings, now));
+  const read = settings ?? (await readCloudSettings(env));
+  const why = await smallRule(env, account, read, now);
+  if (why !== "pricing_v3") return SMALL_FREE_WHYS.has(why);
+  // Pricing v3's own rule (`adPrice.ts` `computerRatesMilli`): free off Free and while the ad switch
+  // doesn't reach the account; on Free it starts at its full price, and the price sync moves it to the ad price.
+  return !freeRuleCharges(account) || !(await switchReaches(env, account, (await gravitySwitches(env, read)).mode));
 }
 
 /**
@@ -93,7 +108,7 @@ export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, set
  * account, a recent US look (`look`), a yes whose looks lapsed (`lapsed`), or
  * no yes at all.
  */
-type SmallWhy = "not_free" | "unreached" | "look" | "lapsed" | "no_yes";
+type SmallWhy = "not_free" | "unreached" | "look" | "lapsed" | "no_yes" | "pricing_v3";
 const SMALL_FREE_WHYS: ReadonlySet<SmallWhy> = new Set(["not_free", "unreached", "look"]);
 
 /**
@@ -101,11 +116,14 @@ const SMALL_FREE_WHYS: ReadonlySet<SmallWhy> = new Set(["not_free", "unreached",
  * it. A paid account acting as Free shows the rule (`smallStateOf`) but is
  * never charged for it; a Free account acting as a paid plan isn't either.
  */
-const freeRuleCharges = (account: AccountRow): boolean => shownPlanIdOf(account) === "free" && boughtPlanIdOf(account) === "free";
+export const freeRuleCharges = (account: AccountRow): boolean => shownPlanIdOf(account) === "free" && boughtPlanIdOf(account) === "free";
 
 async function smallRule(env: GravityEnv, account: AccountRow, settings: CloudSettings | undefined, now: number): Promise<SmallWhy> {
+  const read = settings ?? (await readCloudSettings(env));
+  // Pricing v3 owns Small's rate there (`adPrice.ts`): this rule writes nothing.
+  if (await pricingV3Reaches(env, account.user_id, await pricingV3Mode(env, read))) return "pricing_v3";
   if (!freeRuleCharges(account)) return "not_free";
-  const { mode } = await gravitySwitches(env, settings ?? (await readCloudSettings(env)));
+  const { mode } = await gravitySwitches(env, read);
   if (!(await switchReaches(env, account, mode))) return "unreached";
   const consent = await readConsent(env, account.user_id);
   if (lookKeepsSmallFree(consent, now)) return "look";
@@ -267,6 +285,7 @@ export async function syncSmallRates(
   { settings, waitUntil, restore = false }: { settings?: CloudSettings; waitUntil?: CloudWaitUntil; restore?: boolean } = {},
 ): Promise<number> {
   const why = await smallRule(env, account, settings, now);
+  if (why === "pricing_v3") return 0;
   const smallFree = SMALL_FREE_WHYS.has(why);
   const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null").bind(account.user_id).all<ComputerRow>();
   const statements: D1PreparedStatement[] = [];
@@ -312,19 +331,21 @@ const SMALL_SYNC_BUDGET_MS = 20_000;
 export async function syncAllSmallRates(env: GravityEnv, now: number, { force = false, waitUntil }: { force?: boolean; waitUntil?: CloudWaitUntil } = {}): Promise<number> {
   const settings = await readCloudSettings(env);
   const { mode } = await gravitySwitches(env, settings);
+  const v3Mode = await pricingV3Mode(env, settings);
   const started = Date.now();
   let changed = 0;
   for (;;) {
     const users = await env.DB.prepare(`
       select distinct c.user_id from cloud_computers c join cloud_accounts a on a.user_id = c.user_id
       where c.deleted_at is null and ${smallComputerSql("c")}
+        and not ${SWITCH_REACHES_SQL}
         and c.multiplier_milli != (case when
           not ${FREE_RULE_SQL}
           or not ${SWITCH_REACHES_SQL}
           or exists (select 1 from cloud_sponsored_consent s where s.user_id = a.user_id and s.consent = 'granted' and s.looked_at >= ?)
         then 0 else ? end)
       limit ?
-    `).bind(SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, mode, mode, freeLookSince(now), SMALL_NO_CARDS_RATE_MILLI, SMALL_SYNC_PAGE).all<{ user_id: string }>();
+    `).bind(SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, v3Mode, v3Mode, mode, mode, freeLookSince(now), SMALL_NO_CARDS_RATE_MILLI, SMALL_SYNC_PAGE).all<{ user_id: string }>();
     const page = users.results ?? [];
     let pageChanged = 0;
     for (const { user_id: userId } of page) {

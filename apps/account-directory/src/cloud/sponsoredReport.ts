@@ -1,8 +1,10 @@
 import type { CloudSponsoredFormat } from "./contract";
-import { ALL, INDEX_REPORT_URL, PLACEMENTS, PLATFORM_URL, SPLIT_ARMS, TURN_TTL_MS, type GravityEnv } from "./gravity";
+import { ALL, INDEX_REPORT_URL, PLACEMENTS, PLATFORM_URL, SPLIT_ARMS, type GravityEnv } from "./gravity";
+import { TURN_TTL_MS } from "./sponsoredTurns";
 import { utcDay } from "./plans";
 import { readCloudSettings } from "./settings";
 import { gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
+import { adPriceReportLines } from "./adPrice";
 
 // The owner's side of sponsored cards (`gravity.ts` serves them): the
 // twice-hourly clean-up, the formats' A/B scoreboard, and the daily report's
@@ -12,6 +14,8 @@ import { gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
 
 /** How long a chat ADE Free Models served is kept: its cards need a day; its token totals stay a week. */
 const FREE_MODEL_CHAT_KEEP_MS = 7 * 24 * 60 * 60_000;
+/** Pricing v3's proofs and price rows: two days, past the longest window (`ad_window_minutes`, a day at most). */
+const AD_PROOF_KEEP_MS = 2 * 24 * 60 * 60_000;
 
 /**
  * The clean-up, twice an hour (minutes 23 and 53, every account, whatever the
@@ -30,6 +34,13 @@ export async function pruneSponsored(env: GravityEnv, scheduledTime: number): Pr
     // ADE Free Models (`freeModels.ts`): where a person watched a chat from, after a day; a chat served, after a week.
     env.DB.prepare("delete from cloud_free_model_viewers where seen_at < ?").bind(now - TURN_TTL_MS),
     env.DB.prepare("delete from cloud_free_model_chats where last_at < ?").bind(now - FREE_MODEL_CHAT_KEEP_MS),
+    // Pricing v3 (`adPrice.ts`): a proof after two days (past any window; only its dedupe used it), and a
+    // computer's or phone's row two days after its last change, unless it holds the work of a computer awake now.
+    env.DB.prepare("delete from cloud_ad_proofs where at < ?").bind(now - AD_PROOF_KEEP_MS),
+    env.DB.prepare(`
+      delete from cloud_ad_targets where updated_at < ? and (coalesce(full_work, '[]') = '[]'
+        or not exists (select 1 from cloud_computers c where c.instance_id = cloud_ad_targets.target and c.deleted_at is null and c.awake_since is not null))
+    `).bind(now - AD_PROOF_KEEP_MS),
   ]);
 }
 
@@ -149,6 +160,7 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
       + `refused ${refused.length ? refused.join(", ") : "none"}.`,
     );
   }
+  lines.push(...await adPriceReportLines(env, day).catch(() => ["Ad price: the day's numbers couldn't be read."]));
   if (!env.GRAVITY_API_KEY?.trim()) return lines;
   const key = env.GRAVITY_API_KEY.trim();
   const read = async (url: string): Promise<Record<string, unknown> | null> => {

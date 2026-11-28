@@ -1,3 +1,5 @@
+import { noteOutsideAgentWork } from "./adPrice";
+import type { GravityEnv } from "./gravity";
 import {
   CLOUD_CHAT_MESSAGE_MAX_CHARS,
   CLOUD_CHAT_MESSAGE_PRUNE_MS,
@@ -244,7 +246,7 @@ export type ChatWake = {
    * records the use. A response when the send must not be stored; else what
    * the wake will be. Nothing wakes yet.
    */
-  check: (computer: ComputerRow, asker: { outsideAgent: boolean }) => Promise<Response | { state: "awake" | "waking" }>;
+  check: (computer: ComputerRow, asker: { outsideAgent: boolean; message?: { chatId: string; messageId: string } }) => Promise<Response | { state: "awake" | "waking" }>;
   /**
    * A send a move holds: nothing wakes this computer and the new one sends
    * it. Only the plan's refusals run (the account's block, outside agents on
@@ -676,9 +678,10 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
     // Every refusal runs before the row is written: a refused send stores nothing.
     // A held send runs only the plan's refusals: no wake happens (`heldCheck`).
     const asker = { outsideAgent: input.outsideAgent === true };
+    // A person's message: at 0 credits it can be the computer's ad-price proof (`adProof.ts`).
     const checked = held
       ? (await deps.wake.heldCheck(computer, asker, landsOn)) ?? { state: "moving" as const }
-      : await deps.wake.check(computer, asker);
+      : await deps.wake.check(computer, asker.outsideAgent ? asker : { ...asker, message: { chatId: chat.chat_id, messageId } });
     if (checked instanceof Response) return checked;
     const where: InsertWhere = { instanceId: computer.instance_id, launchId: null, viaLaunch: false };
     // A chat with no saved copy has none for the insert to find.
@@ -688,6 +691,8 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
     // The chat moved to another machine since it was read: nothing is queued, and a send again reaches it there.
     if (!inserted) return fail("chat_moved", "This chat moved to another machine just as the message was sent. Send it again.", 409);
     const { row, created } = inserted;
+    // Pricing v3: an outside agent's work gives the computer the full price (`adPrice.ts`).
+    if (input.outsideAgent && created) await noteOutsideAgentWork(env as GravityEnv, computer, now);
     // A move holds it: nothing wakes the old computer or asks it to send, and the move hands it on.
     const askTo = held ? await computerAfterHold(env, userId, chat, computer, now) : computer;
     if (askTo) {

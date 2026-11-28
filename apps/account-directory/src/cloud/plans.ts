@@ -1,4 +1,4 @@
-import type { CloudCatalog, CloudNextPlan, CloudPaidPlanId, CloudPlanFacts, CloudPlanId, CloudTierId } from "./contract";
+import { CLOUD_CREDIT_SCALE_V3, type CloudCatalog, type CloudNextPlan, type CloudPaidPlanId, type CloudPlanFacts, type CloudPlanId, type CloudTierId } from "./contract";
 
 export type { CloudPaidPlanId };
 
@@ -52,6 +52,72 @@ export const SMALL_SHAPE = { cpu: 2, memoryGb: 4 } as const;
  * half a Medium-hour an hour, as Small costs half of a Medium (owner, 2026-11-23).
  */
 export const SMALL_NO_CARDS_RATE_MILLI = 500;
+
+/* ---- Pricing v3: the credit scale and the ad price (`adPrice.ts`) ---- */
+
+/**
+ * The scale apps show under Pricing v3: shown credits = milli / 1000 x 10.
+ * Storage stays in milli. The website builds its numbers from these exports.
+ */
+export const CREDIT_SCALE = CLOUD_CREDIT_SCALE_V3;
+/** Thousandths in one shown credit at `CREDIT_SCALE`: every v3 rate is a whole number of these. */
+export const SHOWN_CREDIT_MILLI = 1000 / CREDIT_SCALE;
+/** The DAEX Cloud iPhone under Pricing v3: 5 credits a minute (500 thousandths), half its Pricing v2 rate. */
+export const PHONE_MILLI_PER_MINUTE_V3 = 500;
+/** The cloud Mac's full rate under Pricing v3: 5 credits a minute. Its computer row carries it an hour (x 60). */
+export const MAC_MILLI_PER_MINUTE = 500;
+/** The ad price's discount before the owner changes `ad_discount_pct`. */
+export const AD_DISCOUNT_PCT_DEFAULT = 20;
+/** How long a message or a finished reply keeps the ad price before the owner changes `ad_window_minutes`. */
+export const AD_WINDOW_MINUTES_DEFAULT = 60;
+
+/**
+ * Pure: the ad rate of a full rate (thousandths an hour or a minute) at
+ * `discountPct`, rounded down to a whole shown credit, so the discount is
+ * never less than it says: Medium 1000 -> 800, Large 2500 -> 2000, X-Large
+ * 4000 -> 3200, the iPhone and the Mac 500 -> 400 at 20%. At 0% it is the
+ * full rate, and apps show no second price.
+ */
+export function adRateMilli(fullMilli: number, discountPct: number): number {
+  const pct = Math.min(100, Math.max(0, discountPct));
+  return Math.floor((fullMilli * (100 - pct)) / 100 / SHOWN_CREDIT_MILLI) * SHOWN_CREDIT_MILLI;
+}
+
+/**
+ * Pure: a size's full rate under Pricing v3, a whole shown credit, rounded
+ * down so nobody pays more than before (the four unlisted shapes: 1650 ->
+ * 1600, 1250 -> 1200, 7250 -> 7200). The main four are already whole.
+ */
+export const v3FullRateMilli = (multiplierMilli: number): number => Math.floor(multiplierMilli / SHOWN_CREDIT_MILLI) * SHOWN_CREDIT_MILLI;
+
+/** One product's two prices under Pricing v3, in thousandths an hour (sizes) or a minute (`phone`, `mac`). */
+export type V3Rate = { fullMilli: number; adMilli: number };
+
+/**
+ * Pure: the Pricing v3 table every surface and the website show, at a
+ * discount: the four sizes of the main list (Small on Free: 5 credits an hour,
+ * free with ads; Small on a paid plan: free either way), the iPhone and the
+ * Mac. Thousandths; shown credits are `milli / SHOWN_CREDIT_MILLI`.
+ */
+export function pricingV3Rates(discountPct: number = AD_DISCOUNT_PCT_DEFAULT): {
+  sizes: Array<{ tier: CloudTierId; label: string } & V3Rate>;
+  smallFree: V3Rate;
+  smallPaid: V3Rate;
+  phone: V3Rate;
+  mac: V3Rate;
+} {
+  const sizes = CLOUD_SIZES.filter((size): size is CloudSize & { tier: CloudTierId } => size.tier !== null).map((size) => {
+    const full = size.tier === "small" ? SMALL_NO_CARDS_RATE_MILLI : v3FullRateMilli(size.multiplierMilli);
+    return { tier: size.tier, label: size.label, fullMilli: full, adMilli: size.tier === "small" ? 0 : adRateMilli(full, discountPct) };
+  });
+  return {
+    sizes,
+    smallFree: { fullMilli: SMALL_NO_CARDS_RATE_MILLI, adMilli: 0 },
+    smallPaid: { fullMilli: 0, adMilli: 0 },
+    phone: { fullMilli: PHONE_MILLI_PER_MINUTE_V3, adMilli: adRateMilli(PHONE_MILLI_PER_MINUTE_V3, discountPct) },
+    mac: { fullMilli: MAC_MILLI_PER_MINUTE, adMilli: adRateMilli(MAC_MILLI_PER_MINUTE, discountPct) },
+  };
+}
 
 /** Whether a computer at this rate uses hours: every size but Small. */
 export const usesHours = (multiplierMilli: number): boolean => multiplierMilli > 0;
@@ -172,6 +238,9 @@ export type CloudOffers = {
 // The label stays on this server's pages: the catalog's plans keep their shape.
 const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFacts => ({ ...terms, diskGb: terms.computerLimit * LARGEST_DISK_MAX_GB });
 
+/** The catalog's Pricing v3 terms for one account (`adPrice.ts` `pricingAccountState`): the discount, and Small's full rate. */
+export type V3CatalogTerms = { discountPct: number; smallFullMilli: number; freeSmallMilli: number };
+
 /**
  * What `GET /cloud/account` tells a client about sizes and plans. Pro and Max
  * are left out until they are set up, so no client offers them. Extra disk
@@ -179,13 +248,22 @@ const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFact
  * `extraHourCents` at the top is for builds that know one price: the
  * account's own plan's, or Plus's for a free account.
  */
-export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free", { smallUsesHours = false }: { smallUsesHours?: boolean } = {}): CloudCatalog {
+export function cloudCatalog(
+  offers: CloudOffers,
+  planId: CloudPlanId = "free",
+  { smallUsesHours = false, v3 }: { smallUsesHours?: boolean; v3?: V3CatalogTerms } = {},
+): CloudCatalog {
   return {
-    sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => ({
-      type, cpu, memoryGb, tier, label, diskMaxGb,
+    sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => {
+      if (v3) {
+        // Pricing v3 (`adPrice.ts`): the full price, and the ad price beside it. Small: 500 on Free
+        // while the ad switch reaches the account, free with ads; free on paid plans.
+        const full = tier === "small" ? v3.smallFullMilli : v3FullRateMilli(multiplierMilli);
+        return { type, cpu, memoryGb, tier, label, diskMaxGb, multiplierMilli: full, adMultiplierMilli: tier === "small" ? 0 : adRateMilli(full, v3.discountPct) };
+      }
       // Free's Small with no sponsored cards uses hours (`gravity.ts` `smallUsesNoHours`): clients show and count it so.
-      multiplierMilli: tier === "small" && smallUsesHours ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli,
-    })),
+      return { type, cpu, memoryGb, tier, label, diskMaxGb, multiplierMilli: tier === "small" && smallUsesHours ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli };
+    }),
     plans: {
       free: catalogPlan(CLOUD_PLANS.free),
       // `paid` is Plus, for builds that know only two plans.
@@ -197,6 +275,11 @@ export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free", 
     paidPriceUsd: CLOUD_PLANS.plus.priceUsd,
     extraHourCents: CLOUD_PLANS[planId === "free" ? "plus" : planId].extraHourCents ?? 2,
     hourUnit: "medium",
+    ...(v3 ? {
+      creditScale: CREDIT_SCALE,
+      phone: { milliPerMinute: PHONE_MILLI_PER_MINUTE_V3, adMilliPerMinute: adRateMilli(PHONE_MILLI_PER_MINUTE_V3, v3.discountPct) },
+      freeSmallMilli: v3.freeSmallMilli,
+    } : {}),
   };
 }
 

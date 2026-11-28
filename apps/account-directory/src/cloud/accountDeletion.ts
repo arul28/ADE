@@ -132,6 +132,9 @@ export async function deleteCloudAccount(
     env.DB.prepare("delete from cloud_free_model_viewers where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_free_model_chats where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_free_model_meters where user_id = ?").bind(userId),
+    // Pricing v3 (`adPrice.ts`): the proofs and what decides each computer's and phone's price.
+    env.DB.prepare("delete from cloud_ad_proofs where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_ad_targets where user_id = ?").bind(userId),
     // The owner's change log of the account test tool (`ownerAccounts.ts`).
     env.DB.prepare("delete from cloud_owner_log where user_id = ?").bind(userId),
     env.DB.prepare("update cloud_referrals set friend_user_id = ? where friend_user_id = ?").bind(gone, userId),

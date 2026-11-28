@@ -1,7 +1,8 @@
 import { isSponsoredFormat, type GravityEnv } from "./gravity";
 import { sponsoredAbReport } from "./sponsoredReport";
+import { adPriceReport } from "./adPrice";
 import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsoredSmall";
-import { gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
+import { pricingV3Mode, gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
 import { freeModelsHoldOf } from "./freePlanGithub";
 import { PAUSE_AFTER_CALLS, SLOW_AFTER_CALLS, readFreeModelMeter, throttleOf } from "./freeModelsMeter";
 import { fail, json } from "./http";
@@ -78,6 +79,14 @@ import {
 export const OWNER_ACCOUNT_PATH = "/cloud/owner/account";
 export const OWNER_SETTINGS_PATH = "/cloud/owner/settings";
 export const OWNER_AB_PATH = "/cloud/owner/ab";
+export const OWNER_AD_PRICE_PATH = "/cloud/owner/ad-price";
+
+/** `POST /cloud/owner/ad-price` `{ days? }`: ad income against what the ad price took off, by product (`adPriceReport`). */
+export async function handleOwnerAdPrice(env: GravityEnv, body: Record<string, unknown>, now: number): Promise<Response> {
+  const days = body.days === undefined ? 30 : body.days;
+  if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 365) return fail("bad_request", "days is a whole number from 1 to 365.", 400);
+  return json({ ok: true, ...(await adPriceReport(env, now, days)) });
+}
 
 /** `POST /cloud/owner/ab` `{ days? }`: the sponsored formats' A/B scoreboard (`sponsoredAbReport`). */
 export async function handleOwnerAb(env: GravityEnv, body: Record<string, unknown>, now: number): Promise<Response> {
@@ -393,8 +402,9 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
       gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off",
       // Off whatever the variable says while a key is missing (`GRAVITY_INFERENCE_KEY`, `GRAVITY_API_KEY`).
       gravity_inference: env.GRAVITY_INFERENCE_KEY?.trim() && env.GRAVITY_API_KEY?.trim() ? env.GRAVITY_INFERENCE?.trim() || "off" : "off (no key)",
+      pricing_v3: env.PRICING_V3?.trim() || "off",
     },
-    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", gravity_inference: inference.mode },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", gravity_inference: inference.mode, pricing_v3: await pricingV3Mode(env, settings) },
   });
 }
 

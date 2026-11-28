@@ -1,3 +1,5 @@
+import { countStoredFirstProof, freeSmallWayOut, noteActivityReport, noteOutsideAgentWork, syncComputerPrice, wakeRateMilli } from "./adPrice";
+import { firstMessageRate, proofIds, proveWakeMessage } from "./adProof";
 import { authenticate } from "../callerToken";
 import { liveUsedWithPhones } from "./credits";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
@@ -10,7 +12,7 @@ import { deleteSavedChatsForLaneEverywhere, routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { freePlanGithubOf, settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
-import { routeSponsored } from "./gravity";
+import { routeSponsored, type GravityEnv } from "./gravity";
 import { routeFreeModels } from "./freeModels";
 import { noteComputerNetwork, rateMilliFor, smallUsesNoHours } from "./sponsoredSmall";
 import { requestNetwork } from "./sponsoredConsent";
@@ -100,6 +102,7 @@ import {
   setupStartDiskGb,
   tierOf,
   type CloudSize,
+  type V3Rate,
 } from "./plans";
 import { CloudProviderError, cloudErrorMessage, createCloudProvider, type CloudProvider } from "./provider";
 import {
@@ -123,6 +126,7 @@ import {
   ComputerCloseError,
   deleteComputer,
   goneFromProviderStatements,
+  isOutOfHours,
   isOutOfHoursFor,
   isOwnEnvironment,
   isPendingId,
@@ -191,12 +195,17 @@ const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
  * GitHub rule holding the free credits is the reason itself: its sentence,
  * with the hold for the client (`CloudOutOfHoursDetail`).
  */
-const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true, freeGithub: CloudFreePlanGithub | null = null) => fail(
+/** Free under Pricing v3: how its Small still works with no credits (`freeSmallWayOut`). */
+const SMALL_WAY_OUT = {
+  ads_on: " Small computers keep working in chats with ads: send a message to start one.",
+  ads_off: " With ads on, Small computers keep working.",
+} as const;
+const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true, freeGithub: CloudFreePlanGithub | null = null, wayOut: keyof typeof SMALL_WAY_OUT | null = null) => fail(
   "out_of_hours",
   freeGithub?.sentence
     ?? (account && smallFree && !hasNoFreePlan(account)
       ? "You're out of DAEX Cloud credits for this period. Small computers don't use credits, so they keep working."
-      : "You're out of DAEX Cloud credits for this period."),
+      : `You're out of DAEX Cloud credits for this period.${wayOut ? SMALL_WAY_OUT[wayOut] : ""}`),
   402,
   freeGithub?.sentence ? { freeGithub } satisfies CloudOutOfHoursDetail : undefined,
 );
@@ -457,6 +466,8 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
   account: AccountRow;
   computers: ComputerRow[];
   outOfHoursFor: (multiplierMilli: number) => Refused | null;
+  /** The same check at the rate the computer runs at, as it is (Pricing v3's price now). */
+  outOfHoursAt: (rateMilli: number) => Refused | null;
   /** Small runs without hours for this account now (`smallUsesNoHours`). */
   smallFree: boolean;
 }> {
@@ -469,14 +480,17 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
   // A free plan a GitHub rule holds: a refusal names the hold, not credits spent. Read only for a held account.
   const freeGithub = account.free_github_hold != null ? await freePlanGithubOf(env, account).catch(() => null) : null;
   const held = freeGithub && freeGithub.state !== "ok" ? freeGithub : null;
+  // Free under Pricing v3 with no credits left: the refusal says how its Small keeps working. Read only then.
+  const wayOut = !smallFree && !hasNoFreePlan(account) && isOutOfHours(account, liveUsed) ? await freeSmallWayOut(env as GravityEnv, account) : null;
   return {
     account,
     computers,
     smallFree,
     outOfHoursFor: (multiplierMilli) => {
       const rate = multiplierMilli === 0 && !smallFree ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli;
-      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account, smallFree, held), refusal: "out_of_hours" } : null;
+      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account, smallFree, held, wayOut), refusal: "out_of_hours" } : null;
     },
+    outOfHoursAt: (rateMilli) => (isOutOfHoursFor(account, liveUsed, rateMilli) ? { response: outOfHours(account, smallFree, held, wayOut), refusal: "out_of_hours" } : null),
   };
 }
 
@@ -486,12 +500,15 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
  */
 async function wakeBlocker(
   env: CloudEnv,
-  computer: Pick<ComputerRow, "user_id" | "multiplier_milli">,
+  computer: ComputerRow,
   now: number,
   multiplierMilli = computer.multiplier_milli,
 ): Promise<{ blocked: Refused | null; account: AccountRow }> {
-  const { account, outOfHoursFor } = await getAccountContext(env, computer.user_id, now);
-  return { account, blocked: outOfHoursFor(multiplierMilli) };
+  const { account, outOfHoursFor, outOfHoursAt } = await getAccountContext(env, computer.user_id, now);
+  // Pricing v3: the computer wakes at the price it has now (a Small on Free with a live proof at the
+  // price with ads, 0; a paid plan's Small, 0), not its size's rule. A resize keeps the size's rule.
+  const v3Rate = multiplierMilli === computer.multiplier_milli ? await wakeRateMilli(env as GravityEnv, account, computer, now) : null;
+  return { account, blocked: v3Rate != null ? outOfHoursAt(v3Rate) : outOfHoursFor(multiplierMilli) };
 }
 
 /**
@@ -556,17 +573,23 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   channel: "stable" | "beta";
   /** The lane the computer is for, kept on its row from the start. */
   lane: CloudLaneFacts;
+  /**
+   * Pricing v3: the create's gate priced it at the ad price for a person's first message: it runs at
+   * those rates from its first minute, and keeps the message until it counts (`countStoredFirstProof`).
+   */
+  adPrice?: { rates: V3Rate; proof: { chatId: string; messageId: string } } | null;
   now: number;
 }): Promise<{ ok: true; pendingId: string } | ({ ok: false } & Refused) | { ok: false; response: Response; refusal: null } | { ok: false; replay: true }> {
   const pendingId = newPendingId();
   const cutoff = args.now - PENDING_TIMEOUT_MS;
   const count = accountComputerCountSql("?", { moveFrom: args.moveFromInstanceId, cutoff });
   // Free's Small uses hours while the account shows no sponsored cards (`gravity.ts` `smallUsesNoHours`).
-  const rate = args.size.tier === "small" ? rateMilliFor(args.size, await smallUsesNoHours(env, account)) : args.size.multiplierMilli;
+  const rate = args.adPrice ? args.adPrice.rates.adMilli
+    : args.size.tier === "small" ? rateMilliFor(args.size, await smallUsesNoHours(env, account)) : args.size.multiplierMilli;
   const result = await env.DB.prepare(`
     insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at, moving_from, channel,
-      lane_id, lane_name, lane_project_origin, lane_branch)
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?
+      lane_id, lane_name, lane_project_origin, lane_branch, ad_full_milli, ad_first_proof)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and ${AWAKE_CAP_COUNT_SQL}) < ?
       and ${count.sql} < ?
       and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
@@ -576,6 +599,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     pendingId, account.user_id, args.requestId, args.size.type, args.size.cpu, args.size.memoryGb, args.diskGb, rate,
     args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId, args.channel,
     args.lane.laneId, args.lane.laneName, args.lane.projectOrigin, args.lane.branch,
+    args.adPrice?.rates.fullMilli ?? null, args.adPrice ? JSON.stringify([args.adPrice.proof.chatId, args.adPrice.proof.messageId]) : null,
     account.user_id, cutoff, AWAKE_COMPUTER_CAP,
     account.user_id, ...count.binds, computerLimitOf(account),
     args.requestId, account.user_id,
@@ -606,6 +630,30 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
 
 async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
   await env.DB.prepare("delete from cloud_computers where instance_id = ?").bind(pendingId).run();
+}
+
+/**
+ * A made computer's last steps, after its adoption: for the create or copy
+ * that made it, and again for each replay that returns it (the first request
+ * may have died after the provider made the computer, before these ran). Each
+ * is safe to repeat: a block that landed stops it and cuts it off the
+ * internet, an outside agent's computer runs its work at the full price, and
+ * the first message its create was priced at the ad price for counts once
+ * (`countStoredFirstProof`, never a message the replay names).
+ */
+async function finishMadeComputer(env: CloudEnv, provider: CloudProvider, userId: string, instance: CloudInstance, now: number): Promise<void> {
+  await enforceBlockAfterCreate(env, provider, userId, instance.id, now);
+  if (isOutsideAgentMetadata(instance.metadata)) await noteOutsideAgentWork(env as GravityEnv, { instance_id: instance.id, user_id: userId }, now);
+  const unproved = await env.DB.prepare("select instance_id, created_at, ad_first_proof from cloud_computers where instance_id = ? and deleted_at is null and ad_first_proof is not null")
+    .bind(instance.id).first<Pick<ComputerRow, "instance_id" | "created_at" | "ad_first_proof">>();
+  if (unproved) await countStoredFirstProof(env as GravityEnv, await loadAccount(env, userId, now), unproved, now);
+}
+
+/** `replayRequest`, with a returned computer's last steps run again (`finishMadeComputer`). */
+async function replayAndFinish(env: CloudEnv, provider: CloudProvider, userId: string, requestId: string, now: number): Promise<ReplayOutcome | null> {
+  const replay = await replayRequest(env, provider, userId, requestId, now);
+  if (replay?.kind === "replayed") await finishMadeComputer(env, provider, userId, replay.instance, Date.now());
+  return replay;
 }
 
 /**
@@ -681,7 +729,10 @@ const onlyWakePorts = (ports: unknown): Array<{ port: number; label: string }> |
 async function handleCreate(request: Request, env: CloudEnv, userId: string, provider: CloudProvider, ctx: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  return createAnswerOf(await createComputer(env, userId, provider, { body }, ctx));
+  // Pricing v3: the app makes a new lane's computer for a person's first message (`adProof`, as on `/start`).
+  const raw = body.adProof && typeof body.adProof === "object" ? body.adProof as Record<string, unknown> : null;
+  const ids = raw ? proofIds(raw.chatId, raw.messageId) : null;
+  return createAnswerOf(await createComputer(env, userId, provider, { body, ...(ids ? { adProof: { request, ...ids } } : {}) }, ctx));
 }
 
 /**
@@ -731,7 +782,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   // limit: it is not a new computer, so hours or the computer limit can't refuse it.
   const repeatedId = clientMetadata.ade_request_id;
   if (repeatedId) {
-    const replay = await replayRequest(env, provider, userId, repeatedId, now);
+    const replay = await replayAndFinish(env, provider, userId, repeatedId, now);
     if (replay) return replay;
   }
 
@@ -741,7 +792,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
     return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
   }
-  const { account, computers, outOfHoursFor } = await getAccountContext(env, userId, now);
+  const { account, computers, outOfHoursFor, outOfHoursAt } = await getAccountContext(env, userId, now);
   const isMove = body.moveFromInstanceId !== undefined;
   const action = isMove ? "move" : "create";
   const { metadata, requestId } = withRequestId(env, clientMetadata);
@@ -752,8 +803,12 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   // An outside agent (ADE MCP) on the free plan: a create, a move and a new lane's launch alike.
   const outside = outsideAgentRefusal(account, isOutsideAgentMetadata(clientMetadata));
   if (outside) return refused(refuse(outside));
+  // Pricing v3: a person's first message for it (never an agent's or an automation's) is its proof,
+  // so it starts at the price with ads, and the hours check reads that price (Free's Small: 0).
+  const firstProof = extras.adProof && !isMove && !clientMetadata.ade_made_by_agent ? extras.adProof : null;
+  const adRates = firstProof ? await firstMessageRate(env as GravityEnv, account, size, firstProof, now, waitUntil) : null;
   // Only the size being made: a Small computer never uses hours.
-  const empty = outOfHoursFor(size.multiplierMilli);
+  const empty = adRates ? outOfHoursAt(adRates.adMilli) : outOfHoursFor(size.multiplierMilli);
   if (empty) return refused(refuse(empty));
   // The owner's cap limits free use only: a paid account is never refused here.
   if (await freeCapRefuses(env, account, now, waitUntil)) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
@@ -784,9 +839,10 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     if (tooBig) return refused(refuse(tooBig));
   }
   // The computer limit is checked in the reservation's own write (a move's count leaves its source out).
-  const reservation = await reserveComputer(env, account, { size, diskGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, now });
+  const adPrice = adRates && firstProof ? { rates: adRates, proof: { chatId: firstProof.chatId, messageId: firstProof.messageId } } : null;
+  const reservation = await reserveComputer(env, account, { size, diskGb, moveFromInstanceId, name, requestId, templateVersion, channel, lane, adPrice, now });
   if (!reservation.ok) {
-    if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? { kind: "in_progress" };
+    if ("replay" in reservation) return await replayAndFinish(env, provider, userId, requestId, now) ?? { kind: "in_progress" };
     return refused(reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response);
   }
 
@@ -807,8 +863,8 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
       diskDayStatement(env, account, now),
       ...(extras.onMade?.(instance) ?? []),
     ]);
-    // A block that landed while the provider made it (a launch mid-create): stopped now, cut off the internet.
-    await enforceBlockAfterCreate(env, provider, userId, instance.id, Date.now());
+    // A block that landed while the provider made it (a launch mid-create), an outside agent's work, its first message.
+    await finishMadeComputer(env, provider, userId, instance, Date.now());
     track({ action, tier: tierOf(size) });
     return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets) };
   } catch (error) {
@@ -898,7 +954,7 @@ export async function forkComputer(env: CloudEnv, computer: ComputerRow, provide
   // A repeat of a copy this account asked for gets that computer, before any
   // limit, as a repeated create does.
   if (metadataIn.ade_request_id) {
-    const replay = await replayRequest(env, provider, computer.user_id, metadataIn.ade_request_id, now);
+    const replay = await replayAndFinish(env, provider, computer.user_id, metadataIn.ade_request_id, now);
     if (replay) return replay;
   }
   const planned = await planFork(env, computer, body, metadataIn, ctx);
@@ -920,7 +976,7 @@ export async function forkComputer(env: CloudEnv, computer: ComputerRow, provide
     now,
   });
   if (!reservation.ok) {
-    if ("replay" in reservation) return await replayRequest(env, provider, computer.user_id, requestId, now) ?? { kind: "in_progress" };
+    if ("replay" in reservation) return await replayAndFinish(env, provider, computer.user_id, requestId, now) ?? { kind: "in_progress" };
     return refused(reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response);
   }
   try {
@@ -934,7 +990,7 @@ export async function forkComputer(env: CloudEnv, computer: ComputerRow, provide
       diskDayStatement(env, account, now),
       ...(extras.onMade?.(instance) ?? []),
     ]);
-    await enforceBlockAfterCreate(env, provider, computer.user_id, instance.id, Date.now());
+    await finishMadeComputer(env, provider, computer.user_id, instance, Date.now());
     track({ action: "copy", tier: tierOf(size) });
     return { kind: "made", instance, answer: instance };
   } catch (error) {
@@ -1118,7 +1174,8 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     computer.multiplier_milli = rate;
     statements.push(
       // A confirmed grow is no longer a reservation, so it counts as billed disk from here.
-      env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?${nextDisk !== currentDisk ? ", disk_reserved_at = null, disk_confirmed_gb = null" : ""} where instance_id = ?`)
+      // Off any ad price (`ad_full_milli`): Pricing v3 puts the new size on its price right after.
+      env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?, ad_full_milli = null${nextDisk !== currentDisk ? ", disk_reserved_at = null, disk_confirmed_gb = null" : ""} where instance_id = ?`)
         .bind(size.cpu, size.memoryGb, nextDisk, rate, computer.instance_id),
       ...statusChangeStatements(env, computer, status, now, "resize"),
       ...launchStatements,
@@ -1126,6 +1183,8 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     // The bigger disk is billed only now that the provider made it; a refused grow gave its room back above.
     if (nextDisk !== currentDisk) statements.push(diskDayStatement(env, account, now));
     await env.DB.batch(statements);
+    computer.ad_full_milli = null;
+    await syncComputerPrice(env as GravityEnv, computer, now);
     // The computer's own grow during a launch's setup: the next launch of that repository starts at this disk.
     // Best effort, after the grow is recorded, so it can never undo or block one.
     if (nextDisk !== currentDisk && origin === "system") await rememberLaunchSetupDisk(env, computer, nextDisk, now);
@@ -1211,9 +1270,16 @@ async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: C
 async function handleStart(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const { account, blocked } = await wakeBlocker(env, computer, now);
+  let { account, blocked } = await wakeBlocker(env, computer, now);
   // `origin: "mcp"`: an outside agent waking the computer for work, refused on the free plan.
   const outside = outsideAgentRefusal(account, body.origin === "mcp");
+  // Pricing v3: a person's message wakes it (`adProof`): at 0 credits that message is its proof first,
+  // so a Small on Free with ads on wakes at the price with ads (`adProof.ts`).
+  const adProof = body.adProof && typeof body.adProof === "object" ? body.adProof as Record<string, unknown> : null;
+  if (blocked && !outside && body.origin !== "mcp" && adProof) {
+    await proveWakeMessage(env as GravityEnv, request, account, computer, adProof.chatId, adProof.messageId, now, waitUntil);
+    ({ account, blocked } = await wakeBlocker(env, (await ownedComputer(env, computer.user_id, computer.instance_id)) ?? computer, now));
+  }
   if (outside || blocked) {
     // Every wake is use, so none goes through at 0 hours (a Small computer's does). The lanes' work reads from their backups with no wake.
     const { refuse } = cloudActionTracker({ env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: outside ? "agent" : "person", key: computer.instance_id, refusedAction: "wake", now });
@@ -1656,7 +1722,9 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   "POST activity": async (request, env, computer, _provider, { now, waitUntil }) => {
     const report = parseActivityReport(await readJson(request), now);
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-    await recordActivity(env, computer.instance_id, report, waitUntil);
+    // Pricing v3: CLI sessions, automations and an outside agent's turn give it the full price
+    // (`adPrice.ts`). Only from the newest report: one sent late never undoes a newer one.
+    if (await recordActivity(env, computer.instance_id, report, waitUntil)) await noteActivityReport(env as GravityEnv, computer, report, now);
     // The network its brain calls from, for Free Small's tripwire (`sponsoredSmall.ts`). Never fails the report.
     await noteComputerNetwork(env, computer, requestNetwork(request)).catch((error: unknown) => {
       reportCloudFailure("cloud.computer_network_failed", { message: error instanceof Error ? error.message : "unknown" });
@@ -1900,7 +1968,8 @@ function instanceRouteOf(path: string): { instanceId: string; action: string | u
 }
 
 const CORS_METHODS = "GET, POST, PUT, DELETE";
-const CORS_HEADERS = new Set(["authorization", "content-type", "x-ade-correlation-id"]);
+// `x-ade-pricing`: the web client says it knows Pricing v3 (`CLOUD_PRICING_HEADER`).
+const CORS_HEADERS = new Set(["authorization", "content-type", "x-ade-correlation-id", "x-ade-pricing"]);
 
 function withCors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
@@ -1987,15 +2056,20 @@ const DRAIN_EXEC_TIMEOUT_MS = 120_000;
  * The queue's wake (CONTRACTS 3.1): every check `/start` makes, before the
  * message is stored, then the wake and the drain after the answer.
  */
-function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext, launchDeps: LaunchRouteDeps): ChatWake {
+function chatWakeFor(request: Request, env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext, launchDeps: LaunchRouteDeps): ChatWake {
   const { now } = ctx;
   // The plan's refusals, for every send: the account's block, an outside agent
   // on the free plan, credits at `multiplierMilli` (the computer's size, or the
   // one a move that holds the send lands on, as `moveRefusal` checked it).
-  const planRefusal = async (computer: ComputerRow, outsideAgent: boolean, multiplierMilli = computer.multiplier_milli): Promise<Response | null> => {
+  // `message`: a person's message it is (Pricing v3: at 0 credits it is the computer's proof first, `adProof.ts`).
+  const planRefusal = async (computer: ComputerRow, outsideAgent: boolean, multiplierMilli = computer.multiplier_milli, message?: { chatId: string; messageId: string }): Promise<Response | null> => {
     const accountBlock = await blockedNow(env, computer.user_id);
     if (accountBlock) return accountBlock;
-    const { account, blocked } = await wakeBlocker(env, computer, now, multiplierMilli);
+    let { account, blocked } = await wakeBlocker(env, computer, now, multiplierMilli);
+    if (blocked && !outsideAgent && message && multiplierMilli === computer.multiplier_milli) {
+      await proveWakeMessage(env as GravityEnv, request, account, computer, message.chatId, message.messageId, now, ctx.waitUntil);
+      ({ account, blocked } = await wakeBlocker(env, (await ownedComputer(env, computer.user_id, computer.instance_id)) ?? computer, now));
+    }
     const outside = outsideAgentRefusal(account, outsideAgent);
     if (outside) {
       cloudActionTracker({ env, waitUntil: ctx.waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "agent", key: computer.instance_id, refusedAction: "wake", now }).refuse(outside);
@@ -2005,8 +2079,8 @@ function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | nu
   };
   return {
     heldCheck: async (computer, { outsideAgent }, landsOn) => await planRefusal(computer, outsideAgent, landsOn?.multiplierMilli),
-    check: async (computer, { outsideAgent }) => {
-      const planRefused = await planRefusal(computer, outsideAgent);
+    check: async (computer, { outsideAgent, message }) => {
+      const planRefused = await planRefusal(computer, outsideAgent, computer.multiplier_milli, message);
       if (planRefused) return planRefused;
       if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
       // A computer that never reported `chat_queue` can't drain, and the image a
@@ -2037,7 +2111,8 @@ function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | nu
       // The exec wakes it too; a failure is harmless: its ADE drains the queue when it starts.
       await provider.exec(computer.instance_id, CLOUD_COMPUTER_COMMANDS.drainMessages, DRAIN_EXEC_TIMEOUT_MS);
     },
-    startLaunch: (parsed) => startServerLaunch(env, userId, parsed, launchDeps),
+    // A person's message to a resting chat: its proof for the new computer (`startServerLaunch`).
+    startLaunch: (parsed) => startServerLaunch(env, userId, parsed, launchDeps, { request }),
   };
 }
 
@@ -2168,7 +2243,12 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (billing) return billing;
   // Sponsored cards and the Index (`gravity.ts`): rows and Gravity only, no provider.
   if (path.startsWith("/cloud/sponsored/")) {
-    if (!await takeRequest(env, caller.userId, "sponsored", now)) return tooManyRequests();
+    // A person's messages have their own minute (one each, on every device): a proof never waits on a card's.
+    // Answers about cards have their own hour.
+    const bucket = path === CLOUD_PATHS.sponsoredSent ? "sponsored_sent" : path === CLOUD_PATHS.sponsoredConsent ? "sponsored_consent" : "sponsored";
+    if (!await takeRequest(env, caller.userId, bucket, now)) {
+      return tooManyRequests(bucket === "sponsored_consent" ? "Too many answers about sponsored cards from this account in the last hour. Try again later." : undefined);
+    }
     const sponsored = await routeSponsored(request, path, env, caller.userId, now, waitUntil);
     if (sponsored) return sponsored;
   }
@@ -2194,7 +2274,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     return providerCall(() => routeChatMessages(request, env, caller.userId, chatMessages.machineKey, chatMessages.chatId, chatMessages.rest, {
       now,
       waitUntil,
-      wake: chatWakeFor(env, caller.userId, provider, ctx, launchDepsFor(request, env, caller.userId, provider, ctx)),
+      wake: chatWakeFor(request, env, caller.userId, provider, ctx, launchDepsFor(request, env, caller.userId, provider, ctx)),
     }));
   }
   const computerRoute = instanceRouteOf(path);

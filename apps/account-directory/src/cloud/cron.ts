@@ -1,3 +1,5 @@
+import { syncAdPricesInTick, syncPhonePricesInTick } from "./adPrice";
+import type { GravityEnv } from "./gravity";
 import { carryLaunchMessagesForComputer, expireChatMessages } from "./chatMessages";
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
@@ -105,6 +107,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   await stopPhonesDue(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.phone_stops_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
+  // Pricing v3: each cloud iPhone on its price now, with or without computers (`adPrice.ts`). Never throws.
+  await syncPhonePricesInTick(env as GravityEnv, now);
   const key = env.AGENT37_API_KEY?.trim();
   if (!key) return;
   const rows = await env.DB.prepare(`
@@ -192,6 +196,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   }
   statements.push(...await diskDayStatements(env, diskConfirmed, now));
   if (statements.length) await env.DB.batch(statements);
+  // Pricing v3: each running computer on its price now; a window that ended goes back at its end (`adPrice.ts`).
+  await syncAdPricesInTick(env as GravityEnv, live, now);
   // A chat launch's follow-ups that waited for the computer's key join its chat.
   for (const instanceId of keyed) await carryLaunchMessagesForComputer(env, instanceId, now);
 
@@ -234,11 +240,13 @@ function shapeFromProviderStatements(env: CloudEnv, computer: TickComputer, inst
   if (size.multiplierMilli !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
     statements.push(...restartStretchStatements(env, computer, now));
   }
-  statements.push(env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, multiplier_milli = ? where instance_id = ? and cpu = ? and memory_gb = ?")
+  // Off any ad price: Pricing v3's step later in this tick puts the new size on its price (`syncAdPricesInTick`).
+  statements.push(env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, multiplier_milli = ?, ad_full_milli = null where instance_id = ? and cpu = ? and memory_gb = ?")
     .bind(size.cpu, size.memoryGb, size.multiplierMilli, computer.instance_id, computer.cpu, computer.memory_gb));
   computer.cpu = size.cpu;
   computer.memory_gb = size.memoryGb;
   computer.multiplier_milli = size.multiplierMilli;
+  computer.ad_full_milli = null;
   return statements;
 }
 
@@ -442,7 +450,8 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
   const unseen = computers.filter((computer) => {
     if (computer.status !== "running" || computer.awake_since == null) return false;
     if (computer.free_wake_until != null && computer.free_wake_until > now) return false;
-    const lastSign = Math.max(computer.last_seen_at ?? 0, computer.awake_since);
+    // Its wake, not its stretch: a rate move (Pricing v3) or the daily settle restarts the stretch, not the clock.
+    const lastSign = Math.max(computer.last_seen_at ?? 0, computer.status_changed_at ?? computer.awake_since);
     return now - lastSign > NO_CHECK_IN_MS;
   });
   if (unseen.length === 0) return;
