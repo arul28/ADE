@@ -165,8 +165,9 @@ struct WorkCloudLaunchRow: View {
             .foregroundStyle(ADEColor.textMuted)
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 4) {
-              if entry.failed || waitsForPerson {
-                Image(systemName: entry.failed ? "exclamationmark.triangle.fill" : "hand.raised.fill")
+              if entry.failed || entry.cancelled || waitsForPerson {
+                // A cancel is the person's choice: the card header's "minus", never a warning.
+                Image(systemName: entry.cancelled ? "minus" : entry.failed ? "exclamationmark.triangle.fill" : "hand.raised.fill")
                   .font(.caption2)
               } else {
                 ProgressView().controlSize(.mini)
@@ -175,7 +176,7 @@ struct WorkCloudLaunchRow: View {
                 .font(.caption2.weight(.semibold))
                 .lineLimit(1)
             }
-            .foregroundStyle(entry.failed || waitsForPerson ? ADEColor.warning : ADEColor.textSecondary)
+            .foregroundStyle((entry.failed && !entry.cancelled) || waitsForPerson ? ADEColor.warning : ADEColor.textSecondary)
             .fixedSize()
           }
           if !entry.failed {
