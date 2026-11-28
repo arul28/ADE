@@ -1,13 +1,45 @@
-# ACP Provider Expansion — Build Spec (locked 2026-08-30)
+# ACP providers (Qwen, Kimi, Grok, Devin)
 
-Locked by /plan deliberation in ADE session `1504018b-e2c5-4fd4-a954-f86c9f9c67e7`.
-Three ACP providers over one shared ACP host: **qwen**, **kimi**, **grok** (plus **devin**, its own section).
-Copilot left ACP for the SDK provider in `copilot-sdk-provider.md`.
-Full Settings → Models redesign for all providers. Research record lives in that chat.
+Qwen, Kimi, Grok and Devin run over one shared ACP host. Antigravity uses the
+same host with its own doc ([antigravity-provider.md](antigravity-provider.md));
+Copilot moved to its SDK ([copilot-sdk-provider.md](copilot-sdk-provider.md)).
+This page holds the verified per-provider facts. Do not re-derive them from
+memory; re-verify against the pinned CLI when a pin moves.
+
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/desktop/src/main/services/chat/acpHost/` | The shared host: `acpConnection.ts` (spawn, process-tree kill, NDJSON JSON-RPC), `acpSession.ts` / `acpSessionPool.ts` (session lifecycle, pooling by provider/cwd/env with idle TTL), `acpEventTranslator.ts` (`session/update` → `AgentChatEvent`), `acpPermissionBridge.ts`, `acpMcpServers.ts`, `acpModelDiscovery.ts`, `acpPromptBlocks.ts`, `acpTurnTelemetry.ts` / `acpTelemetryReaders.ts`, `acpSupervisionGuard.ts`, `acpRuntimeCoordinator.ts`, `acpOneShotPrompt.ts`, `acpScratchDirs.ts`, `acpProtocolTypes.ts` (mirrored ACP v1 types). |
+| `apps/desktop/src/main/services/chat/acpHost/acpDialects/` | One dialect per provider: `qwen.ts` (+ `qwenSkillDefaults.ts`, `qwenUsageLedger.ts`), `kimi.ts`, `grok.ts` (+ `grokTelemetry.ts`), `devin.ts` (+ `devinCloud.ts`), the Antigravity files, `acpAccounts.ts`, `shared.ts`. |
+| `apps/desktop/src/main/services/chat/acpHost/mockAcpAgent.ts`, `fixtures/` | Scripted mock agent and recorded fixtures for tests. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Wires the host into the chat runtime (`commitChatEvent`, launch, resume, Stop). |
+
+## Gotchas / fragile areas
+
+- **Capabilities come from `initialize`, not version numbers.** Unknown
+  `session/update` kinds, blocks, tool kinds and methods are ignored or
+  answered unsupported. An unsupported protocol version fails at the handshake
+  with "update DAEX".
+- **Live events are not slimmed.** Live IPC publishes the uncompacted
+  `liveEnvelope`.
+- **Stable row ids**: `messageId` for text/thought, `toolCallId` for tools;
+  synthesize when a chunk has none.
+- **Suppress `session/load` replay** when DAEX already has the transcript;
+  prefer `session/resume` when advertised.
+- **Cancel is decided client-side, once,** when the `session/prompt` result
+  arrives. A Stop during turn-end telemetry reads finds a finished turn
+  (`AcpSession.turnAnswered`) and sends no `session/cancel`.
+- **Never inject the Codex-signed computer-use MCP** into ACP providers; MCP
+  injection at `session/new` is capability-gated per dialect.
+- **Grok's permission hatch is undocumented**; the preflight and supervision
+  invariant stay load-bearing.
+- **Preview labels appear only in Settings**; pickers show every provider the
+  same way.
 
 ## Version policy
 
-ADE runs its own pinned, checksum-verified copy of each ACP CLI, downloaded on
+DAEX runs its own pinned, checksum-verified copy of each ACP CLI, downloaded on
 demand into the machine tools cache, never a CLI the user installed. See
 [Pinned CLIs and self-update](#pinned-clis-and-self-update) and
 `../onboarding-and-settings/agent-tools-cache.md`. A new version reaches users
@@ -17,8 +49,8 @@ kinds, content blocks, tool kinds/statuses, stop reasons, and agent-to-client
 methods are ignored or answered as unsupported. ACP stdout is decoded across
 byte chunks and its final unterminated line is processed on exit, preserving
 multibyte text and the last message. If an agent advertises an ACP
-protocol version this build of ADE does not speak, the launch fails at the
-handshake with a message naming the CLI and telling the user to update ADE.
+protocol version this build of DAEX does not speak, the launch fails at the
+handshake with a message naming the CLI and telling the user to update DAEX.
 
 ### Last verified versions
 
@@ -37,12 +69,12 @@ the latest verified versions below.
 > history from the retired ACP build. They describe no live path, and the
 > picker rows and icons for Copilot follow the SDK provider.
 
-## 1. Architecture
+## Architecture
 
 One shared ACP host module + four thin dialects. The host owns: process spawn +
 process-tree kill, NDJSON JSON-RPC over stdio, `initialize`, session lifecycle
 (`session/new|load|resume|prompt|cancel|close`), permission round-trips
-(`session/request_permission` → ADE `approval_request`/`PendingInputRequest`),
+(`session/request_permission` → DAEX `approval_request`/`PendingInputRequest`),
 and the event mapper `session/update` → `AgentChatEvent`. Dialects own: spawn
 argv, env, auth probe, capability quirks, cancel/close/usage behavior, and the
 slash-command allowlist.
@@ -53,11 +85,11 @@ slash-command allowlist.
   events (see `commitChatEvent` in `agentChatService.ts`).
 - Stable row identity: `messageId` (text/thought) and `toolCallId` (tool rows).
   Synthesize stable ids when a chunk has none.
-- `session/load` replay must be suppressed when ADE already has a transcript;
+- `session/load` replay must be suppressed when DAEX already has a transcript;
   prefer `session/resume` when advertised.
-- Cancel is tracked client-side: ADE records that it cancelled and treats the
+- Cancel is tracked client-side: DAEX records that it cancelled and treats the
   turn as `interrupted` regardless of the provider's stopReason. The verdict
-  is taken once, when the `session/prompt` result arrives: ADE's own cancel,
+  is taken once, when the `session/prompt` result arrives: DAEX's own cancel,
   a `cancelled` stopReason, or the caller's `isInterrupted()` flag, a pure
   read taken at that moment. A Stop pressed during the turn-end telemetry
   reads finds a finished turn: it neither changes the verdict nor sends
@@ -68,11 +100,11 @@ slash-command allowlist.
   the Codex-signed computer-use MCP into ACP providers.
 - Connection/process pooling keyed `{provider, cwd, env}` with idle TTL and a
   generation counter (pattern: Emdash `connection/source.ts`).
-- Telemetry is host-owned (§3.5): one `AcpTurnTelemetry` per ACP session
+- Telemetry is host-owned (see Shared telemetry): one `AcpTurnTelemetry` per ACP session
   folds context samples, dialect extension notifications, and the provider's
   own local usage ledger into the turn's `done` fields (`outcome.done`).
 
-## 2. Tier policy
+## Tier policy
 
 | Provider | Tier | Notes |
 |---|---|---|
@@ -83,15 +115,15 @@ slash-command allowlist.
 Preview labels appear ONLY in Settings (tile + detail page). Pickers render all
 providers identically.
 
-## 3. Per-provider dialects (verified facts — do not re-derive)
+## Per-provider dialects
 
-### Qwen (`qwen --acp`, **0.22.3 / 0.24.0 / 0.25.0**; ADE pins the vendor's standalone bundle 0.25.0)
+### Qwen (`qwen --acp`, **0.22.3 / 0.24.0 / 0.25.0**; DAEX pins the vendor's standalone bundle 0.25.0)
 - Caps (0.22.3, 0.24.0, and 0.25.0 agree): loadSession, session list/resume,
   image **and audio** prompts, MCP http/sse. Slash via
   `available_commands_update`. **`session/close` is not advertised and answers
-  -32601 on all three.** ADE ends the process (one process per session). Cancel
+  -32601 on all three.** DAEX ends the process (one process per session). Cancel
   is a **notification**: a `session/cancel` request answers -32601 on 0.22.3 and
-  0.25.0 (the shipped ACP SDK registers only the notification handler), so ADE
+  0.25.0 (the shipped ACP SDK registers only the notification handler), so DAEX
   sends the notification directly. Through 0.24.0, default `qwen --help` hides
   `--acp`, `--approval-mode`, `--session-id`, `--yolo`, and
   `--append-system-prompt`; they exist (error-path help lists them). 0.25.0 lists
@@ -100,14 +132,14 @@ providers identically.
 - Auth: `qwen auth` is **removed**. The advertised method set varies: 0.22.3 and
   0.25.0 advertise only `openai`; 0.24.0 also advertised `openai-responses` (all
   use `OPENAI_API_KEY`; `OPENAI_BASE_URL` and a custom provider in
-  `~/.qwen/settings.json` remain supported). ADE probes the stable `openai`
+  `~/.qwen/settings.json` remain supported). DAEX probes the stable `openai`
   method, which every version advertises. It does **not** write that file — it
   reuses the Qwen CLI the user already configured, including a local
   OpenAI-compatible proxy. Unauthenticated `session/new` is
   `-32000 Authentication required: Use Qwen Code CLI to authenticate first.` on
   0.22.3 and 0.25.0. `authenticate` with `openai` and no key is `-32603 Internal
   error` whose `data.details` say "Missing API key" even when the key already
-  lives in settings.json, so ADE's auth probe uses `session/new` as the proof.
+  lives in settings.json, so DAEX's auth probe uses `session/new` as the proof.
   Free OAuth tier is dead (2026-04). Live model ids come from `settings.json`
   `modelProviders` plus anything a session later reports.
 - Config home: `QWEN_HOME` names the config dir (CODEX_HOME shape). Runtime
@@ -118,7 +150,7 @@ providers identically.
   request to `<runtime dir>/usage/token-usage-YYYY-MM.jsonl` (local month;
   runtime dir = `QWEN_RUNTIME_DIR`, else the Qwen home) with `sessionId` = the
   ACP session id, `source` = `main` or a helper/subagent name, and an
-  `inputTokens` that counts `cachedTokens`. ADE reads the rows appended during
+  `inputTokens` that counts `cachedTokens`. DAEX reads the rows appended during
   the turn (file-size mark at turn start, bounded tail read, both month files
   across a month boundary) → `done` totals marked `usageConfidence: "derived"`,
   `requestCount`, `servedModel` (row `model`), and one derived
@@ -126,7 +158,7 @@ providers identically.
   card). `qwen/notify/session/model-update
   { currentModelId }` (sent without an underscore by 0.24/0.25's ACP SDK; both
   spellings are registered) names the model after a switch; ACP model ids
-  carry an auth-type suffix (`gpt-5.5(openai)`) that ADE strips. Account: the
+  carry an auth-type suffix (`gpt-5.5(openai)`) that DAEX strips. Account: the
   row's `authType` is the upstream; `qwen-oauth` is a subscription. Any other
   type whose `settings.json` `model.baseUrl` (or `OPENAI_BASE_URL`) is
   loopback is a `local` account, with only the URL's origin
@@ -138,21 +170,21 @@ providers identically.
   default|low|medium|high|xhigh|max; 0.25.0 lists none|low|medium|high|xhigh (no
   `default`, no `max`) and marks its default through
   `_meta.qwenCode/reasoning.defaultEffort` (`medium` for gpt-5.5). Both still
-  accept `default` when ADE clears the effort; an unknown value is -32602.
+  accept `default` when DAEX clears the effort; an unknown value is -32602.
 - Model selection (verified 2026-09-23 with no-prompt sessions on 0.22.3, and
   re-verified on 0.25.0). `session/new` advertises the `model` option. Its
   values are the suffixed ids of the models in `settings.json`
   (`gpt-5.5(openai)`). Qwen accepts the suffixed id and the bare id (`gpt-5.5`).
   A model that is not configured for the auth type fails with `-32603` `Model
   '<id>' not found for authType 'openai'`, and the session stays on its model.
-  An unknown `reasoning_effort` value fails with `-32602`. ADE matches its id
+  An unknown `reasoning_effort` value fails with `-32602`. DAEX matches its id
   against the advertised ids through the suffix strip and sends the advertised
-  id. ADE sends nothing for a model that Qwen does not offer (see 3.6).
+  id. DAEX sends nothing for a model that Qwen does not offer (see 3.6).
 - Tracked CLI: `qwen -i "<prompt>" -m <model> --approval-mode=<m> --session-id
   <uuid>`; resume `--resume <id>` / `--continue`; NEVER pass `--yolo` together
   with `--approval-mode` (parse error: use `--approval-mode=yolo`). NEVER pass
   `--session-id` with `--resume`/`--continue`. `--append-system-prompt` carries
-  ADE guidance. The flag set and its parse errors are identical on 0.22.3 and
+  DAEX guidance. The flag set and its parse errors are identical on 0.22.3 and
   0.25.0; only the default help text changed (0.25.0 lists the load-bearing
   flags that older builds hid).
 - Spawn: the pinned bundle's own Node runs its script, `<root>/node/bin/node
@@ -167,18 +199,18 @@ repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
 - Caps (live-verified identical on 0.39.1, 2.1.1 and 2.3.1, 2026-10-23): loadSession,
   list, resume, **`session/close` (implemented; a dummy id returns `{}`)**,
   plus delete/fork/additionalDirectories. Image prompts yes, audio no. MCP
-  http/sse. `agentCapabilities.auth.logout` is advertised; ADE has no ACP
+  http/sse. `agentCapabilities.auth.logout` is advertised; DAEX has no ACP
   logout yet. `fixtures/kimi.initialize.json` is captured from 2.3.1; the only
   difference from 0.39.1 is `agentInfo.version`.
 - Fork: `session/fork` copies the whole session and opens it live in the
   same process; it refuses mid-turn (`SESSION_FORK_ACTIVE_TURN`) and takes no
   cut point over ACP. Side chats use it between turns. Since 2.3.0 a session is
-  locked to its process (`KIMI_CODE_SESSION_LOCK=0` turns that off), so ADE
+  locked to its process (`KIMI_CODE_SESSION_LOCK=0` turns that off), so DAEX
   closes the fork in the main chat's process before the side chat resumes it.
 - Cancel: `session_cancel` is a notification in both binaries. A
   `session/cancel` REQUEST answers `-32601` on both (verified live), so the
   dialect sends the spec notification directly. `stopReason: "cancelled"` maps
-  to ADE's interrupted turn.
+  to DAEX's interrupted turn.
 - MCP: both versions convert ACP `session/new` `mcpServers` and pin
   `runtime_id: "local"` on stdio entries (`acpMcpServersToConfigRecord`), which
   satisfies the engine's stdio runtime-id requirement (MoonshotAI/kimi-code
@@ -193,41 +225,41 @@ repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
   result, so the host waits up to 250 ms for it (and stops waiting in a
   session where it never came). The prompt result may carry the ACP `usage`
   block (`inputTokens`, `outputTokens`, `cachedReadTokens`,
-  `cachedWriteTokens`, `thoughtTokens`, `totalTokens`). ADE reads both when
+  `cachedWriteTokens`, `thoughtTokens`, `totalTokens`). DAEX reads both when
   present; absent stays absent, with no degradation note. The `model` config
   option's `currentValue` names the served model. Account: a
   `$KIMI_CODE_HOME/credentials/kimi-code.json` login is a subscription,
   `MOONSHOT_API_KEY` alone an API key.
 - ACP v1 config: both 0.39.1 and 2.1.1 implement `session/set_config_option`
   for the `mode`, `model`, and `thinking` options (verified live: an unknown
-  session answers `-32602`, so the method exists). ADE forwards those options
+  session answers `-32602`, so the method exists). DAEX forwards those options
   to the native ACP session and surfaces the agent's returned values in the
   generic ACP composer controls. A live authenticated turn is still required to
   validate usage and cancellation behavior end to end.
 - Model and thinking (code review of the 0.39.1 and 2.1.1 binaries; this
   machine has no usable Kimi login). `set_config_option` `model` and
   `session/set_model` run the same `setModel`. The `model` values are the
-  catalog aliases (`kimi-code/k3`), which match ADE's `providerModelId`. The
+  catalog aliases (`kimi-code/k3`), which match DAEX's `providerModelId`. The
   `thinking` option lists `off` and the model's declared effort levels. Kimi
-  shows it only for a model with thinking control. ADE sends the chat's
+  shows it only for a model with thinking control. DAEX sends the chat's
   effort as `thinking` only when the session offers that level. With no
-  effort picked, ADE sends nothing.
+  effort picked, DAEX sends nothing.
 - Vendor references: [Kimi ACP reference](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp) and
   [Kimi Code 2.0.0 release](https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai%2Fkimi-code%402.0.0).
 - Auth: `kimi login` / `kimi acp --login` device-code; region
   `mainland-cn` (kimi.com) or `global` (kimi.ai). Settings and first-run
   setup run `kimi login --region <region>` in-app (`agentCliLoginRunner.ts`);
-  the device code is read from the link's `user_code`. ADE does **not** write
+  the device code is read from the link's `user_code`. DAEX does **not** write
   `~/.kimi-code/config.toml`. `authenticate` method id
   `login`, type `terminal`. Unauthenticated `session/new` is `-32000
   Authentication required` on both 0.39.1 and 2.1.1.
 - Config home: `KIMI_CODE_HOME` (dir itself, default `~/.kimi-code`),
   `config.toml`. Live probe: `kimi doctor` and ACP both honour it. Installer
-  default bin is `$HOME/.kimi-code/bin` — ADE's known-dir lookup includes that
+  default bin is `$HOME/.kimi-code/bin` — DAEX's known-dir lookup includes that
   path because `KIMI_NO_MODIFY_PATH` skips rc edits. Model flag takes an ALIAS,
-  not a raw model id. ADE forwards the selected model alias and supported
+  not a raw model id. DAEX forwards the selected model alias and supported
   abstract permission mode before the `acp` subcommand (`--model <alias>`,
-  `--plan`, `--auto`, or `--yolo`); ADE rejects `auto-edit` because Kimi has no
+  `--plan`, `--auto`, or `--yolo`); DAEX rejects `auto-edit` because Kimi has no
   equivalent mode. Kimi has no ACP session config setter.
 - Tracked CLI: NO argv prompt for interactive TUI → use
   `{ initialInput: prompt, initialInputDelayMs: 750 }` (Cursor-branch shape).
@@ -239,7 +271,7 @@ repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
   stale) — verify with one live probe after login.
 - Metadata/title tasks use Kimi's native `--prompt` route with a temporary
   `--agent-file` whose `tools` list is empty; they never receive project tools.
-  Kimi has no accept-edits equivalent, so ADE's generic accept-edits selection
+  Kimi has no accept-edits equivalent, so DAEX's generic accept-edits selection
   keeps Kimi at its normal approval posture. An explicit native `auto-edit`
   request remains rejected rather than being silently broadened to `--auto`.
 - Session id: NOT assignable at launch. Capture via sessions-dir disk-adopt
@@ -257,7 +289,7 @@ Rust, Apache-2.0)
   neutralization — see the permission rules below; the environment variable is
   the other half and neither works alone. Reasons for the other flags:
   auto-update swaps the binary under the host; native plan mode hangs external
-  hosts; leader mode cross-contaminates sessions. ADE owns plan UX. The same
+  hosts; leader mode cross-contaminates sessions. DAEX owns plan UX. The same
   pair rides the tracked-CLI launch and resume commands.
 - Caps: loadSession, list/resume/close all advertised and verified across host
   restart. NO image/audio. MCP http/sse. Re-verified on 1.0.41 (installed) and
@@ -289,7 +321,7 @@ Rust, Apache-2.0)
      cancels the Claude inheritance. Arm E proved dropping the mode flag
      re-breaks approvals even with the env var set.
      RISK: the underscore prefix marks a vendor-internal hatch. It is
-     undocumented and Grok ships ~daily, so ADE verifies the effect with a
+     undocumented and Grok ships ~daily, so DAEX verifies the effect with a
      cached, offline `grok inspect` preflight
      (`main/services/ai/grokPermissionPreflight.ts`) and backs it with a
      provider-agnostic runtime invariant
@@ -316,7 +348,7 @@ Rust, Apache-2.0)
      fails OPEN on exactly the documented root cause. (It also lists one
      `Source:` row PER CONTRIBUTOR with a combined count, so a single-row
      parse is additionally print-order dependent — a second, smaller trap.)
-     THE GATE ADE SHIPS instead is self-attestation: one throwaway
+     THE GATE DAEX SHIPS instead is self-attestation: one throwaway
      handshake-only agent spawn (`initialize` + `session/new`, never a prompt,
      so zero spend and no user content in the log) using the session's exact
      argv and env plus `--debug --debug-file`, then two tracing lines.
@@ -328,7 +360,7 @@ Rust, Apache-2.0)
      fired on THIS build — measured ×1 on every marker run even with no Claude
      settings present — which makes this signal a LIVE REGRESSION DETECTOR: if
      xAI renames or drops `_GROK_CLAUDE_MARKER_OVERRIDE`, the attestation
-     vanishes and ADE degrades loudly instead of silently losing supervision.
+     vanishes and DAEX degrades loudly instead of silently losing supervision.
      Renamed string, empty log, crash, and timeout all read as FAILED. Note
      `inspect` does not honor `--debug-file` (no logger init), so this signal
      exists only on the `agent stdio` path — the path sessions actually use.
@@ -342,11 +374,11 @@ Rust, Apache-2.0)
      private `GROK_HOME`, which would stop it exercising the user's real
      `~/.grok/config.toml` — including `[ui] permission_mode`, one of the two
      halves under test — and fidelity to the session's real environment is the
-     probe's entire value. ADE also must not delete from `~/.grok`. Bounded by
+     probe's entire value. DAEX also must not delete from `~/.grok`. Bounded by
      the cache to roughly once per lane per Grok version. It is invisible in
      Grok's own UI (`grok sessions list` reports "No sessions found").
      **If Grok session disk-adopt or session import is ever built, that code
-     MUST skip probe sessions**, or phantom entries will surface in ADE that
+     MUST skip probe sessions**, or phantom entries will surface in DAEX that
      the user never created. They sit in the same `sessions/<encoded-cwd>/`
      directory as real ones and are NOT filtered by whatever makes `sessions
      list` skip them. Discriminator, measured: `events.jsonl` is exactly 0
@@ -355,12 +387,12 @@ Rust, Apache-2.0)
      GATE GOTCHA B — silence has TWO causes. Step 3 of Grok's pipeline is
      per-project remembered approvals (`CachedStateStore` /
      `remember_tool_approvals`), evaluated BEFORE prompt policy, so a user who
-     once chose "always allow" — possibly in Grok's own TUI, outside ADE —
-     legitimately gets edits with zero RPCs. ADE cannot tell the two apart, so
+     once chose "always allow" — possibly in Grok's own TUI, outside DAEX —
+     legitimately gets edits with zero RPCs. DAEX cannot tell the two apart, so
      the notice reports the OBSERVATION ("changed files here without asking
-     ADE to approve") and never attributes the decision; the detail body names
+     DAEX to approve") and never attributes the decision; the detail body names
      both causes. A banner that misfires is a banner users learn to ignore.
-     FALLBACK if the hatch disappears: point `GROK_HOME` at an ADE-owned dir
+     FALLBACK if the hatch disappears: point `GROK_HOME` at a DAEX-owned dir
      whose `config.toml` sets `[claude_compat] imported = true`. Documented
      and verified working, but NOT the default: it strips Claude-derived
      skills 50→47, agents 11→3, and MCP 4→2, and it moves `auth.json` and
@@ -407,14 +439,14 @@ Rust, Apache-2.0)
     the cache read, `modelCalls`, `costUsdTicks`, and `modelUsage` keyed by the
     SERVED model (a `grok-4.5` request served by `grok-4.5-build`). The
     `session/prompt` result `_meta` repeats these (on 1.0.13 under
-    `_meta.usage`, with totals also at the top level); ADE reads both.
+    `_meta.usage`, with totals also at the top level); DAEX reads both.
     `costUsdTicks` are nano-dollars (1_000_000_000 = $1.00): a captured
     30k-token ping at 86_649_000 ticks is $0.0866, not $86.65.
   - `x.ai/models/update { currentModelId, availableModels[{ modelId,
     _meta.totalContextTokens }] }` — the requested model and every window.
     `totalContextTokens` is version-specific: 1.0.41 reported grok-4.6/4.5 at
     500000, while 1.0.46 reports all four models at 256000 and adds
-    `_meta.contextWindows: [256000, 500000]` (its TUI-only picker sizes). ADE
+    `_meta.contextWindows: [256000, 500000]` (its TUI-only picker sizes). DAEX
     reads `totalContextTokens`, so its meter follows the installed CLI.
   - `x.ai/session/update` `subagent_spawned` / `subagent_finished`
     (`tokens_used`, `tool_calls`, `duration_ms`, `output`) → `subagent_started`
@@ -435,16 +467,16 @@ Rust, Apache-2.0)
   - `--reasoning-effort low` opened the session at `medium`.
   - `session/resume` brings back the model and effort that the session last
     ran with. It ignores `-m`.
-  ADE keeps `-m` as the process default. ADE also keeps
+  DAEX keeps `-m` as the process default. DAEX also keeps
   `--reasoning-effort` on the spawn for builds before 1.0.40: their session
   advertises no `reasoning_effort` option, so the flag is the only way to set
   the effort. The dialect names the flag (`spawnFlag`). When the open session
   advertises the option, a change to this flag alone does not restart the
   runtime, because the config option already moved the effort. After every
   entry, the coordinator sets the model and the effort through the config
-  option (see 3.6). Live proof through ADE's coordinator: a session
+  option (see 3.6). Live proof through DAEX's coordinator: a session
   opened on grok-4.6, then rejoined in a process spawned with `-m grok-4.7`.
-  The resume reported grok-4.6/medium. ADE set grok-4.7/low, and the turn
+  The resume reported grok-4.6/medium. DAEX set grok-4.7/low, and the turn
   served `grok-4.7-build` at `reasoning_effort: low` (Grok's own
   `chat_history.jsonl`), for $0.157. Grok serves a model under its build name
   (`grok-4.7` as `grok-4.7-build`); `grok-4.7-build-fast` keeps its own id.
@@ -452,7 +484,7 @@ Rust, Apache-2.0)
   text fs and corrupts assets). `terminal` capability optional.
 - Slash: `available_commands_update`, re-emitted repeatedly → dedupe.
 - Config home: `GROK_HOME` IS a valid env override (`xai-dirs` reads it;
-  earlier "no override" text was wrong). ADE passes the resolved value to the
+  earlier "no override" text was wrong). DAEX passes the resolved value to the
   ACP child and auth probe, defaulting to the user's `~/.grok`; it never writes
   the directory. This keeps custom credential homes first-class without
   changing the default login path.
@@ -470,14 +502,14 @@ Rust, Apache-2.0)
   options, cancel-as-notification, close, resume, and a
   `session/request_permission` for a write and an execute in
   `--permission-mode default` with `_GROK_CLAUDE_MARKER_OVERRIDE=1`, including a
-  symlinked cwd. ADE pins `@xai-official/grok-<target>` 1.0.46 and downloads it
+  symlinked cwd. DAEX pins `@xai-official/grok-<target>` 1.0.46 and downloads it
   on demand; `--no-auto-update` plus `GROK_DISABLE_AUTOUPDATER=1` keep it at
   the pin.
 
 ### Copilot (removed from ACP)
 
 Copilot is no longer an ACP provider. It runs as an SDK provider on
-`@github/copilot-sdk` against ADE's pinned Copilot runtime. Its dialect, probes,
+`@github/copilot-sdk` against DAEX's pinned Copilot runtime. Its dialect, probes,
 usage ledger wiring and tests were removed with the move. The current design
 is in `copilot-sdk-provider.md`. The Copilot CLI facts that still matter for
 the terminal CLI and for usage history stay in `terminals-and-sessions/` and
@@ -509,7 +541,7 @@ the terminal CLI and for usage history stay in `terminals-and-sessions/` and
   value -32602. `session/set_mode` returns `{}`. `model` has a `currentValue`
   and an empty choice list pre-login. **Model selection is the `model` config
   option**: `session/set_model` is -32601, so the dialect declares no
-  `modelSelection` and ADE sends `session/set_config_option` (as for Grok,
+  `modelSelection` and DAEX sends `session/set_config_option` (as for Grok,
   Qwen, and Kimi).
 - Auth: `devin auth login` browser OAuth; the handshake advertises only the
   `devin-browser` method. Settings and first-run setup run
@@ -531,7 +563,7 @@ the terminal CLI and for usage history stay in `terminals-and-sessions/` and
   `platform`, load-only rejoin) remain from an earlier session and were not
   re-checked.
 
-### 3.5 Shared telemetry (all four dialects)
+### Shared telemetry (all four dialects)
 
 `acpTurnTelemetry.ts` owns it; dialects only translate their payloads into
 `AcpTelemetrySignal`s (`extensionNotifications`), read their ledgers
@@ -555,7 +587,7 @@ the terminal CLI and for usage history stay in `terminals-and-sessions/` and
   requested model is the launch model token the session opened with (in the
   agent's plain naming, so Qwen's `(authType)` suffix is stripped), replaced
   by Grok's `x.ai/models/update` `currentModelId` when that arrives.
-  **Served-model mismatch.** The telemetry also keeps the model that ADE asked
+  **Served-model mismatch.** The telemetry also keeps the model that DAEX asked
   for, and no agent report replaces it. The shared `isServedModelMismatch`
   (`chat/servedModelMismatch.ts`) decides whether the model that answered is
   another model. Another spelling, a build or effort variant
@@ -569,7 +601,7 @@ the terminal CLI and for usage history stay in `terminals-and-sessions/` and
   answered with gpt-5.6-luna, not claude-haiku-4.5." It does this once per
   served model per session. A dialect can add one line of detail (Copilot
   names the Auto rule). When the provider names no served model, the
-  fallback is the session's current model: the model that ADE set on the
+  fallback is the session's current model: the model that DAEX set on the
   session after the entry call, not the model that the entry call reported.
   `account` is `{ provider, kind, upstream?, endpoint? }` from local non-secret
   config (`endpoint` is an origin only); the email is the quota service's job.
@@ -584,13 +616,13 @@ the terminal CLI and for usage history stay in `terminals-and-sessions/` and
   maps to `context_compact { detection: "provider" }`; unknown statuses and
   `compaction_summary_chunk` map to nothing. The translator reads
   `compaction_update` whether or not the client advertised
-  `clientCapabilities.session.compaction`, and ADE does NOT advertise it:
+  `clientCapabilities.session.compaction`, and DAEX does NOT advertise it:
   telemetry must not change what an agent does, and no dialect's agent has
   been seen to use it. The `initialize` handshake is the same as before
   telemetry, and no dialect switch exists to change it.
   Copilot runs its compaction as a model request that the ledger records with
   `initiator = "compaction"` (verified live with `/compact` on 1.0.88; no ACP
-  update is sent), so ADE reports each such row as `context_compact { state:
+  update is sent), so DAEX reports each such row as `context_compact { state:
   "completed", detection: "provider", preTokens: input }`. There is no
   `postTokens`: the row's output is the summary alone, not the context that
   follows. When the same turn's context drop already published an inferred
@@ -615,7 +647,7 @@ the terminal CLI and for usage history stay in `terminals-and-sessions/` and
 - Live context samples go through the shared `liveContextUsageEvent` builder,
   so the meter's percentage rounds to two decimals like every other runtime.
 
-### 3.6 Model and effort selection (all four dialects)
+### Model and effort selection (all four dialects)
 
 `acpRuntimeCoordinator.ts` owns these rules. The chat service only passes the
 chat's model token and effort.
@@ -633,15 +665,15 @@ chat's model token and effort.
   provider that has never reported (offline, never probed). Copilot background
   model and auth probes first list MCP definitions without connecting, then
   disable every listed server and all built-ins for the temporary process.
-  If that metadata cannot be read, ADE skips opening the probe session and
+  If that metadata cannot be read, DAEX skips opening the probe session and
   reports the failure. Real chat sessions continue to load configured MCPs.
 - **Copilot effort.** Copilot accepts `none`, `minimal`, `low`, `medium`,
   `high`, `xhigh` and `max` (`--effort` is its alias for
   `--reasoning-effort`), and exits at startup on any other value, so only
   those seven are passed. A live Copilot model gets the levels the session
-  lists for it, else the levels ADE already learned, else all seven, except
+  lists for it, else the levels DAEX already learned, else all seven, except
   `Auto`, `gpt-3*`/`gpt-4*` and models the curated table marks as
-  non-reasoning. Cached Copilot models from older ADE builds receive the same
+  non-reasoning. Cached Copilot models from older DAEX builds receive the same
   fallback when loaded, so thinking controls are available immediately after
   an upgrade.
 
@@ -679,7 +711,7 @@ chat's model token and effort.
   toAgentValue, resetValue?, sendWhenUnadvertised?, failClosed?, spawnFlag? }`.
   Qwen and Grok use `reasoning_effort`; Kimi uses `thinking`; Copilot has
   none (its effort rides `--effort`). `null` and the chat service's `default`
-  both mean "no effort picked". That clears the effort that ADE set:
+  both mean "no effort picked". That clears the effort that DAEX set:
   - Qwen sends its `resetValue`, `default`, for every clear. It sends
     `default` also when the session does not list it, because Qwen accepts
     it. Qwen also sends a picked value when the session advertises no
@@ -687,7 +719,7 @@ chat's model token and effort.
   - Grok and Kimi send the effort that the session reported when it opened
     (`initialConfigOptions`), if the session still offers it. If the session
     reported no effort, they send nothing.
-  - Grok maps ADE's ladder onto its own (`max` and `ultracode` become
+  - Grok maps DAEX's ladder onto its own (`max` and `ultracode` become
     `xhigh`). Kimi sends the level as is, and only when the session offers
     it.
   - A picked value that the session does not offer is logged as
@@ -712,106 +744,9 @@ chat's model token and effort.
   set. The coordinator keeps the latest set on the runtime and publishes it
   after the calls, not the entry call's older snapshot.
 
-## 4. ADE contract extensions (all move together, one PR-layer)
-
-From the internal audit (all file:line refs verified 2026-08-30):
-- `shared/types/chat.ts`: `AgentChatProvider` + `"qwen"|"kimi"|"grok"`,
-  `AgentChatModelCatalogRefreshProvider`, `PendingInputSource` + `"acp"`,
-  session fields → ONE generic `acpConfigSnapshot`/`acpPermissionMode` shape
-  (mirroring `cursorModeSnapshot`/`cursorConfigValues`), NOT four bespoke
-  field families. `ACTIVE_TURN_DISPATCH_MODES`: all four queue-only.
-  `HANDOFF_FORK_PROVIDERS`: exclude all four (brief-only handoff). (Later:
-  Kimi joined it once ADE called its `session/fork`, 2026-10-24; Kimi also
-  gained an ADE-run `interrupt` mode.)
-- `shared/modelRegistry.ts`: `ProviderFamily` + `"qwen"|"moonshot"|"xai"|
-  "github"` (or equivalent), `ModelProviderGroup` + the ACP providers, curated descriptors
-  per provider (small set: the models users actually pick), helpers.
-- `shared/modelCatalog.ts`: `ProviderGroupKey`, `PROVIDER_ORDER`,
-  `PROVIDER_GROUP_ORDER/COLORS`, `classifyProviderGroup` — replace silent
-  `default → "opencode"` with exhaustive `Record` tables.
-- `shared/types/config.ts`: `AiProviderConnections` + four keys;
-  `AiSettingsStatus.availableProviders/models` records extended.
-- `main/services/ai/authDetector.ts` (+ `CliName`), `providerConnectionStatus`,
-  `providerRuntimeHealth`: arms for four providers (binary detect + protocol
-  auth probe; Jean pattern: spawn, `initialize`+`authenticate`, map JSON-RPC
-  error to "Run `<cli> login` first").
-- `main/services/shared/providerConfigHomes.ts`: `qwenConfigHome` (QWEN_HOME),
-  `copilotConfigHome` (COPILOT_HOME), `kimiCodeConfigHome` (KIMI_CODE_HOME),
-  and `grokConfigHome` (GROK_HOME) — config-directory env overrides. Grok
-  defaults to `~/.grok`.
-- `shared/cliLaunch.ts`: `CliProvider` + four; launch/resume builders. Template:
-  claude branch for qwen/grok/copilot, cursor branch (initialInput) for kimi.
-- `renderer/lib/sessions.ts`: `KnownChatProvider` + four; both maps + tool types.
-- `agentChatService.ts`: `catalogProviders` + `loadAvailableModels` arms
-  (cached-or-fallback fast tier — NEVER probe synchronously on catalog read);
-  cross-machine preflight `activateRuntime` list + four (agentChatService.ts
-  ~:33921); fork capability → generic brief fallback.
-- Catalog sync: connected-only filter + size cap (4.85 MB incident guard).
-- Picker greying: `useProviderAuthStatus.familiesFromStatus` + four arms;
-  `providerEmptyState.PROVIDER_COPY` + four; `runtimeCatalogCache`
-  `REFRESH_PROVIDERS` + four and `refreshProviderForFamily` (qwen / moonshot→kimi
-  / xai→grok / github-copilot→copilot); `pickerFamilyForCatalogGroup` exhaustive.
-  Desktop `ALL_PROVIDER_FAMILIES` includes the four ACP families so the Work
-  picker rail always has Qwen / Kimi / Grok / GitHub Copilot tabs (Favorites
-  is a starred subset and will not list them until starred).
-- TUI: `AdeCodeProvider`, `TUI_PROVIDER_OPTIONS`, `PROVIDER_FAMILY_LABELS`,
-  `PROVIDER_ORDER`, `modelPickerProviderAuthStatus`, `providerFromCatalogGroup`
-  (exhaustive, no codex fallback), icons (qwen + copilot marks needed; grok +
-  kimi exist), peripheral lists (`adeRpcServer` enum, `remoteLauncher`,
-  `agentRegistry`, login commands).
-- iOS: `workModelGroupOrder` (+4 or the phone silently drops the groups),
-  label/icon/tint/asset/family switch tables, `ProviderGitHub` asset reusable
-  for copilot; qwen/kimi/grok assets needed. Ship in the same release train.
-- Preload/IPC: extend generic `ade.ai.*` surfaces; keep preload/shared/renderer
-  types in sync (runtime-backed null services rule).
-
-## 5. Settings → Models redesign (all 9-10 providers)
-
-- Routing: single settings route stays; sub-view via `?tab=agents&provider=
-  <id>`. ~10 new `SETTINGS_ENTRIES` (one per provider) so ⌘K + deeplinks work;
-  `#ai-providers` and legacy aliases keep resolving (settingsManifest.test.ts
-  invariants).
-- Grid: responsive `repeat(auto-fit, minmax(280px, 1fr))`. Reuse/extend
-  `providerSectionPrimitives.tsx` (`ProviderGrid`/`ProviderTile`).
-- Tile (labeled): logo · name · status dot + word (Connected / Sign in /
-  Needs attention / Not downloaded / Checking / Disabled) · model count ·
-  version · Preview chip (grok) · one-line error when unhealthy.
-  "Checking" is a first-class state distinct from "Not detected".
-- Detail page: two-column. Left rail: identity, status, version, auth actions
-  (sign in/out), diagnostics entry, disable toggle, and the pinned-copy row
-  (Ready (pinned vX) / Downloading / Couldn't download + Retry / Not available
-  on this machine). There is no update surface: ADE moves the pin. Right: models
-  (curated ★default + discovered, search), permission defaults, default model,
-  usage bars where the provider reports them (Kimi's appear once Kimi reports
-  usage).
-- Architecture: descriptor-driven. One `ProviderCard`/`ProviderDetailPage`
-  parameterized by a per-provider descriptor + an auth-body slot for the
-  genuinely bespoke flows (Pi catalog, OpenCode catalog, Cursor OAuth). Do not
-  copy-paste per-provider JSX (the disease being cured).
-- Permission defaults move here; keep the composer tables as the write path is
-  one-way abstract→native — the detail page writes the ABSTRACT mode only.
-- The model-list call IS the health check: a failed enumerate renders as an
-  error row under that provider (VS Code pattern); no Verify button.
-
-## 6. Extras (locked)
-
-1. Embedded terminal sign-in modal: real PTY running the provider login
-   command; auto-open OAuth URL; auto-close when auth probe flips green;
-   reachable from Settings AND the chat auth_required error card.
-2. Settings search aliases: brand keywords (qwen, moonshot, kimi, copilot,
-   github, grok, xai, acp…) route settings search/⌘K to provider pages.
-3. Vendor doctor in diagnostics: run `grok doctor` / `kimi doctor` where
-   available; fold output into the copyable diagnostic report.
-4. Honest-degradation first-use notes: one dismissible line per known hole
-   (e.g. "Copilot sometimes reports a stopped turn as finished. ADE marks it
-   stopped.").
-
-Rejected: env-var provenance surfacing, authenticating pulse animation,
-picker overhaul beyond greying.
-
 ## Pinned CLIs and self-update
 
-ADE runs its own pinned copy of each ACP CLI from the machine tools cache
+DAEX runs its own pinned copy of each ACP CLI from the machine tools cache
 (`../onboarding-and-settings/agent-tools-cache.md`). The user's installed CLI is
 never run, and there is no version check, update button or tested range any
 more. An old persisted `acp_provider_outdated` notice renders as a plain
@@ -828,7 +763,7 @@ warning line.
   own argv. Only Qwen uses them today (`<pinned node> <cli-entry.js> --acp`).
 - **Download before use.** A chat start, auth probe (`acpAuthProbe.ts`) or
   diagnostics run awaits the pin's download; a miss reports the download state
-  ("ADE is downloading <Tool> for this machine…", "Couldn't download <Tool>: …
+  ("DAEX is downloading <Tool> for this machine…", "Couldn't download <Tool>: …
   Retry from Settings > Providers.", "<Tool> is not available on this machine
   (<target>).") and is not cached as health. Model discovery
   (`acpModelDiscovery.ts`) probes only a pin already on disk and never starts a
@@ -842,7 +777,7 @@ warning line.
 
 | Provider | Switch |
 |---|---|
-| qwen | `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true`; ADE's system-defaults file (`QWEN_CODE_SYSTEM_DEFAULTS_PATH`, `qwenSkillDefaults.ts`) always sets `general.enableAutoUpdate: false` and is written for every lane launch. The user's `~/.qwen/settings.json` is never written. |
+| qwen | `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true`; DAEX's system-defaults file (`QWEN_CODE_SYSTEM_DEFAULTS_PATH`, `qwenSkillDefaults.ts`) always sets `general.enableAutoUpdate: false` and is written for every lane launch. The user's `~/.qwen/settings.json` is never written. |
 | kimi | `KIMI_CODE_NO_AUTO_UPDATE=1` |
 | grok | `GROK_DISABLE_AUTOUPDATER=1` plus `--no-auto-update` |
 | devin | none found; its updater targets its own layout |
@@ -856,34 +791,3 @@ warning line.
   permissions) before the pin PR merges. Record the result in
   [Last verified versions](#last-verified-versions).
 
-## 7. Test contract
-
-- `run | degrade` conformance matrix (AgentConnect pattern): every
-  (feature × provider) cell asserts either works, or gracefully absent —
-  never throws, never hangs. Features: capabilities, lifecycle, prompt/stream,
-  permission round-trip, cancel, close/eviction, resume, slash advertise,
-  usage fold, MCP injection.
-- Scripted mock ACP agent + recorded fixture replay for CI (no credentials).
-- Capability declarations use a `requiresBehavior`-style invariant: a dialect
-  that declares a capability must supply the behavior (compile-time where
-  possible).
-- Exhaustive `Record` tables + `AssertNever` replace switch-defaults.
-- Windows parity is default-required: hidden console, process-tree kill
-  (`taskkill /T /F`), `.cmd` shim prompt rule, Kimi Git-Bash preflight.
-
-## 8. Work-unit ownership (build order)
-
-- **W1-contracts**: §4 sweep (types, registry, plumbing, cliLaunch, cross-
-  machine, picker greying, TUI lists). Owner boundary: everything in §4.
-- **W2-host**: `acpHost/` module + mock-agent test harness. New files only;
-  integration seam documented, not wired.
-- **W3-settings-ui**: §5 redesign against existing six providers with the
-  descriptor architecture; four ACP descriptors plug in later.
-- **W4-wire**: agentChatService integration (runtime adapter per provider using
-  W2 host + W1 contracts), auth probes, catalog arms live.
-- **W5-dialect-verify**: live smoke per provider + preview graduation probes
-  (grok permission prompt, kimi resume-permission-flag).
-- **W6-extras**: §6 items.
-- **W7-parity**: TUI + iOS surfaces, sync allowlists.
-- **W8-tests**: §7 harness + regression suites; then /quality → /test → /ship
-  as stacked PRs.
