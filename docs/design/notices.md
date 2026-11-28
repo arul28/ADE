@@ -28,6 +28,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | A state of one tab, pane, or panel: a lane needs a rebase, a PR is blocked | `<Banner model={...} layout="inline" />` inside that surface |
 | The same, on a panel that is dark in every theme (the ADE Cloud hero's night sky) | `<Banner model={...} layout="inline" surface="night" />`: frosted glass, dark-theme tokens |
 | A short state of the chat a composer writes to: settled, snoozed, the lane is on another branch | `<StatusChip tone ...>` inside the composer's one `<StatusStrip>` (chips sit side by side; the explanation goes in `tooltip`, or in `help`, a small "?" after the actions, when the chip has actions with their own hover) |
+| One sentence about the composer's own provider or model, with a button that fixes it: not signed in, a newer version is out | `<ComposerStrip>` (`chat/ProviderSignInSlot.tsx`), a tab on the prompt box in the provider's or model's tint; two at once go in one `<ComposerNoticeStack>`, the one that blocks the send first. `ProviderSignInStrip` and `ModelUpgradeStrip` are built on it |
 | Something that just happened: lane created, PR checks failed, undo available | `showToast({...})` |
 | Yes/no before an action | `await confirmDialog({...})` |
 | One line of text input | `await promptDialog({...})` |

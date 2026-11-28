@@ -863,6 +863,40 @@ and effort for a new chat's first prompt.
   (`ade.modelHint.cheaperOutcomes.v1`); an ignored chip is not recorded.
   Agent-started chats are not in it.
 
+### Newer version (ADE-300)
+
+When the composer's model has a newer version the chat's machine can run, a
+strip above the prompt box says "A newer version is out: Fable 5.2." with
+**Switch** and **×** ("Fable 5.2 is out" in a narrow box). It never switches
+by itself.
+
+- **Data.** A registry row names the provider's next version in
+  `successorId` (`shared/modelRegistry.ts`). `findModelUpgrade`
+  (`shared/modelSuccessors.ts`) follows the chain to its newest member in the
+  composer's own list (`composerAvailableModelIds`, the chat machine's). A
+  model reached through another harness (Cursor, OpenCode, Pi, Droid,
+  Copilot, Antigravity) is a twin: the same wire id, dashed or dotted, in the
+  id's last segment, so its newer version is the same id with the wire id
+  swapped. Pairs today: Claude Fable, Opus and Sonnet; Codex Sol, Astra,
+  Terra and Luna; Muse Spark; Grok. Qwen, Kimi, Devin and Copilot's own rows
+  list no older version.
+- **Switch** is a pick through the composer's own handler: a new chat changes
+  now, an open chat applies it with the next message.
+- **×** turns that pair down on this client (`modelUpgradeMemory.ts`,
+  `ade.chat.dismissedModelUpgrades.v1`, `from>to`, at most 64); a later
+  version is offered again. Picking an older version by hand in the picker or
+  `@` menu turns its pair down too.
+- **Placement.** The strip is a `ComposerStrip` (`ProviderSignInSlot.tsx`),
+  the sign-in strip's frame in the newer model's tint. With the sign-in strip
+  it stacks as one tab (`ComposerNoticeStack`), sign-in first; while the full
+  sign-in card is open it steps aside.
+- **Hidden** while a turn runs, when the picker is locked or hidden, for a
+  Custom preset, and on parallel and Devin Cloud drafts.
+- **The picker** shows "Previous version" in an older version's detail line
+  (`newerVersionOf`).
+- **iOS** mirrors it (`WorkModelUpgrade.swift`, same key). iOS has no sign-in
+  strip, so there is no stacked tab; the sign-in card hides the strip.
+
 ### Voice
 
 - **Dictation** types for you (not the voice conversation button). With voice

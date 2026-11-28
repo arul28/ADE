@@ -7,6 +7,19 @@ import {
   subscribeModelUpgradeDismissals,
 } from "./modelUpgradeMemory";
 
+/**
+ * Product analytics: what the person did with the strip, once per answer a
+ * day, beside the composer's other model hints. Never a model.
+ */
+function captureAnswer(outcome: "hint_accepted" | "hint_dismissed"): void {
+  void window.ade?.analytics?.capture({
+    event: "ade_feature_used",
+    properties: { feature: "model_hint", action: "hint_newer_version", outcome, source: "renderer_route" },
+    dedupeKey: `model_hint:hint_newer_version:${outcome}`,
+    minimumIntervalMs: 24 * 60 * 60_000,
+  }).catch(() => undefined);
+}
+
 export type ModelUpgradeSuggestion = ModelUpgrade & {
   /** Picks the newer version as the person would in the picker. */
   switchTo: () => void;
@@ -43,8 +56,13 @@ export function useModelUpgradeSuggestion(args: {
     if (!upgrade || dismissed.includes(modelUpgradePairKey(upgrade))) return null;
     return {
       ...upgrade,
-      switchTo: () => { personModelChangeRef.current?.(upgrade.toModelId); },
-      dismiss: () => dismissModelUpgrade(upgrade),
+      switchTo: () => {
+        if (personModelChangeRef.current?.(upgrade.toModelId)) captureAnswer("hint_accepted");
+      },
+      dismiss: () => {
+        dismissModelUpgrade(upgrade);
+        captureAnswer("hint_dismissed");
+      },
     };
   }, [availableModelIds, canSwitch, dismissed, modelId, personModelChangeRef]);
 
