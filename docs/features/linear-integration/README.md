@@ -1,8 +1,8 @@
 # Linear Integration
 
-ADE connects a Linear workspace to a project: browse and edit issues, start
+DAEX connects a Linear workspace to a project: browse and edit issues, start
 lanes and agents from them, link them to branches, commits and PRs, and run the
-ADE agent in Linear. The connection follows the project to every computer on
+DAEX agent in Linear. The connection follows the project to every computer on
 the account. With no computer on, the account server reads Linear. The CTO
 reads and updates issues through its tools; automations react to Linear events.
 
@@ -15,16 +15,16 @@ them.
 
 | File | What |
 |---|---|
-| `linearAppClient.ts` | `ADE_LINEAR_APP_CLIENT_ID` (the ADE app's public PKCE client) and `LinearOAuthClientSource` (`"ade-app"` or `"custom"`). |
+| `linearAppClient.ts` | `ADE_LINEAR_APP_CLIENT_ID` (the DAEX app's public PKCE client) and `LinearOAuthClientSource` (`"ade-app"` or `"custom"`). |
 | `linearCredentialService.ts` | The project's encrypted connection (token, auth mode, expiry, refresh token, `clientId`), a custom OAuth client, `ensureFreshToken()`. |
 | `linearAccountSync.ts` | The connection's vault item and the "one owner renews" rule. |
 | `../account/rotatingCredentialOwner.ts` | `decideRotatingRenewal`: renew, claim or read. |
 | `linearOAuthService.ts`, `linearOAuthRefreshLock.ts`, `linearTokenRefresh.ts` | Sign-in (loopback and worker bounce), the cross-process renewal lock, the token exchange. |
 | `linearClient.ts`, `linearClientShared.ts`, `linearQuickView.ts`, `linearIssueSearch.ts`, `linearInbox.ts` | The GraphQL client: reads, writes, the quick view, search, counts and the inbox. |
 | `linearIssueTracker.ts`, `issueTracker.ts`, `linearGraphQLInput.ts` | Normalized reads and the write helpers. |
-| `linearLaneCardService.ts` | "Open in ADE" attachments for lanes, PRs and chats. |
+| `linearLaneCardService.ts` | "Open in DAEX" attachments for lanes, PRs and chats. |
 | `linearLiveStatusService.ts` | The optional launch → PR → merge status writes. |
-| `linearAgentService.ts`, `linearAgentRuntime.ts`, `linearAgentRelayClient.ts` | The ADE agent in Linear. |
+| `linearAgentService.ts`, `linearAgentRuntime.ts`, `linearAgentRelayClient.ts` | The DAEX agent in Linear. |
 | `linearInboxAttentionService.ts` | "Needs you" on a lane's chat from the Linear inbox. |
 | `linearLaneSync.ts` | Lane issue fields from `Issue` webhooks. |
 | `linearProofPoster.ts` | A lane's proof posted to its issues when it opens a PR. |
@@ -33,7 +33,7 @@ Also:
 
 - `apps/ade-cli/src/services/linear/headlessLinearCredentialService.ts`,
   `apps/ade-cli/src/headlessLinearServices.ts`: the same connection in the
-  headless brain (ADE Cloud computers too).
+  headless brain (DAEX Cloud computers too).
 - `apps/desktop/src/shared/linearIssueNormalize.ts`: issue normalization,
   shared by the desktop client and the account reads. Pure.
 
@@ -42,10 +42,10 @@ Also:
 | File | What |
 |---|---|
 | `apps/account-directory/src/cloud/integrations.ts` | `POST /cloud/integrations/linear/query`: fixed Linear reads with the project's vault connection. |
-| `apps/account-directory/src/cloud/linearRenewal.ts` | The server's renewal of an ADE-app grant. |
+| `apps/account-directory/src/cloud/linearRenewal.ts` | The server's renewal of a DAEX-app grant. |
 | `apps/account-directory/migrations/0041_cloud_linear_renewals.sql` | The renewal lease table. |
 | `apps/push-relay/src/accountVault.ts` | `vault/item` and the directory's Linear lease publish. |
-| `apps/desktop/src/shared/adeCloud/integrationReads.ts` | Maps the panes' Linear calls to the account route (desktop on ADE Cloud, web). |
+| `apps/desktop/src/shared/adeCloud/integrationReads.ts` | Maps the panes' Linear calls to the account route (desktop on DAEX Cloud, web). |
 | `apps/ios/ADE/Services/SyncService+LinearAccount.swift` | The iPhone's account reads. |
 
 ### Renderer and iOS
@@ -74,20 +74,38 @@ Also:
 - `apps/desktop/src/shared/linearIssueBranch.ts`: lane and branch names.
 - `apps/desktop/src/shared/chatContextAttachments.ts`: chat issue attachments.
 - `apps/ade-cli/src/cli.ts` (`buildLinearPlan`) and
-  `apps/ade-cli/src/issueCliFields.ts`: `ade linear`.
+  `apps/ade-cli/src/issueCliFields.ts`: `daex linear`.
 
 IPC channels: `apps/desktop/src/shared/ipc.ts` (`window.ade.cto.*`; session
 attach on `window.ade.lane.*`).
+
+## Gotchas
+
+- **Desktop OAuth needs port 19836.** The loopback flow does not pick another
+  port. The phone's worker-bounce flow does not use it.
+- **Never exchange a refresh token outside the owner rule.**
+- **`clientId` is written only when proven.** Do not fill it from the
+  configured client: a grant from a custom client renewed with DAEX's client
+  fails, and the server must not try.
+- **The server keeps people on `linear_renewing` for up to the 10-minute
+  grace** while a computer still owns an expired grant.
+- **Writes need a computer; reads may not.** With no computer answering, the
+  web, iPhone and DAEX Cloud panes read through the account server's fixed
+  `CLOUD_LINEAR_OPS`. Every write (edit, comment, launch) goes to a machine
+  that holds the project, by that machine's pin. A new write must not fall
+  back to the account route.
+- **CRR strips non-PK uniqueness.** Do not use `ON CONFLICT(<unique column>)`
+  on Linear tables.
 
 ## The connection
 
 Each project has its own Linear connection, so two projects can use two
 workspaces. There are two kinds:
 
-1. **OAuth** ("Sign in with Linear"). The default client is the ADE Linear
+1. **OAuth** ("Sign in with Linear"). The default client is the DAEX Linear
    app (`ADE_LINEAR_APP_CLIENT_ID`, PKCE, no secret). A custom OAuth client
    (`linear.oauthClient.v1`, kept on the machine) takes its place when set.
-   The ADE app asks for `read,write,admin`, so Linear sets up the workspace
+   The DAEX app asks for `read,write,admin`, so Linear sets up the workspace
    webhook for automations; a custom client asks for `read,write`. The access
    token lasts about 24 hours, and each refresh returns a new refresh token.
 2. **Personal API key.** Checked with a `viewer` query. It does not expire.
@@ -99,11 +117,11 @@ Until a token is stored, nothing runs (tests stub `getStatus().tokenStored`).
 `linearAccountSync.ts` copies the connection to the account vault: scope
 `repo:<host>/<owner>/<repo>`, kind `integration`, key `linear`, value
 `{v: 1, authMode, token, refreshToken, expiresAt, clientId?}`. Every computer
-that opens the project adopts it, ADE Cloud computers too.
+that opens the project adopts it, DAEX Cloud computers too.
 
 - A project with no remote has no shared scope. Its connection stays on that
   computer, and the status says so.
-- `clientId` names the OAuth client that issued the grant. ADE writes it only
+- `clientId` names the OAuth client that issued the grant. DAEX writes it only
   when a sign-in or a refresh with that client succeeded
   (`linear.tokenClientId.v1`). Without it, the server never renews the grant.
 - An environment token (`LINEAR_API_KEY` and others) stays on its machine and
@@ -137,7 +155,7 @@ capabilities, so an older brain shows no buttons.
 - **Worker-bounce OAuth.** The computer makes the PKCE session with the
   `redirect_uri` set to the webhook relay's `/linear/oauth/callback`. The
   phone opens the authorize URL in an `ASWebAuthenticationSession`. The relay
-  sends the code on to `ade://linear-oauth`, the session captures it, and the
+  sends the code on to `daex://linear-oauth`, the session captures it, and the
   computer exchanges and stores it. The PKCE verifier and the token stay on
   the computer.
 - **API key.** The phone sends the key to the computer, which stores it.
@@ -145,8 +163,8 @@ capabilities, so an older brain shows no buttons.
 
 ## With no computer
 
-The web and iPhone Linear panes, and a desktop tab bound to ADE Cloud, read
-Linear through the ADE account server when no computer answers:
+The web and iPhone Linear panes, and a desktop tab bound to DAEX Cloud, read
+Linear through the DAEX account server when no computer answers:
 
 ```text
 POST /cloud/integrations/linear/query   { origin, op, vars? }
@@ -176,9 +194,9 @@ Refusals (clients show the server's `message`):
 | `rate_limited` | 429 | Over 30 requests a minute. |
 | `integration_failed` | 502 | Linear failed or timed out (15 s). |
 
-### The server renews an ADE-app grant
+### The server renews a DAEX-app grant
 
-When the token has run out and the grant's `clientId` is the ADE app, the
+When the token has run out and the grant's `clientId` is the DAEX app, the
 account server renews it under the same "one owner renews" rule
 (`linearRenewal.ts`). Its owner name is `ade-cloud-directory`.
 
@@ -233,7 +251,7 @@ The desktop pane is `LinearIssueBrowser` (filter rail, multi-select,
 virtualized list, detail pane; keys `j`/`k`, `x`, `Enter`, `/`, `Esc`). One
 issue opens in the Work tools pane or the issue sheet
 ([Issues](../issues/README.md)). The iPhone pane is `apps/ios/ADE/Views/Linear/`;
-`DeepLinkRouter.swift` routes `ade://linear-issue/<IDENT>` to it and ignores
+`DeepLinkRouter.swift` routes `daex://linear-issue/<IDENT>` to it and ignores
 the `linear-oauth` host.
 
 ## Lanes, commits and PRs
@@ -293,9 +311,9 @@ unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`.
 Each write is best effort (`linear_live_status.*`) and never blocks the
 launch, PR or merge.
 
-## The ADE agent and Linear events
+## The DAEX agent and Linear events
 
-- **The ADE agent** (`linearAgentService.ts`). The webhook relay sends each
+- **The DAEX agent** (`linearAgentService.ts`). The webhook relay sends each
   Linear `AgentSessionEvent` to the account of the person who delegated or
   mentioned the agent. A machine with a matching `linear.agent_*` automation
   rule claims the session (the first claim wins) and runs the rule. The chat's
@@ -307,17 +325,17 @@ launch, PR or merge.
 - **Lane sync** (`linearLaneSync.ts`). An `Issue` webhook updates the lane's
   copy of the issue's fields.
 - **Proof** (`linearProofPoster.ts`). When a lane opens a PR for its issues,
-  ADE posts the lane's screenshots and recordings to each issue, once.
-- **Event wakes.** A Linear delivery wakes a resting ADE Cloud computer that
+  DAEX posts the lane's screenshots and recordings to each issue, once.
+- **Event wakes.** A Linear delivery wakes a resting DAEX Cloud computer that
   listens to its organization or agent session.
 
-## `ade linear`
+## `daex linear`
 
-`ade linear` (`buildLinearPlan` in `apps/ade-cli/src/cli.ts`) uses the brain's
+`daex linear` (`buildLinearPlan` in `apps/ade-cli/src/cli.ts`) uses the brain's
 Linear connection; no API key is needed.
 
 - Attach and read: `attach`, `detach`, `issues`, `attached`, `my-issues`.
-- `ade linear create --team ADE --title "..."` takes every field of the
+- `daex linear create --team ADE --title "..."` takes every field of the
   desktop form: `--description` or `--description-file <path|->`, `--state`,
   `--assignee`, `--priority`, `--label` (repeat it), `--project`,
   `--milestone`, `--cycle`, `--estimate`, `--due YYYY-MM-DD`, `--parent`,
@@ -325,12 +343,12 @@ Linear connection; no API key is needed.
   `--blocks`, `--blocked-by`, `--sub-issue` and `--duplicate` pick the link,
   and `--standalone` skips it. A near-duplicate is refused unless
   `--allow-duplicate`.
-- `ade linear edit <id>` changes those fields in one `updateIssue`, plus
+- `daex linear edit <id>` changes those fields in one `updateIssue`, plus
   `--remove-label`.
 - One field: `set-state`, `assign`, `set-priority`, `set-estimate`,
   `set-cycle`, `set-project`, `set-milestone`, `set-due`, `set-parent`,
   `label`, `unlabel`. `none` clears a field where Linear allows it.
-- `ade linear relate <id> --blocks|--blocked-by|--related|--duplicate-of <other>`.
+- `daex linear relate <id> --blocks|--blocked-by|--related|--duplicate-of <other>`.
 
 `issueCliFields.ts` matches names (states and labels in the issue's team,
 users, projects, cycles, milestones, templates). `--assignee me` is the
@@ -339,9 +357,9 @@ them.
 
 ## Deeplinks and attachments
 
-`linearLaneCardService.ts` builds "Open in ADE" attachments for lanes, PRs and
-chats. Portable links use `https://ade-app.dev/open`. Machine-local chat and
-lane links use `ade://session/<id>?lane=<lane-id>`. A person who clicks from
+`linearLaneCardService.ts` builds "Open in DAEX" attachments for lanes, PRs and
+chats. Portable links use `https://ade-app.dev/open` (the open host has not moved to daex.dev). Machine-local chat and
+lane links use `daex://session/<id>?lane=<lane-id>`; old `ade://` links still open. A person who clicks from
 Linear sees a setup dialog when the project or connection is missing.
 
 ## Database tables
@@ -361,19 +379,6 @@ writes them.
 
 The account directory keeps `cloud_linear_renewals` (D1): one lease row per
 account and repository scope while the server renews.
-
-## Gotchas
-
-- **Desktop OAuth needs port 19836.** The loopback flow does not pick another
-  port. The phone's worker-bounce flow does not use it.
-- **Never exchange a refresh token outside the owner rule.**
-- **`clientId` is written only when proven.** Do not fill it from the
-  configured client: a grant from a custom client renewed with ADE's client
-  fails, and the server must not try.
-- **The server keeps people on `linear_renewing` for up to the 10-minute
-  grace** while a computer still owns an expired grant.
-- **CRR strips non-PK uniqueness.** Do not use `ON CONFLICT(<unique column>)`
-  on Linear tables.
 
 ## Cross-links
 
