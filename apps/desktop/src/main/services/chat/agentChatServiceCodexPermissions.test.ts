@@ -1179,6 +1179,24 @@ describe("createAgentChatService", () => {
         && event.event.itemId === "cmd-plan-read"
       )).toBe(false);
 
+      // A read still keeps to the containment root.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-plan-read-outside",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-plan-read-outside",
+          turnId: "turn-1",
+          cwd: path.dirname(path.dirname(tmpRoot)),
+          command: "/bin/zsh -lc 'git status'",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-read-outside")).toMatchObject({
+          result: { decision: "decline" },
+        });
+      });
+
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
         id: "perm-plan-1",

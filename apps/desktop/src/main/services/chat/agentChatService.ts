@@ -42893,10 +42893,15 @@ export function createAgentChatService(args: {
         // the sandbox blocks — on Windows that is every `ade` command, since
         // the sandbox user cannot open the brain's pipe — so a command that
         // only reads (`ade linear issue ADE-296`, `git log`) runs once, no
-        // card. Anything else is refused, unless a host policy says no.
+        // card. Anything else is refused, unless a host policy says no. The
+        // read still keeps to the containment root, as any auto-answer does.
+        const planReadCwd = typeof params.cwd === "string" && params.cwd.trim().length
+          ? params.cwd
+          : managed.laneWorktreePath;
         if (
           shellInvocationIsReadOnly(params.command)
           && !permissionPolicyDeniesByFallback(managed.session)
+          && codexCommandApprovalStaysWithinRoot(codexContainmentRoot(managed), planReadCwd, params.additionalPermissions)
         ) {
           runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
           return;

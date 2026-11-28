@@ -49,6 +49,14 @@ const GIT_READ_ONLY_WITH_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> 
   reflog: new Set(["show", "-n", "--oneline"]),
   tag: new Set(["--list", "-l", "-n"]),
 };
+/**
+ * Git subcommands whose bare form writes: `git stash` is `git stash push`.
+ * They read only with one of these as their first word.
+ */
+const GIT_READ_ONLY_FIRST_WORD: Readonly<Record<string, ReadonlySet<string>>> = {
+  stash: new Set(["list", "show"]),
+  worktree: new Set(["list"]),
+};
 /** Git options that run another program or change config for the call. */
 const GIT_RUNNING_OPTIONS = /^(-c|--ext-diff|-O|--open-files-in-pager|--exec|--upload-pack|--receive-pack|--config-env)/;
 
@@ -118,9 +126,23 @@ const WRITING_OPTIONS = /^(--output|--out\b|--pre|-o)/;
 /** `find` options that write, delete or run something. */
 const FIND_WRITING_OPTIONS = /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
 /** Null-device targets a redirection may name. */
-const NULL_TARGETS: ReadonlySet<string> = new Set(["/dev/null", "$null", "nul", "NUL", "&1", "&2"]);
+const NULL_TARGETS: Readonly<Record<ReadOnlyShellDialect, ReadonlySet<string>>> = {
+  bash: new Set(["/dev/null"]),
+  // `NUL` is a file name on a POSIX host; only Windows makes it the null device.
+  powershell: new Set(["$null", "nul", "NUL"]),
+};
+/** Options that make a reader run another program: GNU `sort --compress-program=./x`. */
+const PROGRAM_RUNNING_OPTIONS = /^--compress-program/;
+/** Trusted directories a shell wrapper's absolute path may name (`/bin/zsh -lc ...`). */
+const TRUSTED_SHELL_DIRS = /^(\/(usr\/)?(local\/)?bin\/|\/opt\/homebrew\/bin\/|[a-z]:[\\/](windows|program files[\\/]powershell)[\\/])/i;
 
-type Segment = string[];
+/**
+ * One word of a command. `unsafe` marks a word the shell would rewrite before
+ * the program sees it: a `$` expansion outside single quotes, or (bash) an
+ * unquoted glob at its start, which could expand to a file named `-delete`.
+ */
+type Word = { text: string; unsafe: boolean };
+type Segment = Word[];
 
 /**
  * Splits a command into its commands' words, honoring quotes. Returns null
@@ -130,12 +152,15 @@ function splitCommand(command: string, dialect: ReadOnlyShellDialect): Segment[]
   // Substitution and backticks are refused anywhere, quoted or not: the
   // check never tries to judge what a nested command would do.
   if (/`|\$\(|\$\{[^}]*[=:]/.test(command)) return null;
+  // `$'-delete'` and `$"..."` are quoting forms this check does not parse.
+  if (/\$['"]/.test(command)) return null;
   if (dialect === "powershell" && /@\(|@\{/.test(command)) return null;
 
   const segments: Segment[] = [];
-  let words: string[] = [];
+  let words: Word[] = [];
   let word = "";
   let wordStarted = false;
+  let wordUnsafe = false;
   let quote: "'" | '"' | null = null;
   // A redirection's target is the next word; it must name the null device.
   let pendingRedirect = false;
@@ -143,13 +168,14 @@ function splitCommand(command: string, dialect: ReadOnlyShellDialect): Segment[]
   const endWord = (): boolean => {
     if (!wordStarted) return true;
     if (pendingRedirect) {
-      if (!NULL_TARGETS.has(word)) return false;
+      if (!NULL_TARGETS[dialect].has(word)) return false;
       pendingRedirect = false;
     } else {
-      words.push(word);
+      words.push({ text: word, unsafe: wordUnsafe });
     }
     word = "";
     wordStarted = false;
+    wordUnsafe = false;
     return true;
   };
   const endSegment = (): boolean => {
@@ -166,7 +192,10 @@ function splitCommand(command: string, dialect: ReadOnlyShellDialect): Segment[]
       if (char === quote) quote = null;
       // Inside bash double quotes a backslash escapes only `$`, a backtick, `"`, `\` and a newline.
       else if (char === "\\" && quote === '"' && dialect === "bash" && /[$`"\\\n]/.test(command[i + 1] ?? "")) word += command[++i];
-      else word += char;
+      else {
+        if (char === "$" && quote === '"') wordUnsafe = true;
+        word += char;
+      }
       continue;
     }
     if (char === "'" || char === '"') {
@@ -212,6 +241,7 @@ function splitCommand(command: string, dialect: ReadOnlyShellDialect): Segment[]
       if (wordStarted && !/^[0-9*]$/.test(word)) return null;
       word = "";
       wordStarted = false;
+      wordUnsafe = false;
       if (command[i + 1] === ">") i += 1;
       if (command[i + 1] === "&") {
         const fd = command[i + 2];
@@ -223,6 +253,8 @@ function splitCommand(command: string, dialect: ReadOnlyShellDialect): Segment[]
       continue;
     }
     if (char === "<" || char === "(" || char === ")" || char === "{" || char === "}") return null;
+    if (char === "$") wordUnsafe = true;
+    if (dialect === "bash" && word === "" && (char === "*" || char === "?" || char === "[")) wordUnsafe = true;
     word += char;
     wordStarted = true;
   }
@@ -234,10 +266,20 @@ function splitCommand(command: string, dialect: ReadOnlyShellDialect): Segment[]
   return segments;
 }
 
-/** `C:\tools\ade.cmd`, `/usr/local/bin/ade`, `$ADE_CLI_PATH` → `ade`. */
-function programName(raw: string): string {
+/**
+ * The program a command's first word names, or null when this check cannot
+ * trust it. A bare name (`ls`, `ade.cmd`) and ADE's own CLI variables
+ * (`$ADE_CLI_PATH`) are trusted; any other path is not, since `./scripts/ls`
+ * can do anything. `trustedDirs` admits absolute paths under those
+ * directories (a provider's `/bin/zsh -lc` wrapper).
+ */
+function programName(word: Word | undefined, trustedDirs?: RegExp): string | null {
+  if (!word) return null;
+  const raw = word.text;
   if (/^\$(\{)?(env:)?ADE_CLI_PATH(\})?$/i.test(raw)) return "ade";
   if (/^\$(\{)?(env:)?ADE_CLI_BIN_DIR(\})?[\\/]ade(\.cmd|\.exe|\.ps1)?$/i.test(raw)) return "ade";
+  if (word.unsafe) return null;
+  if (/[\\/]/.test(raw) && !(trustedDirs && trustedDirs.test(raw))) return null;
   const base = raw.split(/[\\/]/).pop() ?? raw;
   return base.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
 }
@@ -284,9 +326,11 @@ function gitCommandIsReadOnly(args: string[]): boolean {
   if (rest.some((word) => GIT_RUNNING_OPTIONS.test(word))) return false;
   const sub = rest[0] ?? "";
   if (READ_ONLY_GIT.has(sub)) return true;
+  const firstWords = GIT_READ_ONLY_FIRST_WORD[sub];
+  if (firstWords && !firstWords.has(rest[1] ?? "")) return false;
   const allowed = GIT_READ_ONLY_WITH_OPTIONS[sub];
   if (!allowed) return false;
-  return rest.slice(1).every((word) => allowed.has(word) || (sub === "stash" && /^stash@\{\d+\}$/.test(word)));
+  return rest.slice(1).every((word) => allowed.has(word));
 }
 
 function ghCommandIsReadOnly(args: string[]): boolean {
@@ -298,8 +342,12 @@ function ghCommandIsReadOnly(args: string[]): boolean {
 }
 
 function segmentIsReadOnly(words: Segment, dialect: ReadOnlyShellDialect): boolean {
-  const program = programName(words[0] ?? "");
-  const args = words.slice(1);
+  const program = programName(words[0]);
+  if (!program) return false;
+  // An argument the shell would rewrite cannot be judged from its text.
+  if (words.slice(1).some((word) => word.unsafe)) return false;
+  const args = words.slice(1).map((word) => word.text);
+  if (args.some((word) => PROGRAM_RUNNING_OPTIONS.test(word))) return false;
   if (program === "ade") return !args.some((word) => WRITING_OPTIONS.test(word)) && adeCommandIsReadOnly(args);
   if (args.some((word) => WRITING_OPTIONS.test(word))) return false;
   if (program === "git") return gitCommandIsReadOnly(args);
@@ -365,10 +413,11 @@ export function shellInvocationIsReadOnly(command: unknown, platform: NodeJS.Pla
   if (typeof command !== "string" || !command.trim()) return false;
   const segments = splitCommand(command, "bash");
   const words = segments?.length === 1 ? segments[0]! : null;
-  const shell = words ? programName(words[0] ?? "") : "";
+  const shell = words ? programName(words[0], TRUSTED_SHELL_DIRS) ?? "" : "";
   if (words && (POSIX_SHELLS.has(shell) || POWERSHELLS.has(shell))) {
-    const options = words.slice(1, -1);
-    const script = words[words.length - 1];
+    if (words.slice(1).some((word) => word.unsafe)) return false;
+    const options = words.slice(1, -1).map((word) => word.text);
+    const script = words[words.length - 1]?.text;
     if (!script || options.length === 0) return false;
     if (!(POSIX_SHELLS.has(shell) ? posixShellRunsScript(options) : powerShellRunsScript(options))) return false;
     return shellCommandIsReadOnly(script, POSIX_SHELLS.has(shell) ? "bash" : "powershell");
