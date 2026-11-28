@@ -1,540 +1,201 @@
 # History
 
-History is DAEX's per-project timeline. It has two surfaces sharing a
-single page: a **Commits** view (GitKraken-style DAG for the focused
-lane) and an **Activity** view (the unified operations + sessions +
-worker feed). Both surfaces live inside `HistoryPage` and
-sync through a shared zustand store; the URL remembers which surface,
-which lane, and which selection are active so deep links land back on
-the same row.
-
-The Activity feed is sourced from the `operations` SQLite table plus
-in-memory adapters that synthesize timeline rows from chat sessions.
-Git commits in the Commits
-view come from `git log` on the lane's worktree, not from the
-operations table.
+History is DAEX's per-project timeline, one page (`HistoryPage`) with two
+surfaces sharing a zustand store: **Commits** (a git graph for the focused lane)
+and **Activity** (recorded operations plus chat rows). The URL remembers the
+surface, lane and selection, so links land on the same row. Commits come from
+`git log` on the lane's worktree; Activity comes from the `operations` table
+plus rows synthesized from chats.
 
 ## Source file map
 
-Main process / runtime services:
+Main and runtime:
 
-| Path | Role |
-|---|---|
-| `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`, `get`, `listHeadChanges`, and `pruneOld`. |
-| `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `terminal_sessions` and related tables (it still creates the retired `checkpoints` and `pack_*` tables). |
-| `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). Before lane git mutations or lane git reads, it verifies that the saved `worktreePath` is still the Git top-level for that lane; stale paths that resolve to the primary checkout are rejected as missing lane worktrees so History and Git Actions do not read or mutate the wrong branch. Undo selection is branch-aware: it ignores checkout/undo rows, requires the recorded operation's `metadata.branchRef` to match the lane's current branch, and rechecks the branch before running `reset --hard`. |
-| `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD accepts `CreateLaneArgs.startPoint`, used by "Create lane here" to fork a lane from a commit. |
-| `apps/desktop/src/shared/adeCloud/accountReader.ts` | Answers `git.listRecentCommits` and the commit reads for an account-answered pin from GitHub. |
-| `apps/desktop/src/renderer/components/adeCloud/CloudGitAsOf.tsx` | The "As of …, saved by its computer at rest" line, from the project overview. Mounted in `CommitHistoryView.tsx` and `LaneGitActionsPane.tsx`. |
-| `apps/desktop/src/main/services/prs/prService.ts` | Records PR creation as an operation. |
-| `apps/desktop/src/main/services/conflicts/conflictService.ts` | Records rebase operations. |
-| `apps/desktop/src/main/services/sessions/sessionService.ts` | Terminal session lifecycle (separate `terminal_sessions` table). |
-| `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations`, `ade.history.exportOperations`, plus the git IPC channels the History toolbar uses (`ade.git.createTag`, `ade.git.resetToCommit`, `ade.git.undoLastHeadChange`, `ade.git.redoLastHeadChange`, the `ff-only`/`rebase`/`merge` variants of `ade.git.pull`). |
+- `apps/desktop/src/main/services/history/operationService.ts` — `operations`
+  CRUD: `record`, `start`, `finish`, `recordCompleted`, `list`, `get`,
+  `listHeadChanges`, `pruneOld`.
+- `apps/desktop/src/main/services/git/gitOperationsService.ts` — brackets every
+  git operation (`runLaneOperation`), captures pre/post HEAD, owns undo/redo,
+  tags, resets and pull modes; verifies the lane's worktree root before any
+  lane git read or write.
+- `apps/desktop/src/main/services/lanes/laneService.ts` — `CreateLaneArgs.startPoint`
+  ("Create lane here").
+- `apps/desktop/src/main/services/state/kvDb.ts` — schema (`operations`,
+  `terminal_sessions`; still creates the retired `checkpoints` and `pack_*`
+  tables, which nothing writes).
+- `apps/desktop/src/shared/historyExport.ts` — `buildHistoryExport` (desktop and
+  web).
+- `apps/desktop/src/shared/adeCloud/accountReader.ts` — commit reads for a
+  resting DAEX Cloud lane; `renderer/components/adeCloud/CloudGitAsOf.tsx`.
+- Shared types: `shared/types/git.ts` (`GitPullMode`, `GitCreateTagArgs`,
+  `GitResetCommitArgs`, `GitHeadChangeActionArgs`, `ListOperationsArgs`,
+  `ExportHistoryArgs`), `shared/types/lanes.ts`.
 
-Renderer components (`apps/desktop/src/renderer/components/history/`):
+Renderer (`apps/desktop/src/renderer/components/history/`):
 
-| File | Responsibility |
-|---|---|
-| `HistoryPage.tsx` | Hosts the `TimelineStoreProvider`, the two-pane `PaneTilingLayout` (timeline ~60%, detail ~40%), URL ↔ store hydration for `surface` / `laneId` / `eventId` / `commitSha`, two-way lane sync with the lane list held beside History (`useHistoryLaneSync`), the commit's lane operations for the details pane's DAEX activity rows, commit-on-lane tracking for destructive action gates, and the auto-refresh poll for running activity events. Surface defaults to `commits`. |
-| `useHistoryLaneSync.ts` | Keeps History's focused lane and the lane list held under it (the Lanes or Work sidebar) on one selection, in both directions. The list's selection is the store's lane on this machine, or the Lanes list's `machineId:laneId` row for a lane on another machine, through the shared `useForeignLaneSelection` store. |
-| `useTimelineStore.ts` | Zustand store: raw + enriched events, WIP-by-lane nodes, surface, focus lane, selected commit/event, view mode, scope level, filters, lane visibility, columns. `fetchEvents` merges `history.listOperations` with `fetchSupplementalTimelineRecords` and sorts/dedupes via `sortTimelineRecords`. |
-| `timelineTypes.ts` | `HistorySurface = "activity" \| "commits"`, `ViewMode = "graph" \| "list" \| "compact"`, `TimelineEvent` (enriched `OperationRecord`), `LaneTrack`, `GraphLayout`, `TimelineFilters`, `LaneVisibility`, `ColumnConfig`, `WIPNode`, `MinimapBucket`. `DEFAULT_COLUMNS` order is timestamp → graph → event → lane → author → status → duration → sha. |
-| `eventTaxonomy.ts` | Source of truth for event categories, importance levels, node shapes, and the per-kind `EVENT_KIND_META` table that every renderer (graph, list, compact, detail panel) consults. Adds taxonomy entries for the new git head-change kinds (`git_undo_head_change`, `git_redo_head_change`, `git_tag_create`, `git_reset_soft`/`_mixed`/`_hard`) and the unified-feed kind (`chat.session`). |
-| `historyActivitySources.ts` | Pure mappers + the single `fetchSupplementalTimelineRecords(pin)` entry point that builds synthetic `OperationRecord` rows from `agentChat.list`. Synthetic IDs are namespaced (`chat:`) and the actor/eventLabel are embedded in `metadataJson` so the detail panel + graph can render them uniformly. |
-| `historySearch.ts` | Tokenizer + matcher behind the Commits view search input. Supports bare full-text, quoted phrases, and the `message:` / `msg:` / `=` / `author:` / `@` / `commit:` / `sha:` / `#` / `branch:` / `ref:` / `parent:` / `is:` / `type:` keys (e.g. `is:merge`, `is:local`, `type:pushed`). |
-| `commitGraphLayout.ts` | Pure graph algorithms. `buildCommitGraphLayout(rows, { trunkSha, gapAfterRow, gapHeight })` takes `GraphCommit[]` (wrap raw rows with `toGraphCommits`) and assigns columns newest-first (each column waits for one sha; the first parent stays in its column so a trunk stays straight; `trunkSha` pins the base branch to column 0). `contractCommitGraph(commits, keep)` hides commits while keeping the graph connected: kept commits' parents are rewritten to the nearest kept ancestors and each edge records how many commits it folds. `branchTipKeep` is the "fold to branch tips" predicate (refs, merges, roots, fork points). `assignCommitOwners` maps commits to lanes: base history to the base, each lane tip its first-parent run. `computeDividerAfterRow` places the lane/base divider under the lane's oldest own commit (-1 above row 0 for a lane with none; null while searching, in All lanes, or on a Primary lane that is on its base branch). `commitEdgePathD` draws an edge; `rowTop` / `rowCenter` place rows around the optional divider gap. |
-| `CommitHistoryView.tsx` | Virtualized commit graph. Pages `git.listRecentCommits` 100 at a time with `skip` (no cap), in `lane` or `lanes` scope; `git.listBranches` for ref badges. Colours nodes and edges by owning lane, folds or filters through `contractCommitGraph`, keeps the scroll anchor by sha across refreshes, and adapts columns to the pane width. Row presentation lives in `CommitRow.tsx`. Enter / double-click opens the commit's changes full-page; transient action results go through the shared toast. |
-| `CommitRow.tsx` | One commit row: ref badges, agent logo, subject with its `(#123)` PR link, author avatar/name, age, and copy-SHA. Memoized, and each row's git context menu is gated on whether the commit is on the focused lane (`commitOnLaneHistory`), so an All-lanes row owned by another lane cannot run that lane's destructive actions. |
-| `CommitGraphLayer.tsx` | The SVG graph, drawn as memoized 40-row tiles above the rows. Hovering a node or edge focuses that lane's path (others fade) through one generated CSS rule, without React renders. |
-| `CommitRefBadges.tsx` | Ref badges: lane-owned branches show the lane name in its colour and its PR; local/remote twins at one sha fold into one badge with a cloud; overflow is `+N`. A badge opens a menu: show this lane's history, open the lane in Lanes, open its PR, copy the branch. |
-| `CommitToolbarControls.tsx` | Commits rail controls: ahead/behind pill (opens the lane in Lanes), expanding search, This lane / All lanes, fold toggle, column menu, fetch. |
-| `commitRowModel.ts` | Pure row helpers: ref badge model, `(#123)` PR suffix, agent co-author → provider, GitHub avatar from a noreply email, commit → chat session match, commit-body reflow. |
-| `commitViewPrefs.ts` | Saved scope / fold / columns (localStorage) and the live search query. |
-| `historyClipboard.ts` | Shared `copyText` (Electron clipboard with a navigator fallback) and `stripIpcErrorPrefix`, used by the row, detail pane, and toolbar. |
-| `CommitDetailPanel.tsx` | Right pane for the Commits surface: subject, author, full message (lazy via `git.getCommitMessage`), changed file list (`git.listCommitFiles`), related operations (any `OperationRecord` whose `preHeadSha` or `postHeadSha` matches the commit), and the same git action set the context menu exposes. Destructive lane mutations are disabled when the lane has no worktree or the commit was resolved only through a targeted lookup outside that lane's visible history. |
-| `HistoryGitContextMenu.tsx` | Reusable right-click menu shared by `CommitHistoryView` rows and the `CommitDetailPanel` actions strip; built from `buildCommitContextActions` + `groupCommitContextActions`. |
-| `historyGitActions.ts` | Per-commit action catalogue and dispatcher: `Inspect` (checkout, open in Lanes git pane, compare-with-parent, view files), `Create` (branch, lane, tag), `Apply` (cherry-pick, revert, soft/mixed/hard reset), `Share` (open/copy GitHub link, copy patch via `git.listCommitFiles` + `diff.getFilePatch`, copy SHA, copy subject). Calls `window.ade.git.*` + `window.ade.lanes.create({ startPoint })` and centralizes disabled reasons for missing worktrees or commits not on the focused lane history. |
-| `historyUrlHydration.ts` | Pure URL-hydration helper used by `HistoryPage` tests and effects. Re-applies `commitSha` when a URL-driven lane focus change clears the store selection, while refusing to hydrate commit selections on the Activity surface. `historyCommitsPath(laneId, machineId?)` builds the link that every "Commit history" entry point uses. |
-| `historyLaneActions.ts` | Lane-level action catalogue surfaced through the Commits toolbar's "Lane git actions" menu: `Remote` (fetch, pull ff-only/rebase/merge, push, force-push-with-lease), `Recover` (undo/redo last head change), `Branch and PR` (copy branch name, open/copy branch link, open/copy PR link), `Lane` (rename, archive, delete worktree, delete + branch), `Integrate` (merge/rebase onto base), `Stash`, `Conflict` (rebase/merge continue + abort, only when a conflict is in progress), `Open` (jump to Lanes git pane). |
-| `HistoryLanePicker.tsx` | The Commits rail's lane picker: lane glyph in the lane's colour and the lane name; branch in the tooltip and the menu, grouped by machine. Primary leads each machine's group. A mouse pick does not return focus to the trigger (no stray focus ring); a keyboard pick or Escape does, however the menu was opened. |
-| `TimelineToolbar.tsx` | The shared toolbar above both surfaces. Renders the surface toggle (`Commits` / `Activity`), the lane selector + `LaneGitActionsMenu` on the Commits surface, and the activity controls (view-mode toggle, scope selector, search, export-to-JSON, column gear, category/status/time-range/lane filter chips). |
-| `TimelineGraph.tsx` (lazy) | SVG-based per-lane swimlane graph for the Activity surface — used when `viewMode === "graph"`. |
-| `TimelineListView.tsx` | Table-style activity list with column visibility driven by `columns` from the store. |
-| `TimelineCompactView.tsx` | Density-optimized one-line-per-event list. |
-| `EventDetailPanel.tsx` | Right pane for the Activity surface: label, status, lane chip, pre/post SHA buttons, parsed metadata, jump-to-lane / open-chat links derived from metadata. |
-
-Shared types:
-
-| File | Adds / changes |
-|---|---|
-| `apps/desktop/src/shared/types/git.ts` | `GitPullMode` (`ff-only` / `rebase` / `merge`), `GitPullArgs`, `GitCreateTagArgs`, `GitResetCommitArgs`, `GitHeadChangeActionArgs`. `ListOperationsArgs` gains a server-side `status` filter; `ExportHistoryArgs` keeps its own `"all"` sentinel by omitting the new field. |
-| `apps/desktop/src/shared/types/lanes.ts` | `CreateLaneArgs.startPoint?: string` — fork the new lane's branch from a specific commit/ref. Used by the "Create lane here" affordance in the commit context menu. |
-| `apps/desktop/src/shared/types/sync.ts` | Adds `git.createTag`, `git.resetToCommit`, `git.undoLastHeadChange`, `git.redoLastHeadChange` to `SyncRemoteCommandAction` so controllers (iOS, peer desktops) can issue the new commands. |
-| `apps/desktop/src/shared/ipc.ts` | New channels: `gitCreateTag`, `gitResetToCommit`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`. |
+- `HistoryPage.tsx` (layout, URL ↔ store, lane sync, auto-refresh),
+  `useHistoryLaneSync.ts`, `historyUrlHydration.ts` (`historyCommitsPath`, used by
+  every "Commit history" entry point), `useTimelineStore.ts`, `timelineTypes.ts`.
+- Commits: `CommitHistoryView.tsx` (virtualized, pages 100 commits with `skip`),
+  `CommitRow.tsx`, `CommitGraphLayer.tsx`, `commitGraphLayout.ts` (pure layout:
+  `buildCommitGraphLayout`, `contractCommitGraph`, `branchTipKeep`,
+  `assignCommitOwners`, `computeDividerAfterRow`), `CommitRefBadges.tsx`,
+  `CommitToolbarControls.tsx`, `commitRowModel.ts`, `commitViewPrefs.ts`,
+  `historySearch.ts`, `CommitDetailPanel.tsx`, `HistoryGitContextMenu.tsx`,
+  `historyGitActions.ts`, `historyLaneActions.ts`, `HistoryLanePicker.tsx`,
+  `historyClipboard.ts`.
+- Activity: `TimelineToolbar.tsx`, `TimelineGraph.tsx` (lazy),
+  `TimelineListView.tsx`, `TimelineCompactView.tsx`, `EventDetailPanel.tsx`,
+  `eventTaxonomy.ts` (`EVENT_KIND_META`, the source of truth for categories,
+  importance and shapes), `historyActivitySources.ts`
+  (`fetchSupplementalTimelineRecords`).
 
 ## Gotchas / fragile areas
 
-- **Start/finish pairing.** Operations without a `finish` stay
-  `running` forever. Every code path that calls `start` must have a
-  matching `finish` (success or failure). `gitOperationsService`
-  wraps both in `runLaneOperation`; new call sites should adopt
-  that pattern rather than calling start/finish manually.
-- **Pre/post HEAD capture timing.** `preHeadSha` is captured
-  immediately before the operation; `postHeadSha` immediately after
-  (even on failure). If the operation crashes the process between
-  the two reads, the row is left with `running` status and null
-  `postHeadSha` -- it must be reconciled on next startup or left as
-  a tombstone.
-- **Undo/redo HEAD guard.** Both `undoLastHeadChange` and
-  `redoLastHeadChange` re-read HEAD before they touch git; if HEAD
-  has moved since the operation they target, they refuse. This
-  prevents `git reset --hard` from clobbering uncommitted work the
-  user did after the original operation.
-- **Metadata merge on finish.** `operationService.finish` merges the
-  `metadataPatch` into the existing metadata via spread. Nested
-  objects are overwritten wholesale, not deep-merged.
-- **`listOperations.status` vs `exportOperations.status`.** The list
-  API takes a single concrete status; the export API additionally
-  accepts `"all"`. The toolbar passes a single status to export only
-  when exactly one is selected, falling back to a client-side filter
-  for multi-select cases. Large projects with heavy filters can hit
-  the 1000-row limit before the filter applies.
-- **`laneName` join.** `list()` left-joins `lanes.name`. Deleted or
-  archived lanes still show up with `laneName: null` instead of the
-  original name -- good for stable history, surprising for the UI.
-- **CSV export escaping.** The export path embeds metadata JSON; CSV
-  escaping must survive nested quotes. Validate with round-trip
-  tests when adjusting export formats.
-- **Synthesized rows do not export.** Chat
-  rows are renderer-side only. They appear in the Activity feed and
-  the detail panel but never in `ade.history.exportOperations`
-  output. Treat the export as the operations table, not the unified
-  view.
-- **Commit graph virtualization edge filter.** `CommitHistoryView`
-  filters edges to ones touching the current virtual window (±2
-  rows) to keep SVG cheap on tall histories. If a long edge skips
-  more than two rows of virtual scroll, it will pop in and out at
-  the seam — by design, not a bug.
-- **`startPoint` validation.** `laneService.create` resolves
-  `startPoint` with `git rev-parse --verify`. An invalid ref throws
-  `Start point not found for new lane: …` synchronously; callers in
-  `historyGitActions.create_lane` rely on that error to surface a
-  notice.
+- **Start/finish pairing.** An operation with no `finish` stays `running`
+  forever; use `runLaneOperation` instead of calling start/finish by hand.
+- **Undo/redo re-read HEAD** and refuse if it moved since the target operation,
+  so `git reset --hard` never clobbers later work. Undo also requires the
+  recorded `metadata.branchRef` to match the lane's current branch.
+- **`finish` merges `metadataPatch` shallowly**; nested objects are replaced.
+- **Status filters**: `listOperations.status` takes one status; export also
+  takes `"all"`. Multi-select filters run client-side, after the 1,000-row clamp.
+- **`laneName` is a left join**: deleted lanes show `laneName: null`.
+- **Synthesized chat rows never export**; the export is the operations table.
+- **Graph edges** are filtered to the virtual window (±2 rows); a long edge may
+  pop at the seam by design.
+- **`startPoint`** is resolved with `git rev-parse --verify`; an invalid ref
+  throws `Start point not found for new lane: …`, which the action surfaces.
+- **Lane worktree check**: a missing or stale worktree path throws "restore or
+  recreate the lane worktree" for every lane git call, so History never reads
+  the primary checkout by mistake.
 
 ## Where this runs
 
-Operation recording, the `operations` table and the rows an export writes
-live in the brain of the machine that owns the lane's worktree. Every git
-operation runs through that brain's `gitOperationsService`, which brackets
-the command with `operationService.start` / `finish`.
+Operations live in the brain of the machine that owns the lane's worktree.
 
 - **Reads take the lane's pin.** `window.ade.history.listOperations` and
-  `exportOperations` accept `pin?: OpenProjectBinding | null` and route
-  through `callPinnedOrBoundRuntimeActionOr(pin, "operation", …)`; the
-  Commits view's `git.listRecentCommits` / `git.listBranches` use the
-  selected lane's binding. A pinned export reads rows from that machine and
-  writes the file on this one (desktop main's save dialog). The web client
-  builds the same file in the browser (`shared/historyExport.ts`) and
-  downloads it; `savedPath` is then the download filename.
-- **Every machine with the repository.** The lane picker groups lanes by
-  machine. Activity reads are paged per machine, so one offline or slow brain
-  does not hold back the rest. Mutating git actions are disabled for a lane on
-  another machine; its commits and events still show with the machine named.
-- **Chat rows are synthesized.** Activity's chat rows come from
-  `agentChat.list` at render time and are never written to `operations`.
-
-### With no computer awake
-
-A DAEX Cloud lane whose computer is at rest has an account-answered pin
-(`isAccountAnsweredPin`, `shared/adeCloud/binding.ts`). History reads it with
-no computer awake:
-
-- The Commits view reads the lane branch's pushed commits from GitHub through
-  the account reader (`git.listRecentCommits`, `shared/adeCloud/accountReader.ts`),
-  with the account's GitHub App sign-in. Unpushed commits show when the
-  computer is on.
-- A read that GitHub cannot answer shows the reader's sentence, for example
-  "Connect GitHub to your DAEX account to see this repository's files with no
-  computer on." It is an expected state, not a failure to report.
-- `CloudGitAsOf` (`renderer/components/adeCloud/CloudGitAsOf.tsx`) shows above
-  the commits when the pin is account-answered: "As of 3:12 PM, saved by its
-  computer at rest." It reads `adeCloud.projectOverview({origin})` once when
-  the view opens. It does not show while the computer is awake.
-- Git actions that change the lane are "do" actions: they wake the lane's
-  computer first.
+  `exportOperations` accept `pin?: OpenProjectBinding | null` and route through
+  `callPinnedOrBoundRuntimeActionOr(pin, "operation", …)`; the Commits view's git
+  reads use the selected lane's binding. A pinned export reads rows from that
+  machine and writes the file on this one; the web client builds the file in the
+  browser and downloads it.
+- **Every machine with the repository**: the lane picker groups lanes by machine;
+  Activity reads are paged per machine so one slow brain does not hold the rest.
+  Mutating git actions are disabled for a lane on another machine.
+- **With no computer awake**, a resting DAEX Cloud lane (`isAccountAnsweredPin`)
+  shows its pushed commits from GitHub through the account reader, with
+  `CloudGitAsOf` ("As of 3:12 PM, saved by its computer at rest", from
+  `adeCloud.projectOverview`). Unpushed commits show when the computer is on. Git
+  actions that change the lane wake it first.
 
 ## Surfaces
 
 ### Commits
 
-The git graph for the focused lane. **This lane** walks the lane's HEAD;
-**All lanes** walks HEAD, the lane's base and every active lane's branch
-(`scope: "lanes"`, `git log --date-order`), so one graph shows where every
-lane sits against its base. Colour means a lane's own work: each lane's
-commits take its colour, the base line (main, or the Primary lane while it
-is on its base branch) is neutral grey and branches no lane owns are fainter
-still. A Primary lane on a feature branch is a lane like any other: its own
-commits take its colour above a `main` divider. A lane whose base is another
-lane's branch (a stack, or Primary on a feature branch) keeps grey for the
-branch under that lane. Hovering a node or
-line focuses that lane's path and fades the rest.
-
-In **This lane**, a divider row (`main · 34 behind`) sits under the lane's
-oldest own commit, and the lane's colour stops there. Base rows below it are
-dimmer. A lane with no commits of its own shows the divider above the first
-row. Base commits merged into the lane can sit above the divider; they keep
-the base's grey. The divider is a gap in the graph layout
-(`buildCommitGraphLayout(rows, { gapAfterRow })`), so lines run through it.
-
-A `0/0` that is not this machine's measurement (a missing worktree, or a read
-that has not landed) is never taken for "even with the base": while the lane's
-status is stale and the base tip is not among the loaded rows, the divider and
-the lane's colour band wait for a measured `ahead` rather than placing
-themselves from an old count. The rail's drift pill shows the numbers at half
-opacity with a "Last known" tooltip, and an unmeasured `0/0` holds its place
-empty instead of reading as even.
-
-The lane picker in the rail shows the lane glyph in the lane's colour and
-the lane name. The branch is in its tooltip and in the menu. The lane list
-beside History (the Lanes or Work sidebar it opened over) drives it too: a
-lane clicked there is the lane History shows, and a lane picked in History
-is the one the list highlights.
-
-Switching **This lane** / **All lanes** keeps a selected commit the new rows
-still show (and scrolls to it); otherwise the newest commit is selected, the
-same as arriving on a lane.
-
-Each row: ref badges, the agent logo when a `Co-authored-by` trailer
-names an agent, the subject with its `(#123)` PR number as a link, the
-author, a short age and the SHA (click to copy). When every loaded commit has
-one author, the author column is hidden; otherwise a row shows the author only
-where it changes from the row above. Hollow nodes are
-not on any remote yet; the ringed node is HEAD. "Fold to branch tips"
-keeps refs, merges, roots and fork points and draws the folded runs
-dashed. The details pane shows the full message, the agent and the chat
-that was running when it was committed, the lane's PR, push state,
-parents, files (click to open that file's diff) and DAEX activity rows
-that link to the Activity view. Those rows read the commit's lane operations
-(`history.listOperations({ laneId })`, cached per lane for 15 s) and do not
-wait for the Activity view to load. Enter, double-click or **Changes** opens
-the commit's changes full-page; Esc returns. Right-click — or the
-**⋯** menu in the details pane — opens the grouped git actions; see
-`historyGitActions.ts`.
-
-The lane overview in Lanes has a **Commit history** button, and the lane
-right-click menus (Lanes sidebar, Work lane rows, a Work lane on another
-machine, a Work chat's lane actions) have a **Commit history** item. Both open this view on that lane
-(with its machine for a lane on another machine) through `historyCommitsPath`.
-
-The search field in the rail parses through `filterCommitsForSearch`
-in `historySearch.ts`. Bare text matches subject / SHA / author /
-parent / refs. Prefixed keys narrow the match: `message:`, `author:`
-(or `@`), `commit:` (or `#`), `branch:` / `ref:`, `parent:`, plus
-`is:merge`, `is:local`, `is:pushed`. Results keep the graph connected
-(`contractCommitGraph`). While searching, the view reads older pages on its
-own until it has 60 matches or has read 3,000 commits, and the footer
-reports "N matches in M commits" with **Search older** to go further.
-
-The Commits toolbar also exposes a `LaneGitActionsMenu` populated by
-`buildHistoryLaneActions` / `groupHistoryLaneActions`. That menu drives
-lane-scoped operations against `window.ade.git.*` + `window.ade.lanes.*`
-without leaving the History tab.
+- **This lane** walks the lane's HEAD; **All lanes** (`scope: "lanes"`, `git log
+  --date-order`) walks HEAD, the base and every active lane's branch. Each lane's
+  own commits take its colour; the base line is grey; unowned branches are
+  fainter. Hovering focuses a lane's path.
+- In This lane, a divider row (`main · 34 behind`) sits under the lane's oldest
+  own commit (a layout gap, so lines run through). An unmeasured or stale `0/0`
+  is never read as "even with the base": the divider waits for a measured
+  `ahead`, and the drift pill shows "Last known".
+- Rows: ref badges, agent logo (from a `Co-authored-by` trailer), subject with its
+  `(#123)` PR link, author (shown only where it changes), age, SHA. Hollow nodes
+  are unpushed; the ringed node is HEAD. "Fold to branch tips" keeps refs,
+  merges, roots and fork points.
+- The details pane shows the message, the agent and chat at commit time, PR,
+  push state, parents, files and DAEX activity rows (lane operations whose pre/post
+  HEAD matches, cached 15 s). Enter or **Changes** opens the diff full-page.
+  Right-click or ⋯ opens grouped git actions (`historyGitActions.ts`); destructive
+  actions are disabled for a commit not on the focused lane's history.
+- **Search** (`historySearch.ts`): bare text, quoted phrases, `message:`,
+  `author:`/`@`, `commit:`/`#`, `branch:`/`ref:`, `parent:`, `is:merge|local|pushed`.
+  Results keep the graph connected; the view reads older pages until 60 matches
+  or 3,000 commits ("Search older" goes further).
+- `LaneGitActionsMenu` (`historyLaneActions.ts`) runs lane operations from the
+  toolbar. Lanes' overview and lane context menus offer **Commit history**.
 
 ### Activity
 
-Unified operations feed combining recorded `OperationRecord` rows with
-synthesized rows from chat sessions (see
-`historyActivitySources.ts`). `fetchEvents` merges them in
-`useTimelineStore`, deduplicates by `id`, and sorts by `startedAt`
-descending before clamping to `limit`.
-
-Three view modes (`graph` / `list` / `compact`) are selectable from
-the toolbar:
-
-- **Graph** — `TimelineGraph` lays events out on per-lane swimlanes,
-  draws cross-lane connectors, and renders each event with its
-  category color + shape from `eventTaxonomy`.
-- **List** — `TimelineListView` is a tabular view honoring the user's
-  column visibility (`columns` in the store; defaults below).
-- **Compact** — `TimelineCompactView` collapses each event to a
-  single dense line.
-
-Default visible columns: `Time`, `Graph`, `Event`, `Lane`, `Status`,
-`Duration`. Hidden by default: `Author`, `SHA`. Toggles persist in
-the store (not localStorage — they reset when the store is recreated).
-
-The toolbar's **scope** selector controls the importance threshold
-applied before any other filter:
-
-| Scope | Allowed importance |
-|---|---|
-| Key | `high` |
-| Standard (default) | `high`, `medium` |
-| Detailed | `high`, `medium`, `low` |
-| All | everything, including `noise` |
-
-Additional filters: lane multi-select, category multi-select, status
-multi-select (`running` / `succeeded` / `failed` / `canceled`),
-time-range (`1h` / `today` / `week` / `month` / `all`), free-text
-search across label / kind / lane name / status / metadata, and
-solo/hide chips per lane (`visibility.soloedLaneIds`, `hiddenLaneIds`).
-
-Auto-refresh: every 4 s while any event has `running` status, gated
-on `document.visibilityState === "visible"` and `window.focus`, and
-suppressed on the Commits surface.
-
-The export button calls `ade.history.exportOperations` with the
-current `focusLaneId` and (when exactly one status is selected) the
-chosen `status`, format `json`, default `limit: 500`. The desktop
-runs the save dialog locally and writes the file. The button shows
-`"Export unavailable (headless)"` when the preload bridge is missing.
+Recorded operations merged with synthesized chat rows (`chat.session`, from
+`agentChat.list({ includeAutomation: true })`), deduplicated by id and sorted by
+`startedAt`. View modes: graph (per-lane swimlanes), list (columns: Time, Graph,
+Event, Lane, Status, Duration; Author and SHA hidden), compact. Scope sets the
+importance threshold (Key: high; Standard: high + medium; Detailed: + low; All:
+everything). Filters: lanes, categories, statuses, time range, text, per-lane
+solo/hide. Auto-refresh every 4 s while something runs and the window is visible
+and focused. Export writes JSON by default (500 rows).
 
 ## What history captures
 
-History records **operations** — discrete, typed actions that changed
-state — plus synthesized rows from the chat feed
-that pretend to be operations for rendering purposes only. Synthesized
-rows are not written into the `operations` table; they are rebuilt on
-every refresh.
-
 ### Operation kinds
 
-Tracked kinds (canonical, recorded by services via `operationService`):
+Recorded through `operationService` (metadata in parentheses):
 
-| Kind | Source | Metadata |
-|---|---|---|
-| `git_commit` | `gitOperationsService.commit` | `{ message, filesChanged, sha, reason, branchRef, baseRef }` |
-| `git_checkout_branch` | `gitOperationsService.checkoutBranch` | `{ fromBranch, toBranch, mode }` |
-| `git.merge` | `gitOperationsService.merge` | `{ fromBranch, conflicts }` |
-| `git.rebase` | `gitOperationsService.rebase`, `conflictService.rebaseLane` | `{ ontoBranch, commitCount }` |
-| `git_push` | `gitOperationsService.push` | `{ remote, branch, commitCount }` |
-| `git_push_force_with_lease` | `gitOperationsService.push({ forceWithLease })` | `{ remote, branch }` |
-| `git_pull` | `gitOperationsService.pull` | `{ mode: "ff-only" \| "rebase" \| "merge" }` |
-| `git_fetch` | `gitOperationsService.fetch` | `{ remote }` |
-| `git_sync_merge` / `git_sync_rebase` | `gitOperationsService.sync` | `{ baseRef }` |
-| `git_cherry_pick` | `gitOperationsService.cherryPickCommit` | `{ commitSha }` |
-| `git_revert` | `gitOperationsService.revertCommit` | `{ commitSha }` |
-| `git_tag_create` | `gitOperationsService.createTag` | `{ commitSha, tagName, annotated }` |
-| `git_reset_soft` / `git_reset_mixed` / `git_reset_hard` | `gitOperationsService.resetToCommit` | `{ commitSha, mode }` |
-| `git_undo_head_change` | `gitOperationsService.undoLastHeadChange` | `{ undoneOperationId, undoneOperationKind, redoHeadSha, targetHeadSha }` |
-| `git_redo_head_change` | `gitOperationsService.redoLastHeadChange` | `{ redoneUndoOperationId, targetHeadSha }` |
-| `git_stash_push` / `_apply` / `_pop` / `_drop` / `_clear` | `gitOperationsService.stash*` | `{ ref?, message?, includeUntracked? }` |
-| `git_rebase_continue` / `_abort` / `git_merge_continue` / `_abort` | `gitOperationsService.rebase*` / `merge*` | `{}` |
+- `git_commit` (message, filesChanged, sha, branchRef, baseRef),
+  `git_checkout_branch`, `git.merge`, `git.rebase` (also `conflictService`),
+  `git_push`, `git_push_force_with_lease`, `git_pull` (`mode`), `git_fetch`,
+  `git_sync_merge` / `git_sync_rebase`, `git_cherry_pick`, `git_revert`,
+  `git_tag_create`, `git_reset_soft|mixed|hard`, `git_undo_head_change`
+  (`undoneOperationId`, `redoHeadSha`, `targetHeadSha`), `git_redo_head_change`,
+  `git_stash_*`, `git_rebase_continue|abort`, `git_merge_continue|abort`.
+- PR creation (`prService`).
+- Old databases may hold `pack_update_*` rows; nothing records them now.
 
-Older databases may hold `pack_update_lane` / `pack_update_project` rows; `eventTaxonomy.ts` still labels them, but nothing records them now.
+`eventTaxonomy.ts` must have an entry for every kind.
 
-### Synthesized kinds (Activity surface only)
+### Status and SHA transitions
 
-These are built in `historyActivitySources.ts` and rendered as
-operations even though no row lands in the database. They show up in
-the activity feed and the detail panel; they will never appear in
-`ade.history.exportOperations` output.
-
-| Kind | Source | Metadata highlights |
-|---|---|---|
-| `chat.session` | `agentChat.list({ includeAutomation: true })` | `sessionId`, `title`, `provider`, `model`, `chatStatus`, `awaitingInput`, `automationId` |
-
-### Status
-
-`running | succeeded | failed | canceled`. `running` is set at `start`
-and transitions on `finish`. Canceled operations are bracketed with
-`finish({ status: "canceled" })` by the caller. The toolbar's status
-filter and the new `ListOperationsArgs.status` argument both apply
-this field; the export path uses its own `status` (with an `"all"`
-sentinel) and falls back to client-side filtering when a single status
-is requested via the toolbar.
-
-### SHA transitions
-
-Every git operation records `preHeadSha` and `postHeadSha`. The undo
-and redo paths in `gitOperationsService` rely on this. `undoLastHeadChange`
-searches recent head changes for the current lane, skips
-`git_undo_head_change` and `git_checkout_branch`, requires the stored
-`metadata.branchRef` to match the lane's current branch, rechecks that
-the lane branch has not changed after selection, verifies current HEAD
-still equals the selected operation's `postHeadSha`, then runs
-`git reset --hard preHeadSha`. `redoLastHeadChange` inverts that,
-reading the `redoHeadSha` stamped into the latest undo's metadata. The
-`CommitDetailPanel.relatedEvents` view also keys off this pair: any
-operation whose `preHeadSha` or `postHeadSha` matches the focused
-commit is surfaced alongside the commit.
+`running | succeeded | failed | canceled`. Every git operation records
+`preHeadSha` and `postHeadSha`. `undoLastHeadChange` picks the latest
+head-changing operation on the lane (skipping undo and checkout rows), checks the
+branch and that HEAD still equals its `postHeadSha`, then resets to `preHeadSha`;
+`redoLastHeadChange` restores the undo's `redoHeadSha`.
 
 ### Retention
 
-The `operations` table is pruned by `operationService.pruneOld()`,
-invoked once per project at runtime startup (see
-`main.ts`; failures are logged as `operation_prune_failed` and
-swallowed so a prune error never blocks boot). It applies two caps,
-both scoped to the current `project_id` and both of which **never
-evict in-flight (`running`) rows**:
-
-- **Age cap** — deletes finished operations whose `started_at` is
-  older than `maxAgeDays` (default 60).
-- **Count cap** — keeps only the newest `maxRows` finished operations
-  (default 5000), deleting the rest.
-
-This keeps the timeline DB bounded on long-lived projects without
-losing recent history or orphaning operations that are still
-`running`.
-
-## Other history-adjacent tables
-
-Several features own their own history-style tables. The schema still creates the retired `checkpoints` and `pack_*` tables; nothing writes them. These are not
-queried via `ade.history.*` but contribute to the broader picture.
-
-### Terminal sessions
-
-`terminal_sessions` (schema in `kvDb.ts`):
-
-- `id`, `lane_id`, `pty_id`, `tracked`, `pinned`, `manually_named`
-- `goal`, `tool_type`, `title`
-- `started_at`, `ended_at`, `exit_code`, `status`
-- `transcript_path` -- filesystem path to the persisted transcript
-- `head_sha_start`, `head_sha_end` -- git HEAD bracketing the session
-- `last_output_preview`, `last_output_at`, `summary`
-- `resume_command`, `resume_metadata_json` -- resume info for CLI
-  tools (Claude Code, Codex, Cursor) so sessions can be picked up
-  after exit.
-
-Sessions are owned by `sessionService.ts`; their full transcript is on
-disk at `transcript_path`. Terminal sessions do **not** synthesize
-rows into the activity feed yet — chat sessions do.
-
-### AI usage log
-
-`ai_usage_log`:
-
-- Per-turn token and cost tracking across providers.
-- Consumed by the budget/usage dashboards, not the history UI.
+`operationService.pruneOld()` drops finished operations older than 60 days and
+keeps at most 5,000 finished rows per project, never touching `running` rows. It
+is called when the desktop's in-process project context starts (`main.ts`,
+`operation_prune_failed` on error); the brain runtime does not call it.
 
 ## IPC surface
 
-Defined in `apps/desktop/src/shared/ipc.ts`, handled in
-`apps/desktop/src/main/services/ipc/registerIpc.ts`.
-
-### History
-
-| Channel | Args | Purpose |
-|---|---|---|
-| `ade.history.listOperations` | `ListOperationsArgs` (`{ laneId?, kind?, status?, limit?, offset? }`) | Query operations with optional filters and pagination. `status` is applied server-side. Default limit 300, max 1000. |
-| `ade.history.exportOperations` | `ExportHistoryArgs` (`{ format: "csv" \| "json"; laneId?, kind?, status?, limit? }`) | Export filtered history as CSV or JSON via a save dialog. `status` accepts `OperationRecord["status"] \| "all"`; `"all"` skips both server-side and client-side status filtering. Cancellation returns `{ cancelled: true }`. |
-
-### Git (used by the History toolbar + commit context menu)
-
-| Channel | Args | Notes |
-|---|---|---|
-| `ade.git.listRecentCommits` | `{ laneId, limit?, skip?, scope?, includeCoAuthors? }` | Limit is clamped to `[1, 500]` per page; `skip` pages older history with no overall cap. `scope: "lanes"` walks HEAD, the base and every active lane branch in `--date-order`, and marks commits on no remote as unpushed. When `scope` or `skip` is given, rows also carry `authorEmail` and `coAuthors`; `includeCoAuthors: true` adds them to the plain lane read without changing its `pushed` semantics (the lane overview uses it to attribute agent commits). The Commits view pages 100 at a time. |
-| `ade.git.listBranches` | `{ laneId }` | Used to overlay branch refs on commit rows. |
-| `ade.git.listCommitFiles` | `{ laneId, commitSha }` | Drives the detail panel file list and the "Copy patch" action (capped at 50 files). |
-| `ade.git.getCommitMessage` | `{ laneId, commitSha }` | Full commit message body (lazy). |
-| `ade.git.getOriginRemote` | `{ laneId }` | Used to build GitHub commit / branch URLs. |
-| `ade.git.getOpenPrForBranch` | `{ laneId }` | Used by "Open branch PR" and "Copy PR link". |
-| `ade.git.checkoutBranch` | `{ laneId, branchName, mode, startPoint? }` | "Create branch here" passes the commit SHA as `startPoint`. |
-| `ade.git.cherryPickCommit` | `{ laneId, commitSha }` | Records `git_cherry_pick`. |
-| `ade.git.revertCommit` | `{ laneId, commitSha }` | Records `git_revert`. |
-| `ade.git.createTag` | `GitCreateTagArgs` (`{ laneId, commitSha, tagName, message? }`) | Lightweight tag when `message` is omitted, annotated otherwise. Records `git_tag_create`. |
-| `ade.git.resetToCommit` | `GitResetCommitArgs` (`{ laneId, commitSha, mode: "soft" \| "mixed" \| "hard" }`) | Records `git_reset_<mode>`. |
-| `ade.git.pull` | `GitPullArgs` (`{ laneId, mode?: "ff-only" \| "rebase" \| "merge" }`) | Default `ff-only`. Records `git_pull` with `metadata.mode`. |
-| `ade.git.undoLastHeadChange` | `GitHeadChangeActionArgs` (`{ laneId }`) | Resets HEAD to the previous successful head-changing op's `preHeadSha`. Fails if HEAD has moved since. Records `git_undo_head_change`. |
-| `ade.git.redoLastHeadChange` | `GitHeadChangeActionArgs` (`{ laneId }`) | Restores HEAD to the most recent undo's `redoHeadSha`. Fails if HEAD has moved since the undo. Records `git_redo_head_change`. |
-
-All lane-scoped `ade.git.*` reads and mutations validate the lane
-worktree root before running provider Git commands. A missing or stale
-worktree path throws the same "restore or recreate the lane worktree"
-error for history reads, branch/stash/sync
-metadata, and mutating Git actions.
-
-The conflict-resume channels (`gitRebaseContinue`, `gitRebaseAbort`,
-`gitMergeContinue`, `gitMergeAbort`) accept either a bare `string`
-laneId (legacy) or `{ laneId }` (preferred); the preload normalizes
-via `normalizeLaneIdArg` before dispatching.
-
-### Lanes (used from the commit context menu)
-
-| Channel | Args | Notes |
-|---|---|---|
-| `ade.lanes.create` | `CreateLaneArgs` with `startPoint` | "Create lane here" forks the new branch from `commit.sha` at the selected commit. |
-
-## Operation recording pattern
-
-Every operation that should appear in history follows:
-
-```ts
-const op = operationService.start({
-  laneId,
-  kind: "git_commit",
-  preHeadSha,
-  metadata: { reason, branchRef }
-});
-
-try {
-  const result = await doTheThing();
-  const postHeadSha = await getHeadSha();
-  operationService.finish({
-    operationId: op.operationId,
-    status: "succeeded",
-    postHeadSha,
-    metadataPatch: { message: result.message, filesChanged: result.files.length }
-  });
-} catch (error) {
-  operationService.finish({
-    operationId: op.operationId,
-    status: "failed",
-    postHeadSha: await getHeadSha(),
-    metadataPatch: { error: error.message }
-  });
-  throw error;
-}
-```
-
-For instantaneous operations (no async work between start and finish),
-`operationService.recordCompleted()` wraps both calls.
-
-See `gitOperationsService.ts` for the canonical implementation
-(`runLaneOperation`). That helper also emits
-lane-changed and HEAD-changed events so dependent services can
-invalidate caches.
+- `ade.history.listOperations` — `{ laneId?, kind?, status?, limit?, offset? }`,
+  default 300, max 1,000.
+- `ade.history.exportOperations` — `{ format: "csv" | "json", laneId?, kind?,
+  status?, limit? }`; cancel returns `{ cancelled: true }`.
+- Git channels the page uses: `ade.git.listRecentCommits` (`{ laneId, limit?,
+  skip?, scope?, includeCoAuthors? }`, limit 1–500 per page, no overall cap;
+  `scope: "lanes"` marks unpushed commits), `listBranches`, `listCommitFiles`,
+  `getCommitMessage`, `getOriginRemote`, `getOpenPrForBranch`, `checkoutBranch`
+  (`startPoint`), `cherryPickCommit`, `revertCommit`, `createTag`,
+  `resetToCommit`, `pull` (default `ff-only`), `undoLastHeadChange`,
+  `redoLastHeadChange`. The same git actions are sync remote commands
+  ([remote commands](../sync-and-multi-device/remote-commands.md)).
+- Conflict channels accept a bare `laneId` (legacy) or `{ laneId }`
+  (`normalizeLaneIdArg`).
 
 ## Export
 
-`window.ade.history.exportOperations(args, pin)` reads up to 1000 rows
-(`operation.list`) from the lane's machine, then desktop main opens the save
-dialog and writes the file here. `buildHistoryExport`
-(`shared/historyExport.ts`) builds the file on desktop and on the web client:
+Up to 1,000 rows from the lane's machine; `buildHistoryExport` writes
+`ade-history-<projectSlug>-<YYYY-MM-DD>.<csv|json>` (the file name keeps its old
+prefix). JSON: `exportedAt`, project, filters, `rowCount`, `rows`. CSV: `id,
+laneId, laneName, kind, status, startedAt, endedAt, preHeadSha, postHeadSha,
+metadataJson`, RFC 4180 quoted, with a `'` prefix on cells starting `=`, `+`,
+`-`, `@` or a tab.
 
-- File name `ade-history-<projectSlug>-<YYYY-MM-DD>.<csv|json>` (the `ade-`
-  prefix is unchanged).
-- **JSON:** `exportedAt`, project, filters, `rowCount`, `rows`.
-- **CSV:** `id, laneId, laneName, kind, status, startedAt, endedAt,
-  preHeadSha, postHeadSha, metadataJson`. Cells are RFC 4180 quoted, and a
-  cell that starts with `=`, `+`, `-`, `@` or a tab gets a `'` prefix so a
-  spreadsheet does not run it as a formula.
-- Cancel returns `{ cancelled: true }`. A single concrete `status` filters in
-  SQL before the 1000-row clamp; `"all"` sends no status.
+## What is not in history
 
-Chat transcripts are not part of History; see
-[Chat transcript and turns](../chat/transcript-and-turns.md).
-
-## What is NOT in history
-
-Deliberately excluded from the persisted operations table; some of
-these are surfaced on the Activity surface as synthesized rows:
-
-- Individual tool calls during a session.
-- UI navigation events.
-- PR comment polling / check re-runs (captured in PR module).
-- AI token usage (`ai_usage_log`).
+Individual tool calls, UI navigation, PR polling and check reruns, AI token usage
+(`ai_usage_log`), terminal sessions (their own `terminal_sessions` table; they do
+not appear in Activity). Chat transcripts live in the chat system
+([transcript and turns](../chat/transcript-and-turns.md)).
 
 ## Related docs
 
-- [Lanes README](../lanes/README.md) -- `CreateLaneArgs.startPoint` is
-  documented there alongside the rest of the lane creation flow.
-- [Sync remote commands](../sync-and-multi-device/remote-commands.md)
-  -- the git head-change, tag and reset actions are exposed to iOS
-  and peer desktops through `SyncRemoteCommandAction`.
-- [Chat README](../chat/README.md) -- chat transcript persistence is
-  separate from the operations timeline but parallel in intent, and
-  chat sessions also synthesize Activity feed rows.
-- [Agents README](../agents/README.md) -- the CTO keeps no session log; its
-  conversation lives in the chat transcripts, and `readHistory` reads them.
-  `cto.getState` sends no list of past sessions.
+- [Lanes](../lanes/README.md) — lane creation and `startPoint`.
+- [Remote commands](../sync-and-multi-device/remote-commands.md).
+- [Chat](../chat/README.md).
