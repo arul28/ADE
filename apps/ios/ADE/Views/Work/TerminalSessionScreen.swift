@@ -326,6 +326,10 @@ struct TerminalSessionScreen: View {
 
       Spacer(minLength: 0)
 
+      // The session's DAEX Cloud computer: asleep, waking or awake, as a chat's
+      // header shows it. Nothing on the person's own machines.
+      CloudLaneHeaderStateButton(fleetKey: sessionMachineKey, inTerminal: true)
+
       if isAgentCli && !controller.hasExited {
         Button {
           messageBarOn.toggle()

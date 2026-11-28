@@ -99,16 +99,22 @@ function chatsLine(count: number, name: string): string {
   return `${count === 1 ? "A chat is" : `${count} chats are`} running on ${name}.`;
 }
 
+/** What is running where a Sleep was asked for: chats (the machine list, a chat header) or the CLI session whose header it is. */
+export type CloudSleepRunning = "chats" | "session";
+
 /**
  * Asks before a sleep when chats are running on the computer: sleep freezes
  * everything, so a turn in progress may fail. True with nothing running.
- * Every Sleep asks this way (the machine list, a cloud lane's chat header).
+ * Every Sleep asks this way (the machine list, a cloud lane's chat or CLI
+ * session header).
  */
-export async function confirmCloudSleep(name: string, runningChats: number): Promise<boolean> {
-  if (runningChats <= 0) return true;
+export async function confirmCloudSleep(name: string, running: number, what: CloudSleepRunning = "chats"): Promise<boolean> {
+  if (running <= 0) return true;
   return await confirmDialog({
     title: `Sleep ${name}?`,
-    message: `${chatsLine(runningChats, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no credits while asleep.`,
+    message: what === "session"
+      ? `This session is running on ${name}. Sleep stops everything on the computer, so its work in progress may not finish. It uses no credits while asleep.`
+      : `${chatsLine(running, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no credits while asleep.`,
     confirmLabel: "Sleep",
   });
 }
