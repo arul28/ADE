@@ -183,7 +183,7 @@ struct CloudFreeModelsState: Decodable, Equatable {
   /// (`CLOUD_FREE_MODELS_TERMS_VERSION`).
   static let sheetTitle = "\(Brand.name) Free Models show ads"
   static let sheetLead = "These models are free because each chat that uses one shows ads."
-  static let sheetReceives = "Gravity, our ad partner, receives the recent messages in these chats, your IP address and a hashed copy of your account email, and keeps a license to what is sent."
+  static let sheetReceives = "Gravity, our ad partner, receives everything these chats send the model (your messages, the agent's replies, and the files and tool output it reads), your IP address and a hashed copy of your account email, and keeps a license to what is sent."
   static let sheetRegion = "Available in the US and Canada only."
 }
 

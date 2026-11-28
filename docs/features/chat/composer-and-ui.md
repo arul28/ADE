@@ -517,6 +517,11 @@ it.
     (`free_models_locked`, `free_models_no_cards`, `adeFreeModelsRefusal.ts`)
     reads plainly in the transcript, and a reply refused for no ads still
     asks for its ad so the chat can run again (`lastFinishedTurn`).
+  - **Turning them off.** Settings > DAEX Cloud has a **DAEX Free Models**
+    switch beside the add-ons (`CloudPlans.tsx`; iOS `CloudFreeModelsCard` on
+    the cloud dashboard). Off saves the consent's no on the account, which
+    stops them on every device and deletes the viewer records; on (desktop and
+    web) opens the consent sheet. The phone turns them on from the picker only.
   - **Account level.** Consent, the viewer report and ad requests take no
     pin; only the chat's launch and turns go to its machine.
 - **DAEX Cloud drafts.** A new chat on DAEX Cloud lists `GET /cloud/models`

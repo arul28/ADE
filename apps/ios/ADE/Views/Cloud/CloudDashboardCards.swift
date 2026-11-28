@@ -53,6 +53,7 @@ struct CloudDashboardScreen: View {
             CloudSizesCard(account: account, tiers: store.tiers)
           }
           CloudSponsoredCard(pageAccount: store.account)
+          CloudFreeModelsCard(pageAccount: store.account)
           if let referral = store.account?.referral {
             CloudInviteCard(referral: referral, syncService: store.syncService, words: CloudBalanceWords(store.account), onChanged: { Task { await store.reload() } })
           }

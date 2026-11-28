@@ -20,7 +20,7 @@ const FACTS: ReadonlyArray<{ icon: typeof Eye; text: string; fine?: boolean }> =
   { icon: Eye, text: "Each chat that uses them shows an ad after a finished reply, on any computer and any plan." },
   {
     icon: ShareNetwork,
-    text: `To run them, ${BRAND.NAME} sends Gravity, the partner that hosts them, your recent messages in these chats, your IP address and a hashed copy of your account email. Gravity keeps a license to use what is sent.`,
+    text: `To run them, ${BRAND.NAME} sends Gravity, the partner that hosts them, everything these chats send the model (your messages, the agent's replies, and the files and tool output it reads), your IP address and a hashed copy of your account email. Gravity keeps a license to use what is sent.`,
   },
   { icon: ChatsCircle, text: `They answer only while you have the chat open in ${BRAND.NAME}, so automations and the CLI can't use them.` },
   { icon: GlobeHemisphereWest, text: "Only in the US and Canada. Ads are for people 18 or older.", fine: true },
