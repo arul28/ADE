@@ -364,8 +364,13 @@ export type CloudLaneWithoutComputer = {
    * unless they said not to. An older ADE shows an unknown reason as a removed computer.
    */
   reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit";
-  /** The size the old computer had. */
-  type: "default" | "vm";
+  /**
+   * The size the old computer had. `mac`: a DAEX Cloud Mac's lane (6 CPU,
+   * 8 GB), sent only while the Mac switch reaches the account; otherwise the
+   * lane reads as `default` at 4 CPU, 8 GB. An older app shows `mac` as an
+   * unknown size.
+   */
+  type: "default" | "vm" | "mac";
   cpu: number;
   memoryGb: number;
   formerInstanceId: string;
