@@ -135,7 +135,7 @@ export function SavedProofPicture({ proof, label, compact = false, onWake }: {
           <span className="absolute inset-0 flex items-center justify-center bg-black/30">
             <Button type="button" variant="outline" size="sm" casing="sentence" disabled={reach === "waking"} onClick={onWake}>
               {reach === "waking" ? <SpinnerGap size={14} className="animate-spin" aria-hidden /> : <Play size={14} weight="fill" aria-hidden />}
-              {reach === "waking" ? "Waking…" : "Wake to play"}
+              {reach === "waking" ? (machine.mac ? "Starting…" : "Waking…") : machine.mac ? "Start to play" : "Wake to play"}
             </Button>
           </span>
         ) : null}

@@ -16,6 +16,7 @@
 import type { CloudMachineState } from "./adeCloud";
 import type { CloudLaneMachine, CloudMachineLaneFacts } from "./cloudLaneLaunch";
 import type { MachineAddress } from "./machineAddress";
+import { cloudMacPhaseOf, type CloudComputerAction, type CloudMacPhase } from "./cloudMac";
 
 /** The computer a cloud lane runs on now. */
 export type LaneComputer = CloudMachineLaneFacts & {
@@ -23,6 +24,14 @@ export type LaneComputer = CloudMachineLaneFacts & {
   /** The computer's account machine key; null until it has joined the account. */
   machineKey: string | null;
   state: CloudMachineState;
+  /** A DAEX Cloud Mac; absent on Linux. */
+  os?: "mac";
+  /** A Mac's own phase (queued, starting, …, drive lost), from the server's `mac` state; absent on Linux. */
+  macPhase?: CloudMacPhase;
+  /** The server can't wake it or send to it now (`CloudMachine.unavailable`). */
+  unavailable?: true;
+  /** What the server refuses on it (`CloudInstance.unsupported`); absent: nothing. */
+  unsupported?: CloudComputerAction[];
 };
 
 /** A lane's computer changed: same lane, same chats, another computer. */
@@ -48,6 +57,11 @@ export type LaneFollowResult =
  */
 export type LaneComputerSource = Pick<CloudLaneMachine, "instanceId" | "machineKey" | "state" | "lane" | "replacesInstanceId"> & {
   createdAtMs?: number | null;
+  status?: string;
+  os?: CloudLaneMachine["os"];
+  mac?: CloudLaneMachine["mac"];
+  unsupported?: CloudLaneMachine["unsupported"];
+  unavailable?: CloudLaneMachine["unavailable"];
 };
 
 /**
@@ -67,6 +81,9 @@ export function laneComputersOf(machines: readonly LaneComputerSource[]): LaneCo
       instanceId: machine.instanceId,
       machineKey: machine.machineKey ?? null,
       state: machine.state,
+      ...(machine.os === "mac" ? { os: "mac" as const, macPhase: cloudMacPhaseOf(machine.mac, machine.status) } : {}),
+      ...(machine.unsupported?.length ? { unsupported: [...machine.unsupported] } : {}),
+      ...(machine.unavailable ? { unavailable: true as const } : {}),
     };
     const createdAtMs = machine.createdAtMs ?? 0;
     const current = byLane.get(computer.laneId);
@@ -122,13 +139,18 @@ export function parseSavedLaneComputers(raw: unknown): LaneComputer[] {
       instanceId: value.instanceId,
       machineKey: typeof value.machineKey === "string" ? value.machineKey : null,
       state: "asleep",
+      // A saved Mac row is old too: stopped, never on.
+      ...(value.os === "mac" ? { os: "mac" as const, macPhase: "stopped" as const } : {}),
+      ...(Array.isArray(value.unsupported) ? { unsupported: value.unsupported.filter((entry): entry is CloudComputerAction => typeof entry === "string") } : {}),
     }];
   });
 }
 
 /** The rows `parseSavedLaneComputers` reads back: everything but the state. */
-export function savedLaneComputers(computers: readonly LaneComputer[]): Array<Omit<LaneComputer, "state">> {
-  return computers.map(({ laneId, laneName, projectOrigin, instanceId, machineKey }) => ({ laneId, laneName, projectOrigin, instanceId, machineKey }));
+export function savedLaneComputers(computers: readonly LaneComputer[]): Array<Omit<LaneComputer, "state" | "macPhase">> {
+  return computers.map(({ laneId, laneName, projectOrigin, instanceId, machineKey, os, unsupported }) => ({
+    laneId, laneName, projectOrigin, instanceId, machineKey, ...(os ? { os } : {}), ...(unsupported?.length ? { unsupported } : {}),
+  }));
 }
 
 /** `savedLaneComputers` as stored text. */

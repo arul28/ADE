@@ -1,4 +1,5 @@
 import React from "react";
+import { adeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 import { memoWithLatestHandlers } from "../../lib/stableIdentity";
 import {
@@ -120,6 +121,7 @@ import {
   SESSION_TONE_TEXT_CLASS,
   formatFutureDuration,
   sessionElapsedAnchor,
+  STARTING_STATUS_PRESENTATION,
   WAKING_STATUS_PRESENTATION,
   sessionTurnLive,
   wakingSessionView,
@@ -757,7 +759,10 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // stall bar or its wake turns overdue.
   const statusClockSessions = React.useMemo(() => [session], [session]);
   const statusClockMs = useTurnStallClock(statusClockSessions);
-  const presentation = wakingSince ? WAKING_STATUS_PRESENTATION : sessionStatusDisplay(sessionAttentionInput, {
+  // A Mac starts; it never sleeps. Read once while waking (no subscription per row).
+  const presentation = wakingSince
+    ? adeCloudLaneForBinding(runtimePin)?.os === "mac" ? STARTING_STATUS_PRESENTATION : WAKING_STATUS_PRESENTATION
+    : sessionStatusDisplay(sessionAttentionInput, {
     snoozed,
     woke: !snoozed && Boolean(wokeMarker),
     snoozeWakeLabel: snoozed ? snoozeWakeLabel(session.snoozedUntil) : null,

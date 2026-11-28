@@ -436,9 +436,12 @@ export function CloudSetupCard({
   const rows: SetupStep[] = [
     {
       id: "computer",
-      title: "Computer started",
+      title: record?.os === "mac" ? "Mac started" : "Computer started",
       state: entry.startError ? "failed" : steps.computer,
-      detail: record?.state === "needs_approval" && record.approval ? (
+      // A DAEX Cloud Mac waits for a free Mac, then starts: the server's sentence while it does.
+      detail: record?.state === "making" && record.os === "mac" && record.mac?.message ? (
+        <span className="text-[12px]" style={{ color: "var(--kit-text-2)" }}>{record.mac.message}</span>
+      ) : record?.state === "needs_approval" && record.approval ? (
         <div className="mt-1 flex items-center gap-2">
           <span className="text-[12px]" style={{ color: "var(--kit-text-2)" }}>Confirm the computer's sign-in to your account.</span>
           <button type="button" className="kit-btn" data-size="sm" onClick={() => openExternalUrl(record.approval!.url)}>

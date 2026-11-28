@@ -25,6 +25,17 @@ import {
   cloudTierRatePair,
 } from "../../../../shared/cloudAdPriceWords";
 import { formatAgo } from "../../../lib/format";
+import {
+  CLOUD_MAC_PHASE_LABEL,
+  cloudMacDriveText,
+  cloudMacOfferOf,
+  cloudMacPhaseOf,
+  cloudMacPhaseTone,
+  cloudMacPricePerMinute,
+  cloudMacRateText,
+  cloudMacSentence,
+  type CloudMacPhase,
+} from "../../../../shared/cloudMac";
 
 /**
  * The ADE Cloud dashboard's facts, from reads already in memory (the account's
@@ -74,7 +85,38 @@ export type DashLane = {
   noLane: boolean;
   /** The idle cleanup's warning for its computer (or its kept-after-a-failed-save state), else null. */
   idle: CloudIdleCleanupEntry | null;
+  /** A DAEX Cloud Mac's own state, from the server's `mac` (null on Linux and for a lane without a computer). */
+  mac: DashMac | null;
+  /** The server's sentence for a computer it can't wake or send to now (`CloudMachine.unavailable`). */
+  unavailable: string | null;
+  /** A Mac computer, or a lane whose next computer is a Mac (`type: "mac"`, sent only while the server offers one). */
+  isMac: boolean;
 };
+
+/** A Mac row's state: the word, the server's sentence, and its drive as the last stop saved it. */
+export type DashMac = {
+  phase: CloudMacPhase;
+  label: string;
+  sentence: string | null;
+  /** "7.4 of 20 GB", or null before its first save. */
+  drive: string | null;
+  savedAt: number | null;
+};
+
+function dashMacOf(machine: CloudLaneMachine): DashMac | null {
+  if (machine.os !== "mac") return null;
+  const phase = cloudMacPhaseOf(machine.mac, machine.status);
+  return {
+    phase,
+    label: CLOUD_MAC_PHASE_LABEL[phase],
+    sentence: cloudMacSentence(machine.mac),
+    drive: cloudMacDriveText(machine.mac),
+    savedAt: machine.mac?.drive.savedAt ?? null,
+  };
+}
+
+/** A Mac phase as the State column's dot. */
+const MAC_DOT: Readonly<Record<ReturnType<typeof cloudMacPhaseTone>, DashLaneState>> = { on: "awake", busy: "starting", off: "asleep", bad: "failed" };
 
 function stateOf(machine: CloudMachine): DashLaneState {
   if (machine.update?.state === "updating") return "updating";
@@ -111,17 +153,25 @@ export function dashLanes(input: {
   const idle = new Map((input.account?.dueForDeletion ?? []).map((entry) => [entry.instanceId, entry]));
   const priced = cloudPricingOf(input.account) != null;
   const view = cloudAdsViewOf(input.account);
+  const macOffer = cloudMacOfferOf(input.account);
   // The server lists every computer's price now; one it doesn't list yet shows its size's two prices.
-  const priceOf = (machine: CloudLaneMachine, tier: CloudTier | null): DashLane["price"] => {
+  // A Mac's price comes an hour from the server and reads a minute; unlisted, the catalog's two Mac prices.
+  const priceOf = (machine: CloudLaneMachine, tier: CloudTier | null, mac: boolean): DashLane["price"] => {
     if (!priced) return null;
-    const now = cloudComputerPriceOf(input.account, machine.instanceId);
-    if (now) return { text: cloudPriceNowText(now, view, words), reason: cloudFullPriceReasonLine(now, view) };
+    const listed = cloudComputerPriceOf(input.account, machine.instanceId);
+    if (listed && mac) {
+      const now = cloudMacPricePerMinute(listed);
+      return { text: cloudPriceNowText(now, view, words, "minute"), reason: cloudFullPriceReasonLine(now, view) };
+    }
+    if (listed) return { text: cloudPriceNowText(listed, view, words), reason: cloudFullPriceReasonLine(listed, view) };
+    if (mac) return macOffer ? { text: cloudMacRateText(macOffer, words, view), reason: null } : null;
     return tier ? { text: cloudRateText(cloudTierRatePair(tier), view, words), reason: null } : null;
   };
   // Every computer the account pays for: a lane's own, and one that holds no lane.
   const withComputer = input.machines
     .map((machine): DashLane => {
-      const tier = cloudTierOfMachine(machine, tiers);
+      const mac = dashMacOf(machine);
+      const tier = mac ? null : cloudTierOfMachine(machine, tiers);
       const lastActiveAt = machine.lastActiveAtMs ?? null;
       return {
         key: machine.instanceId,
@@ -130,10 +180,13 @@ export function dashLanes(input: {
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
         // Under Pricing v3 the "Costs now" cell says the price; the size stands alone.
-        rateLabel: priced ? null : rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
-        price: priceOf(machine, tier),
-        diskGb: machine.resources?.diskGb ?? 0,
-        state: stateOf(machine),
+        rateLabel: priced ? null
+          : mac ? macOffer ? cloudMacRateText(macOffer, words) : null
+          : rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
+        price: priceOf(machine, tier, mac != null),
+        // A Mac's drive isn't plan disk (the server counts it apart).
+        diskGb: mac ? 0 : machine.resources?.diskGb ?? 0,
+        state: mac ? MAC_DOT[cloudMacPhaseTone(mac.phase)] : stateOf(machine),
         lastActiveAt,
         old: lastActiveAt != null ? input.now - lastActiveAt >= CLOUD_LANE_OLD_MS : machine.createdAtMs != null && input.now - machine.createdAtMs >= CLOUD_LANE_OLD_MS,
         usage: machine.diskUsage ?? null,
@@ -143,6 +196,9 @@ export function dashLanes(input: {
         without: null,
         noLane: !machine.lane,
         idle: idle.get(machine.instanceId) ?? null,
+        mac,
+        isMac: mac != null,
+        unavailable: machine.unavailable ?? null,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -170,6 +226,9 @@ export function dashLanes(input: {
         without: lane,
         noLane: false,
         idle: null,
+        mac: null,
+        isMac: lane.type === "mac" && macOffer != null,
+        unavailable: null,
       };
     });
   // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.
@@ -305,10 +364,10 @@ export const STATE_LABEL: Record<DashLaneState, string> = {
   none: "No computer",
 };
 
-/** Lanes for "Free up space": biggest first, then the longest unused. */
+/** Lanes for "Free up space": biggest first, then the longest unused. A Mac holds no plan disk, so it isn't one. */
 export function cleanupOrder(lanes: readonly DashLane[]): DashLane[] {
   return lanes
-    .filter((lane) => lane.instanceId)
+    .filter((lane) => lane.instanceId && !lane.mac)
     .slice()
     .sort((left, right) => right.diskGb - left.diskGb || (left.lastActiveAt ?? 0) - (right.lastActiveAt ?? 0));
 }

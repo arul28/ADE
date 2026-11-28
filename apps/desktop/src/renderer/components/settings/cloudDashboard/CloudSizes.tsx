@@ -1,11 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Cpu } from "@phosphor-icons/react";
+import { AppleLogo, Cpu } from "@phosphor-icons/react";
 import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../../shared/adeCloud";
 import { cloudTierFacts, cloudTierHoursAt, cloudTiers } from "../../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { cloudAdsViewOf, cloudPricingOf, cloudRateNumber, cloudTierRatePair, type CloudRatePair } from "../../../../shared/cloudAdPriceWords";
+import { CLOUD_MAC_NAME, cloudMacOfferOf, cloudMacRatePair, cloudMacShapeText, cloudMacTimeAt } from "../../../../shared/cloudMac";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
-import { useRootAppStore } from "../../../state/appStore";
+import { rootAppStoreApi, useRootAppStore } from "../../../state/appStore";
 import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import { BRAND } from "../../../../shared/brand";
 import "./cloudSizeCards.css";
@@ -22,13 +23,17 @@ type Row = {
   unit: "hour" | "minute";
   /** Time left at the price the person pays now ("54 h", "962 min", "Unlimited"). */
   left: string;
-  /** A Linux size new lanes can start on; the iPhone has no radio. */
+  /** A size new lanes can start on (a Linux size, or the Mac); the iPhone has no radio. */
   pick: boolean;
+  /** The DAEX Cloud Mac's row (only while the catalog offers one). */
+  mac?: boolean;
 };
 
 /**
- * Settings › DAEX Cloud's "Sizes and prices": one table, one row a size (and
- * the iPhone, for an account that has it). Its columns: the size new lanes
+ * Settings › DAEX Cloud's "Sizes and prices": one table, one row a size (then
+ * the DAEX Cloud Mac while the catalog offers one, and the iPhone for an
+ * account that has it). The Mac's radio is the synced "new lanes start on a
+ * Mac" setting; a Linux size's radio sets Linux again. Its columns: the size new lanes
  * start on (an account setting), the size and what it has, each price, and how
  * long the credits left last at it. The one home of every rate on the page.
  *
@@ -45,6 +50,9 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
   const tiers = useMemo(() => cloudTiers(catalog), [catalog]);
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
   const current = tiers.find((tier) => tier.id === defaultTier) ?? tiers[0] ?? null;
+  const macOffer = cloudMacOfferOf(account);
+  const defaultOs = useRootAppStore((state) => state.cloudDefaultOs);
+  const onMac = macOffer != null && defaultOs === "mac";
   const leftMilli = cloudHoursLeftMilli(account);
   const words = cloudUnitWords(account);
   const view = cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
@@ -70,6 +78,22 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
         pick: true,
       };
     }),
+    ...(macOffer ? [((): Row => {
+      const pair = cloudMacRatePair(macOffer);
+      return {
+        key: "mac",
+        label: CLOUD_MAC_NAME,
+        specs: `${cloudMacShapeText(macOffer)} · by the minute`,
+        title: macOffer.summary,
+        full: false,
+        pair: { fullMilli: pair.fullMilli, adMilli: view ? pair.adMilli : null },
+        unit: "minute",
+        // At the price paid now, like every row's time left.
+        left: cloudMacTimeAt(macOffer, leftMilli, adsLead ? view : null),
+        pick: true,
+        mac: true,
+      };
+    })()] : []),
     ...(phoneFull != null ? [((): Row => {
       const pair: CloudRatePair = { fullMilli: phoneFull, adMilli: view ? phone?.adMilliPerMinute ?? null : null };
       const rate = rateNow(pair);
@@ -121,7 +145,11 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
       <header className="kit-card-head">
         <Cpu size={14} />
         Sizes and prices
-        <span className="adecd-head-note">New cloud lanes start on the size you pick; each can change size later. Every size has a desktop screen the agent can use.</span>
+        <span className="adecd-head-note">
+          {onMac
+            ? "New cloud lanes you start begin on a Mac. Agents and automations start on Linux unless they ask for a Mac."
+            : "New cloud lanes start on the size you pick; each can change size later. Every size has a desktop screen the agent can use."}
+        </span>
       </header>
       <div className="kit-card-body" data-flush="true">
         <table className="adecd-sizetable" data-two={two || undefined} data-swap={swapped ? swapped.lead : undefined} key={swapped?.at ?? 0}>
@@ -140,7 +168,7 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
           </thead>
           <tbody>
             {rows.map((row) => {
-              const picked = row.pick && row.key === current?.id;
+              const picked = row.mac ? onMac : row.pick && !onMac && row.key === current?.id;
               return (
                 <tr key={row.key} data-picked={picked || undefined} title={row.title}>
                   <td className="adecd-sizetable-pick">
@@ -149,14 +177,20 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
                         type="radio"
                         name={name}
                         checked={picked}
-                        aria-label={`New cloud lanes start on ${row.label}`}
-                        onChange={() => pickCloudDefaultTier(row.key as (typeof tiers)[number]["id"])}
+                        aria-label={`New cloud lanes start on ${row.mac ? "a Mac" : row.label}`}
+                        onChange={() => {
+                          const store = rootAppStoreApi.getState();
+                          if (row.mac) return store.setCloudDefaultOs("mac");
+                          if (onMac) store.setCloudDefaultOs("linux");
+                          pickCloudDefaultTier(row.key as (typeof tiers)[number]["id"]);
+                        }}
                       />
                     ) : null}
                   </td>
                   <th scope="row">
                     <span className="adecd-sizetable-name">
-                      {row.pick ? <CloudSizeIcon tier={row.key as (typeof tiers)[number]["id"]} size={16} /> : null}
+                      {row.mac ? <AppleLogo size={15} weight="fill" className="adecd-mac-mark" aria-hidden />
+                        : row.pick ? <CloudSizeIcon tier={row.key as (typeof tiers)[number]["id"]} size={16} /> : null}
                       <b>{row.label}</b>
                       {picked ? <span className="kit-tag" data-tone="accent">Default</span> : null}
                       {row.full ? <span className="kit-tag">Full computer</span> : null}

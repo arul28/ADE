@@ -74,6 +74,8 @@ type ArtifactPreviewProblem = {
   machineName: string;
   /** Why the last wake failed, for `asleep`. */
   wakeError?: string | null;
+  /** A DAEX Cloud Mac: stopped and starting, not asleep and waking. */
+  mac?: boolean;
 };
 
 function artifactMediaNoun(artifact: ComputerUseArtifactView): string {
@@ -107,7 +109,7 @@ function artifactPreviewExplanation(
     case "asleep":
     case "waking":
     case "gone":
-      return chatMachineMediaSentence(problem.reason, noun, problem.machineName, problem.wakeError);
+      return chatMachineMediaSentence(problem.reason, noun, problem.machineName, problem.wakeError, problem.mac);
     case "unsent":
       return `${problem.machineName} could not send this ${noun}.`;
     case "unplayable":
@@ -439,7 +441,8 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
     reason: offlineReason ?? failure,
     machineName: scope.machineName,
     wakeError: machine.error,
-  }), [artifact, failure, machine.error, offlineReason, scope.machineName]);
+    mac: machine.mac,
+  }), [artifact, failure, machine.error, machine.mac, offlineReason, scope.machineName]);
   const { wakeThen } = machine;
   // The person's click wakes the computer; once it is connected, load again.
   const wakeThenRetry = useCallback(() => void wakeThen(retry), [retry, wakeThen]);

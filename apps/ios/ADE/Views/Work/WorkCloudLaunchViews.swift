@@ -64,12 +64,17 @@ func workCloudLaunchStatusLine(_ entry: AccountCloudLaunchStore.Entry, providerL
   if record?.state == "needs_approval" { return "Confirm the computer's sign-in" }
   if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel)" }
   let steps = workCloudLaunchSteps(entry)
+  // A Mac waits for a free one, then starts: its own words while it is made.
+  let startingWords: String = {
+    guard record?.os == "mac" else { return "Starting the computer" }
+    return record?.mac?.state == "queued" ? CloudMacPhase.queued.label : "Starting the Mac"
+  }()
   if entry.isLane {
     if record?.reachedRunning == true { return "Lane ready" }
-    return steps.computer == .done ? "Checking out the branch" : "Starting the computer"
+    return steps.computer == .done ? "Checking out the branch" : startingWords
   }
   if record?.sessionId != nil || steps.send == .done { return "Opening the chat" }
-  if steps.computer != .done { return "Starting the computer" }
+  if steps.computer != .done { return startingWords }
   if steps.repo != .done { return "Cloning the repo" }
   return "Starting the agent"
 }
@@ -688,5 +693,36 @@ struct WorkCloudLaunchSetupCard: View {
         .padding(.top, 6)
       }
     }
+  }
+}
+
+/// Linux or a DAEX Cloud Mac for a new cloud lane, as the desktop's pick.
+/// Shown only while the catalog offers a Mac; a person picks it each time
+/// (Linux first). `refusal`: why the picked model can't run on a Mac, said
+/// before the start.
+struct CloudOsPick: View {
+  let offer: CloudMacOffer
+  @Binding var mac: Bool
+  let words: CloudBalanceWords
+  let refusal: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Picker("Runs on", selection: $mac) {
+        Text("Linux").tag(false)
+        Text("Mac").tag(true)
+      }
+      .pickerStyle(.segmented)
+      .frame(maxWidth: 200)
+      .accessibilityLabel("Runs on")
+      if mac {
+        Text(refusal ?? "\(CloudMacWords.shapeText(offer)) · \(CloudMacWords.rateText(offer, words: words)) · starts \(CloudMacWords.startWords)")
+          .font(.caption)
+          .foregroundStyle(refusal == nil ? ADEColor.textSecondary : ADEColor.warning)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .adeInspectable("Cloud.OsPick")
   }
 }

@@ -5,7 +5,7 @@
  * no computer of the person's own is online.
  */
 
-import type { CloudInstance } from "../../../account-directory/src/cloud/contract";
+import { CLOUD_COMPUTER_UNAVAILABLE_SENTENCE, type CloudInstance } from "../../../account-directory/src/cloud/contract";
 import {
   cloudDiskFullMessage,
   cloudHoursRate,
@@ -53,6 +53,9 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     hoursRate: shape ? cloudHoursRate(cloudMachineKindOf(type), shape.id, catalog) : null,
     pastDue: instance.pastDue,
     failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
+    ...(instance.statusReason?.code === "computer_unavailable"
+      ? { unavailable: instance.statusReason.message?.trim() || CLOUD_COMPUTER_UNAVAILABLE_SENTENCE }
+      : {}),
     machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
     createdAtMs: instance.created != null ? instance.created * 1000 : null,
     sleep: cloudSleepPolicyOf(instance),
@@ -64,6 +67,9 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     diskUsage: instance.diskUsage ?? null,
     laneWork: instance.laneWork ?? null,
     ignoredFiles: instance.ignoredFiles ?? null,
+    // The DAEX Cloud Mac: an older server leaves these out (Linux, nothing refused).
+    ...(instance.os === "mac" ? { os: "mac" as const, mac: instance.mac ?? null } : {}),
+    ...(instance.unsupported?.length ? { unsupported: [...instance.unsupported] } : {}),
     ...(lane ? { lane } : {}),
     replacesInstanceId: instance.metadata.ade_moved_from ?? instance.metadata.ade_copied_from ?? null,
   };

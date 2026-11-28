@@ -176,6 +176,8 @@ export function cloudLaneStartBlock(
      * not refused here. Never for a CLI, an agent or an automation.
      */
     personMessage?: boolean;
+    /** A DAEX Cloud Mac start (`mac`): it always uses credits. */
+    os?: "linux" | "mac" | null;
   } = { newLane: true },
 ): CloudLaneStartBlock | null {
   if (!account) return null;
@@ -184,7 +186,8 @@ export function cloudLaneStartBlock(
   const catalog = cloudCatalogOf(account);
   // Only a size the catalog rates above 0 uses hours (or, with a person's message, its price with ads).
   const size = options.sizeId ? cloudTier(catalog, options.sizeId) : null;
-  const usesHours = size != null && cloudTierUsesHours(size) && !(options.personMessage && freeWithAdsNow(account, size));
+  // A DAEX Cloud Mac always uses credits, by the minute (no size of it is free with ads).
+  const usesHours = options.os === "mac" || (size != null && cloudTierUsesHours(size) && !(options.personMessage && freeWithAdsNow(account, size)));
   // A held free plan (GitHub rules, refused) stops every size, Small too.
   const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
   const why = github && github.state !== "ok" ? github.sentence : null;
@@ -192,8 +195,10 @@ export function cloudLaneStartBlock(
     // The free plan's GitHub rules hold its credits: their sentence says why and what to do.
     return {
       code: "out_of_hours",
-      message: why ?? (cloudSmallUsesHours(catalog) ? `${CLOUD_OUT_OF_HOURS_MESSAGE}${freeSmallWayOut(account)}` : `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`),
-      short: why ? "Free credits wait on GitHub." : "Out of credits for this size.",
+      message: why ?? (options.os === "mac"
+        ? `${CLOUD_OUT_OF_HOURS_MESSAGE} A Mac uses credits each minute, so it can't start until they reset.${cloudSmallUsesHours(catalog) ? freeSmallWayOut(account) : " A Linux Small computer keeps working."}`
+        : cloudSmallUsesHours(catalog) ? `${CLOUD_OUT_OF_HOURS_MESSAGE}${freeSmallWayOut(account)}` : `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`),
+      short: why ? "Free credits wait on GitHub." : options.os === "mac" ? "Out of credits for a Mac." : "Out of credits for this size.",
     };
   }
   if (!options.newLane) return null;

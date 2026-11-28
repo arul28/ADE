@@ -420,7 +420,7 @@ export function ShellCodeBlockRunButton({ code, language }: { code: string; lang
   const machineBlocked = asleep ? (scope.laneId ? null : NO_PROJECT_LANE) : blockedReason(scope);
   const blocked = machineBlocked ?? (plan.ok ? null : plan.reason);
   const waking = machine.waking || runAfterWake || laneWaitUntil != null;
-  const reason = waking ? `Waking ${scope.machineName}…` : blocked;
+  const reason = waking ? `${machine.mac ? "Starting" : "Waking"} ${scope.machineName}…` : blocked;
   const sessionId = scope.sessionId;
   const laneId = scope.laneId;
   const folder = scope.laneWorktreePath;
@@ -488,7 +488,9 @@ export function ShellCodeBlockRunButton({ code, language }: { code: string; lang
   const shownRunFailure = liveFolder ? null : runFailure;
   const label = (waking ? null : wakeFailure ?? shownRunFailure)
     ?? reason
-    ?? (asleep ? `${scope.machineName} is asleep. Run wakes it, then runs this.` : "Run in a new terminal");
+    ?? (asleep
+      ? machine.mac ? `${scope.machineName} is stopped. Run starts it, then runs this.` : `${scope.machineName} is asleep. Run wakes it, then runs this.`
+      : "Run in a new terminal");
   return (
     <button
       type="button"

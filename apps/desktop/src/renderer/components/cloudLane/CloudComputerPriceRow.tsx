@@ -5,6 +5,7 @@ import {
   cloudFullPriceReasonLine,
   cloudPriceNowText,
 } from "../../../shared/cloudAdPriceWords";
+import { cloudMacPricePerMinute } from "../../../shared/cloudMac";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 
@@ -16,15 +17,18 @@ import { useCloudAccount } from "../../state/cloudAccountStore";
  * price: a CLI session runs here"). The server decides both
  * (`pricing.computers[]`); this only reads the account the window already
  * follows. Nothing without Pricing v3 or for a computer the account doesn't
- * price (asleep, or not the account's). Account level, no pin.
+ * price (asleep, or not the account's). Account level, no pin. A DAEX Cloud
+ * Mac (`mac`) reads its price a minute.
  */
-export function CloudComputerPriceRow({ instanceId, compact = false }: { instanceId: string | null; compact?: boolean }) {
+export function CloudComputerPriceRow({ instanceId, compact = false, mac = false }: { instanceId: string | null; compact?: boolean; mac?: boolean }) {
   const account = useCloudAccount(Boolean(instanceId));
-  const price = cloudComputerPriceOf(account, instanceId);
-  if (!account || !price) return null;
+  const listed = cloudComputerPriceOf(account, instanceId);
+  if (!account || !listed) return null;
+  // The server carries a Mac's rate an hour.
+  const price = mac ? cloudMacPricePerMinute(listed) : listed;
   const view = cloudAdsViewOf(account);
   const words = cloudUnitWords(account);
-  const text = cloudPriceNowText(price, view, words);
+  const text = cloudPriceNowText(price, view, words, mac ? "minute" : "hour");
   const reason = cloudFullPriceReasonLine(price, view);
   return (
     <div className="flex min-w-0 flex-col gap-0.5 text-[11px] leading-snug text-muted-fg" data-cloud-price={price.now}>

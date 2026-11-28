@@ -151,6 +151,8 @@ export type ChatLaunchCloudState = {
   sizeId: string;
   /** How the size was chosen (`CloudLaunchSizeChoice`); absent is `picked`. */
   sizeChoice?: "default" | "picked" | "capped";
+  /** A DAEX Cloud Mac (`CloudServerLaunchRequest.os`); absent is Linux. */
+  os?: "linux" | "mac";
   /** Why the computer is bigger than the size asked for, in plain words ("Medium: this repo's setup needed more than 4 GB before."). */
   sizeNote?: string | null;
   /** The repository the lane clones, `github.com/owner/repo`: which project's views show this launch. */
@@ -420,6 +422,12 @@ export type ChatLaunchCloudTarget = {
    * more memory. Absent is `picked`: the size stays.
    */
   sizeChoice?: "default" | "picked" | "capped";
+  /**
+   * `mac`: a DAEX Cloud Mac, only when a person picked it for this start or a
+   * caller asked for it by name (a saved default never makes a Mac for an
+   * agent). Absent is Linux. `sizeId` is still sent and ignored on a Mac.
+   */
+  os?: "linux" | "mac";
   /**
    * The project's git origin as the launching window knows it (the one its
    * composer checked before Send), so main clones the same repository the

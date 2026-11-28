@@ -155,9 +155,14 @@ struct CloudPlansCard: View {
         } else {
           fact("clock", words.planLine(column.facts.includedMilli), current: current)
         }
-        // Pricing v3: what the month lasts on a Medium, at both prices ("Time on a plan").
+        // Pricing v3: what the month lasts on a Medium, at both prices ("Time on a plan"), then
+        // the Mac short on the same one line while the catalog offers one.
         if let adWords, let medium = tiers.first(where: { $0.id == "medium" }), let line = adWords.timeOn(column.facts.includedMilli, tier: medium) {
-          fact("hourglass", cloudCapitalized(line), current: current, lines: nil)
+          let mac = account.macOffer.flatMap { CloudMacWords.planShort($0, includedMilli: column.facts.includedMilli, ad: adWords) }
+          fact("hourglass", cloudCapitalized([line, mac].compactMap { $0 }.joined(separator: " · ")), current: current, lines: nil)
+        } else if let offer = account.macOffer, let macLine = CloudMacWords.planLine(offer, includedMilli: column.facts.includedMilli) {
+          // Before Pricing v3: a plan's credits as time on a DAEX Cloud Mac, from the catalog's rate.
+          fact("apple.logo", macLine, current: current)
         }
         fact("bolt", extraHoursSold(column) ? "\(words.extra) if on" : "No \(words.extra.lowercased())", current: current, quiet: !extraHoursSold(column))
       }
@@ -256,6 +261,9 @@ struct CloudPlansCard: View {
       parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(words.number(column.facts.includedMilli)) credits a month")
     } else {
       parts.append("\(words.number(column.facts.includedMilli)) \(words.perMonth)")
+    }
+    if let offer = account.macOffer, let macLine = CloudMacWords.planLine(offer, includedMilli: column.facts.includedMilli, ad: adWords) {
+      parts.append(macLine)
     }
     parts.append(extraHoursSold(column) ? "\(words.extra.lowercased()) if on" : "no \(words.extra.lowercased())")
     return "\(column.label)\(current ? ", your plan" : "")\(isNew ? ", new" : ""): \(parts.joined(separator: ", "))"

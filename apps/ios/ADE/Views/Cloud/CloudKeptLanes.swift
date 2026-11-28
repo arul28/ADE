@@ -160,6 +160,8 @@ struct CloudDeletedComputerFacts: Equatable {
   var blocked: String? = nil
   /// The account's unit, for the Why? sentence.
   var words: CloudBalanceWords = .credits
+  /// A kept DAEX Cloud Mac lane: its next message or start makes a Mac (one size).
+  var mac = false
 
   /// Nothing known beyond the delete.
   static let unknown = CloudDeletedComputerFacts(fate: cloudComputerFateSentence(nil, deletedAt: nil))
@@ -180,6 +182,13 @@ struct CloudDeletedComputerFacts: Equatable {
   /// What the next message (in a chat) or New computer (on a lane with no chat) does.
   func nextSentence(_ context: CloudLaneLineContext) -> String {
     let on = branch ?? "the lane's branch"
+    if mac {
+      switch context {
+      case .chat: return "Your next message starts a new Mac on \(on) and continues this chat there."
+      case .lane where viaQueue: return "A message in its chat starts a new Mac on \(on) and continues the chat there."
+      case .lane: return "A new Mac for it starts on \(on)."
+      }
+    }
     let at = sizeLabel.map { ", at \($0)," } ?? ""
     switch context {
     case .chat:
@@ -206,23 +215,27 @@ func cloudDeletedComputerFacts(
 ) -> CloudDeletedComputerFacts {
   let fate = kept.map { cloudComputerFateSentence(cloudComputerFate(serverReason: $0.reason), deletedAt: $0.since) }
     ?? cloudComputerFateSentence(cloudComputerFate(serverReason: computer?.reason), deletedAt: computer?.deletedAt)
+  // A kept Mac lane continues on a Mac, through the queue or its own start.
+  let mac = kept.map { cloudKeptLaneIsMac($0, account: store.account) } ?? false
   guard let kept, !viaQueue else {
     return CloudDeletedComputerFacts(
       fate: fate,
       branch: kept?.branchName,
-      sizeLabel: cloudQueueSizeLabel(account: store.account),
+      sizeLabel: mac ? CloudMacWords.name : cloudQueueSizeLabel(account: store.account),
       viaQueue: true,
       blocked: store.doingRefusal,
-      words: CloudBalanceWords(store.account)
+      words: CloudBalanceWords(store.account),
+      mac: mac
     )
   }
   return CloudDeletedComputerFacts(
     fate: fate,
     branch: kept.branchName,
-    sizeLabel: cloudKeptLaneRestartTier(kept, account: store.account)?.label,
+    sizeLabel: mac ? CloudMacWords.name : cloudKeptLaneRestartTier(kept, account: store.account)?.label,
     viaQueue: false,
     blocked: cloudKeptLaneRestartProblem(kept),
-    words: CloudBalanceWords(store.account)
+    words: CloudBalanceWords(store.account),
+    mac: mac
   )
 }
 
@@ -241,8 +254,8 @@ func cloudDeletedComputerFacts(fleetKey: String?, sync: SyncService, store: Acco
     ?? store.lanesWithoutComputer.first { laneIds.contains($0.laneId) }
   let computer = chats.lazy.compactMap(\.computer).first { $0.isDeleted }
   var facts = cloudDeletedComputerFacts(kept: kept, computer: computer, viaQueue: true, store: store)
-  // The size picked in the chat's line, else ADE's.
-  if let picked = store.newComputerSizes[accountKey],
+  // The size picked in the chat's line, else ADE's (a Mac has one).
+  if !facts.mac, let picked = store.newComputerSizes[accountKey],
      let tier = cloudPhoneTiers(store.account?.catalog).first(where: { $0.id == picked }) {
     facts.sizeLabel = tier.label
   }
@@ -269,6 +282,12 @@ func cloudKeptLaneRestartProblem(_ lane: CloudLaneWithoutComputer) -> String? {
 }
 
 /// The size the old computer had, as one of today's sizes; nil (ADE Cloud's default) when none matches.
+/// A kept lane whose computer was a DAEX Cloud Mac, while the account still has the offer
+/// (without it, a new computer is Linux, as the desktop's `cloudLaneRestartOs`).
+func cloudKeptLaneIsMac(_ lane: CloudLaneWithoutComputer, account: CloudPhoneAccount?) -> Bool {
+  lane.type == "mac" && account?.macOffer != nil
+}
+
 func cloudKeptLaneRestartSizeId(_ lane: CloudLaneWithoutComputer, account: CloudPhoneAccount?) -> String? {
   cloudKeptLaneRestartTier(lane, account: account)?.id
 }
@@ -321,8 +340,10 @@ enum KeptCloudLane {
   static func startNewComputer(_ lane: CloudLaneWithoutComputer, sync: SyncService) async {
     guard cloudKeptLaneRestartProblem(lane) == nil else { return }
     ADEHaptics.light()
-    let sizeId = cloudKeptLaneRestartSizeId(lane, account: AccountCloudStore.shared.account)
-    guard let launchId = await AccountCloudLaunchStore.shared.startLaneOnNewComputer(lane, sizeId: sizeId, using: sync) else { return }
+    let account = AccountCloudStore.shared.account
+    let mac = cloudKeptLaneIsMac(lane, account: account)
+    let sizeId = mac ? nil : cloudKeptLaneRestartSizeId(lane, account: account)
+    guard let launchId = await AccountCloudLaunchStore.shared.startLaneOnNewComputer(lane, sizeId: sizeId, os: mac ? "mac" : nil, using: sync) else { return }
     // A refused start shows on its card, with Retry.
     if AccountCloudLaunchStore.shared.entries.first(where: { $0.launchId == launchId })?.startError != nil {
       ADEHaptics.error()
@@ -330,7 +351,7 @@ enum KeptCloudLane {
     }
     ADEHaptics.success()
     CloudLaneActions.shared.toast = ADEToastMessage(
-      text: "Making a new computer for \(lane.laneName)",
+      text: mac ? "Making a new Mac for \(lane.laneName)" : "Making a new computer for \(lane.laneName)",
       detail: "It starts on \(lane.branchName ?? "the same branch"). Its steps show here."
     )
   }
@@ -607,7 +628,7 @@ struct CloudKeptLaneRow: View {
         } label: {
           HStack(spacing: 5) {
             if starting { ProgressView().controlSize(.small) } else { Image(systemName: "plus") }
-            Text(starting || launchHoldsIt ? "Starting…" : "New computer")
+            Text(starting || launchHoldsIt ? "Starting…" : cloudKeptLaneIsMac(lane, account: AccountCloudStore.shared.account) ? "New Mac" : "New computer")
           }
         }
         .buttonStyle(ADEKitButtonStyle(prominent: true))
@@ -722,7 +743,7 @@ struct CloudKeptLaneActionsCard: View {
     } label: {
       HStack(spacing: 6) {
         if starting { ProgressView().controlSize(.small).tint(.white) } else { Image(systemName: "plus") }
-        Text(starting || holds ? "Starting…" : "New computer on the same branch")
+        Text(starting || holds ? "Starting…" : cloudKeptLaneIsMac(lane, account: AccountCloudStore.shared.account) ? "New Mac on the same branch" : "New computer on the same branch")
       }
     }
     .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))

@@ -110,11 +110,16 @@ struct CloudLaunchRecord: Decodable, Equatable {
   let request: RemoteJSONValue?
   /// `needs_approval`: the page that confirms the computer's sign-in to the account.
   let approvalUrl: String?
+  /// `mac` while the launch makes a DAEX Cloud Mac; nil on Linux and from an older server.
+  let os: String?
+  /// While making on a Mac: the queue or the start, with the server's sentence.
+  let mac: CloudMacState?
   /// When the server took the start (ms since 1970); nil from an older server.
   let createdAt: Double?
 
   private enum CodingKeys: String, CodingKey {
     case launchId, state, kind, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request, approval, createdAt
+    case os, mac
   }
   private struct Approval: Decodable { let url: String? }
   private struct Request: Decodable {
@@ -147,6 +152,8 @@ struct CloudLaunchRecord: Decodable, Equatable {
     request = c.lenient(RemoteJSONValue.self, forKey: .request)
     approvalUrl = c.lenient(Approval.self, forKey: .approval)?.url
     createdAt = c.lenient(Double.self, forKey: .createdAt)
+    os = c.lenient(String.self, forKey: .os)
+    mac = os == "mac" ? c.lenient(CloudMacState.self, forKey: .mac) : nil
   }
 
   /// Still on its way to a running chat.
@@ -667,6 +674,7 @@ final class AccountCloudLaunchStore: ObservableObject {
     files: [(name: String, contentType: String, data: Data)] = [],
     existingLane: (id: String, name: String)? = nil,
     newLaneName: String? = nil,
+    os: String? = nil,
     using sync: SyncService
   ) async -> String {
     UserDefaults.standard.set(["provider": provider, "modelId": modelId], forKey: Self.lastModelKey)
@@ -704,6 +712,8 @@ final class AccountCloudLaunchStore: ObservableObject {
       "chat": .object(chat),
       "madeBy": .object(["kind": .string("person")]),
     ]
+    // A DAEX Cloud Mac, only for a new lane the person picked it for (Linux is left out).
+    if os == "mac", existingLane == nil { fields["os"] = .string("mac") }
     if let existingLane {
       fields["lane"] = .object(["id": .string(existingLane.id), "name": .string(existingLane.name)])
     } else {
@@ -739,7 +749,7 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// have it (else ADE Cloud's default). No chat and no first message; the
   /// computer brings back the lane's saved chats. Answers the launch id.
   @discardableResult
-  func startLaneOnNewComputer(_ lane: CloudLaneWithoutComputer, sizeId: String?, using sync: SyncService) async -> String? {
+  func startLaneOnNewComputer(_ lane: CloudLaneWithoutComputer, sizeId: String?, os: String? = nil, using sync: SyncService) async -> String? {
     guard let origin = lane.projectOrigin.flatMap({ nonEmptyTrimmed($0) }), let branch = lane.branchName else { return nil }
     let launchId = UUID().uuidString.lowercased()
     var fields: [String: RemoteJSONValue] = [
@@ -764,6 +774,8 @@ final class AccountCloudLaunchStore: ObservableObject {
       fields["lane"] = .object(laneFields)
     }
     if let sizeId { fields["sizeId"] = .string(sizeId) }
+    // A kept Mac lane starts on a Mac again (only while the catalog offers one).
+    if os == "mac" { fields["os"] = .string("mac") }
     let body: RemoteJSONValue = .object(fields)
     entries.insert(Entry(
       launchId: launchId,

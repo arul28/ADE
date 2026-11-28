@@ -178,6 +178,32 @@ func cloudLaneState(fleetKey: String?, sync: SyncService, store: AccountCloudSto
   return .asleep
 }
 
+/// A cloud lane computer's Mac phase and the sentence the server can't-wake
+/// state carries, from its account-server row. Read only; never wakes it.
+struct CloudLaneComputerWords: Equatable {
+  /// Where the Mac is; nil on Linux.
+  var macPhase: CloudMacPhase? = nil
+  /// The server's sentence for the Mac's state, or why its start failed.
+  var macSentence: String? = nil
+  /// The server can't wake or send to it now (`computer_unavailable`).
+  var unavailable: String? = nil
+
+  init(macPhase: CloudMacPhase? = nil, macSentence: String? = nil, unavailable: String? = nil) {
+    self.macPhase = macPhase
+    self.macSentence = macSentence
+    self.unavailable = unavailable
+  }
+
+  init(_ instance: CloudServerInstance?) {
+    guard let instance else { return }
+    if instance.isMac {
+      macPhase = CloudMacPhase(instance.mac, state: cloudPhoneMachineState(serverStatus: instance.status))
+      macSentence = CloudMacWords.sentence(instance.mac)
+    }
+    unavailable = instance.unavailable
+  }
+}
+
 /// "Deleted in N days" for the idle cleanup's warning, in whole days (at least 1).
 func cloudDeletingSoonDays(deletesAt: Double, now: Date = Date()) -> Int {
   let left = deletesAt / 1000 - now.timeIntervalSince1970
@@ -206,7 +232,11 @@ struct CloudLaneStateLines: View {
     // A chat's next message makes the new computer: its line offers the size,
     // once the account's sizes are known (no menu with nothing in it).
     let tiers = cloudPhoneTiers(store.account?.catalog)
-    let sizeKey = state == .deleted && context == .chat && !tiers.isEmpty
+    let deleted = state == .deleted
+      ? cloudDeletedComputerFacts(fleetKey: fleetKey, sync: syncService, store: store) ?? .unknown
+      : .unknown
+    // A kept Mac lane has one size: no size menu.
+    let sizeKey = state == .deleted && context == .chat && !tiers.isEmpty && !deleted.mac
       ? fleetKey.flatMap { syncService.cloudAccountMachineKey(fleetKey: $0)?.lowercased() }
       : nil
     CloudLaneStateLinesContent(
@@ -214,9 +244,8 @@ struct CloudLaneStateLines: View {
       showsRestingState: showsRestingState,
       deletingDays: deleting.map { cloudDeletingSoonDays(deletesAt: $0.deletesAt) },
       deletingSizeLabel: cloudQueueSizeLabel(account: store.account),
-      deleted: state == .deleted
-        ? cloudDeletedComputerFacts(fleetKey: fleetKey, sync: syncService, store: store) ?? .unknown
-        : .unknown,
+      deleted: deleted,
+      computer: CloudLaneComputerWords(instance),
       context: context,
       sizePick: sizeKey.map { key in
         CloudNewComputerSizePick(
@@ -271,8 +300,27 @@ struct CloudLaneHeaderStateButton: View {
     var problem: String? = nil
   }
 
+  private var computer: CloudLaneComputerWords {
+    CloudLaneComputerWords(syncService.cloudServerInstance(fleetKey: fleetKey))
+  }
+
   private var shown: Shown? {
-    switch cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store) {
+    let state = cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store)
+    let computer = computer
+    // Can't wake now, or a Mac whose start failed: the lines at the top say it.
+    if state == .asleep, computer.unavailable != nil { return nil }
+    if let phase = computer.macPhase {
+      switch state {
+      case .asleep? where phase == .startFailed || phase == .driveLost: return nil
+      // Still saving its drive: no Start until it has stopped.
+      case .asleep? where phase == .stopping: return Shown(word: phase.label, symbol: "hourglass", asleep: false)
+      case .asleep?: return Shown(word: CloudMacPhase.stopped.label, symbol: "stop.circle", asleep: true)
+      case .waking?: return Shown(word: phase == .queued ? phase.label : CloudMacPhase.starting.label, symbol: "hourglass", asleep: false)
+      case .awake?: return Shown(word: CloudMacPhase.running.label, symbol: "apple.logo", asleep: false)
+      default: return nil
+      }
+    }
+    switch state {
     case .asleep?: return Shown(word: "Asleep", symbol: "moon.zzz", asleep: true)
     case .waking?: return Shown(word: "Waking", symbol: "sun.horizon", asleep: false)
     case .awake?: return Shown(word: "Awake", symbol: "icloud", asleep: false)
@@ -295,7 +343,8 @@ struct CloudLaneHeaderStateButton: View {
   }
 
   private func menu(_ shown: Shown, fleetKey: String) -> some View {
-    Menu {
+    let mac = computer.macPhase != nil
+    return Menu {
       if let problem = shown.problem {
         Section(problem) {
           if shown.asleep {
@@ -305,6 +354,26 @@ struct CloudLaneHeaderStateButton: View {
             } label: {
               Label("Try again", systemImage: "arrow.clockwise")
             }
+          }
+        }
+      } else if shown.asleep, mac {
+        Section(inTerminal ? "Stopped · start it to use this terminal." : "Stopped · you're reading the saved copy. Sending a message starts the Mac \(CloudMacWords.startWords).") {
+          Button {
+            ADEHaptics.light()
+            wake(fleetKey)
+          } label: {
+            Label("Start now", systemImage: "play.circle")
+          }
+        }
+      } else if mac {
+        Section("\(CloudMacWords.name): \(shown.word)") {
+          Text(computer.macSentence ?? (shown.word == CloudMacPhase.running.label ? "The Mac is on." : shown.word))
+        }
+        // Pricing v3: what this Mac costs now (a minute), and why it has the full price while ads are on.
+        if computer.macPhase == .running, let price = priceNow(fleetKey, mac: true) {
+          Section {
+            Label(price.line, systemImage: "gauge.with.dots.needle.33percent")
+            if let reason = price.reason { Text(reason) }
           }
         }
       } else if shown.asleep {
@@ -335,16 +404,18 @@ struct CloudLaneHeaderStateButton: View {
         WorkChatGlassCircleLabel(systemName: shown.symbol, glyphSize: 16, tint: shown.asleep ? ADEColor.textSecondary : ADEColor.textPrimary)
       }
     }
-    .accessibilityLabel("\(Brand.cloudName) computer, \(shown.word.lowercased())")
-    .accessibilityHint(shown.asleep ? "Shows Wake now" : "Shows the computer's state")
+    .accessibilityLabel("\(mac ? CloudMacWords.name : "\(Brand.cloudName) computer"), \(shown.word.lowercased())")
+    .accessibilityHint(shown.asleep ? (mac ? "Shows Start now" : "Shows Wake now") : "Shows the computer's state")
     .accessibilityIdentifier("Work.Chat.Header.CloudState")
   }
 
   /// What this chat's own computer costs now (its machine's instance, never the tab's).
-  private func priceNow(_ fleetKey: String) -> (line: String, reason: String?)? {
+  /// A Mac (`mac`) reads its price a minute; the server's row carries it an hour.
+  private func priceNow(_ fleetKey: String, mac: Bool = false) -> (line: String, reason: String?)? {
     guard let adWords = CloudAdPriceWords(store.account),
-          let price = adWords.pricing.computer(syncService.cloudServerInstance(fleetKey: fleetKey)?.id) else { return nil }
-    return (adWords.priceNow(price), adWords.reasonLine(price))
+          let listed = adWords.pricing.computer(syncService.cloudServerInstance(fleetKey: fleetKey)?.id) else { return nil }
+    let price = mac ? CloudMacWords.pricePerMinute(listed) : listed
+    return (adWords.priceNow(price, unit: mac ? .minute : .hour), adWords.reasonLine(price))
   }
 
   /// A doing action: wakes the lane's computer. A failure shows as the
@@ -374,6 +445,8 @@ struct CloudLaneStateLinesContent: View {
   /// What the `.deleted` line says: what happened and what makes the new
   /// computer, or why ADE can't make one.
   var deleted: CloudDeletedComputerFacts = .unknown
+  /// The computer's Mac phase and can't-wake sentence; empty on Linux.
+  var computer = CloudLaneComputerWords()
   var context: CloudLaneLineContext = .chat
   /// The `.deleted` chat line's size menu for the new computer; nil shows none.
   var sizePick: CloudNewComputerSizePick? = nil
@@ -387,6 +460,33 @@ struct CloudLaneStateLinesContent: View {
   var body: some View {
     VStack(spacing: 6) {
       switch state {
+      case .asleep? where computer.unavailable != nil:
+        // The server can't wake or send to it now: its sentence, with no wake.
+        line(symbol: "exclamationmark.icloud", title: CloudMacWords.unavailableLabel, detail: computer.unavailable ?? CloudMacWords.unavailableSentence)
+      case .asleep? where computer.macPhase == .startFailed || computer.macPhase == .driveLost:
+        line(
+          symbol: "exclamationmark.triangle",
+          title: computer.macPhase?.label ?? "",
+          detail: computer.macSentence ?? CloudMacWords.stateSentence("stopped") ?? ""
+        )
+      case .waking? where showsRestingState && computer.macPhase != nil:
+        line(
+          symbol: "hourglass",
+          title: computer.macPhase == .queued ? CloudMacPhase.queued.label : "Starting the Mac",
+          detail: computer.macSentence ?? CloudMacWords.stateSentence(computer.macPhase == .queued ? "queued" : "starting") ?? ""
+        )
+      case .asleep? where showsRestingState && computer.macPhase == .stopping:
+        line(
+          symbol: "hourglass",
+          title: "Stopping the Mac",
+          detail: computer.macSentence ?? CloudMacWords.stateSentence("stopping") ?? ""
+        )
+      case .asleep? where showsRestingState && computer.macPhase != nil:
+        line(
+          symbol: "stop.circle",
+          title: "Mac stopped",
+          detail: "You're reading the saved copy. Sending a message starts the Mac again \(CloudMacWords.startWords)."
+        )
       case .waking? where showsRestingState:
         CloudComputerWakeBanner(machineName: "your \(Brand.cloudName) computer")
       case .wakeFailed(let message)?:

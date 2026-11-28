@@ -792,14 +792,21 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       onChooseTier: adeCloudFixed && onChooseAdeCloudTier ? onChooseAdeCloudTier : adeCloud.chooseTier,
       onSetDefaultTier: adeCloud.setDefaultTier,
       words: adeCloud.words,
+      // Linux or Mac is the person's saved pick: the composer and this dialog show one answer.
+      macOffer: adeCloud.macOffer,
+      os: adeCloud.os,
+      onChooseOs: adeCloud.chooseOs,
       problem: adeCloudOnLane
-        ? cloudLaneStartBlock(adeCloud.account, { newLane: true, sizeId: adeCloudFixed && adeCloudTierId ? adeCloudTierId : adeCloud.tierId })?.message ?? null
+        ? cloudLaneStartBlock(adeCloud.account, { newLane: true, sizeId: adeCloudFixed && adeCloudTierId ? adeCloudTierId : adeCloud.tierId, os: adeCloud.os })?.message ?? null
         : null,
     };
   }, [
     adeCloud.account,
+    adeCloud.chooseOs,
     adeCloud.chooseTier,
     adeCloud.defaultTier,
+    adeCloud.macOffer,
+    adeCloud.os,
     adeCloud.detail,
     adeCloud.offered,
     adeCloud.setDefaultTier,
@@ -932,7 +939,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
           },
       };
       const problem = adeCloudLaunchProblem({
-        args: { ...args, cloud: { sizeId: adeCloud.tierId } },
+        args: { ...args, cloud: { sizeId: adeCloud.tierId, os: adeCloud.os } },
         originUrl: repoOriginUrl,
         account: adeCloud.account,
       });
@@ -950,7 +957,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       }
       resetCreateDialogState();
       onOpenChange(false);
-      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, sizeChoice: adeCloud.sizeChoice, originUrl: repoOriginUrl, binding: projectBinding });
+      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, sizeChoice: adeCloud.sizeChoice, os: adeCloud.os, originUrl: repoOriginUrl, binding: projectBinding });
       return;
     }
 
@@ -1055,6 +1062,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     adeCloudPicked,
     adeCloud.tierId,
     adeCloud.sizeChoice,
+    adeCloud.os,
     adeCloud.account,
     repoOriginUrl,
     formBranches,

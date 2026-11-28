@@ -686,6 +686,9 @@ export const WAKING_STATUS_PRESENTATION: SessionStatusPresentation = {
   activityDetail: true,
 };
 
+/** The same mark for a DAEX Cloud Mac, which starts (it never sleeps). */
+export const STARTING_STATUS_PRESENTATION: SessionStatusPresentation = { ...WAKING_STATUS_PRESENTATION, label: "Starting" };
+
 /**
  * The chat's own machine reports a turn running: a live row (not a saved
  * copy) with a turn started and not idle since. A waking mark gives way to it.

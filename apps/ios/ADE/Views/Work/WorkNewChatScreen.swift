@@ -669,6 +669,8 @@ struct WorkNewChatScreen: View {
   @ObservedObject private var cloudStore = AccountCloudStore.shared
   /// The machine the chat starts on. Nil = the primary (focused) machine.
   @State private var selectedMachineKey: String?
+  /// Mac picked for a new cloud lane (`CloudOsPick`); Linux each time the screen opens.
+  @State private var cloudMac = false
   /// That machine's lanes (namespaced ids), when it is not the primary one.
   @State private var remoteLanes: [LaneSummary] = []
   @State private var remoteLanesLoading = false
@@ -887,6 +889,17 @@ struct WorkNewChatScreen: View {
   /// Whether the chat starts on ADE Cloud (through the account server).
   private var isCloudSelected: Bool { selectedMachineKey == ADECloudMachine.id }
 
+  /// The account's Mac offer while a new cloud lane is picked; nil shows no Mac.
+  private var cloudMacOffer: CloudMacOffer? {
+    isCloudSelected && isAutoCreateLane ? cloudStore.account?.macOffer : nil
+  }
+
+  /// Why the picked model can't run on a Mac, while Mac is picked.
+  private var cloudMacRefusal: String? {
+    guard cloudMac, let offer = cloudMacOffer else { return nil }
+    return CloudMacWords.providerRefusal(offer, provider: provider, cli: sessionMode == .cli, label: cloudProviderEntry?.label)
+  }
+
   /// The model ADE Cloud runs, from the server's catalog.
   private var cloudProviderEntry: CloudCatalogProvider? {
     cloudLaunches.catalog?.providers.first { $0.provider == provider }
@@ -1057,6 +1070,11 @@ struct WorkNewChatScreen: View {
         // Left-aligned in one row, on the prompt box's own left edge.
         laneSelector
           .padding(.horizontal, 10)
+
+        if let offer = cloudMacOffer {
+          CloudOsPick(offer: offer, mac: $cloudMac, words: CloudBalanceWords(cloudStore.account), refusal: cloudMacRefusal)
+            .padding(.horizontal, 14)
+        }
 
         if let cloudFootnote {
           Text(cloudFootnote)
@@ -2132,6 +2150,11 @@ struct WorkNewChatScreen: View {
       errorMessage = "Pick a lane."
       return false
     }
+    let onMac = cloudMac && cloudMacOffer != nil
+    if onMac, let refusal = cloudMacRefusal {
+      errorMessage = refusal
+      return false
+    }
     busy = true
     errorMessage = nil
     if !isOnFreeDefault { WorkComposerPreferences.save(composerSelection) }
@@ -2147,6 +2170,7 @@ struct WorkNewChatScreen: View {
       files: files,
       existingLane: existingLane,
       newLaneName: existingLane == nil ? autoCreatedLaneName(opener: rawText) : nil,
+      os: onMac ? "mac" : nil,
       using: syncService
     )
     busy = false
