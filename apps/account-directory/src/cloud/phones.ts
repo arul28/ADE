@@ -37,6 +37,7 @@
  * never pays for a minute nobody pays for.
  */
 
+import { handleMacWebhook } from "./macProvider";
 import { isCloudBlocked, sendOwnerAlert } from "./blocks";
 import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, phoneChargeSql, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
 import { PHONE_MILLI_PER_MINUTE_V3 } from "./plans";
@@ -989,7 +990,7 @@ export async function handleNomacWebhook(request: Request, env: CloudEnv, now: n
     logCloud("cloud.nomac_webhook_refused", {});
     return fail("unauthorized", "That signature isn't valid.", 401);
   }
-  type Delivery = { id?: unknown; type?: unknown; data?: { session?: unknown } };
+  type Delivery = { id?: unknown; type?: unknown; data?: { session?: unknown } & Record<string, unknown> };
   const event = ((): Delivery | null => {
     try {
       const parsed = JSON.parse(raw) as unknown;
@@ -1020,6 +1021,10 @@ export async function handleNomacWebhook(request: Request, env: CloudEnv, now: n
           billedMinutes: Math.ceil(Number(session.cost?.billed_seconds ?? 0) / 60),
         }, session.id, now);
       }
+    } else if (type.startsWith("mac.") || type.startsWith("drive.")) {
+      // The DAEX Cloud Mac (`macProvider.ts`): an unknown or stale session is nothing; the tick is the backstop.
+      const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : null;
+      await handleMacWebhook(env, type, data, now);
     } else if (type === "credit.low") {
       const day = new Date(now).toISOString().slice(0, 10);
       await sendOwnerAlert(env, {

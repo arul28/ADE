@@ -27,6 +27,7 @@ import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, laun
 import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
 import { draftsFull, insertDraft, r2KeyOf } from "./launchFiles";
 import { cloudSizeForTier, type CloudSize } from "./plans";
+import { macReaches } from "./macSwitch";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
 import { handOverQueuedMessagesStatements, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
@@ -755,12 +756,16 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
       ? "This CLI's computer is gone and DAEX can't tell which CLI or repository it used. Start a new CLI in the lane."
       : "This chat's computer is gone and DAEX can't tell which agent or repository it used. Start a new chat in the lane.");
   }
+  // A Mac lane continues on a Mac while the switch reaches the account; otherwise the lane reads as a plain one
+  // (\`lanesWithoutComputer.ts\`) and continues on Linux, as the person was shown.
+  const onMac = lane.mac && await macReaches(env, userId);
   const parsed: ParsedLaunchRequest = {
     launchId: crypto.randomUUID(),
     kind: "chat",
-    // A picked size starts as picked; none is Small, or bigger if the project needed it (`startSizeOf`).
+    // A picked size starts as picked; none is Small, or bigger if the project needed it (`startSizeOf`). A Mac has one size.
     sizeId: input.sizeId ?? "small",
-    sizeChoice: input.sizeId ? "picked" : "default",
+    sizeChoice: input.sizeId || onMac ? "picked" : "default",
+    ...(onMac ? { os: "mac" as const } : {}),
     project: { origin },
     lane: {
       id: chat.lane_id,
@@ -811,15 +816,18 @@ async function addToLaunch(env: CloudEnv, keys: UserKeys, userId: string, chat: 
   return json({ message: await messageOf(env, keys, row), wake: { state: "launching", launchId: launch.launch_id } } satisfies CloudChatMessageAddResult, created ? 201 : 200);
 }
 
-/** The lane a gone computer held: its lane-without-computer row first, else the computer's own row. */
-async function laneFactsForChat(env: CloudEnv, userId: string, chat: QueueTarget): Promise<{ laneName: string | null; projectOrigin: string | null; branch: string | null }> {
-  const kept = await env.DB.prepare("select lane_name, project_origin, branch_ref from cloud_lanes_without_computer where user_id = ? and lane_id = ?")
-    .bind(userId, chat.lane_id).first<{ lane_name: string; project_origin: string | null; branch_ref: string | null }>();
-  if (kept) return { laneName: kept.lane_name, projectOrigin: kept.project_origin, branch: kept.branch_ref };
+/**
+ * The lane a gone computer held: its lane-without-computer row first, else the computer's own row. \`mac\`: its
+ * last computer was a DAEX Cloud Mac, so its next one is a Mac too (while the switch reaches the account).
+ */
+async function laneFactsForChat(env: CloudEnv, userId: string, chat: QueueTarget): Promise<{ laneName: string | null; projectOrigin: string | null; branch: string | null; mac: boolean }> {
+  const kept = await env.DB.prepare("select lane_name, project_origin, branch_ref, type from cloud_lanes_without_computer where user_id = ? and lane_id = ?")
+    .bind(userId, chat.lane_id).first<{ lane_name: string; project_origin: string | null; branch_ref: string | null; type: string }>();
+  if (kept) return { laneName: kept.lane_name, projectOrigin: kept.project_origin, branch: kept.branch_ref, mac: kept.type === "mac" };
   const former = await env.DB.prepare(`
-    select lane_name, lane_project_origin, lane_branch from cloud_computers where user_id = ? and lane_id = ? order by created_at desc limit 1
-  `).bind(userId, chat.lane_id).first<{ lane_name: string | null; lane_project_origin: string | null; lane_branch: string | null }>();
-  return { laneName: former?.lane_name ?? null, projectOrigin: former?.lane_project_origin ?? null, branch: former?.lane_branch ?? null };
+    select lane_name, lane_project_origin, lane_branch, type from cloud_computers where user_id = ? and lane_id = ? order by created_at desc limit 1
+  `).bind(userId, chat.lane_id).first<{ lane_name: string | null; lane_project_origin: string | null; lane_branch: string | null; type: string }>();
+  return { laneName: former?.lane_name ?? null, projectOrigin: former?.lane_project_origin ?? null, branch: former?.lane_branch ?? null, mac: former?.type === "mac" };
 }
 
 async function handleCancel(env: CloudEnv, userId: string, machineKey: string, chatId: string, messageId: string, now: number): Promise<Response> {

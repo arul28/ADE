@@ -13,7 +13,8 @@ import { freePlanOf } from "./freePlan";
 import { freePlanGithubOf } from "./freePlanGithub";
 import { idleCleanupEntries } from "./idleCleanup";
 import { planCleanupState } from "./planCleanup";
-import { cloudCatalog, isMeteredStatus, nextPlanOffer } from "./plans";
+import { cloudCatalog, cloudMacOffer, isMeteredStatus, nextPlanOffer } from "./plans";
+import { macIdleStopMinutes, macReaches } from "./macSwitch";
 import { readSummaryRow, referralSummary } from "./referrals";
 import { phoneAccountState } from "./phones";
 import {
@@ -124,6 +125,10 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     reportCloudFailure("cloud.free_models.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
+  const macShown = await macReaches(env, userId).catch((error: unknown) => {
+    reportCloudFailure("cloud.mac_switch_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return false;
+  });
   return {
     ...(pricing && knowsV3 ? { pricing } : {}),
     ...(sponsored ? { sponsored } : {}),
@@ -161,8 +166,9 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
       // What the computer limit counts (`accountComputerCountSql`), so the count and a refusal agree.
-      total: countedComputers(computers, now),
-      awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
+      total: countedComputers(computers, now, { hideMacs: !macShown }),
+      // The same Macs left out as `total`, so a hidden Mac never reads as "0 computers · 1 awake" (the tick stops it).
+      awake: computers.filter((computer) => isMeteredStatus(computer.status) && (macShown || computer.type !== "mac")).length,
       limit: computerLimitOf(account),
       // What the limit card offers: the same answer a `computer_limit` refusal carries.
       nextPlan: nextPlanOffer(computerLimitPlanOf(account), offers),
@@ -171,9 +177,13 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     dueForDeletion: due,
     deletedInstanceIds,
     // Small's rate is the account's own: half a Medium-hour on Free with no sponsored cards (`gravity.ts` `smallUsesNoHours`).
-    catalog: priced
-      ? cloudCatalog(offers, shownPlan, { v3: priced.catalog })
-      : cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) }),
+    catalog: {
+      ...(priced
+        ? cloudCatalog(offers, shownPlan, { v3: priced.catalog })
+        : cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) })),
+      // The DAEX Cloud Mac: only while the switch reaches this account (`macSwitch.ts`); absent, no app shows anything of it.
+      ...(macShown ? { mac: cloudMacOffer(await macIdleStopMinutes(env)) } : {}),
+    },
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,

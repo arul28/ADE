@@ -66,6 +66,8 @@ import {
 } from "./store";
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 import { launchChannel, readUpdateChannel, readUpdateTargets } from "./updates";
+import { MAC_SIZE, isMacRow, macStateForClient } from "./macProvider";
+import { macReaches } from "./macSwitch";
 import { markKeepLaneStatement } from "./lanesWithoutComputer";
 import type { ServerGitCheck } from "./accountVault";
 // A cycle (chatMessages imports this file); only called at request time.
@@ -192,6 +194,21 @@ const notFound = () => fail("not_found", NOT_FOUND, 404);
 const JOIN_REFUSED = "This computer can't join with that code.";
 /** What a launch that never signed its computer in shows once its join window closed. */
 const JOIN_NEVER_FINISHED = "The new computer couldn't sign in.";
+/** What a Mac launch shows when DAEX failed to start on its Mac at every try (`bootFailed` in macProvider.ts). */
+const MAC_BOOT_NEVER_FINISHED = "DAEX didn't start on this Mac. Retry to start the lane on a new Mac.";
+
+/**
+ * A Mac whose DAEX failed to start at every try was stopped: its launch, still waiting for the join, fails now with
+ * what to do, rather than at the end of its join window. The cron deletes its computer (the failed launches below),
+ * so Retry makes a new one and the plan's computer slot is free meanwhile.
+ */
+export async function failMacLaunchAtBootCap(env: CloudEnv, instanceId: string, now: number): Promise<void> {
+  const failed = await env.DB.prepare(`
+    update cloud_launches set state = 'failed', error = ?, approval_url = null, updated_at = ?
+    where instance_id = ? and state in ('making', 'joining', 'needs_approval')
+  `).bind(MAC_BOOT_NEVER_FINISHED, now, instanceId).run();
+  if ((failed.meta?.changes ?? 0) > 0) logCloud("cloud.launch_mac_boot_failed", { instanceId });
+}
 /** How often a spent join code may join again: a brain whose earlier sign-in didn't finish, never a link mint without end. */
 const MAX_REJOINS = 5;
 /** What a person's start shows when nothing was made for it (`failUnjoinedLaunches`); Retry starts it again under the same id. */
@@ -288,6 +305,9 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
   const sizeOmitted = body.sizeId === undefined || body.sizeId === null;
   const sizeId = sizeOmitted ? CLOUD_AUTO_SIZE.from : body.sizeId;
   if (!cloudSizeForTier(sizeId)) return "That size isn't one DAEX Cloud offers.";
+  // Linux (left out) or a Mac; anything else is refused as a size DAEX doesn't offer (the switch's own check is in `handleStart`).
+  if (body.os != null && body.os !== "linux" && body.os !== "mac") return "That size isn't one DAEX Cloud offers.";
+  const os = body.os === "mac" ? "mac" as const : undefined;
   const project = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
   const origin = githubOriginOf(project?.origin);
   if (!origin) return "Only GitHub repositories can start a lane on DAEX Cloud.";
@@ -368,8 +388,10 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
   return {
     launchId,
     kind,
+    ...(os ? { os } : {}),
     sizeId: sizeId as CloudTierId,
-    ...(sizeChoice ? { sizeChoice } : {}),
+    // A Mac has one size: nothing may move it.
+    ...(os ? { sizeChoice: "picked" as const } : sizeChoice ? { sizeChoice } : {}),
     project: { origin },
     lane: {
       id: laneId,
@@ -428,10 +450,43 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     signIn: row.state === "waiting_for_sign_in" ? signInOfRow(row) : null,
     machine: row.kind === "machine" ? machineFactsOf(row) : null,
+    ...(row.kind !== "machine" && row.request_json?.includes('"os":"mac"') ? { os: "mac" as const } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
   };
+}
+
+/**
+ * A Mac launch's record with its Mac's state while it is made (queued,
+ * starting), from its computer's row: what the launch card shows on its
+ * computer step until the Mac's brain reports its own stages.
+ */
+export async function withMacFacts(env: CloudEnv, record: CloudLaunchRecord, userId: string): Promise<CloudLaunchRecord> {
+  if (record.os !== "mac") return record;
+  // The switch doesn't reach the account (any more): the record names nothing of the Mac.
+  if (!await macReaches(env, userId)) {
+    const { os: _os, mac: _mac, ...plain } = record;
+    return plain;
+  }
+  if (!record.instanceId || !(record.state === "making" || record.state === "joining")) return { ...record, mac: null };
+  const row = await env.DB.prepare("select * from cloud_computers where instance_id = ? and deleted_at is null").bind(record.instanceId).first<ComputerRow>();
+  return { ...record, mac: row && isMacRow(row) && row.mac_state !== "running" ? macStateForClient(row) : null };
+}
+
+/**
+ * The join code for a Mac's first boot (`bootMac`), worked out again from
+ * the launch's kept salt (the code is never stored): only while the launch
+ * still joins on this computer. Null otherwise (a later boot of a signed-in
+ * brain needs none).
+ */
+export async function macBootJoinCode(env: CloudEnv, launchId: string, instanceId: string, now: number): Promise<string | null> {
+  const row = await readLaunch(env, launchId);
+  if (!row || !row.join_salt || row.instance_id !== instanceId) return null;
+  if (!(row.state === "joining" || row.state === "needs_approval")) return null;
+  if (row.join_expires_at != null && row.join_expires_at <= now) return null;
+  if (!await launchCodeStillJoins(env, row)) return null;
+  return joinCodeOf(env, launchId, row.join_salt);
 }
 
 /** A `machine` launch's facts, kept in its `request_json`. */
@@ -664,6 +719,9 @@ const computerNameOf = (laneName: string): string => laneName.replace(/\s+/g, " 
 
 /* ---- Start ---- */
 
+/** How much longer a Mac launch's join window stays open: the longest a start waits for a free Mac. */
+const MAC_QUEUE_JOIN_GRACE_MS = 60 * 60_000;
+
 async function handleStart(request: Request, env: CloudEnv, userId: string, deps: LaunchRouteDeps): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
@@ -684,6 +742,8 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
       reportCloudFailure("cloud.free_models.launch_note_failed", { message: error instanceof Error ? error.message : "unknown" });
     });
   }
+  // The Mac exists only for an account the switch reaches: anyone else hears the plain size refusal.
+  if (parsed.os === "mac" && !await macReaches(env, userId)) return badRequest("That size isn't one DAEX Cloud offers.");
   let restarted = false;
   if (body.retry === true) {
     const answer = await restartFailedLaunch(env, userId, parsed.launchId, deps);
@@ -908,7 +968,7 @@ export async function startServerLaunch(
     else await first.run();
   }
 
-  const size = cloudSizeForTier(sizeId)!;
+  const size: CloudSize = parsed.os === "mac" ? MAC_SIZE : cloudSizeForTier(sizeId)!;
   const metadata: Record<string, string> = {
     [CLOUD_LANE_METADATA.laneId]: parsed.lane.id,
     [CLOUD_LANE_METADATA.laneName]: parsed.lane.name,
@@ -921,7 +981,8 @@ export async function startServerLaunch(
     // The same id as the launch: a repeated start finds the computer it made.
     ade_request_id: launchId,
   };
-  const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS;
+  // A Mac may wait in line for a free Mac (up to an hour) before its brain can join: its window holds that long too.
+  const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS + (parsed.os === "mac" ? MAC_QUEUE_JOIN_GRACE_MS : 0);
   const joinHash = await sha256Hex(joinCode);
   // Pricing v3: a person's first message (never an automation's or an agent's) is the new computer's proof
   // (`adProof.ts`), under the launch id, or the chat's own for a resting chat the queue continues; never a
@@ -939,10 +1000,13 @@ export async function startServerLaunch(
       type: size.type,
       resources: { cpu: size.cpu, memory: size.memoryGb },
       metadata,
-      publicPorts: [{ port: WAKE_PORT, label: "ADE wake" }],
-      channel: launchChannel(await readUpdateTargets(env), parsed.channel),
+      // A Mac has no public ports: its brain reaches the account outward, and its wake is a new Mac.
+      ...(parsed.os === "mac" ? {} : { publicPorts: [{ port: WAKE_PORT, label: "ADE wake" }] }),
+      // A Mac's drive brings its own DAEX, so the Linux image's launch floor doesn't move it to beta.
+      channel: parsed.os === "mac" ? parsed.channel ?? "stable" : launchChannel(await readUpdateTargets(env), parsed.channel),
     },
     serverEnv: { [CLOUD_LAUNCH_ENV.launchId]: launchId, [CLOUD_LAUNCH_ENV.join]: joinCode },
+    ...(parsed.os === "mac" ? { mac: true } : {}),
     // A computer this call made: its join window opens with the adoption, in
     // one batch. It holds exactly this call's code, so the hash is rewritten to
     // match it (a start retried across a key rotation works the code out under
@@ -989,7 +1053,7 @@ export async function startServerLaunch(
   // A cancel landed while the computer was being made: it goes now.
   if (after.state === "cancelled" && after.instance_id) await deleteLaunchComputer(env, deps.provider, after, deps.now);
   logCloud("cloud.launch_started", { userId, launchId, instanceId: after.instance_id, launchKind: parsed.kind, replay: outcome.kind === "replayed" });
-  return json(recordOf(after, now), outcome.kind === "made" ? 201 : 200);
+  return json(await withMacFacts(env, recordOf(after, now), userId), outcome.kind === "made" ? 201 : 200);
 }
 
 /* ---- A computer with nothing on it (`kind: "machine"`) ---- */
@@ -1397,7 +1461,7 @@ export async function routeLaunches(request: Request, path: string, env: CloudEn
   const row = await ownLaunch(env, userId, launchId);
   if (!row) return notFound();
   if (action === undefined) {
-    if (request.method === "GET") return json(recordOf(row, deps.now));
+    if (request.method === "GET") return json(await withMacFacts(env, recordOf(row, deps.now), userId));
     if (request.method === "DELETE") return await followedBy(await handleCancel(env, row, deps), env, launchId, deps);
     return notFound();
   }
@@ -1594,11 +1658,23 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
 
 /* ---- The minute cron ---- */
 
-/** The computers whose launch is still joining inside its window: the no-check-in sleep leaves them awake. */
+/**
+ * How long after its launch left `joining` a computer is still taken as just signed in: its first check-in can land
+ * after the tick that sees the launch move on (an approval that took longer than the no-check-in limit).
+ */
+const JUST_JOINED_MS = 5 * 60_000;
+
+/**
+ * The computers the no-check-in sleep leaves awake: a launch still joining inside its window, or one that joined
+ * and moved on in the last `JUST_JOINED_MS` (not failed or cancelled).
+ */
 export async function computersJoiningLaunches(env: CloudEnv, now: number): Promise<Set<string>> {
   const rows = (await env.DB.prepare(`
-    select instance_id from cloud_launches where state in ('joining', 'needs_approval') and join_expires_at > ? and instance_id is not null
-  `).bind(now).all<{ instance_id: string }>()).results ?? [];
+    select instance_id from cloud_launches where instance_id is not null and (
+      (state in ('joining', 'needs_approval') and join_expires_at > ?)
+      or (join_used_at is not null and state not in ('joining', 'needs_approval', 'failed', 'cancelled') and updated_at > ?)
+    )
+  `).bind(now, now - JUST_JOINED_MS).all<{ instance_id: string }>()).results ?? [];
   return new Set(rows.map((row) => row.instance_id));
 }
 
@@ -1702,12 +1778,14 @@ export async function failUnjoinedLaunches(
   // computer that reported its own sign-in timeout): delete it.
   const left = (await env.DB.prepare(`
     select l.* from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
-    where l.state = 'failed' and l.error in (?, ?) and c.deleted_at is null limit ?
-  `).bind(JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+    where l.state = 'failed' and l.error in (?, ?, ?) and c.deleted_at is null limit ?
+  `).bind(JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, MAC_BOOT_NEVER_FINISHED, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
   for (const row of left) {
     const why = row.error === SIGN_IN_NEVER_FINISHED
       ? { who: "launch_sign_in", reason: "launch_sign_in_never_finished" }
-      : { who: "launch_join", reason: "launch_never_joined" };
+      : row.error === MAC_BOOT_NEVER_FINISHED
+        ? { who: "launch_join", reason: "launch_mac_boot_failed" }
+        : { who: "launch_join", reason: "launch_never_joined" };
     await deleteLaunchComputer(env, provider, row, now, why).catch((error: unknown) => {
       reportCloudFailure("cloud.launch_never_joined_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     });

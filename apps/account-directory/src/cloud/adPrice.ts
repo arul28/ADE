@@ -15,7 +15,8 @@ import {
   type CloudPricingState,
 } from "./contract";
 import { PLATFORM_URL, adsCountryHas, type GravityEnv } from "./gravity";
-import { CREDIT_SCALE, EXTRA_HOUR_MICROS, SMALL_NO_CARDS_RATE_MILLI, SMALL_SHAPE, adRateMilli, cloudSizeFor, isMeteredStatus, utcDay, v3FullRateMilli, type V3CatalogTerms, type V3Rate } from "./plans";
+import { CREDIT_SCALE, EXTRA_HOUR_MICROS, MAC_MILLI_PER_MINUTE, SMALL_NO_CARDS_RATE_MILLI, SMALL_SHAPE, adRateMilli, cloudSizeFor, isMeteredStatus, utcDay, v3FullRateMilli, type V3CatalogTerms, type V3Rate } from "./plans";
+import { macMode } from "./macSwitch";
 import { readCloudSettings, settingChangedAt, type CloudSettings } from "./settings";
 import { readConsent, sponsoredRequester, startsOnFor, yesHolds, type ConsentRow, type SponsoredRequester } from "./sponsoredConsent";
 import { freeRuleCharges, smallLookUntil } from "./sponsoredSmall";
@@ -107,6 +108,9 @@ export function computerRatesMilli(computer: Pick<ComputerRow, "type" | "cpu" | 
     const full = computer.ad_full_milli ?? computer.multiplier_milli;
     return { fullMilli: full, adMilli: full };
   }
+  // A Mac (`macProvider.ts`): 5 credits a minute full, that less the discount with ads, each a minute's
+  // whole shown credit (as `pricingV3Rates`' `mac`); its row carries it an hour.
+  if (size.type === "mac") return { fullMilli: MAC_MILLI_PER_MINUTE * 60, adMilli: adRateMilli(MAC_MILLI_PER_MINUTE, ctx.discountPct) * 60 };
   if (size.tier === "small") return ctx.freeRule && ctx.adsReach ? { fullMilli: SMALL_NO_CARDS_RATE_MILLI, adMilli: 0 } : { fullMilli: 0, adMilli: 0 };
   const full = v3FullRateMilli(size.multiplierMilli);
   return { fullMilli: full, adMilli: adRateMilli(full, ctx.discountPct) };
@@ -868,8 +872,8 @@ async function publicPricing(env: GravityEnv, request: Request): Promise<CloudPu
   if (!publicSettings || now - publicSettings.at > PUBLIC_SETTINGS_MS || now < publicSettings.at) publicSettings = { at: now, settings: await readCloudSettings(env) };
   const { settings } = publicSettings;
   if ((await pricingV3Mode(env, settings)) !== "all") return { pricingV3: false };
-  // The cloud Mac's switch, once its branch adds it (`mac_computers`); none here reads as off.
-  const mac = (settings as unknown as Record<string, string | undefined>).mac_computers === "all";
+  // The cloud Mac only while its switch, in force, reaches everyone (`macMode`: held under its ceiling and the NoMac key).
+  const mac = (await macMode(env, settings)) === "all";
   const who = sponsoredRequester(request);
   const terms = adTerms(settings);
   // A visitor is a new Free account that isn't a tester: the ad switch reaches it only at `all`.

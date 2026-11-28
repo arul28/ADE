@@ -1,3 +1,4 @@
+import { macMode } from "./macSwitch";
 import { isSponsoredFormat, type GravityEnv } from "./gravity";
 import { sponsoredAbReport } from "./sponsoredReport";
 import { adPriceReport } from "./adPrice";
@@ -403,8 +404,9 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
       // Off whatever the variable says while a key is missing (`GRAVITY_INFERENCE_KEY`, `GRAVITY_API_KEY`).
       gravity_inference: env.GRAVITY_INFERENCE_KEY?.trim() && env.GRAVITY_API_KEY?.trim() ? env.GRAVITY_INFERENCE?.trim() || "off" : "off (no key)",
       pricing_v3: env.PRICING_V3?.trim() || "off",
+      mac_computers: env.MAC_COMPUTERS?.trim() || "off",
     },
-    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", gravity_inference: inference.mode, pricing_v3: await pricingV3Mode(env, settings) },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", gravity_inference: inference.mode, pricing_v3: await pricingV3Mode(env, settings), mac_computers: await macMode(env, settings) },
   });
 }
 

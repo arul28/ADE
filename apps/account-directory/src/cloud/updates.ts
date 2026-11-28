@@ -137,11 +137,16 @@ export function automaticUpdatesOn(targets: CloudUpdateTargets, channel: CloudUp
  * set in all three; a settled update clears it). The idle step and the cron
  * both ask this, so neither retries a failing update every time it runs.
  */
+/** The `template_version` of a DAEX Cloud Mac: it has no image, its drive brings its own DAEX (`infra/ade-cloud-mac/`). */
+export const MAC_TEMPLATE_VERSION = "mac";
+const hasNoImage = (computer: Pick<ComputerRow, "provider">): boolean => computer.provider === "nomac";
+
 export function isBehindAutomatic(
-  computer: Pick<ComputerRow, "channel" | "template_version" | "update_failed_template" | "update_state" | "update_started_at">,
+  computer: Pick<ComputerRow, "channel" | "template_version" | "update_failed_template" | "update_state" | "update_started_at" | "provider">,
   targets: CloudUpdateTargets,
   now: number,
 ): boolean {
+  if (hasNoImage(computer)) return false;
   const target = automaticTemplate(targets, channelOfComputer(computer));
   return target != null
     && computer.update_state !== "updating"
@@ -157,11 +162,13 @@ function updateStateOf(computer: Pick<ComputerRow, "update_state">): CloudUpdate
 /** ADE's own update facts on a provider answer, for the client. */
 export function withUpdateFacts(
   instance: CloudInstance,
-  computer: Pick<ComputerRow, "channel" | "template_version" | "update_state" | "updated_at" | "update_error"> | null | undefined,
+  computer: Pick<ComputerRow, "channel" | "template_version" | "update_state" | "updated_at" | "update_error" | "provider"> | null | undefined,
   targets: CloudUpdateTargets,
 ): CloudInstance {
   if (!computer) return instance;
   const channel = channelOfComputer(computer);
+  // A Mac has no image to update: no version, nothing to update to.
+  if (hasNoImage(computer)) return { ...instance, channel, templateVersion: null, targetTemplate: null, autoUpdate: false, updateState: null, updatedAt: null, updateError: null };
   return {
     ...instance,
     channel,
@@ -176,6 +183,7 @@ export function withUpdateFacts(
 
 export function updateCheckOf(computer: ComputerRow, targets: CloudUpdateTargets, now: number): CloudUpdateCheck {
   const channel = channelOfComputer(computer);
+  if (hasNoImage(computer)) return { behind: false, channel, templateVersion: null, targetTemplate: null, updateState: null };
   return {
     behind: isBehindAutomatic(computer, targets, now),
     channel,

@@ -196,7 +196,8 @@ function toInstance(raw: unknown): CloudInstance | null {
 export type CloudCreateInput = {
   template: string;
   name: string;
-  type: "default" | "vm";
+  /** `mac` only through the router (`createComputerProvider`), never Agent 37's client. */
+  type: "default" | "vm" | "mac";
   resources: { cpu: number; memory: number; disk: number };
   env?: Record<string, string>;
   metadata?: Record<string, string>;

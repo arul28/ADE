@@ -34,6 +34,8 @@ export type CreateComputerExtras = {
   setupDiskGb?: number | null;
   /** Pricing v3: a person's first message for the new computer, its proof (`adProof.ts` `firstMessageRate`). */
   adProof?: FirstMessageProof;
+  /** The server launcher's Mac lane (`os: "mac"`): the only create that may make a Mac. */
+  mac?: boolean;
 };
 
 export const createInProgress = () => fail("create_in_progress", "DAEX Cloud is still making this computer. Try again in a moment.", 409);

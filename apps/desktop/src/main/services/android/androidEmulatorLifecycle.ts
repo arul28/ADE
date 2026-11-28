@@ -1,3 +1,4 @@
+import { isAdeCloudMac } from "../adeCloud/cloudComputerRules";
 import fs from "node:fs";
 import path from "node:path";
 import type {
@@ -499,7 +500,8 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
     // that can't make its data partition grows the disk first, or is refused
     // here, not by the emulator. `force` passes the memory guard only; no
     // start fits on a full disk.
-    if (process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+    // A Mac's drive has one size (no grow): its emulator start is any Mac's.
+    if (process.env.ADE_CLOUD_INSTANCE_ID?.trim() && !isAdeCloudMac()) {
       // A grow can wait minutes: the device reads as starting meanwhile, so a Stop reaches it
       // (`interruptSlot`) and no emulator boots after it.
       slot.stopRequested = false;

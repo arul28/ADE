@@ -20,6 +20,11 @@ Accounts (an email, or a Clerk user id that starts with user_):
   phone <account> <on|off>               on the ADE Cloud iPhone's beta list, or off it; not a test
                                          (a tester picks their own provider in an ADE beta app)
   tester <account> <on|off>              on the sponsored testers list (ads switch "testers")
+  mac <account> <on|off>                 on the DAEX Cloud Mac's testers list (switch mac_computers "testers");
+                                         off stops their Macs and keeps the drives
+  mac-testers                            the Mac's testers and the emails still waiting for an account
+  mac-template [stable|beta] [--drive <name>] [--min-version <x.y.z>]
+                                         a channel's Mac template drive and DAEX release ("" clears); no channel: both
   ad-format <account> <below_reply|above_prompt|inline|switch>
                                          where this account's sponsored cards show (switch: gravity_format's)
   free-models-meter <account> <slowed|paused|reset>
@@ -37,6 +42,7 @@ Switches:
                                          pricing_v3 off|testers|all (the ad price, credit scale 10),
                                          ad_discount_pct 0-50 in steps of 5 (start 20),
                                          ad_window_minutes 5|10|15|30|45|60|90|120|240|480|720|1440 (start 60),
+                                         mac_computers off|testers|all, mac_idle_stop_minutes 5|3|10|15,
                                          gravity_format below_reply|above_prompt|inline|split,
                                          gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
                                          (under the reply - inline - above the prompt box)
@@ -75,6 +81,7 @@ const COMMAND_OPTIONS = {
   set: ["note"],
   ab: ["days"],
   "ad-price": ["days"],
+  "mac-template": ["drive", "min-version"],
 };
 
 function readOptions(command, args) {
@@ -205,6 +212,24 @@ switch (command) {
   case "tester": {
     if (rest[1] !== "on" && rest[1] !== "off") fail(`tester takes on or off.\n\n${USAGE}`);
     printAccount(await call("account", { ...accountRef(rest[0]), tester: rest[1] === "on" }));
+    break;
+  }
+  case "mac": {
+    if (rest[1] !== "on" && rest[1] !== "off") fail(`mac takes on or off.\n\n${USAGE}`);
+    console.log(JSON.stringify(await call("mac-testers", { ...accountRef(rest[0]), enabled: rest[1] === "on" }), null, 2));
+    break;
+  }
+  case "mac-template": {
+    const change = rest[0] ? { channel: rest[0], ...(options.drive !== undefined ? { drive: options.drive } : {}), ...(options["min-version"] !== undefined ? { minVersion: options["min-version"] } : {}) } : {};
+    const answer = await call("mac-template", change);
+    console.table(Object.entries(answer.channels).map(([channel, value]) => ({ channel, drive: value.drive ?? "-", "min version": value.minVersion ?? "-" })));
+    break;
+  }
+  case "mac-testers": {
+    const list = await call("mac-testers", {});
+    console.log(`Switch mac_computers in force: ${list.mode}`);
+    console.table(list.users.map((user) => ({ user: user.user_id, email: user.email ?? "-", added: new Date(user.added_at).toISOString() })));
+    if (list.pending.length) console.table(list.pending.map((entry) => ({ waiting: entry.email, added: new Date(entry.added_at).toISOString() })));
     break;
   }
   case "reset":

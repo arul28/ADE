@@ -768,7 +768,7 @@ import { cloudMoveSendRefusal, isCloudMoveRefusal, isRemoteTurnStart } from "./s
 import { REMOTE_WORK_HOLD_REASON, createCloudRemoteWorkHold } from "./services/power/cloudRemoteWorkHold";
 import { CLOUD_COMPUTER_MOVING_CODE, CLOUD_COMPUTER_MOVING_SENTENCE } from "../../account-directory/src/cloud/contract";
 import { encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
-import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { isAdeCloudComputer, isAdeCloudMac } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { endProviderLoginGateHold, holdProviderLoginGate } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
@@ -31447,8 +31447,9 @@ async function runServe(
           if (!client) throw new Error(`no ${BRAND.CLOUD_NAME} access`);
           await client.requestIdleSleep(instanceId, { backupReportId: extras?.backupReportId ?? null });
         },
-        growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
-        diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
+        // A DAEX Cloud Mac's drive has one size: it never grows.
+        growDiskIfNeeded: async (stillIdle) => (isAdeCloudMac() ? false : await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false),
+        diskGrowDueNow: () => (isAdeCloudMac() ? false : cloudDiskGrower?.growDueNow() ?? false),
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
         saveForRest: async (stillIdle: () => boolean): Promise<string | null> => (cloudRest ? await cloudRest.saveAtIdle(stillIdle) : null),
@@ -31472,6 +31473,7 @@ async function runServe(
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
+        reportBusy: async () => { await cloudComputerReports?.reportBusy(); },
         sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
         // The status menu's idle clock is the keep-awake's own.
         onIdleFacts: cloudActivityReporter ? (idle) => cloudActivityReporter?.noteIdle(idle) : undefined,

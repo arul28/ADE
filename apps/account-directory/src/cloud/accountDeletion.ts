@@ -4,7 +4,8 @@ import { cancelAccountSubscription } from "./billing";
 import { deleteAllAccountChats } from "./chats";
 import { deleteAccountLaunches } from "./launches";
 import { deleteAccountAutomations } from "./automations";
-import { createCloudProvider } from "./provider";
+import { createComputerProvider } from "./computerProvider";
+import { forgetAccountMacs } from "./macProvider";
 import { CLOUD_DELETED_ACCOUNT_PREFIX, CLOUD_REFERRAL_FRIEND_REASON, CLOUD_REFERRAL_REFERRER_REASON } from "./contract";
 import { sha256Hex } from "../sinkUtils";
 import {
@@ -37,13 +38,16 @@ export async function deleteCloudAccount(
 
   const real = (await listComputers(env, userId)).filter((computer) => !isPendingId(computer.instance_id));
   if (real.length) {
-    const key = env.AGENT37_API_KEY?.trim();
-    if (!key) throw new Error("no_provider_key");
-    const provider = createCloudProvider(key);
+    // The router: a Mac goes with its drive at NoMac, every other computer at Agent 37.
+    const provider = createComputerProvider(env as CloudEnv);
+    if (!provider) throw new Error("no_provider_key");
     for (const computer of real) {
       await deleteComputer(env, provider, computer, { who: "system", reason: "account_deleted" }, now);
     }
   }
+  // Any Mac drive still kept under the account's label (a Mac closed earlier whose drive delete failed).
+  // The Worker's whole env reaches here (`accountErasure.ts`), as the router needs.
+  if (env.NOMAC_API_KEY?.trim()) await forgetAccountMacs(env as CloudEnv, userId, now);
 
   // The ADE Cloud iPhone's saved states, replays and workspace at NoMac, and the beta list.
   // NoMac being down must not hold back the rest: its failure is thrown at the end, so Clerk's
