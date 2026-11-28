@@ -514,8 +514,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "tab_opened",
   "widget_added",
   // The composer's model hint: what the user did with a chip, by the kind of
-  // suggestion. Never the prompt, the models, or the efforts.
-  "hint_model", "hint_effort", "hint_cheaper",
+  // suggestion. Never the prompt, the models, or the efforts. `hint_newer_version`
+  // is the "A newer version is out" strip (ADE-300): Switch or ×.
+  "hint_model", "hint_effort", "hint_cheaper", "hint_newer_version",
   // Settings › Keyboard (feature "keyboard"): whether an installation changes a
   // shortcut and whether it uses Quick slots, once a day each. Never the keys,
   // the action, or which slot.

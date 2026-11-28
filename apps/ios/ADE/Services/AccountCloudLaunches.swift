@@ -512,6 +512,9 @@ final class AccountCloudLaunchStore: ObservableObject {
   private var pollGeneration = 0
   /// Bumped by `reset`: an answer to a read the last account made lands nowhere.
   private var accountGeneration = 0
+  /// The account generation whose ADE Cloud sign-ins were read: a read that
+  /// failed or was cancelled leaves it behind, so the next load reads again.
+  private var signInsReadGeneration: Int?
   private var activeReadAt: Date?
   private static let lastModelKey = "ade.cloudChat.lastModel.v1"
 
@@ -539,23 +542,35 @@ final class AccountCloudLaunchStore: ObservableObject {
   }
 
   func loadCatalogIfNeeded(using sync: SyncService) async {
-    guard catalog == nil else { return }
     let generation = accountGeneration
+    let needsCatalog = catalog == nil
+    let needsSignIns = signInsReadGeneration != generation
+    guard needsCatalog || needsSignIns else { return }
     guard let client = await sync.cloudServerClient() else { return }
-    do {
-      let read = try await client.modelCatalog()
-      guard generation == accountGeneration else { return }
-      catalog = read
-      catalogError = nil
-    } catch {
-      guard generation == accountGeneration else { return }
-      catalogError = cloudServerFailureMessage(error)
+    // Told only after both reads, and only for this account: the bump
+    // restarts the suggestion's task, which would cancel the sign-in read
+    // below while it waits on this.
+    var catalogRead = false
+    defer { if catalogRead && generation == accountGeneration { WorkModelCatalogRevision.shared.bump() } }
+    if needsCatalog {
+      do {
+        let read = try await client.modelCatalog()
+        guard generation == accountGeneration else { return }
+        catalog = read
+        catalogError = nil
+        catalogRead = true
+      } catch {
+        guard generation == accountGeneration else { return }
+        catalogError = cloudServerFailureMessage(error)
+      }
     }
+    guard needsSignIns else { return }
     // Whether a desktop-only sign-in (Antigravity) already reached ADE Cloud.
     do {
       let signIns = try await client.accountSignIns()
       guard generation == accountGeneration else { return }
       carriedSignIns = signIns.carried
+      signInsReadGeneration = generation
     } catch {
       cloudLaunchLog.notice("cloud_launches read=sign_ins failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
     }

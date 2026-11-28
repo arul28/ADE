@@ -1010,6 +1010,9 @@ struct WorkChatSessionView: View {
   /// Set while the chat's ADE Cloud computer is not awake: the picker lists
   /// ADE Cloud's models instead of asking a machine the chat is not on.
   var modelPickerCloudCatalog: CloudModelCatalog? = nil
+  /// The models this chat's own machine runs, for the newer-version offer
+  /// (ADE-300). Nil when the phone holds no list for that machine: no offer.
+  var loadModelUpgradeCandidates: (@MainActor () async -> [String]?)? = nil
   var lanes: [LaneSummary] = []
   var lanesRenderSignature: Int = 0
   // Host-side scroll-back: the engine reports whether older history exists
@@ -1178,6 +1181,14 @@ struct WorkChatSessionView: View {
   @State var pickedCopilotTiers: (String, String?)? = nil
   @State var toolActivitySheet: WorkToolActivitySheetSelection?
   @State var modelUpdateInFlight = false
+  /// A newer version of the chat's model its machine runs (ADE-300), and
+  /// that machine's models, read with it. Only suggested: an open chat keeps
+  /// its model until the person switches.
+  @State var modelUpgradeOffer: WorkModelUpgrade?
+  @State var modelUpgradeAvailable: [String] = []
+  /// An older version picked by hand in the picker: its pair is turned down
+  /// once the chat's machine's list is read (`refreshModelUpgradeOffer`).
+  @State var modelUpgradeHandPicked: String?
   /// Bumped each time a NEW blocking pending input arrives so the body can fire
   /// a single light haptic — keeps a question/plan gate from being missed.
   @State var blockingPendingHapticToken = 0
@@ -2771,6 +2782,17 @@ struct WorkChatSessionView: View {
             turn: sponsoredSlotTurn,
             slot: sponsoredSlot
           )
+          if let upgrade = shownModelUpgradeOffer {
+            // A tab on the prompt box, inset from its sides.
+            WorkModelUpgradeStrip(
+              upgrade: upgrade,
+              isBusy: modelUpdateInFlight,
+              onSwitch: switchToNewerModelVersion,
+              onDismiss: dismissModelUpgradeOffer
+            )
+            .padding(.horizontal, 18)
+            .transition(.opacity)
+          }
           WorkChatComposerCard(
             chatSummary: chatSummaryContext,
             contextMeter: composerContextMeter,
@@ -3465,6 +3487,7 @@ struct WorkChatSessionView: View {
         }
         .onChange(of: session.id) { _, _ in
           pendingCodexFastMode = nil
+          modelUpgradeHandPicked = nil
           lastBlockingPendingInputId = nil
           blockingPendingHapticToken = 0
           lastLiveQuotaCardId = nil
@@ -3484,6 +3507,7 @@ struct WorkChatSessionView: View {
         .onChange(of: ctoLiveFacts, initial: true) { _, facts in
           publishCtoLiveFacts(facts)
         }
+        .modifier(WorkModelUpgradeRefreshTask(key: modelUpgradeTaskKey) { await refreshModelUpgradeOffer() })
   }
 
   /// Hands the CTO thread's turn facts to its live model (header pill,
@@ -3624,7 +3648,16 @@ struct WorkChatSessionView: View {
                 defer { modelUpdateInFlight = false }
                 let wasCurrentModel = workModelIdsEquivalent(option.id, currentModelId)
                 if !wasCurrentModel {
-                  _ = await onSelectModel(option.id)
+                  // An older version picked by hand turns its newer-version pair down.
+                  noteModelHandPicked(option.id)
+                  // A change the machine refused is no answer.
+                  if await !onSelectModel(option.id) { modelUpgradeHandPicked = nil }
+                } else if (pickedReasoning ?? "") == chatSummaryContext.reasoningEffort,
+                          pickedFastMode == chatSummaryContext.effectiveFastMode {
+                  // The current older version picked again, no setting changed:
+                  // the same answer, with no model update to send. The picker
+                  // also reports effort and Fast changes; those decline nothing.
+                  dismissModelUpgradeOffer()
                 }
                 guard !Task.isCancelled else { return }
                 let currentReasoning = chatSummaryContext.reasoningEffort

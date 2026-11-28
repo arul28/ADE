@@ -10,15 +10,86 @@
  *   a send just failed on the sign-in. The card draws its own frame.
  *
  * All strip styling lives in `providerSignInSlot.css`, so a design pass can
- * tune it in one place.
+ * tune it in one place. `ComposerStrip` is the one strip frame: the sign-in
+ * strip and the newer-version strip (`ModelUpgradeStrip.tsx`) are both built
+ * from it, and `ComposerNoticeStack` joins two of them into one tab.
  */
-import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Children, memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Gift } from "@phosphor-icons/react";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { providerColor } from "../usage/providerColors";
 import { providerSignInSpec } from "./ProviderSignInCard";
 import "./providerSignInSlot.css";
+
+/**
+ * One strip above the prompt box: a logo, one sentence (a shorter one when
+ * the box is narrow), then its actions. `accent` tints it; text and edges mix
+ * the tint into theme tokens, so light themes read the same as dark ones.
+ */
+export function ComposerStrip({
+  accent,
+  logo,
+  long,
+  short,
+  title,
+  testId,
+  dataAttributes,
+  announce = false,
+  children,
+}: {
+  accent: string;
+  logo: ReactNode;
+  /** The sentence: lead text, then the emphasized name, then its end. */
+  long: { lead: string; strong: string; end: string };
+  /** The narrowest box: this replaces the sentence before a button is cut. */
+  short: string;
+  title?: string;
+  testId: string;
+  dataAttributes?: Record<`data-${string}`, string>;
+  /** Read out politely when it appears: a strip that shows up while the person types. */
+  announce?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className="ade-psi-strip"
+      {...(announce ? { role: "status", "aria-live": "polite" as const } : {})}
+      data-testid={testId}
+      {...dataAttributes}
+      title={title}
+      style={{ "--psi-accent": accent } as CSSProperties}
+    >
+      <span className="ade-psi-logo" aria-hidden>{logo}</span>
+      <span className="ade-psi-text ade-psi-long">
+        <span className="ade-psi-lead">{long.lead}</span>
+        <span className="ade-psi-machine" title={long.strong}>{long.strong}</span>
+        <span className="ade-psi-end">{long.end}</span>
+      </span>
+      <span className="ade-psi-text ade-psi-short">
+        <span className="ade-psi-lead">{short}</span>
+      </span>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The strips above the prompt box as one tab on it. Two at once (not signed
+ * in, and a newer version) stack in one frame, each its own line, rather than
+ * two tabs fighting for the box's top edge. One strip keeps the same element
+ * (CSS draws nothing for it), so a strip is never remounted, and loses no
+ * focus, when another comes or goes. Nothing to show renders nothing.
+ */
+export function ComposerNoticeStack({ children }: { children: ReactNode }) {
+  const items = Children.toArray(children);
+  if (items.length === 0) return null;
+  return (
+    <div className="ade-psi-stack" data-count={items.length} data-testid="composer-notice-stack">
+      {items}
+    </div>
+  );
+}
 
 export const ProviderSignInStrip = memo(function ProviderSignInStrip({
   provider,
@@ -45,27 +116,18 @@ export const ProviderSignInStrip = memo(function ProviderSignInStrip({
   const label = adeCloudPass ? "Claude" : providerSignInSpec(provider)?.label ?? provider;
   const where = runsHere || machineName === THIS_MACHINE_NAME ? "this computer" : machineName;
   return (
-    <div
-      className="ade-psi-strip"
-      data-testid="provider-sign-in-strip"
-      data-provider={provider}
-      // A brand tint only. Text and edges mix it into theme tokens, so light
-      // themes read the same as dark ones.
-      style={{ "--psi-accent": providerColor(provider) } as CSSProperties}
+    <ComposerStrip
+      accent={providerColor(provider)}
+      logo={<ProviderLogo family={provider} size={13} />}
+      long={{
+        lead: adeCloudPass ? `${label} needs a pass on ` : `${label} isn't signed in on `,
+        strong: where,
+        end: ".",
+      }}
+      short={adeCloudPass ? `${label}: needs a pass` : `${label}: not signed in`}
+      testId="provider-sign-in-strip"
+      dataAttributes={{ "data-provider": provider }}
     >
-      <span className="ade-psi-logo" aria-hidden>
-        <ProviderLogo family={provider} size={13} />
-      </span>
-      <span className="ade-psi-text ade-psi-long">
-        <span className="ade-psi-lead">{adeCloudPass ? `${label} needs a pass on\u00a0` : `${label} isn't signed in on\u00a0`}</span>
-        <span className="ade-psi-machine" title={where}>{where}</span>
-        <span className="ade-psi-end">.</span>
-      </span>
-      {/* The narrowest prompt box: the sentence shortens before the button
-          could be cut. */}
-      <span className="ade-psi-text ade-psi-short">
-        <span className="ade-psi-lead">{adeCloudPass ? `${label}: needs a pass` : `${label}: not signed in`}</span>
-      </span>
       {onUseFreeModel ? (
         <button
           type="button"
@@ -82,7 +144,7 @@ export const ProviderSignInStrip = memo(function ProviderSignInStrip({
       <button type="button" className="kit-btn ade-psi-button" data-size="sm" onClick={onSignIn}>
         Sign in
       </button>
-    </div>
+    </ComposerStrip>
   );
 });
 

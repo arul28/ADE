@@ -16873,6 +16873,18 @@ final class SyncService: ObservableObject {
         )
         chatModelCatalogCache[refreshStaleKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
       }
+      if mode != "cached" {
+        // A `cached` read (the newer-version suggestion) must take this
+        // fresher list next: drop this machine's `cached` entries, so it
+        // falls through to the newest list in scope.
+        let scope = cacheKey.firstIndex(of: "\u{1f}").map { cacheKey[$0...] }
+        for key in Array(chatModelCatalogCache.keys)
+        where key.hasPrefix("catalog:cached:") && key.firstIndex(of: "\u{1f}").map({ key[$0...] }) == scope {
+          chatModelCatalogCache[key] = nil
+        }
+      }
+      // A fresh list: the composer's newer-version suggestion reads it again.
+      WorkModelCatalogRevision.shared.bump()
       chatModelCatalogInFlight[cacheKey] = nil
       return catalog
     } catch {
@@ -30067,18 +30079,24 @@ extension SyncService {
             connection.supportsAction("personalChats.modelCatalog") else {
         throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not connected or cannot list chat models."])
       }
-      return try decode(
+      let catalog = try decode(
         await connection.sendCommand(action: "personalChats.modelCatalog", args: args, projectId: nil, projectRootPath: nil),
         as: AgentChatModelCatalog.self
       )
+      WorkModelCatalogRevision.shared.notePersonalCatalog(catalog, machineKey: machineKey)
+      return catalog
     }
     try requireInvokableRemoteAction("personalChats.modelCatalog")
-    return try await sendDecodableCommand(
+    let catalog = try await sendDecodableCommand(
       action: "personalChats.modelCatalog",
       args: args,
       fallbackToActiveProjectScope: false,
       as: AgentChatModelCatalog.self
     )
+    // This list has no cache: the newer-version suggestion hears of it only
+    // when what it lists changed.
+    WorkModelCatalogRevision.shared.notePersonalCatalog(catalog, machineKey: focusedMachineKey ?? "")
+    return catalog
   }
 
   func removePersonalChatFromCache(sessionId: String) {
