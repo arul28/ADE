@@ -1,194 +1,132 @@
 # Linux Desktop
 
-Each lane on a Linux machine can own a screen: its own X display, with a window
-manager and its own D-Bus session, created when the lane asks and gone when it
-stops. The service, the lease, proof, streaming and the Work-tools pane are
-shared with [Mac Desktop](../mac-desktop/README.md) and
-[Windows Desktop](../windows-desktop/README.md); only the seat backend differs,
-so read the Mac page first. This page covers what Linux adds or changes.
+Each lane on a Linux machine can own a screen: its own Xvfb display, window
+manager and D-Bus session, created when the lane asks and gone when it stops.
+The service, lease, proof, streaming and Work-tools pane are shared with
+[Mac Desktop](../mac-desktop/README.md) and
+[Windows Desktop](../windows-desktop/README.md); only the seat backend differs.
+Read the Mac page first. This page covers what Linux adds or changes.
 
-The command family is `ade screen` (`ade mac-desktop` is an alias on a Linux
-host), and the verbs are the Mac Desktop verbs plus the window verbs
-(`focus`, `minimize`, `close`).
-
-It is built for the headless brain: `curl -fsSL https://ade-app.dev/install.sh | sh`
-and `ade connect --headless` on any Linux box (a server, a VPS, a cloud VM). The
-desktop app, the web client and the phone watch and drive the screen over the
-same relay as every other lane screen.
+Commands are `daex screen …` (`ade` still works; `mac-desktop` is an alias),
+the Mac verbs plus the window verbs `focus`, `minimize`, `close`. It is built
+for the headless brain: `curl -fsSL https://ade-app.dev/install.sh | sh` and
+`daex connect --headless` on any Linux box. The desktop app, web client and
+phone watch and drive the screen over the same relay as other lane screens.
 
 ## Source file map
 
-Only the Linux-specific files; the shared service, lease, ownership, streaming
-and proof files are in the [Mac Desktop map](../mac-desktop/README.md#source-file-map).
+Linux-specific files only; the shared files are in the
+[Mac Desktop map](../mac-desktop/README.md#source-file-map).
 
 | Path | Role |
 |---|---|
-| `apps/desktop/native/ADEDesktopDriverLinux/` | The native helper, `ade-desktop-driver` (Rust, static musl). Same NDJSON wire, ops and error codes as the Mac and Windows drivers. |
-| `.../src/main.rs` | The NDJSON loop and dispatcher: one worker thread per lane (requests for a lane run in order, and the thread ends with the lane), `ping`/`wait`/cross-lane ops on their own threads, SIGTERM/stdin-close teardown, the orphaned-X-server sweep. |
-| `.../src/lane/mod.rs` | One lane's screen: Xvfb + Xauthority cookie, the lane's `dbus-daemon`, openbox, app launch/quit, teardown, the lease, and the media ops. |
-| `.../src/lane/observe.rs` | The element map for `observe`: the AT-SPI walk, the element list and its JSON, the observation screenshot and map, handle and text resolution. |
-| `.../src/lane/input.rs` | Input dispatch: click, type, `setValue`, press, scroll, drag, move and buttons, and `wait`. |
-| `.../src/lane/windows.rs` | The window list and its JSON, the window verbs (`focus`, `minimize`, `close`), screenshots, and the window signature. |
-| `.../src/wallpaper.rs` | ADE's wallpaper on the lane's root window, painted once (`assets/ade-mark.png` is compiled in). |
-| `.../src/xconn.rs` | The X11 connection (x11rb): window list (EWMH), XTEST input, keymap and scratch-keycode typing, `GetImage`/MIT-SHM capture, the XFixes cursor overlay. |
-| `.../src/atspi.rs` | The AT-SPI client on the lane's own accessibility bus (zbus): the breadth-first concurrent walk with its node cap and time budget, element actions. |
-| `.../src/media.rs` | The live view and recording: XDamage-driven capture, the system `ffmpeg` encoder, access-unit framing, the loopback byte server, the MP4 recorder. |
-| `.../src/launch.rs` | What `app.launch` starts: app name, path, `.desktop` entry or URL; the lane-private browser profile and accessibility switches. |
+| `apps/desktop/native/ADEDesktopDriverLinux/` | The native helper `ade-desktop-driver` (Rust, static musl). Same NDJSON wire, ops and error codes as the Mac and Windows drivers. |
+| `…/src/main.rs` | NDJSON loop: one worker thread per lane (a lane's requests run in order), `ping`/`wait`/cross-lane ops on their own threads, SIGTERM/stdin-close teardown, orphaned-X-server sweep. |
+| `…/src/protocol.rs` | The shared wire types and error codes. |
+| `…/src/procs.rs` | Child processes: own process group per child, parent-death signal, stop escalation. |
+| `…/src/lane/mod.rs` | One lane's screen: Xvfb + Xauthority cookie, the lane's `dbus-daemon`, openbox, app launch/quit, teardown, lease, media ops. |
+| `…/src/lane/observe.rs` | The `observe` element map: AT-SPI walk (12,000-node cap, 2.5 s budget), screenshot, handle and text resolution. |
+| `…/src/lane/input.rs` | click, type, `setValue`, press, scroll, drag, move, buttons, `wait`. |
+| `…/src/lane/windows.rs` | Window list, window verbs, screenshots, window signature. |
+| `…/src/xconn.rs` | X11 via x11rb: EWMH window list, XTEST input, scratch-keycode typing, `GetImage`/MIT-SHM capture, XFixes cursor. |
+| `…/src/keys.rs`, `…/src/draw.rs` | Key names to keysyms; PNG writing and the numbered element map. |
+| `…/src/atspi.rs` | AT-SPI client on the lane's own accessibility bus (zbus). |
+| `…/src/media.rs` | Live view and recording: XDamage capture, system `ffmpeg`, access-unit framing, loopback byte server, MP4 recorder. Cap `ADE_LINUX_DESKTOP_MAX_FPS` (default 30). |
+| `…/src/launch.rs` | What `app.launch` starts (name, path, `.desktop` entry, URL), browser profile and accessibility switches. |
+| `…/src/wallpaper.rs` | The DAEX wallpaper painted once into the root window's background pixmap (`assets/ade-mark.png` compiled in). |
 | `apps/desktop/scripts/build-linux-desktop-driver.mjs` | Builds the helper for `linux-x64` / `linux-arm64` into `resources/native/<target>/`. |
 | `apps/ade-cli/scripts/package-native-deps.mjs` | Ships it in `ade-linux-<arch>.native.tar.gz` as `native/ade-desktop-driver`. |
 | `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | `resolveLinuxDesktopDriverBinary`: `<ADE_RUNTIME_ROOT>/native/ade-desktop-driver`, then the daemon search. |
-| `apps/desktop/src/main/services/linuxDesktop/linuxDesktopSeatProvider.ts` | The Linux `DesktopSeatAdapter`: the shared op set plus the window verbs, the `host --ade-home` driver client. |
-| `apps/desktop/src/main/services/linuxDesktop/linuxDesktopSetup.ts` | The system packages a screen needs, per package manager, and `ade screen setup` installing them. |
+| `apps/desktop/src/main/services/linuxDesktop/linuxDesktopSeatProvider.ts` | The Linux `DesktopSeatAdapter`: shared ops plus window verbs. |
+| `apps/desktop/src/main/services/linuxDesktop/linuxDesktopSetup.ts` | Packages a screen needs per package manager; `daex screen setup`. |
+| `apps/desktop/src/main/services/linuxDesktop/linuxHostFacts.ts` | Reads the helper's `ping.linux` report (what the host is missing). |
+| `apps/desktop/src/main/services/linuxDesktop/linuxScreenTelemetry.ts` | Sentry reports tagged with distribution, version, CPU and package manager (`linux_screen.*`, see `docs/logging.md`). |
 | `apps/desktop/src/shared/desktopSeat.ts` | `desktopProductName("linux")`, the `linux` seat kind and its status summary. |
+
+## Gotchas / fragile areas
+
+- **Isolation is per lane, not per user.** Each lane has its own X server
+  (per-lane MIT-MAGIC-COOKIE-1) and bus, so lanes cannot see each other's
+  windows. Everything runs as the brain's Unix user. The live-view video port
+  is plain loopback TCP with no token (like the Mac byte server); clients
+  normally read through the brain's token-guarded stream endpoint.
+- **The bus socket dir** is `$XDG_RUNTIME_DIR/ade-ld/<N>/`, or
+  `/tmp/ade-ld-<uid>/<N>/` without `XDG_RUNTIME_DIR`; it is created `0700` and
+  refused if it is a link or owned by another user.
+- **No lease for input.** A lane's X display has no human pointer, so XTEST
+  input is background input by construction (`real input  needs no lease`). A
+  viewer's takeover still wins. XSendEvent is not used: Chromium and GTK drop
+  synthetic pointer events.
+- **Chromium needs flags.** `app.launch` adds `--force-renderer-accessibility`
+  to Chromium-family browsers and Electron apps (detected by
+  `resources/app.asar`), and `--disable-gpu-compositing` unless the caller
+  passes a GPU switch (Xvfb has no GPU; SwiftShader costs about 4x CPU). A
+  stale Chromium profile lock is removed before launch, or Chrome exits with
+  "profile in use".
+- **AT-SPI walk.** Chromium's AT-SPI cache covers only its own UI, so the page
+  is a real breadth-first walk with non-SHOWING subtrees pruned. A cut-short
+  walk reports `truncatedReason` (`node_cap`, `timeout`). Text targets prefer
+  interactive elements, then exact names, then the smallest, as on Mac and
+  Windows.
+- **Encoder latency.** The live encoder runs ultrafast/zerolatency, no
+  B-frames, in-band SPS/PPS, slice threads (frame threading would hold a frame
+  until the next damage). A still screen sends one frame a second. A new or
+  lagging reader gets a fresh encoder starting on a keyframe.
+- **Locale.** Linux helpers keep the machine's locale; `en_US.UTF-8` (set for
+  Mac and Windows helpers) is often not generated on Linux.
+- **ffmpeg differences.** Fedora's `ffmpeg-free` has no libx264 (recording uses
+  libopenh264; the demo engine falls back to DAEX's pinned ffmpeg, see
+  `canRenderDemos` in `ffmpegDemoEngine.ts`). ffmpeg 9 removed
+  `-filter_complex_script` and 6.1 predates `-/filter_complex`; the engine picks
+  by version. An ffmpeg without an H.264 encoder is reported separately
+  (`ffmpeg-encoder`) and never in the packages row.
+- **xterm fonts.** xterm gets `-fa Monospace -fs 11`; a lane screen has no core
+  X fonts.
 
 ## How a lane's screen comes up
 
-`display.create` runs on the lane's worker thread and:
+`display.create` on the lane's worker thread:
 
-1. Picks a free display number from `:90` up, writes a random
-   MIT-MAGIC-COOKIE-1 into `<ADE home>/linux-desktop/lanes/<lane>/Xauthority`,
-   and starts `Xvfb :N -screen 0 WxHx24 -nolisten tcp -auth …`. Only a client
-   with the cookie (the helper, the lane's apps) can connect.
-2. Starts the lane's own `dbus-daemon --session` on a socket under
-   `$XDG_RUNTIME_DIR/ade-ld/<N>/` (or `/tmp/ade-ld-<uid>/<N>/` when
-   `XDG_RUNTIME_DIR` is unset; this directory is created `0700` and refused when
-   it is a link or belongs to another user), asks it for the accessibility bus
-   (D-Bus activates `at-spi-bus-launcher`), and switches accessibility on
-   (`org.a11y.Status.IsEnabled` and `ScreenReaderEnabled`).
-3. Starts `openbox`, waits until it manages the screen, and paints ADE's
-   wallpaper (`src/wallpaper.rs`): the dark canvas (`#0C0B10`) lit by the
-   violet, indigo and lavender lobes of ADE's backdrop gradient, a soft
-   vignette, and the ADE mark at 55% in the middle, sized to the screen. It is
-   drawn once into the root window's background pixmap, so the X server
-   repaints it alone: no timer, no idle CPU, a still picture for the encoder,
-   and nothing in the window list or the accessibility tree. The mark is a
-   39 KB PNG compiled into the helper and decoded with the `png` crate it
-   already uses. If the picture cannot be painted, the screen stays the flat
-   base colour. The pixmap costs the X server one frame of memory (8 MB at
-   1920x1080).
+1. Picks a free display from `:90` up, writes a random cookie to
+   `<ADE home>/linux-desktop/lanes/<lane>/Xauthority`, and starts
+   `Xvfb :N -screen 0 WxHx24 -nolisten tcp -auth …`.
+2. Starts the lane's `dbus-daemon --session`, asks it for the accessibility
+   bus, and sets `org.a11y.Status.IsEnabled` and `ScreenReaderEnabled`.
+3. Starts `openbox`, waits until it manages the screen, and paints the
+   wallpaper once (no timer; flat base colour if painting fails).
 
-Every child gets its own process group and a parent-death signal tied to the
-lane's worker thread, which lives as long as the lane: if the lane's worker goes
-away without stopping a child, the child dies with it. A helper that crashes
-takes its X servers with it, and the next helper kills any orphaned one it finds
-under its ADE home. `display.destroy` quits the lane's apps (SIGTERM to each
-group, SIGKILL after 3 s), then the window manager, the bus and the X server;
-anything still connected to the display goes with it.
+A crashed helper takes its X servers with it; the next helper kills any
+orphaned one under its DAEX home. `display.destroy` sends SIGTERM to each app
+group (SIGKILL after 3 s), then stops the window manager, bus and X server.
 
-Each lane has its own X server and its own bus, so lanes cannot see or drive
-each other's windows, and an observation never lists another lane's apps.
-They run as the same Unix user as the brain, which is the trust level Mac
-Desktop has: the isolation is from other lanes and from the user's own
-desktop, not from a hostile process of the same user. The X display enforces
-that with a per-lane MIT-MAGIC-COOKIE-1. The live-view video port does not: it
-is plain loopback TCP with no token of its own, like the Mac driver's byte
-server, so any local account on this machine can connect to it. Clients
-normally read the picture through the brain's token-guarded stream endpoint,
-not that port directly.
+Common app names open the first installed app of that kind: `browser` (Chrome,
+Chromium, Edge, Brave, Firefox), `terminal` (`x-terminal-emulator`, then
+xfce4-terminal, gnome-terminal, konsole, xterm), `files` (nautilus, thunar,
+pcmanfm, dolphin, nemo, caja). None installed answers with one sentence.
 
-## Input
+Typing focuses the element (AT-SPI `GrabFocus` or a click) and types with
+XTEST; an untypeable character is bound to a spare keycode first. `--cmd` is
+Control, `--opt` Alt, `--win` Super. `setValue` uses AT-SPI `EditableText` or
+`Value`.
 
-XTEST into the lane's X server. On a Mac and on the shared Windows desktop,
-real input moves the user's one pointer, so it needs the lease; a lane's X
-display has no human pointer, so its real input is background input by
-construction and needs no lease (the status says so: `real input  needs no
-lease`). A person who takes control from a viewer still wins, through the
-shared takeover path. XTEST events are genuine to the app; XSendEvent is not
-used, because Chromium and GTK drop synthetic pointer events.
-
-- A click on an element raises its window if another covers it, then clicks
-  its centre. An element with no frame on screen gets its AT-SPI action.
-- Typing focuses the element (AT-SPI `GrabFocus`, or a click) and types with
-  XTEST. A character the keymap cannot type is bound to a spare keycode first,
-  as xdotool does, so any Unicode text types.
-- `--cmd` is Control, `--opt` is Alt, `--win` is Super.
-- `setValue` uses AT-SPI `EditableText` or `Value`.
-
-## The element map
-
-AT-SPI on the lane's accessibility bus. Chromium answers the AT-SPI cache for
-its own UI only, so the page is a real walk: breadth first, every call of a
-level in flight at once, subtrees that are not SHOWING pruned (the part of a
-long page that is scrolled away), a 12,000-node cap and a 2.5 s budget. A walk
-cut short reports `truncatedReason` (`node_cap`, `timeout`). Interactive roles
-(buttons, links, entries, check boxes, menu items, tabs, …) and named text
-roles (headings, labels, static text) with an on-screen frame become elements;
-with more than the limit, the interactive ones are kept first. A text target
-(`click --text`, `type --target`) picks an interactive element first, then an
-exact name, then the smallest, as the macOS and Windows drivers do: a label
-"Open" must not win a click over the button "Open…".
-
-Chromium and Electron build the renderer's tree only when asked: `app.launch`
-adds `--force-renderer-accessibility` to Chromium-family browsers and to
-Electron apps (an app with `resources/app.asar` beside its binary), and the
-accessibility status flags on the bus cover apps that check them.
-
-`app.launch` also gives them `--disable-gpu-compositing` (unless the caller
-passes its own GPU switch): Xvfb has no GPU, so Chromium would composite every
-frame through SwiftShader, about four times the CPU of software compositing.
-WebGL keeps working. A Chromium profile lock left by a Chrome that is gone (a
-killed helper, a reboot, a cloud VM resumed under a new hostname) is removed
-before launch; otherwise Chrome exits with "profile in use" and no window.
-
-Common names open the first app of that kind the machine has: `browser`
-(Chrome, Chromium, Edge, Brave, Firefox), `terminal` (`x-terminal-emulator`,
-then xfce4-terminal, gnome-terminal, konsole, xterm), `files` (nautilus,
-thunar, pcmanfm, dolphin, nemo, caja). The pane's buttons use these names. A
-machine with none of a kind answers with one sentence, such as "No file
-manager is installed on this Linux machine." xterm gets `-fa Monospace -fs 11`:
-a lane screen has no core X fonts, and xterm's default would be the X server's
-tiny built-in bitmap font.
-
-Measured on a 2-vCPU box: Chrome on a Wikipedia article, 383 elements in about
-0.3–0.6 s.
-
-## Live view and recording
-
-Frames are taken only when the X server reports damage (XDamage), with MIT-SHM
-so a 1080p frame is a 2 ms copy instead of 8 MB over the socket. The cursor is
-drawn from XFixes (Xvfb never draws it). A still screen sends one frame a
-second so a viewer's picture stays fresh.
-
-Encoding is the system's `ffmpeg`: libx264 on Debian, Ubuntu and Arch,
-libopenh264 on Fedora. ADE ships no codec of its own. The live encoder runs
-ultrafast/zerolatency with no B-frames and in-band SPS/PPS, its two threads as
-slices of one frame: frame threading would hold each picture in the encoder
-until the next one, and frames come only on damage, so the result of a key or a
-click would wait for the next change or the heartbeat. The helper splits
-its byte stream into access units at the delimiter, or when the encoder goes
-quiet, and sends them in the same 12-byte record framing the other drivers use,
-so every viewer (desktop, web, phone) decodes it unchanged. A new reader, or
-one that fell behind, starts on a fresh encoder whose first picture is a
-keyframe. The stream is capped at 30 fps (`ADE_LINUX_DESKTOP_MAX_FPS`).
-
-`record.start` writes an MP4 through ffmpeg at a fixed rate, cutting still
-time over 1.5 s unless `keepIdle`. With no desktop app attached, the proof is
-filed as recorded (the demo engine is the desktop app's).
-
-Measured at 1920x1080 on a 2-vCPU box: a still screen costs the helper and
-ffmpeg about 1% of one core; scrolling a page at ~25 fps costs the helper ~4%,
-ffmpeg ~19% and Chrome ~30%.
-An empty lane screen (Xvfb + openbox) is about 37 MB.
+`record.start` writes an MP4 at a fixed rate, cutting still time over 1.5 s
+unless `keepIdle`. With no desktop app attached, the proof is filed as recorded
+(the demo engine lives in the desktop app).
 
 ## Setup
 
-A plain Linux server has none of what a screen needs. The helper reports what
-is missing on every `ping`; the status lists it with the one command that
-installs it:
+The helper reports missing packages on every `ping`, and the status shows the
+install command:
 
 ```
-ade screen status --text
+daex screen status --text
   missing packages  xvfb, openbox, at-spi2-core, ffmpeg
   install with      sudo apt-get install -y --no-install-recommends xvfb openbox at-spi2-core ffmpeg
 ```
 
-`ade screen setup --allow-prompt` (a trusted client: the desktop pane, the
-phone, `ade --role cto`) runs the same install when ADE is root or `sudo`
-needs no password, which covers most cloud VMs; otherwise it answers with the
-command for the user to run. An agent cannot run setup. The printed command is
-the interactive form (`sudo`, no `-n`), so copying it into a terminal can
-prompt for the password; ADE's own run is `sudo -n`, so a brain with no
-terminal fails instead of hanging. Packages per manager:
+`daex screen setup --allow-prompt` (trusted clients only: the desktop pane, the
+phone, `--role cto`; never an agent) runs the install with `sudo -n` when DAEX
+is root or sudo needs no password; otherwise it prints the interactive command.
 
 | Manager | Packages |
 |---|---|
@@ -198,61 +136,28 @@ terminal fails instead of hanging. Packages per manager:
 | zypper | `xorg-x11-server-Xvfb openbox dbus-1 at-spi2-core ffmpeg` |
 | apk | `xvfb openbox dbus at-spi2-core ffmpeg` |
 
-Only Xvfb is required to start a screen. Without openbox, windows are
-unmanaged (no title bars; Chrome draws its own); without D-Bus or AT-SPI,
-observations carry the screenshot and windows but no elements (the reason is in
-`stalledApps`); without ffmpeg, everything works except the live view and
-recording. An installed ffmpeg that has no H.264 encoder is a separate
-requirement (`ffmpeg-encoder`): the encoder row says so in words and the
-packages row never lists it, because installing the `ffmpeg` package again
-would not add one; a full build (or one with libopenh264) does. A browser is not
-a dependency; `ade screen open <url>` names what to install when none is found.
+Only Xvfb is required. Without openbox windows are unmanaged; without D-Bus or
+AT-SPI observations have no elements (reason in `stalledApps`); without ffmpeg
+there is no live view or recording. A browser is not a dependency.
 
-Tested end to end (setup from a bare image, a screen, typed input, a recording
-and its cut demo) on Ubuntu 24.04, Fedora 44, Debian 13 and Arch Linux on x64,
-and on Ubuntu 24.04, Fedora 44 and Arch Linux ARM on arm64. On x64 a phone
-client over the sync socket also paired by PIN, watched the live stream, took
-control and typed into the lane's window. What differs between them, and is
-handled:
-
-- Fedora's `ffmpeg-free` has no libx264: recording uses libopenh264, and the
-  demo engine passes over a system ffmpeg without libx264 or `drawtext` for
-  ADE's pinned copy (`canRenderDemos` in `ffmpegDemoEngine.ts`).
-- ffmpeg 9 (Arch) removed `-filter_complex_script`, and Ubuntu 24.04's 6.1
-  predates its replacement `-/filter_complex`: the engine picks by version.
-- Arch keeps `at-spi-bus-launcher` directly under `/usr/lib`.
-- The helper and the apps on a lane's screen keep the machine's locale; the
-  `en_US.UTF-8` the Mac and Windows helpers are started with is not set on
-  Linux, where many machines have not generated it.
-
-A failure on any other host reaches Sentry tagged with the distribution and
-CPU (`linux_screen.*`, see `docs/logging.md`).
-
-`ade connect` on a Linux machine also turns on systemd lingering for the user
-(best effort), so the brain keeps running after logout and comes back after a
-reboot; where that needs root, the install message prints the command.
+Verified end to end on Ubuntu 24.04, Fedora 44, Debian 13 and Arch (x64) and on
+Ubuntu, Fedora and Arch Linux ARM (arm64). `daex connect` also turns on systemd
+lingering (best effort) so the brain survives logout and reboot.
 
 ## Remote
 
-A Linux desktop can view its local lane screens, and another desktop, phone,
-or browser can view them remotely. Calls reach the machine that owns the lane
-through its pin like any other lane screen (`callPinnedRuntimeAction`, the `mac_desktop` action domain,
-the stream over the sync socket). "Bring to my screen", claim, release and
-present do not exist on Linux: every window on the lane's screen is already
-the lane's. So the pane's **Add app** opens an app on the screen instead (an
-app name, a path or a web address, with Chrome, Firefox and Terminal one click
-away; `macDesktop.open`), and a window card offers **Close**
-(`macDesktop.closeWindow`) where a Mac card offers Release. Both carry the
-lane's pin like every other pane call. The `macDesktop.stopSeat` action supports stopping a Linux seat remotely. The
-phone shows Linux and offers Stop and Close window when the lane owner advertises
-the corresponding permission; older hosts without Linux facts keep their prior
-presentation. The phone reads screen capabilities from the lane's own machine;
-stream records and unsubscribe follow that machine's connection, and a host
-without streaming keeps the still-image view.
+Calls reach the lane's machine through its pin like any lane screen
+(`callPinnedRuntimeAction`, the `mac_desktop` action domain, the stream over
+the sync socket). Bring-to-my-screen, claim, release and present do not exist
+on Linux: every window on the lane's screen is already the lane's. The pane's
+**Add app** opens an app on the screen (`macDesktop.open`) and a window card
+offers **Close** (`macDesktop.closeWindow`); `macDesktop.stopSeat` stops a
+seat. The phone shows Stop and Close window when the lane's machine advertises
+them, and reads screen capabilities from that machine.
 
 ## Not in scope
 
-Wayland-only applications on a lane screen (the lane screen is its own X server), per-lane Unix users or containers (same-user isolation, as on a
-Mac), GPU encoding, and the iOS simulator. ADE's built-in browser stays an
-Electron view on the desktop; a Chrome on the lane screen is the Linux
+Wayland-only apps (the lane screen is its own X server), per-lane Unix users or
+containers, GPU encoding, the iOS simulator. The DAEX built-in browser stays an
+Electron view on the desktop; Chrome on the lane screen is the Linux
 equivalent.
