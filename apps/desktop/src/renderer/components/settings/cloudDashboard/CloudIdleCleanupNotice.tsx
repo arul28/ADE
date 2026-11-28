@@ -1,8 +1,6 @@
 import { useState } from "react";
 import {
-  CLOUD_BACKUP_NOT_SAVED_SENTENCE,
   formatCloudDate,
-  idleCleanupHeldNext,
   idleCleanupWhen,
   ignoredFilesList,
   type CloudAccountState,
@@ -13,6 +11,7 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { showToast } from "../../app/toast/toastStore";
 import { Banner } from "../../ui/notice";
 import { BRAND } from "../../../../shared/brand";
+import { CloudIdleHeldBanner, heldIdleEntry, heldIdleSentences } from "../../cloudLane/cloudIdleHeld";
 
 /**
  * The idle cleanup's notices on Settings › ADE Cloud, one per computer the
@@ -20,11 +19,12 @@ import { BRAND } from "../../../../shared/brand";
  * its lanes' work that isn't on GitHub is saved first (no wake, no push), which files
  * git ignores won't be kept, and "Keep it", which restarts the idle clock on
  * the server with no wake and no hours. A computer kept because its save
- * failed says why and what to do. The facts are the emails' (the same
- * date, branch and ignored files), said in fewer words: a banner has a title
- * and one short detail.
+ * failed says what happened and what to do, with "Why?" and "Delete anyway"
+ * (`CloudIdleHeldBanner`, the email's words). The facts are the emails' (the
+ * same date, branch and ignored files), said in fewer words: a banner has a
+ * title and one short detail.
  *
- * Account level (`keepIdleComputer` is by the computer's ADE Cloud id), so no pin.
+ * Account level (`keepIdleComputer` and the delete are by the computer's ADE Cloud id), so no pin.
  */
 
 /** The lane or computer, as a person knows it. */
@@ -37,29 +37,6 @@ function idleSubject(entry: CloudIdleCleanupEntry): string {
   return entry.laneName ? `${entry.laneName}'s computer` : idleEntryName(entry);
 }
 
-/** The same opening before the rename; reasons stored then still start with it. */
-const LEGACY_CLOUD_BACKUP_NOT_SAVED_SENTENCE = "ADE couldn't save this lane's work.";
-
-/**
- * Why the save failed, without what the title already says. The server's
- * reason opens with `CLOUD_BACKUP_NOT_SAVED_SENTENCE` (or its old wording) and
- * names each lane ("pricing-page: …"); a computer holds one lane, the one the
- * notice names.
- */
-function idleHeldReason(laneName: string | null | undefined, held: { reason: string }): string {
-  let reason = held.reason.trim();
-  const opening = [CLOUD_BACKUP_NOT_SAVED_SENTENCE, LEGACY_CLOUD_BACKUP_NOT_SAVED_SENTENCE].find((sentence) => reason.startsWith(sentence));
-  if (opening) reason = reason.slice(opening.length).trim();
-  if (laneName && reason.startsWith(`${laneName}: `)) reason = reason.slice(laneName.length + 2);
-  return reason;
-}
-
-/** A computer kept after a failed save: why, then what to do and when ADE checks again (Settings and the lane's chat say the same). */
-export function idleHeldDetail(entry: Pick<CloudIdleCleanupEntry, "laneName" | "deletesAt"> & { held: NonNullable<CloudIdleCleanupEntry["held"]> }, now: number): string {
-  return [idleHeldReason(entry.laneName, entry.held), idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)].filter(Boolean).join(" ");
-}
-
-/** What happens before the delete and what is lost, in two short sentences. */
 /** What the delete loses: the files git ignores, with a leading space, or "" when none were found. */
 function ignoredDetail(entry: CloudIdleCleanupEntry): string {
   // Absent (an older server) reads like unknown: the warning still says ignored files aren't kept.
@@ -86,7 +63,8 @@ function idleDetail(entry: CloudIdleCleanupEntry): string {
 
 /** The lane row's short mark: "Deleted in 1 day", or "Not deleted" for a computer kept after a failed save. */
 export function idleRowTag(entry: CloudIdleCleanupEntry, now: number): { label: string; title: string } {
-  if (entry.held) return { label: "Not deleted", title: `${BRAND.NAME} didn't delete its computer: ${entry.held.reason}` };
+  const held = heldIdleEntry(entry);
+  if (held) return { label: "Not deleted", title: heldIdleSentences(held, now) };
   const when = idleCleanupWhen(entry.deletesAt, now);
   return { label: when.charAt(0).toUpperCase() + when.slice(1), title: `Unused, so ${BRAND.CLOUD_NAME} deletes its computer on ${formatCloudDate(entry.deletesAt)} unless you keep it. The lane stays.` };
 }
@@ -117,19 +95,16 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
     <>
       {entries.map((entry) => {
         const action = { label: busy === entry.instanceId ? "Keeping…" : "Keep it", variant: "primary" as const, disabled: busy != null, onClick: () => void keep(entry) };
-        if (entry.held) {
+        const held = heldIdleEntry(entry);
+        if (held) {
           return (
-            <Banner
+            <CloudIdleHeldBanner
               key={`idle-held-${entry.instanceId}`}
-              layout="inline"
-              model={{
-                id: `cloud-idle-held-${entry.instanceId}`,
-                tone: "warning",
-                title: `${idleSubject(entry)} wasn't deleted: ${BRAND.NAME} couldn't save its work`,
-                detail: `${idleHeldDetail({ ...entry, held: entry.held }, now)}${ignoredDetail(entry)}`,
-                actions: [action],
-                report: false,
-              }}
+              id={`cloud-idle-held-${entry.instanceId}`}
+              entry={held}
+              now={now}
+              keep={{ busy: busy === entry.instanceId, disabled: busy != null, onClick: () => void keep(entry) }}
+              onDeleted={onChanged}
             />
           );
         }

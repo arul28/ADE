@@ -67,6 +67,12 @@ export type CloudLaneDeleteOptions = {
    * move carried to another machine. The rest stay readable from ADE Cloud.
    */
   onlyChats?: readonly string[];
+  /**
+   * "Delete anyway" on a computer the idle cleanup kept: only the computer
+   * goes, and the lane and its saved chats stay (a lane without a computer).
+   * Nothing is checked, saved or pushed first.
+   */
+  keepLane?: boolean;
 };
 
 export type CloudLaneDeleteResult = {

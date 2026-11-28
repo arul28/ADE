@@ -165,9 +165,9 @@ async function wakeThroughTransition(api: CloudApiClient, instanceId: string): P
 }
 
 /** Deletes a computer and waits until the server says it is gone (a 404 or `deleted`). False when it isn't yet. */
-async function deleteComputerConfirmed(api: CloudApiClient, instanceId: string): Promise<boolean> {
+async function deleteComputerConfirmed(api: CloudApiClient, instanceId: string, keepLane = false): Promise<boolean> {
   try {
-    await api.deleteComputer(instanceId, { reason: "user" });
+    await api.deleteComputer(instanceId, keepLane ? { keepLane: { branchRef: null } } : { reason: "user" });
   } catch (error) {
     // A computer already gone is what a delete wants.
     if (!isNotFound(error)) throw error;
@@ -282,7 +282,7 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
       }
     },
 
-    deleteLane: async (args: { instanceId: string; skipCheck?: boolean; keepChats?: boolean }): Promise<CloudLaneDeleteResult> => {
+    deleteLane: async (args: { instanceId: string; skipCheck?: boolean; keepChats?: boolean; keepLane?: boolean }): Promise<CloudLaneDeleteResult> => {
       const api = need();
       const refuse = (message: string, state: CloudLaneWorkState | null = null): CloudLaneDeleteResult => ({
         ok: false,
@@ -296,7 +296,9 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
       }
       const instance = await readComputer(api, args.instanceId);
       const machineKey = instance?.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
-      const state = args.skipCheck || !instance ? null : await workStateWith(api, args.instanceId);
+      // "Delete anyway" keeps the lane and its chats, and checks, saves and pushes nothing.
+      const keepLane = args.keepLane === true;
+      const state = args.skipCheck || keepLane || !instance ? null : await workStateWith(api, args.instanceId);
       // Without the person's go-ahead (`skipCheck`), work that may not be on GitHub keeps the lane.
       if (state && state.unpushed !== false) {
         return refuse(state.unpushed
@@ -305,13 +307,13 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
       }
       let gone: boolean;
       try {
-        gone = await deleteComputerConfirmed(api, args.instanceId);
+        gone = await deleteComputerConfirmed(api, args.instanceId, keepLane);
       } catch (error) {
         return refuse(errorText(error), state);
       }
       if (!gone) return refuse(DELETE_UNCONFIRMED, state);
       // The chats go after the computer, so a turn that saves a last part can't bring one back.
-      const chatsDeleted = !args.keepChats && machineKey
+      const chatsDeleted = !args.keepChats && !keepLane && machineKey
         ? await deleteSavedChatsOf(api, { machineKey, formerMachineKeys: formerMachineKeysOf(instance?.metadata) })
         : null;
       return {
@@ -319,7 +321,7 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
         message: `Deleted on ${BRAND.CLOUD_NAME} and removed from ${BRAND.NAME}.`,
         unpushed: state?.unpushed ?? null,
         unpushedLanes: state?.unpushedLanes ?? [],
-        chatsKept: args.keepChats === true || chatsDeleted == null,
+        chatsKept: args.keepChats === true || keepLane || chatsDeleted == null,
       };
     },
 

@@ -15,6 +15,8 @@
  *    with its saved work; Settings › ADE Cloud also lists saved work from a deleted project's lane.
  *  - `idlepaid`: Plus, one lane unused 7 days (deleted in 3 days, no ignored-files summary yet).
  *  - `idleheld`: Free plan, one lane ADE didn't delete because it couldn't save its work (over 50 MB).
+ *    `&mockCloudHeld=<kind>` stores the reason of that kind instead (`CloudIdleHeldKind`), or `old`:
+ *    a reason the person can't act on, stored before the rename (it says "ADE").
  *  - `pastdue`: Plus with its last payment failed (free plan rules until it's paid).
  *  - `limit`: Free plan using both its computers (one has no lane): a new lane opens the computer limit card.
  *  - `upgraded`: Plus a moment after checkout, with this computer last seeing Free
@@ -58,8 +60,17 @@ import type {
 
 const mockRestores = new Map<string, { record: CloudKeptLaneRestoreRecord; startedAt: number; refused: boolean }>();
 import {
+  CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE,
+  CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE,
+  CLOUD_BACKUP_NO_COMMIT_SENTENCE,
   CLOUD_BACKUP_NOT_SAVED_SENTENCE,
+  CLOUD_BACKUP_STAGED_ONLY_SENTENCE,
+  CLOUD_BACKUP_SUBMODULE_SENTENCE,
   CLOUD_BACKUP_TOO_LARGE_SENTENCE,
+  CLOUD_BACKUP_UNTIL_THEN_SUFFIX,
+  CLOUD_SAVE_ADE_TOO_OLD_SENTENCE,
+  CLOUD_SAVE_PREPARE_FAILED_SENTENCE,
+  idleHeldKindOf,
   type CloudAdsState,
   type CloudComputerPrice,
   type CloudFullPriceReason,
@@ -101,6 +112,23 @@ function param(name: string): string | null {
     return new URLSearchParams(INITIAL_SEARCH).get(name);
   } catch {
     return null;
+  }
+}
+
+/** The `idleheld` preview's stored reason for `&mockCloudHeld=<kind>`, as the server stores one. */
+function heldReasonPreview(kind: string | null): string {
+  const lane = (reason: string) => `${CLOUD_BACKUP_NOT_SAVED_SENTENCE} pricing-page: ${reason}`;
+  switch (kind) {
+    case "account_full": return lane(CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE);
+    case "staged_only": return lane(CLOUD_BACKUP_STAGED_ONLY_SENTENCE);
+    case "submodule": return lane(CLOUD_BACKUP_SUBMODULE_SENTENCE);
+    case "no_commit": return lane(CLOUD_BACKUP_NO_COMMIT_SENTENCE);
+    case "fix_named": return lane(`Git LFS files can't travel; push them first. ${CLOUD_BACKUP_UNTIL_THEN_SUFFIX}`);
+    case "stop_agent": return CLOUD_SAVE_PREPARE_FAILED_SENTENCE;
+    case "none": return lane(CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE);
+    case "open_once": return CLOUD_SAVE_ADE_TOO_OLD_SENTENCE;
+    case "old": return "ADE couldn't save this lane's work. pricing-page: ADE couldn't reach GitHub to check this lane's work. It checks again at the next rest.";
+    default: return lane(CLOUD_BACKUP_TOO_LARGE_SENTENCE);
   }
 }
 
@@ -399,7 +427,7 @@ function fixture(scenario: Scenario): Fixture {
           inMs: scenario === "idle" ? DAY - HOUR : 4 * HOUR,
           days: 3,
           ignored: { checkedAt: Date.now() - 2 * DAY, paths: [".env", ".env.local", "prisma/dev.db"], more: 2, rebuildable: 3 },
-          ...(scenario === "idleheld" ? { held: `${CLOUD_BACKUP_NOT_SAVED_SENTENCE} pricing-page: ${CLOUD_BACKUP_TOO_LARGE_SENTENCE}` } : {}),
+          ...(scenario === "idleheld" ? { held: heldReasonPreview(param("mockCloudHeld")) } : {}),
         }],
       };
     case "idlepaid":
@@ -528,7 +556,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
         warnedAt: now - DAY,
         idleDays: entry.days,
         ignoredFiles: entry.ignored,
-        held: entry.held ? { at: now - 2 * HOUR, reason: entry.held } : null,
+        held: entry.held ? { at: now - 2 * HOUR, reason: entry.held, kind: idleHeldKindOf(entry.held) } : null,
       };
     }),
     deletedInstanceIds: [],

@@ -1,3 +1,6 @@
+import { BRAND } from "../../../desktop/src/shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../desktop/src/shared/brandNames";
+
 /**
  * The ADE Cloud routes this Worker serves. Paths and response shapes only:
  * nothing here imports the Worker, so the desktop can `import type` it.
@@ -596,9 +599,29 @@ export type CloudIdleCleanupEntry = {
   idleDays?: number;
   /** Null before the computer first reported them. */
   ignoredFiles?: CloudIgnoredFiles | null;
-  /** Kept because its save failed; ADE tries again at `retryAt` (an older server leaves it out: use `deletesAt`). */
-  held?: { at: number; reason: string; retryAt?: number } | null;
+  /**
+   * Kept because its save failed; ADE tries again at `retryAt` (an older server
+   * leaves it out: use `deletesAt`). `kind` is what the person can do about it,
+   * read from `reason` (`idleHeldKindOf`); an older server leaves it out.
+   */
+  held?: { at: number; reason: string; retryAt?: number; kind?: CloudIdleHeldKind } | null;
 };
+
+/**
+ * What the person can do about a computer the idle cleanup kept: the action
+ * that really ends the hold for its reason, or `none` when only waiting
+ * (ADE tries again by itself), "Delete anyway" or "Keep it" are left.
+ */
+export type CloudIdleHeldKind =
+  | "too_large"
+  | "account_full"
+  | "staged_only"
+  | "submodule"
+  | "no_commit"
+  | "fix_named"
+  | "open_once"
+  | "stop_agent"
+  | "none";
 
 /** The update channel a computer follows. A client's `alpha` counts as `beta`. */
 export type CloudUpdateChannel = "stable" | "beta";
@@ -1213,13 +1236,164 @@ export function idleCleanupSaveSentence(branch: string | null | undefined): stri
   return `DAEX deletes it only once its work that isn't on GitHub is saved in DAEX Cloud; it never commits or pushes for you. The lane and its chats stay, and your next message makes a new computer from ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} with that work back on it.`;
 }
 
+/* ---- A computer the idle cleanup kept because its work isn't saved ---- */
+
+// The reasons a lane's save stops, as the computer reports them
+// (`cloudLaneBackup.ts`) and the server stores them: kept here so the server
+// can tell them apart (`idleHeldKindOf`).
+export const CLOUD_BACKUP_STAGED_ONLY_SENTENCE = `This lane has staged changes that its files no longer hold. Commit or unstage them, then ${BRAND.NAME} saves it.`;
+export const CLOUD_BACKUP_SUBMODULE_SENTENCE = `This lane has changes inside a submodule. Commit and push them in the submodule, then ${BRAND.NAME} saves it.`;
+export const CLOUD_BACKUP_NO_COMMIT_SENTENCE = `This lane has no commit yet, so ${BRAND.NAME} can't save it. Commit once, then it saves.`;
+export const CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE = `${BRAND.NAME} couldn't reach GitHub to check this lane's work. It checks again at the next rest.`;
+export const CLOUD_BACKUP_MISSING_FOLDER_SENTENCE = `This lane's folder is missing on the computer, and ${BRAND.NAME} has no saved copy of its work.`;
+export const CLOUD_BACKUP_SAVE_STOPPED_SENTENCE = `The save stopped before this lane; ${BRAND.NAME} saves it at the next rest.`;
+/** Ends a refusal that names what to fix in the lane's files (a path git can't carry, for one). */
+export const CLOUD_BACKUP_UNTIL_THEN_SUFFIX = `${BRAND.NAME} can't save this lane's work until then.`;
+// The reasons the server's own save check stops (`saveBeforeDelete`, the idle cleanup).
+export const CLOUD_SAVE_PREPARE_FAILED_SENTENCE = `${BRAND.NAME} on the computer couldn't stop its agents and save its chats.`;
+export const CLOUD_SAVE_ADE_TOO_OLD_SENTENCE = `This computer's ${BRAND.NAME} is too old to save its lanes' work. It saves them after it updates, the next time it rests.`;
+export const CLOUD_SAVE_UNREACHABLE_SENTENCE = `${BRAND.CLOUD_NAME} couldn't reach the computer to check its saved work.`;
+
 /**
- * What to do about a computer the idle cleanup kept because its lanes' work
- * isn't saved, and when ADE reads again (1, 2, 4 ... days, at most 14). ADE
- * never wakes it to save: its next use saves it when it rests.
+ * A stored reason with the product's name taken out: reasons stored before the
+ * rename say "ADE", newer ones "DAEX", and an old cloud image still writes the
+ * old name. The matcher compares text without it.
  */
-export function idleCleanupHeldNext(retryAt: number, now: number): string {
-  return `Open the lane once so DAEX saves its work when the computer rests, or delete the lane if you don't need it. DAEX checks again ${inHowLong(retryAt, now)}.`;
+const PRODUCT_NAME = new RegExp(String.raw`\b${PRODUCT_NAME_PATTERN}\b`, "g");
+const withoutProductName = (text: string): string => text.replace(PRODUCT_NAME, "\u0000");
+/** `sentence` as a pattern that matches it under either name. */
+const underEitherName = (sentence: string): string =>
+  sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(PRODUCT_NAME, PRODUCT_NAME_PATTERN);
+/**
+ * The reason sentences DAEX writes, each matched under either name. The
+ * stored text is the only record of a hold (an old computer sends nothing
+ * else), so each known sentence is shown in today's words and the rest (a
+ * lane's name, a path, a sentence this doesn't know) as stored. Built on first
+ * use: the sentences are declared further down this file.
+ */
+let knownSentences: ReadonlyArray<readonly [RegExp, string]> | null = null;
+const knownSentencesNow = (): ReadonlyArray<readonly [RegExp, string]> => (knownSentences ??= [
+  CLOUD_BACKUP_NOT_SAVED_SENTENCE, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_BACKUP_TOO_LARGE_SENTENCE, CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE,
+  CLOUD_BACKUP_STAGED_ONLY_SENTENCE, CLOUD_BACKUP_SUBMODULE_SENTENCE, CLOUD_BACKUP_NO_COMMIT_SENTENCE, CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE,
+  CLOUD_BACKUP_MISSING_FOLDER_SENTENCE, CLOUD_BACKUP_SAVE_STOPPED_SENTENCE, CLOUD_BACKUP_UNTIL_THEN_SUFFIX, CLOUD_SAVE_PREPARE_FAILED_SENTENCE,
+  CLOUD_SAVE_ADE_TOO_OLD_SENTENCE, CLOUD_SAVE_UNREACHABLE_SENTENCE,
+].map((sentence) => [new RegExp(underEitherName(sentence), "g"), sentence] as const));
+
+/** A stored reason in today's words: each sentence DAEX stored under the old name reads with the current one. */
+export function idleHeldReasonNow(reason: string): string {
+  return knownSentencesNow().reduce((text, [pattern, sentence]) => text.replace(pattern, () => sentence), reason);
+}
+
+/**
+ * Each reason's opening words (a stored reason is cut at 300 characters), and
+ * what the person can do about it. Built on first use: two of the sentences
+ * are declared further down this file.
+ */
+let idleHeldMarks: ReadonlyArray<readonly [string, CloudIdleHeldKind]> | null = null;
+const idleHeldMarksNow = (): ReadonlyArray<readonly [string, CloudIdleHeldKind]> => (idleHeldMarks ??= ([
+  [CLOUD_BACKUP_TOO_LARGE_SENTENCE, "too_large"],
+  [CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE, "account_full"],
+  [CLOUD_BACKUP_STAGED_ONLY_SENTENCE, "staged_only"],
+  [CLOUD_BACKUP_SUBMODULE_SENTENCE, "submodule"],
+  [CLOUD_BACKUP_NO_COMMIT_SENTENCE, "no_commit"],
+  [CLOUD_BACKUP_UNTIL_THEN_SUFFIX, "fix_named"],
+  [CLOUD_SAVE_PREPARE_FAILED_SENTENCE, "stop_agent"],
+  [CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE, "none"],
+  [CLOUD_BACKUP_MISSING_FOLDER_SENTENCE, "none"],
+  [CLOUD_SAVE_UNREACHABLE_SENTENCE, "none"],
+] as const).map(([sentence, kind]) => [withoutProductName(sentence).slice(0, 40), kind] as const));
+
+/**
+ * What the person can do about a kept computer, from the reason the server
+ * stored. The first reason named wins (a computer holds one lane). Anything
+ * else (it slept before ADE saved, its ADE is old, the save stopped or failed
+ * on the way) ends when the person uses it once: its next rest saves it.
+ */
+export function idleHeldKindOf(reason: string): CloudIdleHeldKind {
+  const text = withoutProductName(reason);
+  let first: { at: number; kind: CloudIdleHeldKind } | null = null;
+  for (const [mark, kind] of idleHeldMarksNow()) {
+    const at = text.indexOf(mark);
+    if (at >= 0 && (!first || at < first.at)) first = { at, kind };
+  }
+  return first?.kind ?? "open_once";
+}
+
+/** The action line for each kind: what ends the hold, then the way out. Each is 20 words or fewer. */
+function idleHeldAction(kind: CloudIdleHeldKind, hasLane: boolean): string {
+  switch (kind) {
+    case "too_large": return "Push its work to GitHub, or delete it anyway.";
+    case "account_full": return "Push or delete other lanes you don't need, or delete it anyway.";
+    case "staged_only": return "Open the lane and commit or unstage its staged changes, or delete it anyway.";
+    case "submodule": return "Open the lane and push the changes in its submodule, or delete it anyway.";
+    case "no_commit": return "Open the lane and make its first commit, or delete it anyway.";
+    case "fix_named": return "Open the lane and fix what Why? names, or delete it anyway.";
+    case "stop_agent": return "Open the lane and stop its agent, or delete it anyway.";
+    case "none": return "Delete it anyway, or keep it.";
+    case "open_once": return hasLane ? `Open the lane once so ${BRAND.NAME} can save its work, or delete it anyway.` : `Use it once so ${BRAND.NAME} can save its work, or delete it anyway.`;
+  }
+}
+
+export type CloudIdleHeldWords = {
+  /** What happened, in one short sentence. */
+  title: string;
+  /** What the person can do, in one short sentence. */
+  action: string;
+  /** "Why?": the cleanup's rule, the reason, the files git ignores, when ADE checks again. */
+  why: string[];
+  /** The one confirm before "Delete anyway": what is lost, and what stays. */
+  confirm: { title: string; body: string; confirmLabel: string };
+};
+
+/**
+ * The words for a computer the idle cleanup kept because its work isn't
+ * saved, the same on every surface (Settings, the lane's band and menus, the
+ * email). "Delete anyway" deletes the computer and keeps the lane and its
+ * chats; it saves and pushes nothing.
+ */
+export function idleHeldWords(
+  entry: Pick<CloudIdleCleanupEntry, "laneName" | "name" | "branch" | "idleDays" | "ignoredFiles" | "deletesAt"> & { held: NonNullable<CloudIdleCleanupEntry["held"]> },
+  now: number,
+): CloudIdleHeldWords {
+  const laneName = entry.laneName?.trim() || null;
+  const subject = laneName ? `${laneName}'s computer` : entry.name?.trim() || "a computer without a lane";
+  const kind = entry.held.kind ?? idleHeldKindOf(entry.held.reason);
+  let reason = idleHeldReasonNow(entry.held.reason.trim());
+  if (reason.startsWith(CLOUD_BACKUP_NOT_SAVED_SENTENCE) && reason.length > CLOUD_BACKUP_NOT_SAVED_SENTENCE.length) {
+    reason = reason.slice(CLOUD_BACKUP_NOT_SAVED_SENTENCE.length).trim();
+  }
+  if (laneName && reason.startsWith(`${laneName}: `)) reason = reason.slice(laneName.length + 2);
+  const ignored = entry.ignoredFiles ?? null;
+  const list = ignored ? ignoredFilesList(ignored) : null;
+  const ignoredLine = !ignored
+    ? "Files git ignores, such as .env, are never saved."
+    : list
+      ? `Files git ignores are never saved: ${list}.${ignored.incomplete ? ` ${BRAND.NAME} couldn't read every lane, so there may be more.` : ""}`
+      // A report that couldn't read a lane and found nothing doesn't mean there is nothing.
+      : ignored.incomplete
+        ? `Files git ignores, such as .env, are never saved. ${BRAND.NAME} couldn't read every lane to list them.`
+        : null;
+  const retryAt = entry.held.retryAt ?? entry.deletesAt;
+  const why = [
+    entry.idleDays
+      ? `${BRAND.CLOUD_NAME} deletes a computer after ${entry.idleDays} days without use, and saves its ${laneName ? "lane's " : ""}work first.`
+      : `${BRAND.CLOUD_NAME} deletes a computer that isn't used, and saves its ${laneName ? "lane's " : ""}work first.`,
+    reason || CLOUD_BACKUP_NOT_SAVED_SENTENCE,
+    ...(ignoredLine ? [ignoredLine] : []),
+    kind === "none" ? `${BRAND.NAME} tries again by itself ${inHowLong(retryAt, now)}.` : `${BRAND.NAME} checks again ${inHowLong(retryAt, now)}.`,
+  ];
+  const branch = entry.branch?.trim() || null;
+  const lost = !ignored || (!list && ignored.incomplete) ? "such as .env" : list;
+  const body = laneName
+    ? `Its work that isn't on GitHub is lost for good: changes not pushed to ${branch ?? "the lane's branch"}${lost ? `, and files git ignores (${lost})` : ""}. `
+      + `The lane and its chats stay; your next message makes a new computer from ${branch ?? "the lane's branch"} on GitHub.`
+    : `Its work that isn't on GitHub is lost for good${lost ? `, with files git ignores (${lost})` : ""}.`;
+  return {
+    title: `${BRAND.NAME} didn't delete ${subject} because it couldn't save its work.`,
+    action: idleHeldAction(kind, laneName != null),
+    why,
+    confirm: { title: `Delete ${subject} without saving its work?`, body, confirmLabel: "Delete computer" },
+  };
 }
 
 /** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
