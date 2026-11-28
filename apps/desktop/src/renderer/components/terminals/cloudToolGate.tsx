@@ -144,7 +144,9 @@ export function CloudToolGate({
     return restingGate({
       id: "cloud-tool-out-of-hours",
       title: "Out of credits",
-      detail: `${name} needs ${BRAND.CLOUD_NAME} credits to wake at its size. They come back when your credits reset${cloudSmallUsesHours(cloudCatalogOf(account)) ? "." : "; a Small computer never uses them."}`,
+      detail: box.os === "mac"
+        ? `${name} uses ${BRAND.CLOUD_NAME} credits each minute it runs, so it can't start until your credits reset.`
+        : `${name} needs ${BRAND.CLOUD_NAME} credits to wake at its size. They come back when your credits reset${cloudSmallUsesHours(cloudCatalogOf(account)) ? "." : "; a Small computer never uses them."}`,
       actions: [{ label: "Plans and credits", onClick: openCloudPlanSettings }],
     });
   }
@@ -158,11 +160,13 @@ export function CloudToolGate({
           tone: "info",
           icon: <Moon size={15} />,
           busy: comingUp,
-          title: comingUp ? "Waking this lane's computer…" : "This lane's computer is asleep",
-          actions: comingUp ? undefined : [{ label: "Wake", variant: "solid", onClick: wake }],
+          title: box.os === "mac"
+            ? comingUp ? "Starting this lane's Mac…" : "This lane's Mac is stopped"
+            : comingUp ? "Waking this lane's computer…" : "This lane's computer is asleep",
+          actions: comingUp ? undefined : [{ label: box.os === "mac" ? "Start" : "Wake", variant: "solid", onClick: wake }],
         }}
       />
-      {wakeError ? <Banner layout="inline" model={{ id: "cloud-tool-wake-failed", tone: "error", title: `${BRAND.NAME} couldn't wake this computer`, detail: wakeError, report: { surface: "cloud_tool_wake" } }} /> : null}
+      {wakeError ? <Banner layout="inline" model={{ id: "cloud-tool-wake-failed", tone: "error", title: box.os === "mac" ? `${BRAND.NAME} couldn't start this Mac` : `${BRAND.NAME} couldn't wake this computer`, detail: wakeError, report: { surface: "cloud_tool_wake" } }} /> : null}
     </div>
   );
 }
