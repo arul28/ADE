@@ -161,7 +161,8 @@ enum CloudNoComputerFixtureData {
 /// charged), `devin` (a changed page, a Medium computer's charge), `device`,
 /// `api_key`, `old` (an older server: no new field), `ended` (failed in the
 /// step, with the end note) on the launch card; `checking`, `refused` and
-/// `accepted` (the code box after a send) as the step alone.
+/// `accepted` (the code box after a send), and `consent` (the DAEX Free
+/// Models sheet the free-model button opens) as the step alone.
 private enum CloudSignInFixture {
   @MainActor
   static func view(_ variant: String) -> AnyView? {
@@ -188,6 +189,13 @@ private enum CloudSignInFixture {
       return step(claude, .refused("That code didn't work. Open sign-in again and paste the new code."))
     case "accepted":
       return step(claude, .accepted)
+    case "consent":
+      // "Start with … instead" answered `free_models_consent`, and a fresh
+      // account read says no yes yet: the step's own consent sheet.
+      let account: CloudPhoneAccount? = try? JSONDecoder().decode(CloudPhoneAccount.self, from: Data(#"{"plan":"free","hours":{"includedMilli":600000,"usedMilli":0,"leftMilli":600000,"percentUsed":0,"state":"none"},"freeModels":{"modelIds":["opencode/ade-free/deepseek-v4.1-flash"],"available":true,"format":"below_reply"}}"#.utf8))
+      AccountCloudStore.shared.seedPreview(access: nil, account: account)
+      let deepseek = claude.replacingOccurrences(of: #""modelId":"ade/free-coder","label":"DAEX Free Coder""#, with: #""modelId":"opencode/ade-free/deepseek-v4.1-flash","label":"DeepSeek V4.1 Flash""#)
+      return step(deepseek, .idle, consentOpen: true)
     default:
       return nil
     }
@@ -215,13 +223,13 @@ private enum CloudSignInFixture {
 
   /// The step alone, after a code was sent.
   @MainActor
-  private static func step(_ signIn: String, _ codeState: CloudSignInStepDetail.CodeState) -> AnyView {
+  private static func step(_ signIn: String, _ codeState: CloudSignInStepDetail.CodeState, consentOpen: Bool = false) -> AnyView {
     AnyView(frame {
       VStack(alignment: .leading, spacing: 10) {
         Label("Sign in to Claude to start the chat", systemImage: "person.badge.key")
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
-        CloudSignInStepDetail(signIn: CloudNoComputerFixtureData.decode(signIn), instanceId: "i_sign_in", launchId: "l_sign_in", codeState: codeState)
+        CloudSignInStepDetail(signIn: CloudNoComputerFixtureData.decode(signIn), instanceId: "i_sign_in", launchId: "l_sign_in", codeState: codeState, consentOpen: consentOpen)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .adeGlassCard(cornerRadius: 16, padding: 14)
