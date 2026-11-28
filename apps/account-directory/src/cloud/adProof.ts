@@ -3,7 +3,7 @@ import { adContextFor, cloudNetworkOf, computerRatesMilli, countAdProof, noteClo
 import type { CloudAdProofAnswer } from "./contract";
 import { blockedReason, freeModelAdGate, honorGpc, ownCloudComputer, ownLivePhone, type GravityEnv } from "./gravity";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, shortString } from "./http";
-import { utcDay, type CloudSize } from "./plans";
+import { utcDay, type CloudSize, type V3Rate } from "./plans";
 import { readCloudSettings } from "./settings";
 import { readConsent, requestNetwork, sponsoredRequester, yesHolds } from "./sponsoredConsent";
 import { adTerms, pricingV3Mode, pricingV3Reaches } from "./sponsoredSwitch";
@@ -143,14 +143,14 @@ async function messageCounted(env: GravityEnv, userId: string, messageId: string
 export type FirstMessageProof = { request: Request; chatId: string; messageId: string };
 
 /**
- * Pricing v3: the rate a new computer of `size` starts at when `proof` (a
+ * Pricing v3: the rates a new computer of `size` starts at when `proof` (a
  * person's first message: a launch's, or an app's create with `adProof`) will
- * count for it: its ad rate. Null when it won't (Pricing v3 or ads not
+ * count for it: it runs at the ad rate from its first minute. Null when it won't (Pricing v3 or ads not
  * reaching the account, ads off, no ads here, the network of the account's own
  * computers, a message already counted), so the create checks hours at the
  * full rate as before. Never fails the create.
  */
-export async function firstMessageRate(env: GravityEnv, account: AccountRow, size: CloudSize, proof: FirstMessageProof, now: number, waitUntil?: CloudWaitUntil): Promise<number | null> {
+export async function firstMessageRate(env: GravityEnv, account: AccountRow, size: CloudSize, proof: FirstMessageProof, now: number, waitUntil?: CloudWaitUntil): Promise<V3Rate | null> {
   try {
     const settings = await readCloudSettings(env);
     if ((await pricingV3Mode(env, settings)) === "off") return null;
@@ -168,23 +168,10 @@ export async function firstMessageRate(env: GravityEnv, account: AccountRow, siz
       return null;
     }
     if (network === "cloud") await noteCloudNetworkProof(env, account, asn, now, waitUntil);
-    return computerRatesMilli({ type: size.type, cpu: size.cpu, memory_gb: size.memoryGb, multiplier_milli: size.multiplierMilli, ad_full_milli: null }, ctx).adMilli;
+    return computerRatesMilli({ type: size.type, cpu: size.cpu, memory_gb: size.memoryGb, multiplier_milli: size.multiplierMilli, ad_full_milli: null }, ctx);
   } catch (error) {
     reportCloudFailure("cloud.ad_price.first_message_failed", { message: error instanceof Error ? error.message : "unknown" });
     return null;
-  }
-}
-
-/**
- * The new computer was made: `proof` counts for it, for the whole window (the
- * server holds the message, so no short window for a chat it never saw), and
- * it goes to the price with ads from its first minute. Never fails the create.
- */
-export async function proveFirstMessage(env: GravityEnv, account: AccountRow, instanceId: string, proof: FirstMessageProof, now: number): Promise<void> {
-  try {
-    await countAdProof(env, account, { chatId: proof.chatId, turnId: `msg:${proof.messageId}`, kind: "sent", freeModel: false, instanceId, phoneId: null }, now);
-  } catch (error) {
-    reportCloudFailure("cloud.ad_price.first_message_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
 }
 
