@@ -1728,7 +1728,7 @@ tailnet routes to a paired device never consulted account state at all.
 An ADE Cloud computer runs the same brain. On it the brain also keeps the
 account server up to date, so a person reads the lane with no computer awake.
 The server routes and caps are in
-[ADE Cloud with no computer of your own](../ade-cloud/README.md#ade-cloud-with-no-computer-of-your-own).
+[ADE Cloud with no computer of your own](../ade-cloud/README.md#daex-cloud-with-no-computer-of-your-own).
 Each part below runs only when `isAdeCloudComputer()` is true, except the
 account lane index, which every brain sends.
 

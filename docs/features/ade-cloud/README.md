@@ -1,24 +1,112 @@
-# ADE Cloud
+# DAEX Cloud
 
-ADE Cloud lets a person use ADE fully with no computer of their own.
+DAEX Cloud lets a person use DAEX fully with no computer of their own.
 
-- Every signed-in account always has one machine named ADE Cloud. It shows in
+- Every signed-in account always has one machine named DAEX Cloud. It shows in
   every machine list and every "Run on" menu on the web, the iPhone and the
   desktop, next to the person's own computers.
-- Each cloud lane has its own Linux computer behind the scenes. ADE never shows
+- Each cloud lane has its own Linux computer behind the scenes. DAEX never shows
   these computers one by one.
-- Each computer runs ADE's brain as its main process and signs in to the
-  account with nothing to type. To the rest of ADE it is an ordinary remote
+- Each computer runs DAEX's brain as its main process and signs in to the
+  account with nothing to type. To the rest of DAEX it is an ordinary remote
   machine (see [Remote Runtime](../remote-runtime/README.md)).
 - A computer sleeps when its work stops. An asleep cloud computer is not
   offline. Reading never wakes it: the account server keeps a copy of what a
-  person reads (see [ADE Cloud with no computer of your own](#ade-cloud-with-no-computer-of-your-own)).
+  person reads (see [DAEX Cloud with no computer of your own](#daex-cloud-with-no-computer-of-your-own)).
   Doing (send, run, continue) wakes it.
 
 The calls in this doc are account level. They act on the account's cloud
 computers, not on a lane, a chat or another machine, so these IPC calls take no
 pin. A computer's own actions go through the machine list like any other
 machine.
+
+## Source file map
+
+| Area | File (under `services/adeCloud/`) |
+|---|---|
+| Machine list and box actions | `cloudMachines.ts` |
+| Making a machine, its sign-in, joining the account | `cloudMachineCreator.ts`, `cloudApprovalWindow.ts`; the approval a machine with nobody at it runs (browserless first, headless Chromium as the fallback) is `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts` (`approveSignInLink`) |
+| Half-made machines after a quit | `cloudPendingCreates.ts` |
+| Copy and move | `cloudMachineCopy.ts` |
+| Reconnect a machine removed from DAEX | `cloudReconnect.ts` |
+| Sleep, wake for use, agent limits | `cloudSleep.ts`, `cloudSleepWatch.ts`, `cloudBrainAccess.ts` |
+| Saved DAEX Cloud keys and Claude's sign-in (kept in the account vault) | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudClaudeSignIn.ts`; `cloudSignInBoot.ts` only for computers an older DAEX made |
+| Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`; on a machine `services/claudePass/` |
+| The sign-in end warning (Claude passes, and keys with an end date from their provider) | `cloudSignInEndWarning.ts`; the banner `renderer/components/settings/providers/cloud/CloudSignInEndNotice.tsx` |
+| Shared machine operations (metadata patch, wake through a transition) | `cloudInstanceOps.ts` |
+| Product analytics for cloud lanes (launch result, freed lane, Clear caches; the renderer sends the default size) | `cloudLaneAnalytics.ts` |
+| Account sign-ins on every computer (capture, apply, renewal) | `services/providerLogins/` (entry `providerLoginSync.ts`, one file per job) |
+| CLI and agent verbs, approvals | `cloudAgentActions.ts`, `cloudBrainMaker.ts`, `cloudDesktopActions.ts` |
+| A new lane on its own new computer (before the hand-off to its brain) | `cloudLaneLaunchService.ts`, `cloudLaneLaunchRecords.ts`, `registerCloudLaneLaunchIpc.ts`, `cloudLaunchFileCopies.ts` (images from another machine) |
+| An agent's disk grow on its own computer | `cloudAgentActions.ts` (`grow_disk`), `cloudDiskGrowHost.ts`; `apps/ade-cli/src/services/power/cloudDiskGrow.ts`; `apps/desktop/src/shared/cloudDiskGrowRules.ts` (the fit), `apps/desktop/src/shared/cloudDiskGrowCard.ts` (the chat cards) |
+| Rules on a cloud computer (one lane, Codex full access) | `cloudComputerRules.ts`, `cloudComputerLaneHold.ts` |
+| Desktop IPC | `registerCloudIpc.ts` |
+| Reaching DAEX's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
+| Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts`, `referrals.ts`, `freePlan.ts`, `email.ts` |
+| Server reads with no computer awake (migration `0039`): sealed saved copies, the project overview, the account lane index | `apps/account-directory/src/cloud/seal.ts`, `sessionCopies.ts`, `gitSummaries.ts`, `forkCapsules.ts`, `projectOverview.ts`; `apps/account-directory/src/accountLanes/routes.ts` |
+| Server message queue of an existing chat or CLI, and the continue on a new computer | `apps/account-directory/src/cloud/chatMessages.ts`, `launches.ts` (`continueChat`), `launchMessages.ts`, `chats.ts` (`handleMove`), `moves.ts` (the hold during a move) |
+| Server account reads for a client with no computer (migrations `0040`, `0041`) | `apps/account-directory/src/cloud/limits.ts`, `accountSecrets.ts`, `ctoCopy.ts`, `integrations.ts`, `linearRenewal.ts`, `eventWakes.ts` |
+| Client calls for DAEX with no computer (desktop and web) | `apps/desktop/src/shared/cloudApiClient.ts`, `apps/desktop/src/shared/adeCloud/chatQueue.ts`, `apps/desktop/src/shared/adeCloud/accountCalls.ts`, `apps/desktop/src/renderer/state/adeCloudChatQueue.ts`, `apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.ts` |
+| A cloud computer's git identity | `apps/ade-cli/src/services/github/cloudGitIdentity.ts` |
+| Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
+| Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneAccount.ts` (the account side, shared by the desktop and the brain), `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
+| An agent's size request: the card, the answer, telling the agent how the change ended | `cloudTierRequestActions.ts` (`tier_request`, `tier_request_answer`); `apps/desktop/src/shared/cloudTierRequest.ts`; the asking chat's pin parsed by `apps/desktop/src/shared/projectBinding.ts` (shared with `main.ts`'s renderer-pin sanitizer) |
+| The argument readers every DAEX Cloud action builder shares (`record`, `text`, `clipReason`, `readApproval`) | `cloudActionArgs.ts` |
+| A running move or size change as one line (title, live step, size label) for the job card, the bar above the prompt box and the header's status menu | `apps/desktop/src/renderer/components/cloudLane/cloudLaneJobPresentation.ts` (pure; `cloudLaneStatus.ts` reads it) |
+| Where a send goes while the chat's lane is moving or its computer is gone (the account's queue, or files and comments kept in the box) | `apps/desktop/src/renderer/components/chat/chatAccountQueueRoute.ts` |
+| The account's lanes, saved chats, CLI copies, backups and server jobs from the CLI and agents (`daex cloud lanes`, `chats`, `sessions`, `backups`, `jobs`, `project`) | `cloudLaneVerbs.ts`; text in `apps/ade-cli/src/cliCloudLanes.ts` |
+| Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
+| The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
+| A lane computer's status menu: the header button and menu, the status hook, the server read, the provider's status webhook (migration `0050`), the brain's activity report | `apps/desktop/src/renderer/components/cloudLane/CloudLaneHeaderButton.tsx`, `CloudLaneComputerPanel.tsx`, `CloudLaneConnectionRow.tsx`, `cloudLaneStatus.ts`, `useCloudComputerStatus.ts`; `registerCloudIpc.ts` (`cloudComputerStatus`); `apps/account-directory/src/cloud/computerStatus.ts`, `apps/account-directory/src/webhookSignature.ts`, `apps/account-directory/scripts/register-agent37-webhook.mjs`; `apps/ade-cli/src/services/account/cloudActivityReporter.ts` |
+| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts`, `apps/ade-cli/src/services/power/cloudRemoteWorkHold.ts` (slow remote work held awake) |
+| Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `planCleanup.ts` (`saveBeforeDelete`), `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
+| Lane backups at rest (save, report, restore, download) | `apps/account-directory/src/cloud/laneBackups.ts`, `apps/ade-cli/src/services/cloudChats/cloudLaneBackup.ts`, `apps/desktop/src/main/services/lanes/cloudLaneRestoreHook.ts`, `apps/desktop/src/main/services/adeCloud/cloudLaneBackupIpc.ts`, `apps/desktop/src/renderer/components/cloudLane/CloudLaneSavedWork.tsx`, `apps/ios/ADE/Views/Cloud/CloudMachineScreen.swift` (`CloudSavedWorkRow`) |
+| CLI status read (`daex cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
+| The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
+| The dashboard in Settings › DAEX Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
+| Server: automatic updates, lanes without a computer, the disk usage report (migrations `0020`, `0021`, `0022` in `apps/account-directory/migrations/`) | `apps/account-directory/src/cloud/updates.ts`, `lanesWithoutComputer.ts`, `diskUsage.ts` |
+| A default-size launch moving its computer from Small to Medium when setup runs out of memory, and the repository remembered (migration `0036`) | `apps/ade-cli/src/services/power/cloudSetupUpsize.ts`, `apps/account-directory/src/cloud/launches.ts` (`launchAutoSizeCheck`, `startSizeOf`) |
+| Server safety: block list, card rule, kill switch, hourly limits, owner alerts (migration `0037`) | `apps/account-directory/src/cloud/blocks.ts`, `safety.ts`, `costReport.ts` (free-use cap) |
+| Server launches from the web and the phone: queued messages, sign-in status, models (migration `0038`) | `apps/account-directory/src/cloud/launches.ts`, `launchMessages.ts`, `accountSignIns.ts`, `models.ts` |
+| Launch files and their per-account caps (migration `0068`) | `apps/account-directory/src/cloud/launchFiles.ts` |
+| The cloud computer's side of a launch: sign-in wait, queued messages | `apps/ade-cli/src/services/account/cloudBootLaunch.ts`, `cloudLaunchSignInWait.ts`, `cloudLaunchMessages.ts` |
+
+Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`,
+`cloudSignIns.ts`, `cloudTiers.ts` (the four lane sizes, read from the catalog)
+and `cloudLaneLaunch.ts`. On a machine, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`
+keeps it awake while it works and asks the server to sleep it 3 minutes after
+that stops (see Sleep and busy rules).
+
+## Gotchas / fragile areas
+
+- A new call to the provider goes through `CloudProvider`, never around it.
+- User-facing text, CLI output and skills say DAEX Cloud. "Powered by Agent 37"
+  on the settings page is the only product mention.
+- What spends hours or deletes a computer asks the person first (`cloudAgentActions.ts`), in hours.
+- An agent never makes a computer alone. A new action that adds a computer
+  other than a lane launch sets `makesComputer` on its card.
+- **Account calls take no pin; lane work does.** Plans, credits, the computer
+  list, sleep, create and saved copies are the account's (`window.ade.cloud`,
+  the `cloud` action domain, `/cloud/*` on the account directory). A chat,
+  terminal or git action on a cloud lane goes to that lane's computer by its
+  pin, like any other machine (see CLAUDE.md, "Built for remote machines").
+- **Reading never wakes a computer.** A resting lane has an account-answered
+  pin (`isAccountAnsweredPin`, `shared/adeCloud/binding.ts`); saved chats,
+  session copies and the git summary come from the account server. Only doing
+  (send, run, git) wakes it. A new read that wakes a computer is a bug.
+- **The server decides.** Limits, credits, refusals and the Free rule are
+  computed by `apps/account-directory`; clients show `{ code, message }`
+  (`CLOUD_REFUSAL_CODES`) and never decide or count on their own.
+- **Old default names are mapped, never migrated.** New computers are named
+  `DAEX Cloud computer` (`CLOUD_MACHINE_DEFAULT_NAME`); stored rows from
+  before the rename keep `ADE Cloud computer`, `ADE Cloud · <lane>`, `ADE
+  computer` and `ADE CLI|agents|Desktop on <host>`. Screens pass a stored name
+  through `displayLegacyDefaultName` (`shared/legacyDefaultNames.ts`; iOS
+  `AccountDirectory.swift`); code that compares names uses
+  `isCloudMachineDefaultName`, which accepts both. A name a person typed is
+  never changed.
+- **A lane computer has one lane.** Lane lists leave out its main checkout
+  (`crossMachineLanes.ts`).
 
 ## Layers
 
@@ -33,7 +121,7 @@ renderer (window.ade.cloud)   CLI (ade cloud)   phone (cloud.read/write)
                                     |
                  getCloudProvider (cloudAccess.ts)   <- the one place that picks the provider
                                     |
-                 cloudServerProvider.ts   <- calls ADE's server (`/cloud/*` on the account directory)
+                 cloudServerProvider.ts   <- calls DAEX's server (`/cloud/*` on the account directory)
                                     |
                  apps/account-directory/src/cloud/   <- the only code that knows the provider's API
 ```
@@ -54,7 +142,7 @@ are in `apps/account-directory/src/cloud/contract.ts`.
 
 ### The provider: Agent 37
 
-ADE Cloud computers are Agent 37 instances. The account server talks to its
+DAEX Cloud computers are Agent 37 instances. The account server talks to its
 API in `apps/account-directory/src/cloud/provider.ts` (`api.agent37.com`, exec
 on `sandbox.agent37.app`, secret `AGENT37_API_KEY`); the image is built there
 too (`infra/ade-cloud/README.md`). Users never see the name. Read Agent 37's
@@ -73,7 +161,7 @@ own docs before changing anything that depends on how an instance behaves:
 - Webhooks (`instance.status.updated`):
   https://www.agent37.com/docs/agents-api/webhooks.md
 
-Facts from those docs that ADE's design leans on:
+Facts from those docs that DAEX's design leans on:
 
 - Only traffic to the instance's own URLs (or an exec) counts as activity.
   An agent's outgoing calls don't, which is why the brain pings its wake URL
@@ -85,7 +173,7 @@ Facts from those docs that ADE's design leans on:
 
 ## Access
 
-- `getCloudProvider(deps)` returns ADE Cloud for a signed-in ADE account, or
+- `getCloudProvider(deps)` returns DAEX Cloud for a signed-in DAEX account, or
   null. The bearer is the account token; no desktop or brain holds a provider
   key.
 - `/cloud/access` answers `{ enabled: true }`, or for a blocked account
@@ -96,66 +184,9 @@ Facts from those docs that ADE's design leans on:
 - A development build reaches a local server with `ADE_ACCOUNT_DIRECTORY_URL`
   (for example `http://127.0.0.1:8787`).
 
-## Source file map
-
-| Area | File (under `services/adeCloud/`) |
-|---|---|
-| Machine list and box actions | `cloudMachines.ts` |
-| Making a machine, its sign-in, joining the account | `cloudMachineCreator.ts`, `cloudApprovalWindow.ts`; the approval a machine with nobody at it runs (browserless first, headless Chromium as the fallback) is `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts` (`approveSignInLink`) |
-| Half-made machines after a quit | `cloudPendingCreates.ts` |
-| Copy and move | `cloudMachineCopy.ts` |
-| Reconnect a machine removed from ADE | `cloudReconnect.ts` |
-| Sleep, wake for use, agent limits | `cloudSleep.ts`, `cloudSleepWatch.ts`, `cloudBrainAccess.ts` |
-| Saved ADE Cloud keys and Claude's sign-in (kept in the account vault) | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudClaudeSignIn.ts`; `cloudSignInBoot.ts` only for computers an older ADE made |
-| Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`; on a machine `services/claudePass/` |
-| The sign-in end warning (Claude passes, and keys with an end date from their provider) | `cloudSignInEndWarning.ts`; the banner `renderer/components/settings/providers/cloud/CloudSignInEndNotice.tsx` |
-| Shared machine operations (metadata patch, wake through a transition) | `cloudInstanceOps.ts` |
-| Product analytics for cloud lanes (launch result, freed lane, Clear caches; the renderer sends the default size) | `cloudLaneAnalytics.ts` |
-| Account sign-ins on every computer (capture, apply, renewal) | `services/providerLogins/` (entry `providerLoginSync.ts`, one file per job) |
-| CLI and agent verbs, approvals | `cloudAgentActions.ts`, `cloudBrainMaker.ts`, `cloudDesktopActions.ts` |
-| A new lane on its own new computer (before the hand-off to its brain) | `cloudLaneLaunchService.ts`, `cloudLaneLaunchRecords.ts`, `registerCloudLaneLaunchIpc.ts`, `cloudLaunchFileCopies.ts` (images from another machine) |
-| An agent's disk grow on its own computer | `cloudAgentActions.ts` (`grow_disk`), `cloudDiskGrowHost.ts`; `apps/ade-cli/src/services/power/cloudDiskGrow.ts`; `apps/desktop/src/shared/cloudDiskGrowRules.ts` (the fit), `apps/desktop/src/shared/cloudDiskGrowCard.ts` (the chat cards) |
-| Rules on a cloud computer (one lane, Codex full access) | `cloudComputerRules.ts`, `cloudComputerLaneHold.ts` |
-| Desktop IPC | `registerCloudIpc.ts` |
-| Reaching ADE's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
-| Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts`, `referrals.ts`, `freePlan.ts`, `email.ts` |
-| Server reads with no computer awake (migration `0039`): sealed saved copies, the project overview, the account lane index | `apps/account-directory/src/cloud/seal.ts`, `sessionCopies.ts`, `gitSummaries.ts`, `forkCapsules.ts`, `projectOverview.ts`; `apps/account-directory/src/accountLanes/routes.ts` |
-| Server message queue of an existing chat or CLI, and the continue on a new computer | `apps/account-directory/src/cloud/chatMessages.ts`, `launches.ts` (`continueChat`), `launchMessages.ts`, `chats.ts` (`handleMove`), `moves.ts` (the hold during a move) |
-| Server account reads for a client with no computer (migrations `0040`, `0041`) | `apps/account-directory/src/cloud/limits.ts`, `accountSecrets.ts`, `ctoCopy.ts`, `integrations.ts`, `linearRenewal.ts`, `eventWakes.ts` |
-| Client calls for ADE with no computer (desktop and web) | `apps/desktop/src/shared/cloudApiClient.ts`, `apps/desktop/src/shared/adeCloud/chatQueue.ts`, `apps/desktop/src/shared/adeCloud/accountCalls.ts`, `apps/desktop/src/renderer/state/adeCloudChatQueue.ts`, `apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.ts` |
-| A cloud computer's git identity | `apps/ade-cli/src/services/github/cloudGitIdentity.ts` |
-| Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
-| Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneAccount.ts` (the account side, shared by the desktop and the brain), `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
-| An agent's size request: the card, the answer, telling the agent how the change ended | `cloudTierRequestActions.ts` (`tier_request`, `tier_request_answer`); `apps/desktop/src/shared/cloudTierRequest.ts`; the asking chat's pin parsed by `apps/desktop/src/shared/projectBinding.ts` (shared with `main.ts`'s renderer-pin sanitizer) |
-| The argument readers every ADE Cloud action builder shares (`record`, `text`, `clipReason`, `readApproval`) | `cloudActionArgs.ts` |
-| A running move or size change as one line (title, live step, size label) for the job card, the bar above the prompt box and the header's status menu | `apps/desktop/src/renderer/components/cloudLane/cloudLaneJobPresentation.ts` (pure; `cloudLaneStatus.ts` reads it) |
-| Where a send goes while the chat's lane is moving or its computer is gone (the account's queue, or files and comments kept in the box) | `apps/desktop/src/renderer/components/chat/chatAccountQueueRoute.ts` |
-| The account's lanes, saved chats, CLI copies, backups and server jobs from the CLI and agents (`ade cloud lanes`, `chats`, `sessions`, `backups`, `jobs`, `project`) | `cloudLaneVerbs.ts`; text in `apps/ade-cli/src/cliCloudLanes.ts` |
-| Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
-| The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
-| A lane computer's status menu: the header button and menu, the status hook, the server read, the provider's status webhook (migration `0050`), the brain's activity report | `apps/desktop/src/renderer/components/cloudLane/CloudLaneHeaderButton.tsx`, `CloudLaneComputerPanel.tsx`, `CloudLaneConnectionRow.tsx`, `cloudLaneStatus.ts`, `useCloudComputerStatus.ts`; `registerCloudIpc.ts` (`cloudComputerStatus`); `apps/account-directory/src/cloud/computerStatus.ts`, `apps/account-directory/src/webhookSignature.ts`, `apps/account-directory/scripts/register-agent37-webhook.mjs`; `apps/ade-cli/src/services/account/cloudActivityReporter.ts` |
-| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts`, `apps/ade-cli/src/services/power/cloudRemoteWorkHold.ts` (slow remote work held awake) |
-| Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `planCleanup.ts` (`saveBeforeDelete`), `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
-| Lane backups at rest (save, report, restore, download) | `apps/account-directory/src/cloud/laneBackups.ts`, `apps/ade-cli/src/services/cloudChats/cloudLaneBackup.ts`, `apps/desktop/src/main/services/lanes/cloudLaneRestoreHook.ts`, `apps/desktop/src/main/services/adeCloud/cloudLaneBackupIpc.ts`, `apps/desktop/src/renderer/components/cloudLane/CloudLaneSavedWork.tsx`, `apps/ios/ADE/Views/Cloud/CloudMachineScreen.swift` (`CloudSavedWorkRow`) |
-| CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
-| The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
-| The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
-| Server: automatic updates, lanes without a computer, the disk usage report (migrations `0020`, `0021`, `0022` in `apps/account-directory/migrations/`) | `apps/account-directory/src/cloud/updates.ts`, `lanesWithoutComputer.ts`, `diskUsage.ts` |
-| A default-size launch moving its computer from Small to Medium when setup runs out of memory, and the repository remembered (migration `0036`) | `apps/ade-cli/src/services/power/cloudSetupUpsize.ts`, `apps/account-directory/src/cloud/launches.ts` (`launchAutoSizeCheck`, `startSizeOf`) |
-| Server safety: block list, card rule, kill switch, hourly limits, owner alerts (migration `0037`) | `apps/account-directory/src/cloud/blocks.ts`, `safety.ts`, `costReport.ts` (free-use cap) |
-| Server launches from the web and the phone: queued messages, sign-in status, models (migration `0038`) | `apps/account-directory/src/cloud/launches.ts`, `launchMessages.ts`, `accountSignIns.ts`, `models.ts` |
-| Launch files and their per-account caps (migration `0068`) | `apps/account-directory/src/cloud/launchFiles.ts` |
-| The cloud computer's side of a launch: sign-in wait, queued messages | `apps/ade-cli/src/services/account/cloudBootLaunch.ts`, `cloudLaunchSignInWait.ts`, `cloudLaunchMessages.ts` |
-
-Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`,
-`cloudSignIns.ts`, `cloudTiers.ts` (the four lane sizes, read from the catalog)
-and `cloudLaneLaunch.ts`. On a machine, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`
-keeps it awake while it works and asks the server to sleep it 3 minutes after
-that stops (see Sleep and busy rules).
-
 ## Surfaces
 
-- **Settings › ADE Cloud** (its own tab under General, `CloudSection.tsx`,
+- **Settings › DAEX Cloud** (its own tab under General, `CloudSection.tsx`,
   `settings/cloudDashboard/CloudDashboard.tsx`, entries `integrations.ade-cloud*`):
   - The hero: hours and computers against the plan, and the disk used; the 80% / 95% /
     out-of-hours banners; computers due for deletion.
@@ -170,7 +201,7 @@ that stops (see Sleep and busy rules).
   - "Free up space" at 80% of the plan's disk (`CloudFreeUpSpace.tsx`): the
     biggest lanes first, then the longest unused.
   - The disk measure is each computer's own (`cloudDiskUsage.ts`): repository,
-    dependencies, Docker, Android, caches, agent programs and ADE data, the
+    dependencies, Docker, Android, caches, agent programs and DAEX data, the
     rest as "System and other", parts on another disk left out. The computer
     measures it at its idle step at most every 6 hours, so the dashboard wakes
     nothing.
@@ -186,7 +217,7 @@ that stops (see Sleep and busy rules).
     unwatched agent gets no.
 - **The web app:** the same page (`web: "account"`), from the top bar's
   Settings with no project or computer. `GET /cloud/access` (kept a minute)
-  says whether ADE Cloud is on. An online computer answers the computer list
+  says whether DAEX Cloud is on. An online computer answers the computer list
   (`cloud.read`). With none online, or a brain too old, the web reads
   `GET /cloud/account` and `GET /cloud/instances` with the browser's own token
   (`webclient/adapter/cloud.ts`); a failed list shows the plan and marks the
@@ -194,20 +225,20 @@ that stops (see Sleep and busy rules).
   again (a server read, no wake). Billing goes straight to the server
   (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`).
   Stripe opens in the same tab with `returnTo: "web"` and comes back to the
-  web Settings › ADE Cloud. The website's plan buttons link to
+  web Settings › DAEX Cloud. The website's plan buttons link to
   `app.ade-app.dev/?cloudPlan=<plan>` (see
   [Web client deeplinks](../web-client/README.md#deeplinks)).
-- **New lane on ADE Cloud:** a chat launch with a `cloud` target makes one
+- **New lane on DAEX Cloud:** a chat launch with a `cloud` target makes one
   computer for one lane, then hands the launch to that computer's brain. There
-  is no form for a bare computer; the phone and a person's `ade cloud create`
+  is no form for a bare computer; the phone and a person's `daex cloud create`
   can still make one. An agent never makes one alone (see **Who may start
-  one**). See [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes).
-- **The composer:** "Run on" lists one ADE Cloud row (the person's lanes as a
-  small skyline). The lane list shows this project's ADE Cloud lanes from the
+  one**). See [DAEX Cloud lanes](../chat/README.md#ade-cloud-lanes).
+- **The composer:** "Run on" lists one DAEX Cloud row (the person's lanes as a
+  small skyline). The lane list shows this project's DAEX Cloud lanes from the
   computers' metadata with no wake. A size button picks the size (default
   `cloudDefaultTier`, Small at first). A label turns Send off when the account
   is out of hours, uses all its computers, or has a full disk. See
-  [Run on ADE Cloud in the composer](../chat/README.md#run-on-ade-cloud-in-the-composer).
+  [Run on DAEX Cloud in the composer](../chat/README.md#run-on-ade-cloud-in-the-composer).
 - **A cloud lane's chat:** one cloud button in the header
   (`CloudLaneHeaderButton.tsx`). Its mark says asleep, waking or awake
   (`cloudLaneStatus.ts`), with a warning dot while idle cleanup plans to delete
@@ -217,26 +248,26 @@ that stops (see Sleep and busy rules).
   (`ChatMachineWakeBanner`, `headerLaneId`). The menu opens on the computer's
   status (up since, size, disk and hours, its work, running agents, trouble
   only when there is some; see [The status menu](#the-status-menu)), then Wake,
-  Keep, Change size, Sleep (asks first while a turn runs), the ADE Cloud page
+  Keep, Change size, Sleep (asks first while a turn runs), the DAEX Cloud page
   and Delete lane. It is account level, by the computer's id, so it works for
   a chat on any machine. A chat whose computer was deleted has no header
   button (desktop and iPhone); its deleted-computer banner says what the next
   message does.
 - **Look:** the Night sky tokens, the cloud mark, the size icon and the skyline
   are in `remoteTargets/cloudBrand.tsx` and `cloudBrand.css`.
-- **CLI:** `ade cloud` (`ade help cloud`) and
-  `ade chat create --machine cloud [--size <size>]` (see
+- **CLI:** `daex cloud` (`daex help cloud`) and
+  `daex chat create --machine cloud [--size <size>]` (see
   [From the CLI and agents](#from-the-cli-and-agents)).
-- **Agents:** the `ade-cloud` skill (see [Guidance for agents](#guidance-for-agents)).
+- **Agents:** the `daex-cloud` skill (see [Guidance for agents](#guidance-for-agents)).
 - **Phone:** the cloud page, over the `cloud.read` and `cloud.write` sync
   commands.
 - **Bring your own provider:** `BringYourOwnCloudCard.tsx` is layout only,
   behind `BRING_YOUR_OWN_CLOUD_ENABLED`. Nothing uses it.
 
-## ADE Cloud with no computer of your own
+## DAEX Cloud with no computer of your own
 
-A person with no computer of their own uses ADE on the web, the iPhone or the
-desktop with ADE Cloud as their machine. The account server keeps what a
+A person with no computer of their own uses DAEX on the web, the iPhone or the
+desktop with DAEX Cloud as their machine. The account server keeps what a
 person reads, so a read never wakes a cloud computer. An action wakes the
 computer, and the UI never waits for the wake. The routes, caps and errors
 are in
@@ -254,7 +285,7 @@ are in
 | The account lane index (name, branch, machine, PR; only for mentions) | `accountLanes/routes.ts` |
 | The model picker's favorites, one list per account (migration `0070`) | `accountModelFavorites/routes.ts` |
 | The CTO account copy | `ctoCopy.ts` |
-| Automations whose home is ADE Cloud | `automations.ts` |
+| Automations whose home is DAEX Cloud | `automations.ts` |
 | Linear and Jira, with the account's sign-in | `integrations.ts` |
 | Agent limits, secret names, plan, hours, usage | `limits.ts`, `accountSecrets.ts` |
 | Files and history | none: the client reads GitHub (each lane's branch, and a read-only "Default branch" workspace for every repository) |
@@ -263,7 +294,7 @@ are in
   computer the account owns writes one, and every read checks the owner.
 - The computer writes the copies before it rests (`cloudRestSave.ts` in
   `apps/ade-cli/src/services/cloudChats/`): at its idle step, in
-  `ade cloud prepare-stop` and in `ade cloud save-for-rest`. An unchanged
+  `daex cloud prepare-stop` and in `daex cloud save-for-rest`. An unchanged
   copy is not sent again. The text is redacted first. The same save makes
   the lane backups first ([Lane backups at rest](#lane-backups-at-rest)).
 - A chat's copy gets one part when a turn ends. The rest save also sends
@@ -297,8 +328,8 @@ are in
   count against the account's saved-chat space. A read answers a fixed
   picture type with `nosniff`. No new table: the bytes go in the copy row's
   `bytes`, and the count is the bucket's list of the chat's proof.
-- The desktop, ADE Web and the phone show the saved picture in place of
-  "This proof is on ADE Cloud, which is asleep" while the computer rests or
+- The desktop, DAEX Web and the phone show the saved picture in place of
+  "This proof is on DAEX Cloud, which is asleep" while the computer rests or
   after it is deleted. A video shows its still with **Wake to play**. They
   read it from the account, by the chat's own saved copy, and never wake the
   computer. Nothing saved: the notice stays.
@@ -315,7 +346,7 @@ A message to a chat or CLI whose computer rests goes to the account server
    place; a shell takes no messages.
 2. The server runs the wake checks first, so a refusal stores nothing.
 3. It stores the sealed message, answers at once, wakes the computer and runs
-   `ade cloud messages drain` there. The same `messageId` again changes
+   `daex cloud messages drain` there. The same `messageId` again changes
    nothing.
 4. The computer claims each message in one conditional update, sends it with
    `clientSendId = messageId`, and reports it. Each message goes once.
@@ -345,35 +376,35 @@ holds the lane's messages and answers `wake.state: "moving"`:
   (an update in progress, the queue feature, past due, the awake cap, the
   idle cleanup's claim) are skipped. Its own list and claim
   leave the held messages out (`MOVE_HOLDS_MESSAGES_SQL`), since the move
-  stops its ADE and would cut the turn. `wait_idle` holds nothing.
+  stops its DAEX and would cut the turn. `wait_idle` holds nothing.
 - A send straight to the old computer, from a device that doesn't know of
-  the move (another desktop, ADE Web, the phone): the move marks the running
+  the move (another desktop, DAEX Web, the phone): the move marks the running
   old computer with its hold (`moveOutMarkCommand`,
-  `$ADE_HOME/cloud/moving.json`), and its ADE refuses, with
+  `$ADE_HOME/cloud/moving.json`), and its DAEX refuses, with
   `computer_moving`, exactly what starts a turn from another device: the
   actions in `REMOTE_TURN_STARTS` (`cloudMoveMark.ts`), one list for the
-  desktop's `ade/actions/call` and the sync commands of ADE Web and the
+  desktop's `ade/actions/call` and the sync commands of DAEX Web and the
   phone. That is a chat's sends and launches, and a CLI's input: text typed
   into it (`chat.typeIntoCli`, `pty.sendToSession` / `work.sendToSession`)
   and a terminal started with its first input (`pty.create` /
   `work.startCliSession`), since a CLI's process does not survive the move.
   A chat made with no turn (`chat.create`) and a terminal started with no
-  first input are not refused. The desktop, ADE Web and the phone then send
+  first input are not refused. The desktop, DAEX Web and the phone then send
   a message to a chat that exists to the account's queue (desktop and web:
   `withSavedChatReads`; the phone: `SyncService.sendChatMessage`), which
   holds it. A refused send with files or comments is not queued: they stay
   in the composer with the line "Files and comments can't go while this
   chat's computer moves". A new chat with its first message
   has no queue: the desktop shows the sentence and keeps the text, and a
-  launch fails with the sentence. `ade chat create --prompt` and
-  `ade new chat --prompt` with `--machine` make the chat, then send to it:
+  launch fails with the sentence. `daex chat create --prompt` and
+  `daex new chat --prompt` with `--machine` make the chat, then send to it:
   when the send is refused they delete the chat they made and print the
   sentence. The queue's own drain is never refused. The undo clears the
   mark; one it misses (the computer was asleep) expires with the hold.
 - At the end of `register` the new computer has the lane: the queued
   messages move to its instance id and keep their chat address (machine key
   and chat id), so every client reads them where it queued them. The server
-  runs `ade cloud messages drain` there, detached
+  runs `daex cloud messages drain` there, detached
   (`DRAIN_MESSAGES_DETACHED_COMMAND`). A message the old computer had
   claimed may have reached the chat there, so it ends failed with "check the
   chat" (`MOVE_CUT_MESSAGE_ERROR`), never sent twice. The move's last step
@@ -388,18 +419,18 @@ holds the lane's messages and answers `wake.state: "moving"`:
   computer finds the chat by its id.
 - A failed or cancelled move gives the messages back to the old computer:
   what the new one was given comes back, and a running old computer is asked
-  to drain (a paused one drains when its ADE starts again). An asleep one
+  to drain (a paused one drains when its DAEX starts again). An asleep one
   keeps them for its next wake.
 - A size change in place keeps the computer's id, so its messages drain when
-  its ADE starts again after the restart. The server does not hold them
+  its DAEX starts again after the restart. The server does not hold them
   before the resize is asked; the client waits until then (below).
 
-On the desktop, in ADE Web and on the phone, a held message looks like any
+On the desktop, in DAEX Web and on the phone, a held message looks like any
 sent message: the person's own bubble at the end of the thread and the
 working line, with a quiet Cancel while it is queued. Only a failed message
 (Put back, Dismiss) and one waiting for a sign-in say so. The bubble stays
 until the chat's transcript shows the message with the same `clientSendId`.
-On the desktop and ADE Web the bubble is `cloudQueuedMessageEnvelope`
+On the desktop and DAEX Web the bubble is `cloudQueuedMessageEnvelope`
 (`CloudQueuedMessages.tsx`). It takes the send's own bubble's place at the
 same time, so the row does not move. The working line says what the messages
 wait for: "Waking the computer…", "Moving to the new computer…", "Changing
@@ -446,27 +477,26 @@ chat continues on the new computer in the same chat row.
   logins go to the account as access-only copies. Personal chats stay on
   their machine.
 - A browser can never read the vault (the push relay's browser allowlist).
-  Web Passwords says to open ADE desktop or the iPhone.
+  Web Passwords says to open DAEX desktop or the iPhone.
 - Git on a cloud computer: see [Stored data](#git-on-a-cloud-computer).
-- Not built: web push, and a move of a lane or a chat onto ADE Cloud.
+- Not built: web push, and a move of a lane or a chat onto DAEX Cloud.
 
 ## Plans, hours and sizes
 
 The server's `plans.ts` holds the plan rules, and `GET /cloud/account` sends
 them in `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
-`shared/adeCloud.ts` fills gaps from an older server). The design is in
-[docs/plans/ade-cloud-plans-and-disk.md](../../plans/ade-cloud-plans-and-disk.md).
+`shared/adeCloud.ts` fills gaps from an older server).
 
-Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plans/pricing-v2-and-gravity.md)):
+Plans:
 
-| Plan | Price | Hours a month | Cloud computers | Extra hours | Outside agents (ADE MCP) |
+| Plan | Price | Hours a month | Cloud computers | Extra hours | Outside agents (DAEX MCP) |
 |---|---|---|---|---|---|
 | Free | $0 | 50 | 2 | none: work stops | no |
 | Plus | $5 | 100 | 3 | 4¢ an hour | yes |
 | Pro | $20 | 600 | 10 | 4¢ an hour | yes |
 | Max | $50 | 2,000 | 20 | 4¢ an hour | yes |
 
-The ADE Cloud iPhone has no minutes of its own: it draws from these credits,
+The DAEX Cloud iPhone has no minutes of its own: it draws from these credits,
 one a minute (below).
 
 - **Hours are Medium-hours** (`catalog.hourUnit: "medium"`; integer
@@ -480,8 +510,8 @@ one a minute (below).
   `diskMaxGb`).
 - **No account-wide disk.** Each computer's disk grows to its size's
   `diskMaxGb` and no further (`disk_limit`, reason `tier_limit`). No extra
-  disk is sold; `catalog.extraDiskCentsPer10GbMonth` and
-  `CloudAccountState.extraDisk` are never sent, `disk.limitGb` is null, and
+  disk is sold; `catalog.extraDiskCentsPer10GbMonth` is
+  never sent, `disk.limitGb` is null, and
   `POST /cloud/billing/extra-disk` is no route (404). Builds before Pricing
   v2 read `plans[].diskGb` as the plan's shared disk and check their own
   grows against it, so it is sent as the plan's computers times the largest
@@ -513,7 +543,7 @@ one a minute (below).
   `out_of_hours`) or stopped by the cron; Small keeps working, and its timed
   wake-ups stay. An account with no free plan (`free_refused_at` or
   `free_github_hold`) and no hours left runs nothing, Small included.
-- **Outside agents on Free.** An ADE MCP request to start ADE Cloud work on
+- **Outside agents on Free.** A DAEX MCP request to start DAEX Cloud work on
   the free plan (`past_due` included) answers 403 `outside_agent_free_plan`
   (`CLOUD_OUTSIDE_AGENT_FREE_MESSAGE`). It is read from lane metadata
   `ade_made_by_agent: "mcp"`, a launch's `madeBy: { kind: "agent", agent:
@@ -522,9 +552,9 @@ one a minute (below).
 - The account sends `plan: "free" | "paid"` for older builds and
   `planId: "free" | "plus" | "pro" | "max"`. A `past_due` account follows the
   free rules for hours and outside agents but keeps its computers.
-- **ADE Cloud iPhone:** behind `CLOUD_PHONE_ACCESS`. With `beta`, only the
+- **DAEX Cloud iPhone:** behind `CLOUD_PHONE_ACCESS`. With `beta`, only the
   accounts the owner added read `on`; everyone else reads `off` (never
-  `soon`), and ADE shows no iPhone. The owner can add a tester by email
+  `soon`), and DAEX shows no iPhone. The owner can add a tester by email
   before they sign up: the email waits in `cloud_phone_beta_pending`, and the
   account that first appears with it as a verified Clerk address takes it.
   The owner check (every 10 minutes) also asks Clerk about each waiting email
@@ -560,9 +590,9 @@ one a minute (below).
   for room, then answers 429 `too_many_awake`. A create, copy, resize wake or
   sign-in wake past it is refused at once (`cloud.awake_cap_reached`). The
   owner check reports `cloud.awake_cap_passed`.
-- **"You're on Plus":** when the account moves to a higher paid plan, ADE says
+- **"You're on Plus":** when the account moves to a higher paid plan, DAEX says
   so once: a toast with the plan's hours, computers and renewal date, and a
-  banner and a one-time glow on the ADE Cloud page. From Free it also names
+  banner and a one-time glow on the DAEX Cloud page. From Free it also names
   the free hours the paid period replaced. `cloudPlanMoment.ts` (localStorage
   per account; UserDefaults on the phone) keeps what this device last saw. It
   records `ade_feature_used` `cloud_plan`/`completed`.
@@ -571,7 +601,7 @@ one a minute (below).
   (`billing.nextPlanId`) and is never refused; over the cheaper plan's
   computers, the answer carries `cleanup`. Both go through
   `POST /cloud/billing/checkout {plan}`. The billing portal can not switch
-  plans (`subscription_update` off), so ADE's switch always checks the
+  plans (`subscription_update` off), so DAEX's switch always checks the
   cheaper plan's limits.
 - **Not set up yet:** Pro and Max show only once their Stripe prices are
   set. Until then their catalog fields are absent and a checkout for them is
@@ -589,28 +619,25 @@ one a minute (below).
   token).
 
 Hours, plan, disk and billing come from `GET /cloud/account`
-(`CloudAccountState`), read only while ADE Cloud shows (`useCloudMachines`).
+(`CloudAccountState`), read only while DAEX Cloud shows (`useCloudMachines`).
 At 0 hours the server refuses, and its sentence is what the person sees.
 
 ### Credits
 
-One balance for everything ADE Cloud runs (owner, 2026-11-24). Every account
-is on credits: the `cloud_credits` switch that rolled them out was turned to
-`all` on 2026-11-25 and then removed (its stored row is ignored; the owner
-log keeps the flip). Where this page says hours, the person sees credits.
+One balance for everything DAEX Cloud runs. Where this page says hours, the
+person sees credits.
 
 A credit is the hour renamed, so no number changes: Free 50, Plus 100, Pro
 600, Max 2,000 a month; a Small computer uses none, Medium 1 an hour, Large
-2.5, X-Large 4. The ADE Cloud iPhone draws from the same balance at one credit
+2.5, X-Large 4. The DAEX Cloud iPhone draws from the same balance at one credit
 a minute (a Mac VM, later, the same). Past the plan, a paid plan's extra
 credits are the extra-hours switch at 4¢ each, so an extra iPhone minute is
 an extra credit. Free stops when the credits run out.
 
 How the server counts it (`credits.ts`, `phones.ts`, migration 0059):
 
-- A phone counts in credits when its row says so (`cloud_phones.credits = 1`):
-  every phone saved since the flip. Rows from before it (`credits = 0`, the
-  old iPhone minutes, gone since 2026-11-25) are history only: they charge
+- A phone counts in credits when its row says so (`cloud_phones.credits = 1`).
+  Rows with `credits = 0` are from the retired iPhone minutes: they charge
   nothing and count nothing.
 - Its billed minutes go into the account's `used_milli` as its provider
   settles them, in the same write as the phone's row
@@ -629,22 +656,22 @@ How the server counts it (`credits.ts`, `phones.ts`, migration 0059):
 
 ### A cheaper plan's limits
 
-`planCleanup.ts`, migrations 0027 and 0032. ADE never removes a computer on
+`planCleanup.ts`, migrations 0027 and 0032. DAEX never removes a computer on
 its own, and there is no grace period. Only the number of computers counts
 (a move's two computers once, a reservation not at all). A `past_due`
 account is never cleaned.
 
-- **In ADE:** a move down that leaves too many computers
+- **In DAEX:** a move down that leaves too many computers
   (`downgradePreviews.plus` / `.pro`) opens `CloudPlanLimitsDialog.tsx`: "I'll
   clean up myself" (lists the oldest computers that would be enough), or "Let
-  ADE handle it" (a "Save each lane's work first" switch, on by default, and
+  DAEX handle it" (a "Save each lane's work first" switch, on by default, and
   the computers to free). The checkout carries the pick (`cleanup`,
   `CloudPlanCleanupPick`). The server checks that the pick fits before Stripe
   is asked (409 `cleanup_does_not_fit`, `cleanup_changed`,
   `cleanup_running`), records it (`plan_cleanup_choice_json`), and the minute
   cron (`runPlanCleanupPicks`) frees those computers at once. A request with
   no pick deletes nothing.
-- **Outside ADE** (a portal cancel, a plan that ended): nothing is deleted. An
+- **Outside DAEX** (a portal cancel, a plan that ended): nothing is deleted. An
   account still over the plan gets 403 `over_plan_limits` on a new computer
   or copy, one email (`plan_over_told_at`), and a dashboard notice ("Choose
   what goes", `POST /cloud/billing/plan-cleanup`). A cancel that waits for the
@@ -684,13 +711,13 @@ since the latest of `last_awake_at` (or creation), `hours_restored_at` and
   `cloud.email_skipped`.
 - **No wake, no push.** The computer is deleted as it rests, only when it
   rested with every lane's work saved (`saveBeforeDelete` in
-  `planCleanup.ts`, [Lane backups at rest](#lane-backups-at-rest)). ADE never
+  `planCleanup.ts`, [Lane backups at rest](#lane-backups-at-rest)). DAEX never
   starts it to save, and never commits or pushes. The delete claim
   (`claimDelete`) also needs `backup_rest_at`, so a start during the run calls
   the delete off.
 - **Held.** If a lane is not saved, the computer stays as it is
-  (`idle_held_at`, `idle_held_reason`: "ADE couldn't save this lane's work."
-  and the lanes' reasons). One email and a notice say why and when ADE reads
+  (`idle_held_at`, `idle_held_reason`: "DAEX couldn't save this lane's work."
+  and the lanes' reasons). One email and a notice say why and when DAEX reads
   again (`held.retryAt`); Sentry gets `cloud.idle_cleanup_not_saved` or
   `cloud.idle_cleanup_save_failed`. The read is a D1 read, never a wake: the
   computer's next real use saves it when it rests. Each read in a row that
@@ -720,7 +747,7 @@ since the latest of `last_awake_at` (or creation), `hours_restored_at` and
 ### Lane backups at rest
 
 Server `laneBackups.ts` (migration 0044), computer `cloudLaneBackup.ts`. Every
-wake is use, and ADE never pushes on its own, so a computer saves each lane's
+wake is use, and DAEX never pushes on its own, so a computer saves each lane's
 work that is not on GitHub before it rests, and a cleanup deletes it later
 with no wake.
 
@@ -755,7 +782,7 @@ with no wake.
 - **Cleanups.** Idle, plan, project delete and automation run end all use
   `saveBeforeDelete`: a resting computer goes only with `backup_rest_at`; an
   awake one is saved in place (`prepare-stop`, `save-for-rest --capsules`)
-  and goes when that report is current. Else it stays with "ADE couldn't save
+  and goes when that report is current. Else it stays with "DAEX couldn't save
   this lane's work." An image older than lane backups never reports, so it
   stays until its next real wake updates it.
 - **Freeze before a delete.** Every cleanup but the idle one runs
@@ -763,10 +790,10 @@ with no wake.
   (`CLOUD_COMPUTER_COMMANDS.prepareForDelete`). From the start of that
   prepare, the computer refuses new chat turns (send, steer, rerun,
   recovery; a scheduled wake waits), new terminals and agent CLIs, and remote
-  work, with "This ADE Cloud computer is being removed. …"
+  work, with "This DAEX Cloud computer is being removed. …"
   (`cloudDeleteFreeze.ts`). So nothing is written after the save and lost
   with the delete. The freeze ends when the prepare is not confirmed, when
-  the server keeps the computer (`ade cloud unfreeze`, `unfreezeComputer`),
+  the server keeps the computer (`daex cloud unfreeze`, `unfreezeComputer`),
   or after 10 minutes. The idle cleanup keeps its own rule: a person's use
   calls its delete off (`/use`).
 - **Restore.** A lane launch on a cloud computer (`chatLaunchService.ts`,
@@ -792,7 +819,7 @@ with no wake.
   can't wake (0 hours on a size that uses hours). Download patch everywhere; on
   the desktop, "Open in a new lane here" puts the work on a new
   `ade-saved/...` branch of a clone on this computer (the uncommitted part as
-  its last commit) and makes a lane of it, with no push. Settings › ADE
+  its last commit) and makes a lane of it, with no push. Settings › DAEX
   Cloud lists, under "Saved lane work", the saved work no lane row shows
   (a deleted project's lanes), with Delete in its ⋯ menu.
 - **Security.** Sealed with the account's key, the additional data naming
@@ -817,17 +844,17 @@ move keeps the old disk.
   4 GB step that fits (`AndroidCloudComputerNotice.tsx`), within the size's
   `diskMaxGb` and the plan's rules. The emulator grows the disk the same way
   when it is short (`androidEmulatorLifecycle.ts`).
-- **An agent:** `ade cloud resize --free <GB>` (or `--disk <GB>`,
+- **An agent:** `daex cloud resize --free <GB>` (or `--disk <GB>`,
   `--reason "…"`) runs `cloud.grow_disk` (`cloudAgentActions.ts`), then
   `growToFit` of the computer's own grower (`cloudDiskGrowHost.ts`). It grows
   only the computer it runs on. The fit is `cloudDiskGrowFit`
   (`shared/cloudDiskGrowRules.ts`):
   - Inside the size's disk maximum (`diskMaxGb`), it grows with no card. The
     hours check does not apply.
-  - Past it, the server refuses (`tier_limit`): ADE Cloud sells no extra
+  - Past it, the server refuses (`tier_limit`): DAEX Cloud sells no extra
     disk, so the way out is a bigger size. `growToFit` reads the fit again
     before each resize and retry, at most 3 rounds.
-- **The restart:** the grow waits for idle. Chats and ADE's own agent CLIs do
+- **The restart:** the grow waits for idle. Chats and DAEX's own agent CLIs do
   not hold it; they continue after the restart whatever "Continue chats after
   restarts" says (cause `disk_grow`, `brainUnplannedRestart.ts`). A terminal
   command or a hand-started agent CLI (`shell_agent_cli`) holds it; the `ade`
@@ -852,7 +879,7 @@ under the deploy variable `GRAVITY_ADS` (production `all`; `off` there is a hard
 off), test ads until the `gravity_live` switch is on under `GRAVITY_LIVE=1`, the
 plan (Free only, `past_due` included as paid, or the account test tool's plan), the country (`GRAVITY_COUNTRIES`, from Cloudflare), the account's answer
 (`cloud_sponsored_consent`, one per account, so every machine agrees), and that
-the chat runs on one of the account's own live ADE Cloud computers and is not a
+the chat runs on one of the account's own live DAEX Cloud computers and is not a
 subagent's (`cloud_chat_copies`). Chats on the person's own machine never get a
 card, whatever the plan.
 
@@ -887,25 +914,25 @@ card, whatever the plan.
   fields (never chat text) for a day. Nothing rewards a view or a click. One
   sponsored unit per window (`sponsoredOnScreen.ts`), and the tray hides its
   upgrade button beside it.
-- **Gravity's renderer** (Gravity's recommendation, 2026-11-25): the ad
+- **Gravity's renderer:** the ad
   request names the client's renderer (`renderer`: `web1` for
   `@gravity-ai/ui` on desktop and web, `psp1` for Gravity's Swift SDK on the
   iPhone and iPad), and only then does the server ask Gravity for its design
   (`supportsSpec`; never a frame). The answer's `gravity` is Gravity's ad in
   its own field names, design (`renderer_spec`) included; the client hands it
   to `GravityAd` (`SponsoredGravityCard.tsx`, loaded only when a card shows)
-  or `SpecAdView`, which draws Gravity's design in ADE's colors and sends the
-  view link and the `measured`/`viewable` beacons itself. ADE keeps the place,
+  or `SpecAdView`, which draws Gravity's design in DAEX's colors and sends the
+  view link and the `measured`/`viewable` beacons itself. DAEX keeps the place,
   the hide button and its link rule (every click opens one of Gravity's own
   links in the browser). For `web1` the server inlines the advertiser's icon
   as a `data:` image (the desktop page loads images only from listed hosts;
   `rendererCsp.ts` and the web client's `_headers` list Gravity's hosts for
   the beacons). An older client sends no `renderer`, gets no design, and
-  draws ADE's own card from the plain fields, sending the view link itself
+  draws DAEX's own card from the plain fields, sending the view link itself
   once half the card is on screen.
-- **Index pick** (`ade cloud recommend --need "…"`, `cloudAgentActions.ts`): an
-  agent on an ADE Cloud computer asks for a service the person needs. Refused
-  for a person, ADE MCP, automation and subagent chats, and while nobody has a
+- **Index pick** (`daex cloud recommend --need "…"`, `cloudAgentActions.ts`): an
+  agent on a DAEX Cloud computer asks for a service the person needs. Refused
+  for a person, DAEX MCP, automation and subagent chats, and while nobody has a
   chat or agent CLI of that computer open (`cloud_sponsored_viewers`, from
   `seen` every 4 minutes). The Index has no test mode, so before go-live only
   testers reach it, and only from a listed country (`GRAVITY_COUNTRIES`, read
@@ -928,7 +955,7 @@ card, whatever the plan.
 - **Small needs cards on Free** (part of the ad switch, no switch of its
   own): a Free account the ad switch reaches runs Small without hours only
   in the US (`SMALL_FREE_COUNTRY`): while it said yes and someone opened one
-  of its ADE Cloud chats or terminals from the US in the last 7 days
+  of its DAEX Cloud chats or terminals from the US in the last 7 days
   (`src/cloud/sponsoredSmall.ts`: `SMALL_FREE_LOOK_MS`, plus the hour
   `looked_at` may trail the last look; `cloud_sponsored_consent.looked_at`,
   set by a yes from the US and refreshed by `/cloud/sponsored/seen` from the
@@ -955,10 +982,10 @@ card, whatever the plan.
   `looked_at`; kept only for Free, and never a privacy relay's network such
   as Cloudflare's, Akamai's or Fastly's). Each computer's launch join also
   saves its network once (`cloud_computers.join_asn`): the join is the
-  computer's own, made during setup with a one-time code no person holds. ADE
+  computer's own, made during setup with a one-time code no person holds. DAEX
   Cloud's network is the account's own computers' (activity reports use the
   account's own sign-in, so they name only that account's computers), or one an
-  ADE Cloud computer joined from in the last 30 days (`JOINED_NETWORK_MS`), so
+  DAEX Cloud computer joined from in the last 30 days (`JOINED_NETWORK_MS`), so
   an account rewriting its own computers' network hides nothing and no account
   can make someone's home network count. A look or yes from it, while the account has a live Small,
   sends the owner one alert per account per week (`small_cloud_look`: an
@@ -966,40 +993,13 @@ card, whatever the plan.
   `ade_cloud_safety` step) and adds a line to the daily report while that look
   is what keeps Small free (`smallCloudLookAlarms`). It sees only computers
   that send activity reports, and only the latest look's network.
-- **Start on in the US:** in `GRAVITY_DEFAULT_ON_COUNTRIES` (default `US`,
-  empty asks everywhere; California, `ASK_FIRST_REGIONS` by Cloudflare's
-  `regionCode`, is asked, and so is an unknown US state) the state carries
-  `startsOn` instead of asking: the
-  chat's card (and Settings › ADE Cloud) is the notice that cards are on, with
-  Got it and Turn off. Shown, it is saved as `PUT /cloud/sponsored/consent
-  {consent: "notice"}`, a yes with `source = notice` (migration `0062`) that
-  holds only from those countries and never from a request with
-  `Sec-GPC: 1`. The notice's reply asks for no card. A no given there holds
-  12 months (`SPONSORED_OPT_OUT_HOLD_MS`); elsewhere the two-week re-ask
-  applies. A notice never overwrites an answer that holds. After a no in
-  the US, or with `Sec-GPC: 1` from the US, the state carries `confirmYes`:
-  the question's yes and Settings' switch confirm a second time
-  (California's two-step opt-in), and `PUT` refuses an unconfirmed yes
-  (409 `sponsored_confirm`). Elsewhere a yes after a no is one click.
-- **Global Privacy Control:** `Sec-GPC: 1` from the US opts the whole
-  account out (CCPA §7025): any request that reads or reports sponsored
-  state turns no answer, or a yes not given from such a browser, into a
-  no (`source = gpc`, held 12 months like any US no), deletes the viewer
-  rows and moves Small's rate, so no notice starts cards on another
-  device. The state then says `gpcOff`, and Settings says why. A yes
-  given from that browser, past the second confirm, is saved with
-  `gpc = 1` (migration `0064`) and holds there. The US rules (the
-  12-month hold, the second confirm, GPC) follow the law, not
-  `GRAVITY_DEFAULT_ON_COUNTRIES` (`OPT_OUT_LAW_COUNTRIES` in
-  `sponsoredConsent.ts`).
-  A look at a chat keeps its state beside its country (`region`, migration
-  `0064`), so the Index checks a notice's yes where the person last looked.
-  Details:
+- **Start on in the US, Global Privacy Control, California, testers
+  abroad:** who is told instead of asked, how long a no holds, the second
+  confirm and the GPC opt-out follow the law (`OPT_OUT_LAW_COUNTRIES`,
+  `ASK_FIRST_REGIONS` and `GRAVITY_DEFAULT_ON_COUNTRIES` in
+  `sponsoredConsent.ts`; migrations `0062`, `0064`). The rules are written
+  once, in
   [account-test-tool.md](account-test-tool.md#where-cards-start-on).
-- **Testers abroad:** while ads are test ads (`gravity_live` off), an account
-  on the testers list gets cards from any country; everyone else still needs
-  `GRAVITY_COUNTRIES`. Real ads keep the country check for everyone, and so
-  does the Index: it has no test mode, so its picks are always real.
 - **Testing:** the account test tool flips these switches and has an account
   act as any plan, instantly, without touching Stripe
   ([account-test-tool.md](account-test-tool.md)).
@@ -1031,7 +1031,7 @@ route is behind the `/cloud` access gate except the website's invite lookup.
 
 - The desktop and a brain send `x-ade-computer` on every `/cloud` call:
   SHA-256 of `ade-cloud-free-plan-computer-v1:` plus the OS machine id
-  (`hardwareAnchor.ts`), or `unreadable`. An ADE Cloud computer sends none.
+  (`hardwareAnchor.ts`), or `unreadable`. A DAEX Cloud computer sends none.
   The server keeps only an HMAC of it (key from `CLOUD_CHAT_MASTER_KEY`).
 - A create, move, copy or wake on free rules claims the computer for the
   account (`cloud_free_plan_claims`, both keys unique). A read never claims.
@@ -1049,16 +1049,16 @@ route is behind the `/cloud` access gate except the website's invite lookup.
 - Free hours need a connected GitHub account at least 30 days old
   (`CLOUD_FREE_GITHUB_MIN_AGE_MS`). GitHub's `created_at` is read once into
   `github_account_ages`, with a backoff retry (5 minutes to 6 hours).
-- `cloud_free_github_claims` is unique on the GitHub user and the ADE account.
+- `cloud_free_github_claims` is unique on the GitHub user and the DAEX account.
   The settle runs with the computer claim, only while the GitHub App is set.
 - A hold (`free_github_hold`: `no_github`, `github_too_new`, `github_used`,
-  `github_checking`) keeps `included_milli` at 0. Accounts that used ADE Cloud
+  `github_checking`) keeps `included_milli` at 0. Accounts that used DAEX Cloud
   before the rule are `free_github_exempt`.
 - A too-new GitHub account can start with a card saved at no charge
   (`POST /cloud/billing/free-unlock`, a Stripe setup Checkout;
   `free_card_unlocked_at`).
 - The account read carries `freePlan.github`. Desktop, CLI, the lane-start
-  refusal and the `ade-cloud` skill show it; the phone states it without the
+  refusal and the `daex-cloud` skill show it; the phone states it without the
   card. PostHog: `ade_cloud_free_plan` steps `github_*`,
   `card_unlock_started`, `card_unlocked`.
 
@@ -1075,11 +1075,11 @@ every 6 hours). Five or more sign-ups from one address in an hour make a line
 - One invite code per account (`cloud_invite_codes`, 8 characters without
   0/O/1/I/L), link `https://ade-app.dev/invite/<CODE>`.
 - `POST /cloud/referrals/redeem { code }` takes the link, the `ade://` link or
-  the code, within 30 days of the friend's ADE account, once, never the
+  the code, within 30 days of the friend's DAEX account, once, never the
   account's own code, never a code whose owner lacks access. Refusals answer
   `invite_refused` with a `reason` (`CloudInviteRefusalReason`).
 - The reward, 20 hours to both, is paid when the friend's first chat runs on
-  an ADE Cloud computer (its first saved part, `chats.ts`). One batch moves the
+  a DAEX Cloud computer (its first saved part, `chats.ts`). One batch moves the
   referral out of `pending`, so it pays once; the referrer's cap is 10 rewards.
   No reward (`refused`) when the two accounts shared a computer
   (`same_computer`) or the friend was refused the free plan
@@ -1088,14 +1088,14 @@ every 6 hours). Five or more sign-ups from one address in an hour make a line
   `GET /cloud/referrals` answers it alone.
 - **Website:** `/invite/<CODE>` (`apps/web/src/app/pages/InvitePage.tsx`) asks
   `GET /invites/<CODE>` (public, 30 a minute per address) for the inviter's
-  first name, and shows the downloads and "Open in ADE"
-  (`ade://invite/<CODE>`). The code never reaches analytics, and replay masks
+  first name, and shows the downloads and "Open in DAEX"
+  (`daex://invite/<CODE>`). The code never reaches analytics, and replay masks
   the page.
 - **Desktop, CLI, phone:** `window.ade.cloud.redeemInvite(code)`;
-  `ade://invite/<CODE>` opens Settings › Account with the code filled (the log
-  keeps `ade://invite/<redacted>`). The `cloud` actions `referral` and
-  `invite_redeem` (user-only: an agent, an ADE MCP app and the CLI are
-  refused). `ade cloud invite` prints the link and the summary.
+  `daex://invite/<CODE>` opens Settings › Account with the code filled (the log
+  keeps `daex://invite/<redacted>`). The `cloud` actions `referral` and
+  `invite_redeem` (user-only: an agent, a DAEX MCP app and the CLI are
+  refused). `daex cloud invite` prints the link and the summary.
 
 ### Analytics and alerts
 
@@ -1132,14 +1132,14 @@ sentence.
 ### Sign-ins in the account vault
 
 - Kind `integration`, scope `all`: `cloud-budget` (the agent limits),
-  `cloud-key-<provider>` (the saved ADE Cloud keys) and `cloud-claude-token`
+  `cloud-key-<provider>` (the saved DAEX Cloud keys) and `cloud-claude-token`
   (an older Claude item, adopted as `claude-pass/legacy`).
 - Kind `provider_login`: the provider sign-ins, `<provider>/<origin>.<slot>`
   (the origin is 12 hex of the computer's machine key), and the Claude passes,
   `claude-pass/<12 hex>`. The relay caps one value at 16,000 characters.
-- The account setting `providerLogins.cloud` says which sign-in ADE Cloud uses
+- The account setting `providerLogins.cloud` says which sign-in DAEX Cloud uses
   for each provider, which are off, and the Claude smart balance switch.
-- A computer keeps marks only, never a token: `<ADE home>/provider-logins/`
+- A computer keeps marks only, never a token: `<ade home>/provider-logins/`
   `state.json` and `applied.json`, and `claude-pass-use.json`.
 - A new cloud computer gets no sign-in in its env. Its brain signs in to the
   account and takes every sign-in from the vault (`providerLoginApplyPass.ts`,
@@ -1152,11 +1152,11 @@ sentence.
   starts (`pty.create` with a runtime CLI launch) and `work.startCliSession`
   from the web and the phone. Right after a start or a wake, the brain holds
   turns until the sync has installed its gate (`holdProviderLoginGate`, at
-  most 30 s). Then, until the sync has the account's ADE Cloud answer, the
+  most 30 s). Then, until the sync has the account's DAEX Cloud answer, the
   gate waits up to 30 s for the account sign-in and that answer (it asks
   again every 5 s while the answer is unreadable), pulls the vault and the
   account settings, and applies the provider before the turn goes. A chat
-  says "Getting this cloud computer's sign-ins from your ADE account…" while
+  says "Getting this cloud computer's sign-ins from your DAEX account…" while
   it waits. A wait that runs out is logged (`provider_login.gate_cold`), and
   later turns go at once until the next answer. On a person's own computer
   the gate is not installed, so a send pays nothing.
@@ -1169,30 +1169,30 @@ Sign-ins also come down to the person's own computers
 - It never replaces a local sign-in (`provider_login.down_kept_local`), never
   writes a saved key or an env variable, and stays off a place the person
   signed out of there until they sign in there again.
-- Claude never comes down (ADE Cloud uses a pass), nor does Copilot's GitHub
+- Claude never comes down (DAEX Cloud uses a pass), nor does Copilot's GitHub
   CLI login.
-- What the sync down wrote is replaced only while it is as ADE wrote it. It
-  leaves on ADE sign-out.
+- What the sync down wrote is replaced only while it is as DAEX wrote it. It
+  leaves on DAEX sign-out.
 
 OpenCode's sign-in (`providerLoginCarry.ts`, `openCodeCarryWriter.ts`):
 
 - Only the opencode.ai sign-in travels (OpenCode Go and Zen ride it): the
-  `credential` row with `integration_id = 'opencode'` in ADE's own OpenCode
+  `credential` row with `integration_id = 'opencode'` in DAEX's own OpenCode
   store, the one in use. Other sign-ins made in OpenCode stay on the computer.
   An Anthropic login held by OpenCode is never copied (the Claude rule), and
-  an API key pasted into OpenCode stays too (ADE's saved keys carry keys).
+  an API key pasted into OpenCode stays too (DAEX's saved keys carry keys).
 - Capture never reads the store file (it is large and changes on every
   turn). It asks SQLite for the row's id and last write only when the file or
   its WAL moved, and reads the row when that changed.
 - Apply writes the row through OpenCode's own `credential` API on the shared
   server, never by SQL, and makes it the one in use. A copy is access-only
-  (the refresh token is empty), on ADE Cloud and on the person's other
+  (the refresh token is empty), on DAEX Cloud and on the person's other
   computers alike. Each copy is a new row (`cred_ade…`): it is written and
   made the one in use first, then the copy before is removed, so a failed
   write never leaves no sign-in. A copy before that cannot be removed then
   stays on the entry (`openCodeLeft`) and is tried again by the next copy and
-  by sign-out. ADE never downloads OpenCode only to write a
-  sign-in; it waits until OpenCode is there. On sign-out ADE removes its row
+  by sign-out. DAEX never downloads OpenCode only to write a
+  sign-in; it waits until OpenCode is there. On sign-out DAEX removes its row
   with OpenCode's API, or with one SQL delete when OpenCode is gone. A
   removal that fails (the store is busy) stays in `applied.json`, and the
   next account's first pass tries it again (all providers). A copy OpenCode
@@ -1200,7 +1200,7 @@ OpenCode's sign-in (`providerLoginCarry.ts`, `openCodeCarryWriter.ts`):
 - A copy is replaced only while it is still the row OpenCode uses and nobody
   changed it. A sign-in made in OpenCode on that computer afterwards is a new
   row in use, so the copy stops there.
-- The computer that signed in renews it ahead: 270 s before expiry, ADE asks
+- The computer that signed in renews it ahead: 270 s before expiry, DAEX asks
   its OpenCode server to load a new, empty folder, which makes OpenCode 2.0.29
   renew the login (it renews only inside the last 5 minutes). No model
   request. The renewed row is pushed by the next pass. A renewal timer more
@@ -1228,22 +1228,22 @@ sign-in was signed out where it came from. The account is the email
   `integration/github-cli` (a `gh` login that `githubGhAccountSync.ts` copies
   to the account). A private repository with none is refused with the way
   out. A public one goes on. No answer from GitHub goes on with a warning
-  (`cloud.warning`). The composer of a new ADE Cloud lane reads the same check
+  (`cloud.warning`). The composer of a new DAEX Cloud lane reads the same check
   (`window.ade.cloud.gitPreflight`, `useAdeCloudDraft.ts`) and turns Send off
   on a refusal.
 - The clone passes its auth header through Git's config environment, so no
   token stays in `.git/config`.
-- On an ADE Cloud computer only, the clone's config gets an empty
+- On a DAEX Cloud computer only, the clone's config gets an empty
   `credential.https://github.com.helper` and then
-  `!'<launcher>' git credential`. The launcher is the ADE the brain runs, else
-  the ADE home's `bin/ade`, else `/usr/local/bin/ade`. A plain `git push` in a
-  terminal there signs in with ADE's token.
-- A person's own computer records no helper: ADE passes the token per command.
+  `!'<launcher>' git credential`. The launcher is the DAEX the brain runs, else
+  the DAEX home's `bin/ade`, else `/usr/local/bin/ade`. A plain `git push` in a
+  terminal there signs in with DAEX's token.
+- A person's own computer records no helper: DAEX passes the token per command.
   A clone sent to a computer with no GitHub sign-in says so
   (`githubSignInMissing`), and the window warns that fetch and push there
   will not sign in.
 - Commits use the account's GitHub noreply identity, else
-  `ADE Cloud <cloud@users.noreply.ade-app.dev>` (`cloudGitIdentity.ts`), never
+  `DAEX Cloud <cloud@users.noreply.ade-app.dev>` (`cloudGitIdentity.ts`), never
   over a value a person set.
 
 ### Metadata, request ids and launch records
@@ -1258,19 +1258,19 @@ sign-in was signed out where it came from. The account is the email
   released. The reserve insert allows one live row per account and request id.
 - The desktop keeps one record per lane launch in
   `<userData>/cloud-lane-launches/<launchId>.json` until its cleanup is done;
-  a brain keeps its own in `<machine ADE folder>/cloud-lane-launches/`.
+  a brain keeps its own in `<machine .ade folder>/cloud-lane-launches/`.
 
 ## From the CLI and agents
 
 ### The status read
 
-`cloud.status` (`ade cloud status`, or `ade cloud` alone) answers the whole
+`cloud.status` (`daex cloud status`, or `daex cloud` alone) answers the whole
 account from one computer list and one account read. It wakes and spends
-nothing, and never throws for "no ADE Cloud".
+nothing, and never throws for "no DAEX Cloud".
 
 - `canStartLane {ok, reason, code}`: the composer's sentence
   (`cloudLaneStartBlock`: out of hours, all computers in use, disk full), the
-  access sentence (`NO_PROVIDER_SENTENCE`), or that ADE couldn't read the plan.
+  access sentence (`NO_PROVIDER_SENTENCE`), or that DAEX couldn't read the plan.
 - `plan`, `hours`, `disk`, `computers` (in use, awake, the most at once).
 - `lanes`: every computer, lanes first, with the lane name and origin from its
   metadata, size, rate, state, disk and full-disk sentence, and `deletesAt`.
@@ -1281,32 +1281,32 @@ nothing, and never throws for "no ADE Cloud".
   left, and the sizes unwatched agents may pick.
 
 `list`, `hours` and `limits` are narrow views of the same reads. The text puts
-"No new lane on ADE Cloud now: <reason>" first on a no. ADE MCP read access,
+"No new lane on DAEX Cloud now: <reason>" first on a no. DAEX MCP read access,
 the phone (`cloud.read`) and a brain with no project can read it.
 
 ### A new lane
 
 **The commands.**
 
-- `ade chat create --machine cloud [--size small|medium|large|xlarge] --prompt "…"`
+- `daex chat create --machine cloud [--size small|medium|large|xlarge] --prompt "…"`
   makes one computer for one new lane, gets the repository there and starts
   the chat there. With no `--size`, the brain uses the saved size for new
   lanes (`CLOUD_DEFAULT_TIER_SETTING_KEY`), else Small; a default Small that
   runs out of memory in setup moves to Medium once (see "A launch that needs
   more memory").
-- `ade chat launch --machine cloud` takes the same flags and `chat launch`'s
+- `daex chat launch --machine cloud` takes the same flags and `chat launch`'s
   lane flags (`--from`, `--lane-name`, `--existing-branch`). The lane starts
   from the pushed branch: `--on uncommitted`, `--on local`, `--notify-url`,
   `--lane`, `--project` and `--clone` are refused. A Linear issue must be the
   whole issue (`--linear-issue-json`), because the computer can not look up a
   bare id.
-- `ade lanes create --machine cloud [--size …] [--launch-id <id>] --name <n>`
+- `daex lanes create --machine cloud [--size …] [--launch-id <id>] --name <n>`
   makes the lane alone (a launch of kind `lane`: computer, join, clone, fetch,
   checkout, environment; no agent stage). It takes `--from`, `--branch-name`,
   `--existing-branch`, `--template` and a whole Linear issue, and refuses
   `--description` and `--no-template`.
-- A CLI session can start a new ADE Cloud lane only from the app (pick CLI,
-  then Run on: ADE Cloud). The computer's brain parks the launch at
+- A CLI session can start a new DAEX Cloud lane only from the app (pick CLI,
+  then Run on: DAEX Cloud). The computer's brain parks the launch at
   `awaiting-client`, and the launching window starts the CLI there through
   `snapshot.cloud.binding`. `cloud.lane_launch` refuses kind `cli`, because a
   brain has no window.
@@ -1334,12 +1334,12 @@ the phone (`cloud.read`) and a brain with no project can read it.
   `size`. They call `cloud.lane_launch` on the CTO's home brain under the CTO
   chat's identity, so the approval card shows in the CTO chat, and return
   when the launch starts (at most 180 s).
-- **Automations:** a rule can set `execution.cloud: { sizeId? }` ("Run on ADE
+- **Automations:** a rule can set `execution.cloud: { sizeId? }` ("Run on DAEX
   Cloud"). The machine that runs the rule watches the trigger and keeps the
   history. Each run calls `cloud.lane_launch` with the run id as the launch id
   and the approval `{ by: "agent", chatSessionId: null, automation: true }`,
   so the agent limits answer. An agent rule starts a chat launch; a rule of
-  built-in steps makes the lane alone, then runs its ADE action steps here.
+  built-in steps makes the lane alone, then runs its DAEX action steps here.
   The run waits up to 30 minutes. Such rules need `laneMode` "create" or
   "pr-branch", no bound chat and no step that works in a lane here
   (`automationCloudProblem`). A test run stays here.
@@ -1347,27 +1347,27 @@ the phone (`cloud.read`) and a brain with no project can read it.
   server's caller stamp (`CLOUD_APPROVED_ACTIONS`), and `lane_launch` asks
   with the same `approve()` as `cloud.create`: a card in an attended chat; the
   agent limits (daily count, largest size, hours) in a full-auto chat or an
-  automation. The start checks (`cloudLaneLaunchStartProblem`, then
-  `cloudLaneStartBlock`) run before the question. An account ADE couldn't
+  automation. The start checks (`cloudLaneLaunchStartRefusal`, then
+  `cloudLaneStartBlock`) run before the question. An account DAEX couldn't
   read goes on to the server, but an unattended agent is refused for unknown
   hours.
 - **A computer with no lane (`create`, `copy`, `move`):** agents start lanes;
   they never make a computer alone. These cards carry `makesComputer`, so
   `approve()` asks the person on a card in the agent's chat, also in a
   full-auto chat, and refuses when nobody can answer: an automation run, an
-  ADE MCP app, a chatless shell, and the CTO's generic action tool (the RPC
+  DAEX MCP app, a chatless shell, and the CTO's generic action tool (the RPC
   server stamps the CTO as an agent for these three actions,
   `CLOUD_COMPUTER_MAKE_ACTIONS`). The refusal is
   `CLOUD_AGENT_NO_COMPUTER_MESSAGE`: start a lane with the size the work
-  needs, or ask the person to make the computer in Settings › ADE Cloud. A
+  needs, or ask the person to make the computer in Settings › DAEX Cloud. A
   move adds a computer too, so it has the same rule. Lane launches keep the
   agent limits.
 - **A person at a plain terminal or a chatless agent:** refused, with "Start
-  it in the ADE app (pick ADE Cloud under Run on in a new chat), or ask for it
-  in an ADE chat, where ADE can ask you." A chatless `ade` looks exactly like
+  it in the DAEX app (pick DAEX Cloud under Run on in a new chat), or ask for it
+  in a DAEX chat, where DAEX can ask you." A chatless `ade` looks exactly like
   an agent's shell, so nothing there can prove a person
   (`mayUseUserOnlyActions`).
-- **ADE MCP:** an outside app with write access is an unattended agent, only
+- **DAEX MCP:** an outside app with write access is an unattended agent, only
   when the RPC server can stamp `viaAdeMcp` (the operator role and a process
   the MCP runner started, `isRunningRemoteRun`). A resize, a delete, a move, a
   cancel and loosening the limits always need the person. A read-only
@@ -1376,7 +1376,7 @@ the phone (`cloud.read`) and a brain with no project can read it.
   `chats`, `sessions`, `backups`, `jobs` and `project`
   (`remoteMcpCommandPolicy.ts`, `isCloudAccountRead`).
 - **The daily limit:** past the day's new computers for agents, the refusal
-  names the limit and Settings › Integrations › ADE Cloud › What agents may do
+  names the limit and Settings › Integrations › DAEX Cloud › What agents may do
   › New computers a day. A person is never counted.
 - **The card.** `approve()` asks with one structured question: a short
   question ("Delete Stall Repro?", `question`, else the title with "?"), one
@@ -1397,7 +1397,7 @@ the phone (`cloud.read`) and a brain with no project can read it.
 
 **How it runs.**
 
-- This computer's brain (`ade serve`) runs it through the server launcher
+- This computer's brain (`daex serve`) runs it through the server launcher
   (core `cloudLaneLaunchService.ts`, deps `cloudLaneLaunchBrainHost.ts`). The
   CLI calls `cloud.lane_launch` and reads `cloud.lane_launch_status` every 2 s.
 - The `computer`, `join` and `clone` rows show the server's record (every 3 s,
@@ -1407,19 +1407,19 @@ the phone (`cloud.read`) and a brain with no project can read it.
 - The launch carries the server's facts and the whole launch as set up
   (`launch`, at most 256 KB). `madeBy` names an agent's chat
   (`ade_made_by_agent`, `ade_made_by_chat`).
-- A computer the brain makes itself (`ade cloud create`, copy, a move with no
+- A computer the brain makes itself (`daex cloud create`, copy, a move with no
   desktop) joins with a device sign-in. Its link goes to the agent's chat, to
   `make_status`, and as a push to the person's phones ("Approve <computer>
-  joining your ADE account", `setCloudJoinApprovalPush` in
+  joining your DAEX account", `setCloudJoinApprovalPush` in
   `cloudBrainMaker.ts`), under the normal push rules. With no push publisher,
   the brain logs `cloud.join_approval_push_skipped`.
 - **One computer per id:** the launch id is printed first. The same
   `--launch-id` answers that launch, and a failed one is retried (`--prompt`
   is not needed again). Ctrl-C stops only the waiting; the brain resumes saved
-  records 5 s after it starts. `ade chat launch-status <id> --machine cloud`
-  reads it; `ade chat launch-cancel <id> --machine cloud` stops it and deletes
+  records 5 s after it starts. `daex chat launch-status <id> --machine cloud`
+  reads it; `daex chat launch-cancel <id> --machine cloud` stops it and deletes
   its computer (only the chat that started it, or the person).
-- **Output:** text shows the lane, the chat and `ADE Cloud · <computer>`.
+- **Output:** text shows the lane, the chat and `DAEX Cloud · <computer>`.
   `--json`: `{ok, launchId, phase, laneId, laneName, sessionId, machine,
   approvalUrl, launch}`. A failed or cancelled launch exits non-zero with the
   card's sentence.
@@ -1427,10 +1427,10 @@ the phone (`cloud.read`) and a brain with no project can read it.
 ### A new lane with no computer of your own (the server launcher)
 
 Every new lane on its own computer starts through the server
-(`apps/account-directory/src/cloud/launches.ts`, migration `0029`; design in
-`docs/plans/cloud-6/c6-c8-launcher-spec.md`). The app and the CLI send it
+(`apps/account-directory/src/cloud/launches.ts`, migration `0029`).
+The app and the CLI send it
 through `cloudLaneLaunchService.ts` and follow the computer's launch once it
-joins. The web, the phone and an automation on ADE Cloud send it with no
+joins. The web, the phone and an automation on DAEX Cloud send it with no
 computer. The new computer runs its own launch. The routes are in
 [`apps/account-directory/README.md`](../../../apps/account-directory/README.md#launches-from-the-web-and-the-phone).
 
@@ -1448,7 +1448,7 @@ computer. The new computer runs its own launch. The routes are in
   - The kind is `chat` or `lane`. A CLI launch goes as `lane` with `cli` in
     `launch.kind`, so an older server or computer runs the lane alone.
   - `lane.autoName: true` lets the computer's brain give the AI name.
-  - `lane.color` (`#rrggbb`) is the new lane's color. The desktop, ADE Web
+  - `lane.color` (`#rrggbb`) is the new lane's color. The desktop, DAEX Web
     and the phone pick the first palette color that none of the project's
     listed lanes uses, on any machine (`withCloudLaneColor`,
     `LaneColorPalette.nextAvailableColor`). A lane that gets a new computer
@@ -1457,7 +1457,7 @@ computer. The new computer runs its own launch. The routes are in
     one from the lane id (`laneColorFromId`): a cloud computer holds only its
     main checkout and one lane, so "first unused" would give every cloud lane
     the same color.
-  - An ADE app also sends its launch args (`launch`, at most 256 KB); the
+  - A DAEX app also sends its launch args (`launch`, at most 256 KB); the
     facts win where both say something.
   - A caller with no computer sends `project: { accountProjectId }` and may
     leave out `lane` and `sizeId` (a new lane named from the first message,
@@ -1476,7 +1476,7 @@ computer. The new computer runs its own launch. The routes are in
   code (an HMAC under `CLOUD_LAUNCH_JOIN_KEY` of the launch id and a kept
   salt; the server keeps only the salt and the code's SHA-256).
   - At brain start with no session (`cloudBootLaunch.ts`), the brain drops
-    both from its env, starts ADE's device sign-in and calls
+    both from its env, starts DAEX's device sign-in and calls
     `POST /cloud/launches/:id/join` with no account token. The code is valid
     30 minutes and is the only proof. The brain may join again while the
     sign-in was not approved, at most 5 times. `409 join_not_ready` is
@@ -1521,15 +1521,15 @@ computer. The new computer runs its own launch. The routes are in
   chat on a new computer (see
   [Continue a chat whose computer is gone](#continue-a-chat-whose-computer-is-gone-fork-continue)).
 
-### Automations whose home is ADE Cloud
+### Automations whose home is DAEX Cloud
 
-A rule's home can be ADE Cloud itself (`automations/README.md`, "Runs on ADE
+A rule's home can be DAEX Cloud itself (`automations/README.md`, "Runs on DAEX
 Cloud"). The server keeps the rule (`cloud_automations`, migration 0030,
 `apps/account-directory/src/cloud/automations.ts`) and watches its trigger.
 
 - **Registration.** A brain sends `PUT /cloud/automations/:ruleId` for a
   version the server lacks (the same version writes nothing but reads the
-  vault again), and `DELETE ?through=<version>` when the home leaves ADE Cloud
+  vault again), and `DELETE ?through=<version>` when the home leaves DAEX Cloud
   or the rule goes. Each registration reads the agent limits and the git
   credential from the vault and keeps them for the runs; unread limits refuse
   unattended spend. Only a newer version turns a storm-paused rule back on.
@@ -1548,7 +1548,7 @@ Cloud"). The server keeps the rule (`cloud_automations`, migration 0030,
   automation`), under the agent limits, then the launcher's checks.
   - One run at a time per rule and one waiting; the rest are skipped. Past the
     rule's runs an hour (default 6), the rule pauses.
-  - A 503 from ADE Cloud leaves the run starting for up to an hour. A chat
+  - A 503 from DAEX Cloud leaves the run starting for up to an hour. A chat
     that stops for input fails the run ("The agent asked for input").
   - When the chat ends, the cron saves its chats and each lane's backup on the
     awake computer (nothing is pushed) and deletes the computer, keeping the
@@ -1562,7 +1562,7 @@ Cloud"). The server keeps the rule (`cloud_automations`, migration 0030,
 
 - Provider sign-ins from the phone or the web:
   `POST /cloud/instances/:id/sign-ins { provider }` runs
-  `ade providers sign-in <provider> --remote --json` there;
+  `daex providers sign-in <provider> --remote --json` there;
   `.../sign-ins/:job` and `.../code` read it and pass a pasted code. Which
   providers can do this is `CLOUD_REMOTE_SIGN_IN` in `contract.ts`.
 - `POST /cloud/projects/computers/delete { origin, dryRun: true }` lists a
@@ -1583,7 +1583,7 @@ is `cloudLaneAccount.ts`, which a brain's `cloud` actions use too
 (`cloudLaneVerbs.ts`). Each call is account level: it names a computer of the
 account, never a pin.
 
-- **Work check.** `ade cloud push-work --check --json` on the computer lists
+- **Work check.** `daex cloud push-work --check --json` on the computer lists
   the lanes with uncommitted changes or commits no remote has
   (`laneService.readUnsavedWork`, uncached). It changes nothing. A resting
   computer is woken for it like any wake: the person's click is use, and at 0
@@ -1591,7 +1591,7 @@ account, never a pin.
   `git fetch --all --prune` per project (60 s). Commits already in the
   remote's base branch (`git merge-tree` changes nothing) count as saved. A
   lane that can't be read, or a fetch that fails, reads `failed`, never
-  `clean`, and the computer is kept. `ade cloud work-state` runs the same
+  `clean`, and the computer is kept. `daex cloud work-state` runs the same
   check.
   - **When GitHub stopped it.** A `failed` lane carries `reason` when git's
     error says GitHub stopped the fetch or the push (`classifyGitPushFailure`):
@@ -1601,7 +1601,7 @@ account, never a pin.
     check then say what GitHub did (`pushWorkGithubProblem`,
     `pushWorkGithubMessage` in `computerCommands.ts`) instead of "open the
     lane". A refusal is the person's to fix, so the free logs it and sends no
-    Sentry event. An older ADE on the computer sends no `reason`, and the
+    Sentry event. An older DAEX on the computer sends no `reason`, and the
     older sentences stay.
   - **A lane that isn't on the computer.** A launch that failed before it
     made the lane (a provider refused its key) leaves a computer with only its
@@ -1615,15 +1615,15 @@ account, never a pin.
     commits or changed files is unpushed work. `checkedBy` says which way it
     read. An asleep computer that saved nothing is still woken.
 - **Delete lane.** The computer goes, and the lane and its saved chats with
-  it. ADE never refuses it. The work check runs first unless the person was
+  it. DAEX never refuses it. The work check runs first unless the person was
   already warned.
   - "Keep its chats to read later" (off by default) passes `keepChats`.
     Otherwise main deletes the computer's saved chats by its machine key, and
     the keys in `ade_former_machine_keys` (a moved lane) while the server says
     their computer is deleted. It reads at most 20 pages of 200; when chats
     stay, `chatsKept` is true and the toast says to remove the rest in Work.
-  - `cloud.delete` (`ade cloud delete <machine>`) keeps the chats.
-    `cloud.lane_delete` (`ade cloud lanes delete <lane>`) deletes them, as
+  - `cloud.delete` (`daex cloud delete <machine>`) keeps the chats.
+    `cloud.lane_delete` (`daex cloud lanes delete <lane>`) deletes them, as
     the desktop does. It refuses `keepChats` (and the CLI refuses
     `--keep-chats`): the person picks on the card, and Keep for later is the
     way to keep the lane and its chats. An agent can't keep the chats behind
@@ -1633,12 +1633,12 @@ account, never a pin.
 - **Manage lane on a cloud lane** opens a Computer tab
   (`CloudLaneComputerPanel.tsx`): Change size, Put to sleep, Keep the lane and
   free its computer (`freeCloudLaneWithConfirm`), Keep this computer while
-  the idle cleanup warned, and the ADE Cloud page. Its Delete tab is the cloud
+  the idle cleanup warned, and the DAEX Cloud page. Its Delete tab is the cloud
   delete with the keep-chats box.
 - **A deleted computer looks like a sleeping one** (`cloudLanesWithoutComputer.tsx`,
   `CloudLaneComputerDeletedBanner.tsx`). A lane whose computer was deleted,
   kept by the server or listed only by its saved chats, stays a normal row
-  among the ADE Cloud lanes in Lanes and Work, with one quiet "Computer
+  among the DAEX Cloud lanes in Lanes and Work, with one quiet "Computer
   deleted" mark. Its rows name the machine id `ade-cloud-deleted`, which
   nothing routes to, so every lane action refuses them. Its lane page and its
   chats show one inline banner: what happened, what the next message does,
@@ -1648,7 +1648,7 @@ account, never a pin.
   bigger if the project needed it before. A pick goes with the message
   (`sizeId`), and the server starts the computer at that size and does not
   change it. The pick belongs to the deleted computer's machine key, so all
-  of its chats share it, and a send that carries it clears it. When ADE Cloud can't start one (the account is blocked or signed
+  of its chats share it, and a send that carries it clears it. When DAEX Cloud can't start one (the account is blocked or signed
   out, no hours or disk, no branch or repository), the banner turns to a
   warning with the reason and Send is off. A lane with no chat offers New
   computer on the same branch instead. In Lanes, a lane with no kept record
@@ -1660,7 +1660,7 @@ account, never a pin.
   delete, the lane leaves the list at once (`noteKeptLaneDeleted`), and a
   saved-chats read that started before the delete can't list the lane or
   its chats again (`noteCloudSavedChatsDeleted`). A lane on a deleted
-  computer whose chats are all gone leaves the list. The ADE Cloud page lists every
+  computer whose chats are all gone leaves the list. The DAEX Cloud page lists every
   project's kept lanes (`CloudDashboard.tsx`).
   - On the iPhone the same lanes are normal rows in the project's Lanes list
     (`LaneKeptCloudRows.swift`), counted under Active. A tap opens the newest
@@ -1671,34 +1671,34 @@ account, never a pin.
     Everything goes through the account server, so it works with no machine
     of the person's own.
   - **Lane links to a kept lane** open its kept page, not "Lane shared with
-    you" or "This link is from a computer that isn't in your ADE account".
+    you" or "This link is from a computer that isn't in your DAEX account".
     The iPhone reads the kept list fresh (`openKeptLane` in
     `DeepLinkRouter.swift`) and shows `KeptLaneLinkSheet`, which closes when
     the lane leaves the list. The desktop (`keptCloudLaneNavigation` in
-    `main.ts`, and `App.tsx` for a link with no machine) and ADE Web
-    (`WebClientRoot.resolveOwnedTarget`) open Settings › ADE Cloud with that
+    `main.ts`, and `App.tsx` for a link with no machine) and DAEX Web
+    (`WebClientRoot.resolveOwnedTarget`) open Settings › DAEX Cloud with that
     row selected (`?tab=ade-cloud&lane=<id>#cloud-lanes`).
     A lane page left open while its computer goes (opened from any machine's
     row) turns into that kept row, with New computer and Delete; it reads
     the list a few times for about half a minute. When the read fails, the
-    ADE Cloud page says so with Try again, never "No cloud lanes yet".
+    DAEX Cloud page says so with Try again, never "No cloud lanes yet".
 - **Move this lane to** one of the person's own computers
   (`components/laneMove/`, the chat composer's machine chip; the iPhone's
   `LaneMoveSheet`). The review lists every chat with how much history it
   keeps, the unpushed work, and the files git ignores
-  (`instance.ignoredFiles`, from the disk report): those do not move. ADE
+  (`instance.ignoredFiles`, from the disk report): those do not move. DAEX
   Cloud is never a destination. The way depends on the lane's computer:
   - **Awake:** the batch move carries the lane and its Work chats and CLIs,
-    then ADE deletes the computer. Only the saved copies of the chats that
+    then DAEX deletes the computer. Only the saved copies of the chats that
     arrived go with it (`deleteLane` with `onlyChats`); a Done, archived or
-    other-surface chat the move left stays readable from ADE Cloud.
+    other-surface chat the move left stays readable from DAEX Cloud.
     Before the delete, the source answers two checks: no chat or CLI started
     on the lane during the move, and the lane's HEAD and working tree match
     what the move carried (`chat.crossMachineBatchSourceChanged`, against the
     lane item's `carriedHeadSha` and `carriedTreeSha`). A chat that started
     there keeps the computer and ends the run as "move again", which does not
-    block a new move. Changed files, or a computer whose ADE is too old to
-    check, end it at "Push to GitHub and delete": ADE pushes the lane's files
+    block a new move. Changed files, or a computer whose DAEX is too old to
+    check, end it at "Push to GitHub and delete": DAEX pushes the lane's files
     to its branch, checks nothing is left off GitHub, then deletes the
     computer, and the person pulls the branch on the destination. "Keep
     computer" leaves it. A check that can't read the source keeps the
@@ -1727,7 +1727,7 @@ account, never a pin.
     `cloud.getKeptLaneRestore`; all with `fromComputer: { instanceId }`).
   - A restore lists at most 100 chats and CLIs to bring. When more are left,
     it ends as failed and keeps the lane; a new start brings the next ones.
-- **Keep the lane on a fresh computer.** ADE pushes the work first; a push that
+- **Keep the lane on a fresh computer.** DAEX pushes the work first; a push that
   can't save everything keeps the computer, and freeing is refused while the
   agent works ("Stop it or wait, then free the computer"). Then the server
   deletes the computer with `keepLane` (`cloud_lanes_without_computer`,
@@ -1735,25 +1735,25 @@ account, never a pin.
 - **Tier change.** A resize in place when the kind stays, else a move. The
   server's `/resize` wakes a sleeping computer first, metered from the wake.
   It starts when the agent is idle (`keep-awake.json`) or now
-  (`ade cloud prepare-stop` stops the turn).
-  - A disk-only grow runs `ade cloud prepare-stop --disk-grow <GB>`: it
+  (`daex cloud prepare-stop` stops the turn).
+  - A disk-only grow runs `daex cloud prepare-stop --disk-grow <GB>`: it
     writes the grow note and keeps the turns, which continue after the
     restart.
   - A resize with a disk sends `computerIdle: true` only within 2 minutes of
     the job's own save. A failed disk-only resize removes the note.
   - Its steps go to every window (`IPC.cloudLaneJobEvent`). The lane is Online
-    only when ADE on the computer answers and has the lane's project.
-  - While a change runs, the desktop and ADE Web composer of the lane's chat
+    only when DAEX on the computer answers and has the lane's project.
+  - While a change runs, the desktop and DAEX Web composer of the lane's chat
     send through the account's queue instead of to the computer
-    (`chatLaneChangeRef` in `AgentChatPane`, then `sendThroughCloudQueue`). ADE
+    (`chatLaneChangeKind` in `AgentChatPane`, then `sendThroughCloudQueue`). DAEX
     on the computer stops during the change (a move stops it at `serve` and
     deletes the computer), so a direct send waited at most 45 s on the old
     address and failed, or started a turn the change cut. A move's message
     is held on the server and sent on the new computer
     ([the message queue](#send-to-an-asleep-or-deleted-computer-the-message-queue));
-    the chat shows it as queued ("Moving this lane to its new ADE Cloud
+    the chat shows it as queued ("Moving this lane to its new DAEX Cloud
     computer…") until the transcript has it. A size change queues only once
-    its resize was asked: before that its ADE still answers, and the restart
+    its resize was asked: before that its DAEX still answers, and the restart
     would cut the turn the message started, so the message stays in the box
     with a hint. Files and thread comments stay in the box with a hint for
     the whole change (they go with a live send only), and so does a message
@@ -1763,7 +1763,7 @@ account, never a pin.
   - A move saves the chats while it makes the new computer (Save work and
     Make computer run at once; one after the other they took about 1.5
     minutes each). The server's `make` step holds the running old computer
-    and starts `ade cloud prepare-stop` there in the background, once per
+    and starts `daex cloud prepare-stop` there in the background, once per
     move (`startMoveSaveCommand`); `join` notes its end while it waits, and
     `save` waits for it, at most 2 minutes from its start, then goes on with
     a warning as a save past its time always did. The copy (`serve`, the
@@ -1792,42 +1792,42 @@ account, never a pin.
     lane's job the same way (`useChatCloudLaneJob`), and Send goes to the
     account's queue while the job holds sends (`cloudLaneJobHoldsSends`). The
     chat header's cloud button shows the job too: its step now, "Show the
-    move's steps" (opens that bar, else the ADE Cloud page), and no sleep
+    move's steps" (opens that bar, else the DAEX Cloud page), and no sleep
     countdown, Change size or Sleep now while it runs.
-- **An agent asks.** `ade cloud resize --request --size large --reason "…"`
+- **An agent asks.** `daex cloud resize --request --size large --reason "…"`
   (`cloud.tier_request`, `cloudTierRequestActions.ts`) posts a `cloud_tier_request` card in the agent's
   chat; the person confirms there. An unwatched agent can not change a size:
   `cloud.resize` is declined.
   - The newest request still waiting (a day at most) is pinned above the
-    prompt box, where an "ADE asks" question shows
+    prompt box, where a "DAEX asks" question shows
     (`CloudTierRequestsAboveComposer`); its transcript card turns to one line
     that points there. The × and Keep the size say no; Change size or Move it
     start the change (`changeTier`, main process, no pin).
   - Every answer then goes to the chat's own machine by the chat's pin
     (`cloud.tier_request_answer` with the chat and the request id, user-only;
-    ADE Web and the phone through `cloud.write`). That machine reads the card
+    DAEX Web and the phone through `cloud.write`). That machine reads the card
     from the chat (never a client's copy), marks it answered (same `cardId`,
     no buttons, the answer in its subtitle and rows) for every surface, and
     tells the agent (`cloudTierRequestAgentMessage`): Keep the size wakes it
-    at once with ADE's words (`hostContinuation.reason: "card_answer"`); a
+    at once with DAEX's words (`hostContinuation.reason: "card_answer"`); a
     yes is a note for its next turn (no wake: a turn then would hold up a
     change that waits for the agent to be idle).
   - How the change ended (online, failed or cancelled) goes to the chat's
     machine from what runs the change, with the chat's pin the confirm
     passed (`requestedByChatPin`): this app's main process
     (`tellRequestingChat` in `cloudLaneLife.ts`) for a size change it runs
-    and for a move it follows on ADE's server, with every window closed; it
+    and for a move it follows on DAEX's server, with every window closed; it
     tries again a few times, and after a quit. Each try reads the job again,
     so a Retry's end is told too (at once when it comes while a try waits).
-    ADE Web's tab tells it for a size change it ran and for a move it
+    DAEX Web's tab tells it for a size change it ran and for a move it
     follows (`createWebTierRequestTeller`), while the tab is open; both run
     the same loop (`createTierRequestTelling` in `shared/cloudTierRequest.ts`).
-    A move started from ADE Web keeps its request and timing on the server's
+    A move started from DAEX Web keeps its request and timing on the server's
     record (`CloudMoveRequest.requestId`, `requestedByChat`,
     `requestedByChatPin`), so a reloaded tab still tells the chat; an older
     server drops them and nobody is told. A chat that lived
     on the moved computer is told on the new one, and a pin that names no
-    machine (a saved chat's `cloud-saved:<key>`, the ADE Cloud tab's) is
+    machine (a saved chat's `cloud-saved:<key>`, the DAEX Cloud tab's) is
     reached by its machine key: that machine is connected and the chat's
     project found there (`cloudTierRequestChatMachineKey`). The agent is
     woken with the outcome. The card keeps what the agent was told
@@ -1843,7 +1843,7 @@ account, never a pin.
 `cloudLaneVerbs.ts` adds the account's views to the brain's `cloud` domain.
 Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
 
-- **One lane model.** `cloud.lanes` (`ade cloud lanes`) lists every lane of
+- **One lane model.** `cloud.lanes` (`daex cloud lanes`) lists every lane of
   the account once. A lane is on a computer (`awake`, `asleep`, `starting`,
   `stopping`, `deleting`, `error`) or `computer_deleted`: the server kept the
   lane, or only its saved chats are left. Each lane has its saved chat count,
@@ -1866,7 +1866,7 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
     by the server refuses a delete or free of either computer. Computer
     already deleted: its kept record (the
     server deletes the lane's backups and saved chats with it), then any
-    chats left on its deleted computers. With no kept record, ADE deletes
+    chats left on its deleted computers. With no kept record, DAEX deletes
     those chats and the lane's backups itself.
   - `lane_free`, `saved_chat_delete`, `session_delete`, `backup_forget` and
     `job_cancel` ask the same way.
@@ -1874,7 +1874,7 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
     (`cloud_lane_action`, drawn by the generic `ade_card`): "Deleting X…",
     then "Deleted X" with the result's sentence, or why it failed in amber. The command gets the same result. `lane_start` makes the lane's new computer
     through `lane_launch` and its card, on `origin/<branch>`, from a folder
-    of the lane's project. A lane whose repository ADE doesn't know is
+    of the lane's project. A lane whose repository DAEX doesn't know is
     refused.
   - `lane_keep` (`POST /cloud/instances/:id/keep`) needs no card: it stops
     the idle cleanup's delete, wakes nothing and uses no hours.
@@ -1887,11 +1887,11 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
 
 ## Guidance for agents
 
-One text serves every agent: `apps/desktop/resources/agent-skills/ade-cloud/SKILL.md`.
-ADE's agents load it as the `ade-cloud` skill; ADE MCP serves it as the
-`ade-cloud` prompt, and the `ade-mcp-client` skill has a three-step version.
-Both show only to an account with ADE Cloud access (`setAdeCloudSkillVisible`).
-The skill says what ADE Cloud is, to read the status first and stop on a no,
+One text serves every agent: `apps/desktop/resources/agent-skills/daex-cloud/SKILL.md`.
+DAEX's agents load it as the `daex-cloud` skill; DAEX MCP serves it as the
+`daex-cloud` prompt, and the `daex-mcp-client` skill has a three-step version.
+Both show only to an account with DAEX Cloud access (`setAdeCloudSkillVisible`).
+The skill says what DAEX Cloud is, to read the status first and stop on a no,
 how to start, follow, retry and cancel a lane, what each refusal means, to
 clean up before a delete, and what an agent must never do. It holds no rates:
 an agent reads them from the status.
@@ -1900,20 +1900,20 @@ an agent reads them from the status.
 
 `infra/ade-cloud/` holds the image every computer starts from (see its
 README). It sets `ADE_HOST_INSTANCE_ID=cloud:<hostname>` and
-`ADE_CLOUD_INSTANCE_ID`, the only variables the rest of ADE reads to know it
+`ADE_CLOUD_INSTANCE_ID`, the only variables the rest of DAEX reads to know it
 runs on a cloud computer. Every release builds the image
 (`.github/workflows/cloud-template.yml`), tests it on a real computer and
 moves the image of the tag's channel only on a pass
 (`infra/ade-cloud/promote-template.mjs`). The server creates from the pinned
-image of the computer's channel. On first boot, a computer installs the ADE
-version of the app that made it when the image's ADE is older.
+image of the computer's channel. On first boot, a computer installs the DAEX
+version of the app that made it when the image's DAEX is older.
 
 Agent programs (see
 [Agent tools cache](../onboarding-and-settings/agent-tools-cache.md#cache-layout-on-disk)):
 
 - `/home/node` is the billed disk. Everything else is the provider's unbilled
   system layer, which an image update resets.
-- The image bakes the agents its ADE pins (Codex, Claude Code and OpenCode by
+- The image bakes the agents its DAEX pins (Codex, Claude Code and OpenCode by
   default) read-only into `/opt/ade-tools`.
 - Any other agent, or a newer pin, downloads on first use into
   `/var/cache/ade/tools` (with the npm, pip and yarn caches). Each install
@@ -1929,7 +1929,7 @@ Agent programs (see
 
 ## Updates
 
-Cloud computers update themselves, image and ADE together, onto their
+Cloud computers update themselves, image and DAEX together, onto their
 channel's image, only when nothing runs (`apps/account-directory/src/cloud/updates.ts`).
 
 - **Channels.** `cloud_settings` keeps `template_version_stable` and
@@ -1943,7 +1943,7 @@ channel's image, only when nothing runs (`apps/account-directory/src/cloud/updat
   woken to update: it updates at the idle step after its next real wake.
   (Older rows may still read `reason: "asleep"`.)
 - **Only a tested image.** Automatic updates go only to `auto_update_<channel>`
-  (`off` stops them). A person's "Update this computer" (`ade cloud update`)
+  (`off` stops them). A person's "Update this computer" (`daex cloud update`)
   goes to the channel's image; one update runs at a time
   (`409 update_in_progress`).
 - **Proof and rollback.** Each brain start sends
@@ -1954,13 +1954,13 @@ channel's image, only when nothing runs (`apps/account-directory/src/cloud/updat
   clears it. A failed rollback is not retried.
 - **Hours.** An automatic update or rollback of an awake, idle computer uses
   a free window (`free_wake_started_at`, `free_wake_until`) until the boot
-  report: the restart is ADE's, not use. The idle update's power log and free
+  report: the restart is DAEX's, not use. The idle update's power log and free
   window are written before the provider is asked, and the computer's call
   waits at most 8 s for the provider (a quick refusal reaches it; otherwise it
   is told the update started), because the restart can cancel that request. A person's update is metered.
 - **What people see.** Where other machines have an Update button, a cloud
   computer shows "Updates itself when idle", "Updating…", or "Update failed:
-  <why>." with Retry. `ade cloud status` gives each computer's
+  <why>." with Retry. `daex cloud status` gives each computer's
   `update {image, channel, target, state, error}`. Each update writes
   `cloud_power_log` (`update_manual`, `update_idle`, `update_asleep`,
   `update_rollback`).
@@ -2000,11 +2000,11 @@ The answer puts together:
   a lane row comes to exist, with the count and the create lock in
   `cloudComputerLaneHold.ts`. On Linux the template's own file also marks the
   computer. The refusal (`CloudComputerLaneLimitError`) says to start a new
-  lane on ADE Cloud, or to restore the archived lane that owns the computer.
+  lane on DAEX Cloud, or to restore the archived lane that owns the computer.
   A chat launch and a hand-off check give it before any work. The launch's own
   lane, a moved or copied chat, an unarchive and a restore on an empty
   computer are allowed. An older computer with several lanes keeps them. See
-  [One lane per ADE Cloud computer](../lanes/README.md#one-lane-per-ade-cloud-computer).
+  [One lane per DAEX Cloud computer](../lanes/README.md#one-lane-per-ade-cloud-computer).
 - **Codex runs with full access:** approval `never` and the
   `danger-full-access` sandbox, set on the chat's fields at every create, load,
   update and thread start. Plan mode, side chats, a chat an agent started, a
@@ -2046,7 +2046,7 @@ One busy list, `decideCloudBusy` in
 - Typing warms the chat's model (`chat.prewarmDraft`, and `chat.warmupModel`
   with `sdkOnly`). These are background writes, so typing never wakes a
   sleeping computer, but an awake one counts it as use and stays awake: it
-  sleeps three to four minutes after the last keystroke. The desktop (and ADE
+  sleeps three to four minutes after the last keystroke. The desktop (and DAEX
   Web) composer and the iPhone composer repeat `warmupModel` with `sdkOnly`
   at most every 30 s while the draft changes in a chat on a cloud computer,
   for every provider (`CLOUD_TYPING_PING_MS`, `SyncService.noteChatTyping`).
@@ -2066,8 +2066,8 @@ One busy list, `decideCloudBusy` in
   backstop. The app's own writes (`isBackgroundAdeWrite`) neither wake a
   computer nor keep it awake.
 - Copy and move hold a computer awake only while they run (time-outs of 20 and
-  45 minutes cover an ADE that quit mid-way).
-- `ade cloud prepare-stop --timeout 40` (before a stop at 0 hours) interrupts
+  45 minutes cover a DAEX that quit mid-way).
+- `daex cloud prepare-stop --timeout 40` (before a stop at 0 hours) interrupts
   chat turns and agent CLIs, writes the saved chat copy, and saves each lane's
   backup (`backups` in its `--json` result).
 - **The person's Sleep** of an awake computer first runs
@@ -2079,7 +2079,7 @@ One busy list, `decideCloudBusy` in
   (`markRestedWithBackups`), so a later move or cleanup needs no wake, only
   when the prepare reports every lane saved, answers `frozen: true`, and the
   sleep follows within 20 s. A save that didn't finish in time, or an older
-  ADE that doesn't freeze, marks nothing.
+  DAEX that doesn't freeze, marks nothing.
 - **The saved-only delete** (a move from an asleep computer) claims the
   computer with one conditional write (`claimSavedDelete`, `idle_deleting_at`)
   while it rests with current backups. While the claim holds, start, exec,
@@ -2140,7 +2140,7 @@ One busy list, `decideCloudBusy` in
   shows "Waking the computer…" and the Work row "Waking"
   (`markCloudWakeForSend`, display only). Once the chat's connection is up
   again (the header then reads Awake) and the send is still on its way, the
-  line reads "Starting <agent>…"; a turn waiting for ADE to download the agent
+  line reads "Starting <agent>…"; a turn waiting for DAEX to download the agent
   reads "Getting <agent> ready…" (the notice's `status: "agent_download"`).
   The bubble shows when the person pressed Enter: a send that reached the
   computer 5 s to 1 hour after that carries the time as `user_message.sentAt`
@@ -2152,7 +2152,7 @@ One busy list, `decideCloudBusy` in
   target, `via`, action). A tool panel (`CloudToolGate`, `terminals/cloudToolGate.tsx`) wakes
   the computer on a person's click through `cloud.machineAction`; a restored
   tab shows Wake; at 0 hours (a size that uses hours) it shows the lane's
-  saved work instead (`CloudLaneSavedWork`, no wake). A connect from ADE Web to an asleep computer wakes
+  saved work instead (`CloudLaneSavedWork`, no wake). A connect from DAEX Web to an asleep computer wakes
   it first, then retries the connect for up to two minutes.
 - **The chat's settings while it rests.** The computer puts the chat's
   settings in each saved row: model, preset, thinking level, Fast and the
@@ -2160,7 +2160,7 @@ One busy list, `decideCloudBusy` in
   changed with no new transcript part goes at the next rest save, after the
   new turns (`markChangedSettings` in `cloudChatUploader.ts`). The server checks each
   field (`cloudChatRowSettingsOf`), seals them in the copy's summary and
-  returns them in `GET /cloud/chats`. The desktop and ADE Web show them in
+  returns them in `GET /cloud/chats`. The desktop and DAEX Web show them in
   the composer (`savedChatSummary`); a pick since the last send wins, and a
   pick a queued send carried shows until the computer saves a newer row. The
   phone shows the model, thinking level and Fast (`rosterChatSummary`) and
@@ -2171,7 +2171,7 @@ One busy list, `decideCloudBusy` in
   it, sends its row again at the next rest save. The server seals the color
   in the summary with the rest (anything that is not `#rrggbb` reads as
   null) and returns it in `GET /cloud/chats`, `GET /cloud/sessions` and on
-  each overview lane. The desktop, ADE Web and the phone paint the resting
+  each overview lane. The desktop, DAEX Web and the phone paint the resting
   lane with it. Rows from an older computer carry none, and the lane shows
   grey until that computer updates.
 - **The @ menu while it rests.** The menu never asks a resting or deleted
@@ -2186,7 +2186,7 @@ One busy list, `decideCloudBusy` in
   PRs are left out there, and it lists no files.
 - **A deleted computer's chat** shows no running turn: nothing runs there.
 - **Comments wait on the device.** A thread comment written in a chat whose
-  computer rests stays on the device that wrote it (desktop and ADE Web,
+  computer rests stays on the device that wrote it (desktop and DAEX Web,
   localStorage), because a create is a write and would wake the computer. So
   does an edit, tick or delete of a comment the computer already has. The
   send that carries comments applies the changes and hands the new ones to
@@ -2197,7 +2197,7 @@ One busy list, `decideCloudBusy` in
   Other devices see them only after that send. See
   [chat › thread comments](../chat/README.md).
 - **Files wait on the device.** A file pasted, dropped or picked into a chat
-  whose computer rests stays in the window that took it (desktop and ADE
+  whose computer rests stays in the window that took it (desktop and DAEX
   Web, `heldChatAttachments.ts`), because copying it to the computer is a
   write. The send copies it there right before the message and goes direct
   (files never ride the queue from the desktop); a failed copy sends nothing
@@ -2206,11 +2206,11 @@ One busy list, `decideCloudBusy` in
   [chat › attachments](../chat/composer-and-ui.md#attachments).
 - **What the clients keep is per account.** A computer or a browser can be
   shared. The desktop keeps the lane index, the lanes kept without a computer
-  and ADE Cloud's on/blocked state in localStorage, each naming the account
+  and DAEX Cloud's on/blocked state in localStorage, each naming the account
   it was read for (`state/accountScopedStorage.ts`). A window reads a copy
   back only once the account status names that account; a sign-out or
   another account drops it, and a read the last account started lands
-  nowhere (`accountScopeGeneration`). ADE Web keeps none of them, and an ADE
+  nowhere (`accountScopeGeneration`). DAEX Web keeps none of them, and a DAEX
   Web tab's project strip reopens only for the account that kept it
   (`windowStripStorage.ts`). Held comments are kept by chat id, which no
   other account holds.
@@ -2231,17 +2231,17 @@ One busy list, `decideCloudBusy` in
   `exists`, or `deleted` with its time and reason (`you`, `freed`, `idle`,
   `plan`, `automation`, `project`, `launch`, `other`). A live computer with
   the copy's machine key wins, so a moved lane's chats read `exists`. A copy
-  that no ADE Cloud computer saved reads `null`: it moved with its lane to one
+  that no DAEX Cloud computer saved reads `null`: it moved with its lane to one
   of the person's own machines. The desktop and the phone list it nowhere
   (`cloudSavedChatsSync.ts`, `restingCloudMachineRows`), because that machine
-  lists its own chats and is never a deleted ADE Cloud computer.
+  lists its own chats and is never a deleted DAEX Cloud computer.
 - **After a move,** a chat shows once. A machine that lists a chat itself wins
   over a saved copy (`crossMachineLanes.ts`, `useWorkMachineRouter.ts`). The
   saved-chats read gives each chat id one computer: an existing one, then a
   connected one, then the newer copy (`cloudSavedChatsSync.ts`). A move forgets
   this desktop's connection to the deleted source
   (`forgetMachineConnections`).
-- **ADE Web** reads saved chats through an online computer (`cloud.read`
+- **DAEX Web** reads saved chats through an online computer (`cloud.read`
   `saved_chats_list` / `saved_chats_read`), else from the account server.
 - **Project ids.** A pinned remote call also sends the pin's folder, and
   `callAction` matches the machine's project by id, then by folder
@@ -2259,7 +2259,7 @@ One busy list, `decideCloudBusy` in
     someone's use (`in_use`) keeps it busy. One grow at a time, none for 10
     minutes after one starts, a refused one again after an hour.
   - A refusal at the 10% line writes the reason to `ade_disk_full_reason`
-    (and `ade_disk_full`); the card and `ade cloud status` show it. A refused
+    (and `ade_disk_full`); the card and `daex cloud status` show it. A refused
     turn's sentence reads `$ADE_HOME/cloud/disk-grow.json` and names the cloud
     computer's disk, the grow under way, or the way out.
 - **Setup that fills the disk** (every size starts at 4 GB, or the disk the repository's setup grew to before):
@@ -2281,7 +2281,7 @@ One busy list, `decideCloudBusy` in
     settles, on Cancel and on Retry. Past 3 resumes or an hour after the mark,
     the launch reads as interrupted (`chat_launch.environment_resume_refused`).
   - A refused grow fails the stage with its way out and Retry.
-    `ade chat launch-status` prints the stage's sentence as `now`.
+    `daex chat launch-status` prints the stage's sentence as `now`.
   - `cloud_repo_disks` (migration 0046) remembers the disk per account,
     origin and lane template (`setupKeyOf`). The server writes it after a grow
     with `origin: "auto"` that the provider made, while a launch on that
@@ -2297,7 +2297,7 @@ One busy list, `decideCloudBusy` in
   - Every setup script and dependency install runs beside a small `sh` guard
     that reads `MemAvailable` every 0.5 s and kills the command's process
     group below a tenth of memory (256 MB to 1 GB). The step fails with
-    "Setup used nearly all of this computer's memory (N GB), so ADE stopped it
+    "Setup used nearly all of this computer's memory (N GB), so DAEX stopped it
     before the computer had to restart. …" (`laneSetupOutOfMemoryError`,
     `lane_env_init.setup_stopped_for_memory`).
   - A machine-wide guard (`ade-cli/src/services/power/cloudMemoryGuard.ts`)
@@ -2311,7 +2311,7 @@ One busy list, `decideCloudBusy` in
     warning notice: what was stopped, its size, the computer's memory, and
     that a bigger size gives more. Its agent gets a one-time note ahead of
     its next turn (`pendingRestartNote`, the restart-note channel, every
-    provider): the same facts and `ade cloud resize --request`. A process
+    provider): the same facts and `daex cloud resize --request`. A process
     with no chat id, or a chat no booted runtime has, tells every chat with a
     running turn instead. One notice per chat a minute
     (`reportCloudMemoryKill` in `agentChatService.ts`), so a burst of kills is
@@ -2327,7 +2327,7 @@ One busy list, `decideCloudBusy` in
   - Every agent's prompt on a cloud computer has one line
     (`describeAdeCloudComputer` in `adeCloud/cloudComputerRules.ts`): its memory,
     no swap, that "Killed" means the guard stopped it, and
-    `ade cloud resize --request`. The runtime block carries it for Claude,
+    `daex cloud resize --request`. The runtime block carries it for Claude,
     Codex, Copilot, Droid, OpenCode and Pi; `buildAdeGuidanceForLane` for
     Cursor (beside its 3 KB prompt, outside the budget), Muse and the ACP
     agents (Qwen, Kimi, Grok, Devin, Antigravity). Cursor Cloud and Devin
@@ -2355,7 +2355,7 @@ One busy list, `decideCloudBusy` in
     (`auto_size = 'remembered'`).
   - The app shows the record's size (`adoptServerSize`) and `sizeNote`
     ("Medium: this repo's setup needed more than 4 GB before."). A picked
-    Small adds "Small was picked for this launch, so ADE didn't move it up.
+    Small adds "Small was picked for this launch, so DAEX didn't move it up.
     Start it again on Medium (2× hours)."
 - The image (see [`infra/ade-cloud/README.md`](../../../infra/ade-cloud/README.md)):
   - `build-essential` and `pkg-config`, so npm packages with native code
@@ -2364,15 +2364,15 @@ One busy list, `decideCloudBusy` in
     that drops `--unshare-net` only for Codex's sandbox, because gVisor can't
     make the network namespace. Codex's seccomp filter still blocks the
     network: plan mode can't write or reach the network, default mode writes
-    only in the workspace, and Codex's network-on setting (on in every ADE
+    only in the workspace, and Codex's network-on setting (on in every DAEX
     chat mode and a terminal's Default and Edit) reaches it. When the wrapper
     can't run, Codex falls back to its own bwrap.
-  - The GitHub CLI. ADE's `gh` shim adds the account's GitHub token and runs
+  - The GitHub CLI. DAEX's `gh` shim adds the account's GitHub token and runs
     it. The brain puts the shim on the first chat after it starts
     (`gitConfigOrigin.ts`).
   - `/etc/profile.d/ade-shims.sh` (`ade-shims-profile.sh`) puts the PATH a
     login shell was given back in front of Debian's, so a login shell outside
-    ADE (an SSH session) keeps the `ade` and `gh` shims and the tools. ADE's
+    DAEX (an SSH session) keeps the `ade` and `gh` shims and the tools. DAEX's
     own terminals are non-login shells (see
     [Linux support](../../development/linux-support.md)).
 
@@ -2418,12 +2418,3 @@ directory wakes it (routes in `apps/account-directory/README.md`):
 
 A timed wake and an event wake are use, the same as a person's wake: the time
 awake bills hours, and the wake restarts the idle cleanup's clock.
-
-## Rules for changes
-
-- A new call to the provider goes through `CloudProvider`, never around it.
-- User-facing text, CLI output and skills say ADE Cloud. "Powered by Agent 37"
-  on the settings page is the only product mention.
-- What spends hours or deletes a computer asks the person first (`cloudAgentActions.ts`), in hours.
-- An agent never makes a computer alone. A new action that adds a computer
-  other than a lane launch sets `makesComputer` on its card.
