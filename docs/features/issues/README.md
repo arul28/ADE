@@ -111,8 +111,8 @@ clickable.
 - **Live updates.** An `issues` or `issue_comment` webhook delivery for an
   issue (not a pull request) emits a `github-issue-changed` PR event; open
   views re-read that issue (one ETag'd GET), and the repo's lists and badge are
-  marked stale. Nothing is read for an issue nobody has open. The ADE GitHub
-  App (`ade-for-github`) has `Issues: Read and write` and subscribes to the
+  marked stale. Nothing is read for an issue nobody has open. The DAEX GitHub
+  App (`daex-for-github`, `ade-for-github` before the rename) has `Issues: Read and write` and subscribes to the
   `issues` and `issue_comment` events since 2026-10-08. Each existing
   installation keeps read-only until its owner accepts the update; the
   permission banner covers that window.

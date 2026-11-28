@@ -135,11 +135,12 @@ What flipped, with the reader that still accepts the old form:
 | Stored cloud computer default `DAEX Cloud computer` | `ADE Cloud computer` | `isCloudMachineDefaultName`, `displayLegacyDefaultName` (desktop, iOS, CLI) |
 | User agents `DAEX-Agent/1.0`, `DAEX-LinkPreview/1.0`, `DAEX-iOS/<v>`, `DAEX MCP events`, the Worker agents, … | ADE | Gravity `hashedEmailFor` |
 | MCP Apps `hostInfo.name` and `userAgent` DAEX | ADE | none |
+| GitHub App slug `daex-for-github`: install page, bot `daex-for-github[bot]` | `ade-for-github` | `GITHUB_APP_SLUGS` in `shared/github/githubAppIdentity.ts` (bot table in `prBotIdentity.ts`), iOS `Brand.githubAppSlugs` |
 
 Kept on purpose: the lowercase machine tokens (`ade-desktop`, `ade-cli`,
 `ade-harness-test` user agents and RPC client names), `TERM_PROGRAM=ADE`
-(outside tools detect terminals by it), the GitHub App slug `ade-for-github`,
-and everything in **Frozen identifiers**.
+(outside tools detect terminals by it), and everything in **Frozen
+identifiers**.
 
 ## Launch steps
 
@@ -151,5 +152,20 @@ and everything in **Frozen identifiers**.
    not-yet-updated app can be sent a `daex://` link it does not register.
 2. Builds released before the gate existed (v1.2.130 and older) are not
    blocked by it and cannot open `daex://`; only their own updater moves them.
-3. Rename the GitHub App to "DAEX for GitHub" in its settings; the slug
-   `ade-for-github` stays, and the app copy already says DAEX.
+3. **GitHub App rename.** The release links to
+   `github.com/apps/daex-for-github/installations/new` (one constant:
+   `apps/desktop/src/shared/github/githubAppIdentity.ts`, iOS
+   `Brand.githubAppSlug`). GitHub derives the slug from the app's name and
+   does not redirect the old one, so the new install page 404s until the
+   rename and the old one 404s after it. At the moment the release is
+   published:
+   1. GitHub → Settings → Developer settings → GitHub Apps → "ADE for
+      GitHub" → General: set **GitHub App name** to `DAEX for GitHub` and
+      save. Check the slug in the page URL is now `daex-for-github` and
+      `https://github.com/apps/daex-for-github/installations/new` opens.
+   2. In the same page, **Display information**: upload
+      `assets/brand/daex/icon-ios-release.png` (1024 px) as the logo.
+   App id, client id, private key, webhook URL and every installation keep
+   working; only the name, slug, bot login and logo change. Bot comments and
+   check runs made before keep `ade-for-github[bot]`, which the readers still
+   accept.
