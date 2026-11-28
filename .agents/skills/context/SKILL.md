@@ -1,8 +1,8 @@
 ---
 name: context
 description: >-
-  Session primer for ADE work: what ADE is, the dev loop, the tooling you can
-  reach (the `ade` CLI control plane, app/browser/iOS-sim control, Linear,
+  Session primer for DAEX work: what DAEX is, the dev loop, the tooling you can
+  reach (the `daex` CLI control plane, app/browser/iOS-sim control, Linear,
   computer-use), and what's in flight on this branch. Auto-detects the active
   feature area from branch changes (or explicit keywords) and loads only the
   relevant docs + the matching perf skill — never a broad dump.
@@ -18,7 +18,7 @@ Distinguish desktop from headless and simulated checks from real-host proof.
 Reuse existing checks and CI; do not double the full suite.
 
 
-Session primer. Run once at the start of a session to learn what ADE is, how we
+Session primer. Run once at the start of a session to learn what DAEX is, how we
 work, the tooling you can reach, and what (if anything) is in flight on this
 lane. Feature-aware — load only the docs relevant to the work, never a broad
 dump.
@@ -55,9 +55,11 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   (add `--project-root <path>` to open a different project). It shares `~/.ade`,
   starts its brain with `--no-sync`, respects chat runtime ownership, never
   touches the installed brain service, and prints a dev isolation report first.
-  Never hand-start `ade serve` or copy `~/.ade` secrets. Use a separate
+  Never hand-start `daex serve` or copy `~/.ade` secrets. Use a separate
   `ADE_HOME` only for deliberate scratch-home work; a new home shows the
   account gate, and full project isolation also needs a throwaway project.
+  (`ADE_HOME`, `~/.ade` and `.ade/` keep the old name on purpose; see
+  `docs/brand/README.md`.)
 - **Start it DETACHED, with its own socket.** The command runs in the foreground
   for as long as the app is open, so running it normally holds your turn open
   and the window dies with the turn. Background it, give the lane its own
@@ -76,7 +78,7 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   machines only when someone presses Connect in it; the report's `machines`
   line says so. Do not press Connect or Disconnect on a paired machine in a dev
   app unless that is the task: either takes the machine away from the user's
-  installed ADE. When you are done, stop the app's process group and confirm
+  installed DAEX. When you are done, stop the app's process group and confirm
   its brain exited (`pgrep -fl "<your socket>"`). To test what another machine
   calls into (a cloud box, the phone, another desktop), run the branch's brain
   as its own machine: `npm run dev:machine -- start` (see local-development.md
@@ -93,7 +95,7 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   (`npm run dev:desktop:attach -- --socket <your socket>` reopens just the
   window if your dev brain is still up and you did not change brain code).
 - `docs/README.md` — the internal-docs navigation map.
-- `docs/PRD.md` — what ADE is, who it's for, the feature index.
+- `docs/PRD.md` — what DAEX is, who it's for, the feature index.
 - `docs/ARCHITECTURE.md` — read the **section** relevant to the touched area
   (IPC, data plane, build/test/deploy), not the whole file. It's large.
 
@@ -101,7 +103,7 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
 
 ## Step 2b — Before you start any brain (always check)
 
-ADE's brain is a singleton per `ADE_HOME` **by convention only**. Nothing
+DAEX's brain is a singleton per `ADE_HOME` **by convention only**. Nothing
 refuses a second one, and two brains on one home share one database: a chat can
 be owned by only one of them, so the other's agents can be stopped without
 explanation.
@@ -110,7 +112,7 @@ Before starting a dev brain, and before blaming anything for dead agents, list
 every brain **and its home**:
 
 ```bash
-pgrep -alf "cli.cjs serve|/bin/ade serve"
+pgrep -alf "cli.cjs serve|/bin/daex serve|/bin/ade serve"
 # then, for each pid:
 ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME    # no output = the shared ~/.ade
 ```
@@ -122,7 +124,7 @@ Five rules that cost hours when ignored:
 - **A different `ADE_HOME` is not isolation either.** The home holds the machine
   state; each PROJECT keeps its own database in `<project>/.ade/ade.db`. A brain
   on `~/.ade-alpha` that opens `~/Projects/ADE` writes the same `ade.db` as the
-  installed brain. Any `ade` call run from inside a registered project opens it.
+  installed brain. Any `daex` call run from inside a registered project opens it.
   Real isolation is a different home AND a throwaway project that no other brain
   has registered (check `<home>/projects.json`).
 - **A dev brain outlives its app.** The launcher spawns it detached so it
@@ -135,10 +137,10 @@ Five rules that cost hours when ignored:
   you have two brains on one database — decide which one you meant to have.
   There is no warning yet for two brains on one PROJECT; check with
   `lsof <project>/.ade/ade.db`.
-- **A hand-started brain needs `--role cto`.** `ade serve` defaults to role
+- **A hand-started brain needs `--role cto`.** `daex serve` defaults to role
   `agent`, which refuses desktop, phone and web clients. Start it as
-  `ade --role cto serve`. A brain or dev app started from an agent shell
-  scrubs the inherited caller, lane/project/workspace, default-role, ADE
+  `daex --role cto serve`. A brain or dev app started from an agent shell
+  scrubs the inherited caller, lane/project/workspace, default-role, DAEX
   provider-home, and Claude parent-session env itself; no env prefix is needed.
   On its own socket, a brain leaves chats it does not run to the installed
   machine brain when that brain is live on the project, including scheduled
@@ -179,14 +181,13 @@ doc in the summary's **Docs** line.
 
 ### Windows parity docs
 
-Windows parity is a **default requirement** for all new ADE code — Windows is
+Windows parity is a **default requirement** for all new DAEX code — Windows is
 part of "done", not a follow-up. If the lane touches any Windows-sensitive
 surface in the doc-map's **Windows parity** table (paths, process launch/kill,
 local IPC, credentials, capability gates, packaging, release), load the mapped
 Windows docs in this step and name them in the summary:
 
-- `WINDOWS_PORT.md` (root) — port status, the readiness table, the original
-  release-blocking findings and how each was closed.
+- `WINDOWS_PORT.md` (root) — the short entry point; it links the docs below.
 - `docs/development/windows-support.md` — installed-host behavior: supervisor,
   pipe/channel isolation, provider/PTY matrix, uninstall residue.
 - `docs/development/windows-release-proof.md` — what counts as Windows proof.
@@ -210,7 +211,7 @@ git status --short               # new/untracked work the diff omits
 
 - Read the diff to understand the purpose of the in-flight work.
 - If a commit or branch name carries a Linear ID (e.g. `ADE-123`), read the
-  issue for intent (`ade linear` — see the `ade-linear` skill).
+  issue for intent (`daex linear` — see the `daex-linear` skill).
 - Cross-check the feature doc's task tracking (`[ ]` / `[x]`).
 - **No lane commits and no diff → say "Fresh lane — no in-flight work."**
   Don't invent context.
@@ -224,7 +225,7 @@ Emit this and nothing more (keep it scannable):
 ```markdown
 ## Context Loaded
 
-**Project:** ADE — local-first desktop env for orchestrating coding agents,
+**Project:** DAEX — local-first desktop env for orchestrating coding agents,
 lanes, PRs, and proof/artifacts (Electron + React + TS; CLI in `apps/ade-cli`).
 **Branch:** [name] · [N changed files | fresh lane]
 **Area:** [feature] — [desktop / cli / ios / cross-cutting]
@@ -235,9 +236,9 @@ Windows-sensitive surface, parity still required]
 **In flight:** [what the work does + why, or "Fresh lane — no in-flight work"]
 **Tracking:** [open N / done N · Linear: IDs or none · gaps if any]
 
-**Tools (configured — use them for live state, don't ask):** `ade` CLI control
-plane · app/browser/iOS-sim/macOS-VM control · Linear (via `ade`) · computer-use
-+ proof drawer. Depth → the matching `ade-*` skill.
+**Tools (configured — use them for live state, don't ask):** `daex` CLI control
+plane · app/browser/iOS-sim/screen control · Linear (via `daex`) · computer-use
++ proof drawer. Depth → the matching `daex-*` skill.
 **Dev loop:** /context → work → /quality → /test → /ship. Utilities: /audit,
 /finalize, /optimize, /release, /update-providers. Open each skill when you reach it.
 **Tests:** [commands for this area — see AGENTS.md "Validation"]
@@ -249,29 +250,32 @@ Ready to assist with [feature].
 
 ## Tooling you have
 
-ADE ships its capabilities as Agent Skills. State them briefly in the summary;
+DAEX ships its capabilities as Agent Skills (`daex-*`; the old `ade-*`
+names still resolve). State them briefly in the summary;
 open the relevant one only when a task needs it.
 
-- **`ade` CLI** — the control plane for ADE state (lanes, chats, actions, PRs,
-  proof, runtime/socket, project secrets via `ade secrets`). Ground truth is
-  `ade help <command>` and `ade actions list --text`, not memory.
-  → `ade-cli-control-plane`.
-- **Lanes & git** → `ade-lanes-git`. **PR workflows** → `ade-pr-workflows`.
-- **Computer use** (which surface to drive, the lane's private Mac Desktop)
-  → `ade-computer-use` (old name `ade-desktop` still resolves).
-- **App / browser / Apple-device control** → `ade-app-control`,
-  `ade-browser`, `ade-apple` (old name `ade-ios-simulator` still resolves).
-  Read `ade-apple` before you touch `xcodebuild`, `xcrun` or `simctl` by hand.
+- **`daex` CLI** — the control plane for DAEX state (lanes, chats, actions, PRs,
+  proof, runtime/socket, project secrets via `daex secrets`). Ground truth is
+  `daex help <command>` and `daex actions list --text`, not memory. `ade` is a
+  permanent alias, so older notes and scripts that say `ade …` still work.
+  → `daex-cli-control-plane`.
+- **Lanes & git** → `daex-lanes-git`. **PR workflows** → `daex-pr-workflows`.
+- **Computer use** (which surface to drive, the lane's own screen)
+  → `daex-computer-use`.
+- **App / browser / Apple-device control** → `daex-app-control`,
+  `daex-browser`, `daex-apple`, `daex-android`.
+  Read `daex-apple` before you touch `xcodebuild`, `xcrun` or `simctl` by hand.
   Running an iOS app on a simulator, seeing a SwiftUI change, driving a screen,
-  or capturing proof of one is `ade apple`, and `ade apple launch` resolves,
+  or capturing proof of one is `daex apple`, and `daex apple launch` resolves,
   builds, installs and starts a target in a single call. A screenshot taken
   with `simctl` and attached afterwards loses the owner that makes it visible
   in the drawer.
-- **Linear** (no API key needed; routed through ADE) → `ade-linear`.
+- **Linear** (no API key needed; routed through DAEX) → `daex-linear`.
 - **Proof & computer-use** (screenshots, video, traces → proof drawer) →
-  `ade-proof-artifacts`. **Deeplinks** → `ade-deeplinks`.
+  `daex-proof-artifacts`. **Deeplinks** → `daex-deeplinks`. **Search** →
+  `daex-search`. **DAEX Cloud** → `daex-cloud`.
 
-**Worktree note:** ADE runs this session inside a lane worktree
+**Worktree note:** DAEX runs this session inside a lane worktree
 (`.ade/worktrees/<lane>/`). Every edit must target a path under that worktree,
 never the project-root checkout.
 
