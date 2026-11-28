@@ -333,6 +333,7 @@ import { createConfigReloadService } from "./services/projects/configReloadServi
 import { IPC } from "../shared/ipc";
 import { readRuntimeActionRequest } from "./services/ipc/ipcTimeouts";
 import { resolveAdeLayout } from "../shared/adeLayout";
+import { createLaneRuntimeEnvResolver, createSessionLinearEnvResolver } from "./services/pty/terminalSessionEnv";
 import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
 import type {
   OpenProjectBinding,
@@ -5253,59 +5254,13 @@ app.whenReady().then(async () => {
       },
     });
 
-    const getLaneRuntimeEnv = async (laneId: string) => {
-      const lease = portAllocationService.getLease(laneId);
-      const lane = (await laneService.list({ includeArchived: false, includeStatus: false })).find(
-        (entry) => entry.id === laneId,
-      );
-      const hostname = laneProxyService.getRoute(laneId)?.hostname
-        ?? laneProxyService.generateHostname(laneId, lane?.name);
-      const portStart = lease?.rangeStart ?? 3000;
-      const portEnd = lease?.rangeEnd ?? portStart;
-      return {
-        PORT: String(portStart),
-        PORT_RANGE_START: String(portStart),
-        PORT_RANGE_END: String(portEnd),
-        HOSTNAME: hostname,
-        PROXY_HOSTNAME: hostname,
-      };
-    };
-
-    // Materialize the per-session Linear issue context for a CLI terminal agent
-    // (mirrors agentChatService.buildAgentRuntimeEnv for SDK chats) so the agent
-    // can read its attached issues without Linear creds. Keyed by the terminal's
-    // chat/session id; returns the env vars pointing at the context file.
-    const getSessionLinearEnv = ({
-      sessionId,
-      chatSessionId,
-    }: {
-      sessionId: string;
-      chatSessionId: string | null;
-    }): Record<string, string> | null => {
-      const linkKey = (chatSessionId ?? sessionId).trim();
-      if (!linkKey) return null;
-      try {
-        const links = laneService.listLinearIssuesForSession?.({ chatSessionId: linkKey }) ?? [];
-        const context = writeSessionLinearIssueContextFile({
-          contextDir: resolveAdeLayout(projectRoot).contextDir,
-          sessionId: linkKey,
-          links,
-          now: new Date().toISOString(),
-        });
-        if (!context) return null;
-        return {
-          ADE_LINEAR_ISSUE_IDS: context.identifiers,
-          ADE_LINEAR_CONTEXT_FILE: context.filePath,
-        };
-      } catch (error) {
-        logger.warn("pty.session_linear_env_failed", {
-          sessionId,
-          chatSessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return null;
-      }
-    };
+    const getLaneRuntimeEnv = createLaneRuntimeEnvResolver({ laneService, portAllocationService, laneProxyService });
+    const getSessionLinearEnv = createSessionLinearEnvResolver({
+      laneService,
+      contextDir: resolveAdeLayout(projectRoot).contextDir,
+      writeContextFile: writeSessionLinearIssueContextFile,
+      logger,
+    });
 
     let sessionDeltaServiceRef: ReturnType<typeof createSessionDeltaService> | null = null;
     const onTrackedSessionEnded = ({

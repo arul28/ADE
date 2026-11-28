@@ -36,11 +36,12 @@ same entry points and the same gate.
 
 ## Lane environment
 
-`createPtyService` takes an optional `getLaneRuntimeEnv`. The desktop main
-process passes one (`main.ts`: `PORT`, `PORT_RANGE_START`, `PORT_RANGE_END`,
-`HOSTNAME`, `PROXY_HOSTNAME` from the port lease and proxy route); the
-brain's `bootstrap.ts` currently passes none, so brain-spawned terminals get no
-extra lane env from it. When present it is merged before `args.env`, so a
+`createPtyService` takes `getLaneRuntimeEnv` (`PORT`, `PORT_RANGE_START`,
+`PORT_RANGE_END`, `HOSTNAME`, `PROXY_HOSTNAME` from the lane's port lease and
+proxy route) and `getSessionLinearEnv` (the attached Linear issues for a CLI
+agent). Both are built by `services/pty/terminalSessionEnv.ts` and passed by
+the machine brain (`apps/ade-cli/src/bootstrap.ts`, which runs terminals in
+production) and by desktop `main.ts`. When present it is merged before `args.env`, so a
 launch can override it. Setup scripts get their own lane variables; see
 [Lanes › runtime](../lanes/runtime.md#setup-script-execution).
 

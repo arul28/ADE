@@ -117,7 +117,9 @@ import {
   createProjectHealthTurnStateReader,
 } from "./services/projects/projectHealth/projectHealthService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
-import { createAgentChatService, flushAllQueuedTranscriptWrites, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
+import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
+import { createAgentChatService, flushAllQueuedTranscriptWrites, listMachineProviderAccountChatLoad, writeSessionLinearIssueContextFile } from "../../desktop/src/main/services/chat/agentChatService";
+import { createLaneRuntimeEnvResolver, createSessionLinearEnvResolver } from "../../desktop/src/main/services/pty/terminalSessionEnv";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
 import { trackedCliIdentity } from "../../desktop/src/main/services/chat/cliSessionLifecycle";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
@@ -2087,6 +2089,13 @@ export async function createAdeRuntime(args: {
 
     const ptyService = createPtyService({
       projectRoot,
+      getLaneRuntimeEnv: createLaneRuntimeEnvResolver({ laneService, portAllocationService, laneProxyService }),
+      getSessionLinearEnv: createSessionLinearEnvResolver({
+        laneService,
+        contextDir: resolveAdeLayout(projectRoot).contextDir,
+        writeContextFile: writeSessionLinearIssueContextFile,
+        logger,
+      }),
       runtimeSocketPath,
       sessionActivityReportingEnabled,
       transcriptsDir: paths.transcriptsDir,
