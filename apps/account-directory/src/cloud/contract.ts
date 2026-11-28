@@ -3017,6 +3017,25 @@ export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The sign-in wasn't done in time, 
  * reports it, and launches that failed before keep it. The server reads both
  * as the sign-in timeout and stores the current words from a report.
  */
+/**
+ * A launch whose computer the server stopped before its chat started (the
+ * credits ran out, a block, another stop) fails with why and what to do.
+ * Out of credits: the first sentence, then the way out this account has.
+ */
+export const CLOUD_LAUNCH_OUT_OF_CREDITS = "Your DAEX Cloud credits ran out, so the computer stopped before the chat started.";
+export const CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT = {
+  /** Small uses no credits for this account. */
+  small_free: " Small computers don't use credits, so they keep working: start the chat again on Small.",
+  /** Free under Pricing v3: the words of the out-of-credits refusal (`SMALL_WAY_OUT` in routes.ts). */
+  ads_on: " Small computers keep working in chats with ads: send a message to start one.",
+  ads_off: " With ads on, Small computers keep working.",
+  /** Free with no free plan, or no other way out. */
+  plan: " Pick a plan in Settings › DAEX Cloud › Plans, then Retry.",
+  /** A paid plan. */
+  credits: " Add credits or pick a bigger plan in Settings › DAEX Cloud › Plans, then Retry.",
+} as const;
+/** Any other stop before the chat started. */
+export const CLOUD_LAUNCH_COMPUTER_STOPPED = "The computer stopped before the chat started. Retry starts the chat on a new computer.";
 export const LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
 
 /** What the phone and the web show for a provider whose sign-in can't move. */

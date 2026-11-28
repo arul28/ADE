@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, CLOUD_SIGN_IN_CODE_REFUSED, CLOUD_SIGN_IN_MAX_CODES, CLOUD_SIGN_IN_TOO_MANY_CODES, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, CLOUD_LAUNCH_COMPUTER_STOPPED, CLOUD_LAUNCH_OUT_OF_CREDITS, CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT, CLOUD_SIGN_IN_CODE_REFUSED, CLOUD_SIGN_IN_MAX_CODES, CLOUD_SIGN_IN_TOO_MANY_CODES, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
@@ -17,6 +17,8 @@ import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { CloudProviderError, createCloudProvider } from "../src/cloud/provider";
 import { startCloudUpdate } from "../src/cloud/updates";
 import { failUnjoinedLaunches, MACHINE_LAUNCH_MIN_VERSION_SETTING } from "../src/cloud/launches";
+import { enforceBlockOnComputer } from "../src/cloud/safety";
+import { ACCOUNT_BLOCKED_MESSAGE } from "../src/cloud/blocks";
 import { rateMoveStatements } from "../src/cloud/adPrice";
 import { runCloudMoves } from "../src/cloud/moves";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
@@ -3108,6 +3110,44 @@ describe("ADE Cloud server launcher", () => {
       await startWaiting();
       await end();
       expect(usedMilli(harness)).toBe(expected);
+    });
+
+    it.each<[string, () => Promise<void>, string]>([
+      ["the credits ran out during the join", async () => {
+        harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+        await harness.tick();
+      }, CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.credits],
+      ["a block", async () => {
+        harness.insert("cloud_blocks", { user_id: OWNER, reason: "spam", created_at: clock });
+        await enforceBlockOnComputer(harness.env, createCloudProvider("provider-key"), harness.row("select * from cloud_computers where instance_id = ?", MADE) as never, clock);
+      }, ACCOUNT_BLOCKED_MESSAGE],
+      ["another stop", async () => {
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/stop`, {})).status).toBe(200);
+      }, CLOUD_LAUNCH_COMPUTER_STOPPED],
+    ])("a computer stopped before its chat started ends the launch at the next tick with why (%s), and nothing is charged after the stop", async (_label, stop, sentence) => {
+      harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
+      at(1);
+      await stop();
+      expect(computer(harness, MADE).status).toBe("stopped");
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      const record = (await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { state: string; error: string | null };
+      expect([record.state, record.error]).toEqual(["failed", sentence]);
+      const used = usedMilli(harness);
+      at(40);
+      await harness.tick();
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      expect(usedMilli(harness)).toBe(used);
+    });
+
+    it("a free sign-in wait at 0 credits keeps its computer: the zero stop skips the free window, and the step goes on", async () => {
+      await startWaiting();
+      harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+      at(5);
+      await harness.tick();
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      expect(providerCalls(harness, /POST .*\/instances\/madenew12345\/stop$/)).toHaveLength(0);
+      expect(((await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { state: string }).state).toBe("waiting_for_sign_in");
     });
 
     it("an older computer (its step names no end) gets no free wait: a cancel is charged as before", async () => {
