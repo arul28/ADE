@@ -1,13 +1,12 @@
 import { app, BrowserWindow } from "electron";
 
 import {
-  ADE_DEEPLINK_SCHEMES,
   ADE_DEEPLINK_HTTPS_PATH,
   deeplinkToNavigationTarget,
-  hasAdeDeeplinkScheme,
   isAdeDeeplinkHttpsHost,
   parseDeeplink,
 } from "../../../shared/deeplinks";
+import { ADE_DEEPLINK_SCHEME_SOURCE, ADE_DEEPLINK_SCHEMES, hasAdeDeeplinkScheme } from "../../../shared/deeplinkSchemes";
 import { IPC } from "../../../shared/ipc";
 import type {
   AppNavigationRequest,
@@ -208,8 +207,10 @@ export function registerAdeProtocolHandler(options: {
  * A deeplink as the log may keep it. An ADE Cloud invite's code is left out
  * (`ade://invite/<redacted>`), as everywhere else ADE logs an invite.
  */
+const INVITE_LINK_CODE = new RegExp(`^(\\s*${ADE_DEEPLINK_SCHEME_SOURCE}:\\/*invite\\/)[^?#]*`, "i");
+
 function deeplinkForLog(rawUrl: string): string {
-  return rawUrl.replace(/^(\s*(?:ade|daex):\/*invite\/)[^?#]*/i, "$1<redacted>");
+  return rawUrl.replace(INVITE_LINK_CODE, "$1<redacted>");
 }
 
 /**
