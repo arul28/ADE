@@ -600,7 +600,8 @@ jobs:
         run: |
           set -euo pipefail
           entry() { printf '{"target":"%s","os":"%s","binary":"%s"}' "$1" "$2" "$3"; }
-          linux_x64="$(entry linux-x64 ubuntu-latest ade-linux-x64)"
+          # A fixed Ubuntu, as release-core pins: native modules need the glibc of the image that built them.
+          linux_x64="$(entry linux-x64 ubuntu-24.04 ade-linux-x64)"
           all="$(entry darwin-arm64 macos-15 ade-darwin-arm64),$(entry darwin-x64 macos-15-intel ade-darwin-x64),$linux_x64,$(entry linux-arm64 ubuntu-24.04-arm ade-linux-arm64),$(entry win32-x64 windows-latest ade-win32-x64.exe)"
           pick() {
             echo "matrix={\"include\":[$1]}" >> "$GITHUB_OUTPUT"
