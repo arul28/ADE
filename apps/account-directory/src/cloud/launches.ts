@@ -968,7 +968,8 @@ export async function startServerLaunch(
       metadata,
       // A Mac has no public ports: its brain reaches the account outward, and its wake is a new Mac.
       ...(parsed.os === "mac" ? {} : { publicPorts: [{ port: WAKE_PORT, label: "ADE wake" }] }),
-      channel: launchChannel(await readUpdateTargets(env), parsed.channel),
+      // A Mac's drive brings its own DAEX, so the Linux image's launch floor doesn't move it to beta.
+      channel: parsed.os === "mac" ? parsed.channel ?? "stable" : launchChannel(await readUpdateTargets(env), parsed.channel),
     },
     serverEnv: { [CLOUD_LAUNCH_ENV.launchId]: launchId, [CLOUD_LAUNCH_ENV.join]: joinCode },
     ...(parsed.os === "mac" ? { mac: true } : {}),

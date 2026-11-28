@@ -103,7 +103,7 @@ import {
   type CloudSize,
 } from "./plans";
 import { CloudProviderError, cloudErrorMessage, type CloudProvider } from "./provider";
-import { createComputerProvider, hiddenMacInstance, isMacRow, touchMac } from "./macProvider";
+import { createComputerProvider, hiddenMacInstance, isMacRow, templateDriveFor, touchMac } from "./macProvider";
 import { macIdleStopMinutes, macReaches } from "./macSwitch";
 import {
   accountComputerCount,
@@ -755,7 +755,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const targets = await readUpdateTargets(env);
   // A Mac has no image: its drive brings its own DAEX, so no Linux template is needed.
   const templateVersion = size.type === "mac" ? MAC_TEMPLATE_VERSION : channelTemplate(targets, channel);
-  if (!templateVersion) {
+  if (!templateVersion || (size.type === "mac" && !await templateDriveFor(env, { channel }))) {
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
     return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
   }

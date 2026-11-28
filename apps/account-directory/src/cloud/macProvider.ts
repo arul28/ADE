@@ -441,9 +441,16 @@ export async function handleOwnerMacTemplate(env: CloudEnv, body: Record<string,
   return json({ ok: true, channels });
 }
 
-async function templateDriveFor(env: CloudEnv, row: Pick<ComputerRow, "channel">): Promise<string | null> {
-  const channel = row.channel === "beta" ? "beta" : "stable";
-  return (await readSetting(env, `mac_template_drive_${channel}`))?.trim() || (await readSetting(env, "mac_template_drive"))?.trim() || null;
+/**
+ * The template drive a Mac of `row`'s channel starts from: its channel's, else stable's (beta's DAEX comes
+ * from `mac_min_version_beta` at boot). Null when the owner set none: no Mac may start then, because NoMac
+ * copies a template only into a drive it makes, so a drive made empty never gets one.
+ */
+export async function templateDriveFor(env: CloudEnv, row: Pick<ComputerRow, "channel">): Promise<string | null> {
+  const read = async (key: string) => (await readSetting(env, key))?.trim() || null;
+  return (row.channel === "beta" ? await read("mac_template_drive_beta") : null)
+    ?? await read("mac_template_drive_stable")
+    ?? await read("mac_template_drive");
 }
 
 /**
@@ -479,13 +486,17 @@ async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = ro
   // Mac from its save. Only an upkeep start still in flight holds the start, for a minute (the tick tries again).
   if (await clearUpkeepFor(env, row.instance_id, now) === "hold") return holdStart(env, row, now, "upkeep_starting");
   const template = await templateDriveFor(env, row);
+  if (!template) {
+    reportCloudFailure("cloud.mac_start_refused_no_template", { instanceId: macId }, "cloud-mac");
+    throw new CloudProviderError("DAEX Cloud can't start a Mac right now. Try again soon.", "template_unset", 503);
+  }
   const label = row.mac_label ?? macLabelOf(env, macId);
   const answer = await call(env, "POST", "/mac/sessions", {
     label,
     reuse: true,
     require_drive: true,
     queue_seconds: MAC_QUEUE_SECONDS,
-    ...(template ? { access: { drive_from: template } } : {}),
+    access: { drive_from: template },
     limits: limitsFor(minutes),
   }, `ade-mac-${macId}-${token}`);
   const session = macSessionOf(answer.body?.session);
