@@ -14,7 +14,7 @@
  */
 import { useSyncExternalStore } from "react";
 import { CLOUD_PUBLIC_PRICING_PATH, type CloudPublicPricing } from "../../../account-directory/src/cloud/contract";
-import { AD_WINDOW_MINUTES_DEFAULT } from "../../../account-directory/src/cloud/plans";
+import { AD_WINDOW_MINUTES_DEFAULT, SMALL_NO_CARDS_RATE_MILLI } from "../../../account-directory/src/cloud/plans";
 import { accountDirectoryBase } from "./accountDirectory";
 
 export type SiteAds = {
@@ -32,6 +32,8 @@ export type SiteOffer =
       v3: true;
       /** The cloud Mac is open to every account. */
       mac: boolean;
+      /** A Small's full rate an hour on Free for this visitor, in thousandths of a stored credit (`freeSmallMilli`; 0: free). */
+      freeSmallMilli: number;
       /** The ad price, only where the visitor's country has ads; null shows only full prices and no word about ads. */
       ads: SiteAds | null;
     };
@@ -52,9 +54,12 @@ export function parseSiteOffer(body: unknown): SiteOffer {
   const pct = ads?.discountPct;
   const minutes = ads?.adWindowMinutes;
   const validAds = typeof pct === "number" && Number.isInteger(pct) && pct > 0 && pct < 100;
+  const small = raw.freeSmallMilli;
   return {
     v3: true,
     mac: raw.mac === true,
+    // Missing or unreadable: Small charges on Free, as the server's bill does while the ad switch reaches everyone.
+    freeSmallMilli: typeof small === "number" && Number.isInteger(small) && small >= 0 ? small : SMALL_NO_CARDS_RATE_MILLI,
     ads: validAds
       ? {
           startsOn: ads!.startsOn === true,
@@ -67,7 +72,7 @@ export function parseSiteOffer(body: unknown): SiteOffer {
 
 /**
  * The local preview: `?offer=us`, `ca` or `world` (and `&mac=1`, `&pct=`,
- * `&window=`) shows Pricing v3 as that visitor would see it, and `?offer=off`
+ * `&window=`, `&small=0`) shows Pricing v3 as that visitor would see it, and `?offer=off`
  * today's site. Only in `vite dev`: a built site always asks the server, and
  * the build drops this code.
  */
@@ -80,7 +85,8 @@ function previewOffer(): SiteOffer | null {
   const ads = offer === "us" || offer === "ca"
     ? { startsOn: offer === "us", discountPct: Number(params.get("pct") ?? 20), adWindowMinutes: Number(params.get("window") ?? 60) }
     : null;
-  return parseSiteOffer({ pricingV3: true, mac: params.get("mac") === "1", ads });
+  const small = params.get("small");
+  return parseSiteOffer({ pricingV3: true, mac: params.get("mac") === "1", ...(small != null ? { freeSmallMilli: Number(small) } : {}), ads });
 }
 
 type State = { offer: SiteOffer; settled: boolean; adsOn: boolean };

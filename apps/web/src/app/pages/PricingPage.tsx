@@ -391,7 +391,7 @@ function PlanFinder() {
               ) : (
                 <>
                   <span className="font-semibold text-white">No {UNIT.many}:</span>{" "}
-                  {!view.v3 ? `${size.machine}es never use them` : view.withAds ? `${size.machine}es are free with ads on` : `${size.machine}es are free on paid plans`}
+                  {!view.v3 || view.freeSmallFree ? `${size.machine}es never use them` : view.withAds ? `${size.machine}es are free with ads on` : `${size.machine}es are free on paid plans`}
                 </>
               )}
             </p>
@@ -404,7 +404,7 @@ function PlanFinder() {
                 </p>
                 <p className="mt-4 text-[15px] leading-[1.6] text-white/65">
                   {!usesUnits
-                    ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)}, and ${size.machine}es ${!view.v3 ? "never use" : best.plan.priceUsd > 0 ? "on it never use" : "with ads on never use"} your ${UNIT.many}.`
+                    ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)}, and ${size.machine}es ${!view.v3 || view.freeSmallFree ? "never use" : best.plan.priceUsd > 0 ? "on it never use" : "with ads on never use"} your ${UNIT.many}.`
                     : best.extraHours > 0
                       ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)} and ${count(best.plan.hours)}. The other ${count(best.extraHours)} cost ${extraCost(best.plan)}, with ${UNIT.extra} turned on.`
                       : best.plan.priceUsd === 0
@@ -649,7 +649,11 @@ function ExtraCard() {
       )}
       <p className="mt-5 text-[13.5px] leading-[1.5] text-white/45">
         {view.v3 ? (
-          view.ads ? `On Free, work that uses ${UNIT.many} pauses until next month instead. Small stays free with ads on.` : `On Free, work that uses ${UNIT.many}, Small included, pauses until next month instead.`
+          view.ads
+            ? `On Free, work that uses ${UNIT.many} pauses until next month instead. Small stays free with ads on.`
+            : view.freeSmallFree
+              ? `On Free, work that uses ${UNIT.many} pauses until next month instead. Small stays free.`
+              : `On Free, work that uses ${UNIT.many}, Small included, pauses until next month instead.`
         ) : (
           <>On Free, {UNIT.spenders} pause until next month instead. Small computers keep working in the US with sponsored cards and a {BRAND.CLOUD_NAME} chat there each week.</>
         )}
@@ -695,10 +699,10 @@ function FreePlanCardV3({ view }: { view: PricingView }) {
   return (
     <DetailCard accent={MINT} icon={Gift} title="The free plan" note="You never pay to start.">
       <p className="font-display text-[34px] leading-[1.05]" style={{ color: MINT.color }}>
-        {view.ads ? "Unlimited Small with ads" : `${freeCredits} a month`}
+        {view.ads ? "Unlimited Small with ads" : view.freeSmallFree ? "Unlimited Small" : `${freeCredits} a month`}
       </p>
       <p className="mt-1 text-[14px] text-white/50">
-        {view.ads
+        {view.ads || view.freeSmallFree
           ? `${cloudComputersPhrase(FREE_PLAN.computerLimit)} · ${freeCredits} a month for ${view.spenders}`
           : `${cloudComputersPhrase(FREE_PLAN.computerLimit)} · for every size${view.mac ? ", the Mac" : ""} and the iPhone · Small uses ${smallRate} on Free`}
       </p>
@@ -863,7 +867,9 @@ function FaqSectionV3({ view }: { view: PricingView }) {
             </FaqItem>
           ) : null}
           <FaqItem question="Are Small computers really unlimited?">
-            {ads
+            {view.freeSmallFree
+              ? `Yes: they never use your ${UNIT.many}, on any plan.`
+              : ads
               ? `On every paid plan, yes: they never use your ${UNIT.many}. On Free they are free with ads on, and use ${smallRate} with no ads.`
               : `On every paid plan, yes: they never use your ${UNIT.many}. On Free, Small uses ${smallRate}.`}{" "}
             Each one counts toward your plan's cloud computers, and it sleeps when work stops. {CLOUD_SMALL_FAIR_USE_SENTENCE}
@@ -878,7 +884,7 @@ function FaqSectionV3({ view }: { view: PricingView }) {
           </FaqItem>
           <FaqItem question={`What happens when my ${UNIT.many} run out?`}>
             On Free, work that uses {UNIT.many} stops until next month, or until you pick a paid plan
-            {ads ? `; Small stays free with ads on` : ""}. On a paid plan, turn on {UNIT.extra} in Settings and your agents keep working:
+            {ads ? `; Small stays free with ads on` : view.freeSmallFree ? "; Small stays free" : ""}. On a paid plan, turn on {UNIT.extra} in Settings and your agents keep working:
             extra {UNIT.many} cost {extraPrice}, billed after use. With {UNIT.extra} off, work on the bigger sizes stops at your plan's {UNIT.many}.
           </FaqItem>
           <FaqItem question="Can I change plans or cancel?">

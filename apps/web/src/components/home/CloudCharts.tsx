@@ -108,6 +108,7 @@ function Struck({ value }: { value?: string }) {
 
 /** Under Pricing v3, the Small offer in one sentence: free on paid plans, and on Free with ads where there are ads. */
 export function smallOfferSentence(view: PricingView): string {
+  if (view.freeSmallFree) return "Unlimited free Small computers on every plan.";
   return view.ads ? "Unlimited free Small computers on paid plans, and on Free with ads." : "Unlimited free Small computers on every paid plan.";
 }
 
@@ -337,7 +338,7 @@ function FreeHoursChart({ view }: { view: PricingView }) {
 function PerHourChart({ className, view }: { className?: string; view: PricingView }) {
   const cents = (value: number) => (value === 0 ? "0¢" : `${value < 10 ? value.toFixed(1) : Math.round(value)}¢`);
   const rates = adeRates(view);
-  const smallPlans = !view.v3 || view.withAds ? "Every plan" : "Paid plans";
+  const smallPlans = !view.v3 || view.withAds || view.freeSmallFree ? "Every plan" : "Paid plans";
   const bars = sortBars([
     { id: "ade-small", name: `${BRAND.NAME} ${ADE_SMALL.label}`, sub: `${smallPlans}${withAdsTag(view)} · ${ADE_SMALL.machine}`, logo: ADE_LOGO, value: 0, label: cents(0), ade: true },
     ...PRICING_PLANS.filter((plan) => plan.priceUsd > 0).map((plan): Bar => {

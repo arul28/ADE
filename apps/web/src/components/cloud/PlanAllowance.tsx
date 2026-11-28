@@ -33,7 +33,7 @@ export function PlanAllowance({ plan, free, view }: { plan: PricingPlan; free: b
   return (
     <div className="mt-6 border-t border-white/[0.08] pt-5">
       <ul>
-        {!free ? (
+        {!free || view.freeSmallFree ? (
           <AllowanceRow name={SMALL_SIZE.label} detail={`Linux, ${SMALL_SIZE.specs}`} value="Unlimited" unit="free" free even tall={view.ads != null} />
         ) : view.withAds ? (
           <AllowanceRow name={SMALL_SIZE.label} detail={`Linux, ${SMALL_SIZE.specs}`} value="Unlimited" unit="free with ads" free even tall note={`${formatCount(view.freeSmall.struck ?? 0)} ${UNIT.many} an hour with no ads`} />
@@ -75,6 +75,7 @@ export function PlanAllowance({ plan, free, view }: { plan: PricingPlan; free: b
 
 /** The Free card's small print about Small under Pricing v3. */
 export function freeSmallNote(view: PricingView): string {
+  if (view.freeSmallFree) return "Small computers are free on every plan.";
   const rate = `${formatCount(view.freeSmall.struck ?? view.freeSmall.now)} ${UNIT.many} an hour`;
   if (!view.ads) return `Small is ${rate} on Free, and free on every paid plan.`;
   return `With ads, Small computers are free, and bigger ones cost ${view.ads.discountPct}% less.`;

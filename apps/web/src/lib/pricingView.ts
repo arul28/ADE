@@ -67,6 +67,8 @@ export type PricingView = {
   machines: Machine[];
   /** Free's Small for an hour, in shown credits: free with ads, a rate without. */
   freeSmall: ShownPrice;
+  /** Small is free on Free too, with ads or not (the server's ad switch does not reach everyone): free on every plan. */
+  freeSmallFree: boolean;
   /** How far `storedHours` of a plan goes on `machine`, in whole hours or minutes. */
   timeOn: (storedHours: number, machine: Machine) => number;
   /** The same with no ads, for the honest "50 with no ads" beside it. Null when the control is not on "With ads". */
@@ -122,7 +124,7 @@ export function pricingViewFor(offer: SiteOffer, adsOnChoice: boolean): PricingV
   if (offer.v3 && offer.mac) machines.push(minuteMachine("mac", MAC_MILLI_PER_MINUTE / 1000, scale, ads, withAds));
   machines.push(minuteMachine("iphone", v3 ? PHONE_MILLI_PER_MINUTE_V3 / 1000 : PHONE_CREDITS_PER_MINUTE, scale, ads, withAds));
 
-  const smallFull = SMALL_NO_ADS_RATE * scale;
+  const smallFull = offer.v3 ? offer.freeSmallMilli / SHOWN_CREDIT_MILLI : SMALL_NO_ADS_RATE * scale;
   // Free's Small: free with ads (in every ad country), the full rate without.
   const freeSmall: ShownPrice = withAds ? { now: 0, struck: smallFull } : { now: smallFull, struck: null };
 
@@ -146,6 +148,7 @@ export function pricingViewFor(offer: SiteOffer, adsOnChoice: boolean): PricingV
     creditsLabel,
     machines,
     freeSmall,
+    freeSmallFree: v3 && smallFull === 0,
     timeOn,
     timeOnFull,
     extraPrice,
@@ -202,6 +205,6 @@ export function creditUnitSentence(view: PricingView): string {
   const minutes = mac && phone && full(mac) === full(phone)
     ? `the ${BRAND.CLOUD_NAME} Mac and iPhone ${full(phone)} a minute each`
     : `${mac ? `the ${BRAND.CLOUD_NAME} Mac ${full(mac)} a minute, ` : ""}the ${BRAND.CLOUD_NAME} iPhone ${full(phone)} a minute`;
-  return `A Medium computer uses ${full(medium)} credits an hour, and ${minutes}. Small computers on paid plans use none.`;
+  return `A Medium computer uses ${full(medium)} credits an hour, and ${minutes}. Small computers ${view.freeSmallFree ? "use" : "on paid plans use"} none.`;
 }
 

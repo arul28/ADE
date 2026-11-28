@@ -42,7 +42,7 @@ export function inviteRewardLine(view: PricingView): string {
 
 /** "Unlimited Small computers come free", true for the visitor's prices: under Pricing v3, on paid plans (and on Free with ads where there are ads). */
 export function freeOfferLine(view: PricingView, where = ""): string {
-  if (!view.v3) return `${FREE_OFFER}${where} come free.`;
+  if (!view.v3 || view.freeSmallFree) return `${FREE_OFFER}${where} come free.`;
   return `${FREE_OFFER}${where} come free on paid plans${view.ads ? ", and on Free with ads" : ""}.`;
 }
 
