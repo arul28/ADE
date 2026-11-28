@@ -44,6 +44,7 @@ import { useRuntimeCatalogVersion } from "./useRuntimeCatalogVersion";
 import { isAdeFreeModelId } from "../../../../shared/adeFreeModels";
 import { useCloudAccount } from "../../../state/cloudAccountStore";
 import { askAdeFreeModelsConsent } from "./AdeFreeModelsConsentDialog";
+import { askAdeFreeModelsUnlock } from "./AdeFreeModelsUnlockDialog";
 
 /** The saved preset (or ad-hoc route) a surface is running on, for the trigger. */
 export type ModelPickerActivePreset = {
@@ -288,6 +289,13 @@ export const ModelPicker = memo(function ModelPicker({
   const adeFreeModelIds = useMemo(() => (adeFreeIdsKey ? adeFreeIdsKey.split("\n") : []), [adeFreeIdsKey]);
   const adeFreeConsentRef = useRef(adeFreeState?.consent ?? null);
   adeFreeConsentRef.current = adeFreeState?.consent ?? null;
+  // Locked by the GitHub rule (`CloudFreeModelsState.locked`): the rows stay listed, shown locked, and a pick opens the unlock sheet.
+  const adeFreeLocked = adeFreeIdsKey !== "" && adeFreeState?.locked != null;
+  const adeFreeLockedRef = useRef(adeFreeLocked);
+  adeFreeLockedRef.current = adeFreeLocked;
+  const adeFreeLockedLine = adeFreeLocked
+    ? (adeFreeState?.locked?.reason === "checking" ? "Checking your GitHub account…" : "Add a card to unlock")
+    : null;
   /**
    * The rendered catalog is tagged with the machine it came from, and a tag
    * mismatch is resolved synchronously against that machine's bucket.
@@ -531,6 +539,21 @@ export const ModelPicker = memo(function ModelPicker({
           ...(options.serviceTier === "fast" ? { serviceTier: "standard" as const } : {}),
         }
         : options;
+      const commit = () => {
+        if (selection) onChange(modelId, selection);
+        else onChange(modelId);
+      };
+      // A locked ADE Free Model is never picked: the unlock sheet first, then
+      // the consent sheet if the account hasn't said yes, then the pick.
+      if (isAdeFreeModelId(modelId) && adeFreeLockedRef.current) {
+        setOpen(false);
+        void askAdeFreeModelsUnlock().then(async (unlocked) => {
+          if (!unlocked || !unlocked.available || !unlocked.modelIds.includes(modelId)) return;
+          if (unlocked.consent !== "granted" && !(await askAdeFreeModelsConsent())) return;
+          commit();
+        });
+        return;
+      }
       // An ADE Free Model before the account's yes: the sheet first, and the pick only after a yes.
       if (isAdeFreeModelId(modelId) && adeFreeConsentRef.current !== "granted") {
         setOpen(false);
@@ -695,6 +718,7 @@ export const ModelPicker = memo(function ModelPicker({
                 {...(hideSignInFamilies ? { hideSignInFamilies } : {})}
                 {...(runtimePin ? { runtimePin } : {})}
                 {...(adeFreeModelIds.length > 0 ? { adeFreeModelIds } : {})}
+                {...(adeFreeLockedLine ? { adeFreeLockedLine } : {})}
                 {...(openCodeAssumed ? { openCodeAssumed } : {})}
               />
             ) : null}

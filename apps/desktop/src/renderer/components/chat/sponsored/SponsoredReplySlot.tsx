@@ -149,6 +149,7 @@ export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, 
         smallNeedsCards={false}
         confirmYes={false}
         format={freeModels.format ?? "below_reply"}
+        pausedRecovery
       />
     );
   }
@@ -184,7 +185,10 @@ function SponsoredReplySlotOn({
   smallNeedsCards,
   confirmYes,
   format,
+  pausedRecovery = false,
 }: Omit<SponsoredReplySlotProps, "instanceId" | "sessionId" | "freeModelChat"> & {
+  /** An ADE Free Models chat: a reply refused for no cards still gets its card (`lastFinishedTurn`). */
+  pausedRecovery?: boolean;
   /** The ADE Cloud computer the card is asked for; null for an ADE Free Models chat, on any machine. */
   instanceId: string | null;
   /** The ADE Cloud computer whose Index hears that someone watches it, or null. */
@@ -201,7 +205,7 @@ function SponsoredReplySlotOn({
 }) {
   const visible = useDocumentVisible() && paneVisible;
   // The scan runs only between turns; while one streams there is no card.
-  const turn = useMemo(() => (turnActive ? null : lastFinishedTurn(events)), [events, turnActive]);
+  const turn = useMemo(() => (turnActive ? null : lastFinishedTurn(events, { pausedRecovery })), [events, turnActive, pausedRecovery]);
   const fresh = turn != null && Date.now() - turn.finishedAt < SPONSORED_TURN_FRESH_MS;
   const turnKey = turn ? `${sessionId}:${turn.turnId}` : null;
   const [hidden, setHidden] = useState(() => (turnKey ? hiddenTurns.has(turnKey) : false));

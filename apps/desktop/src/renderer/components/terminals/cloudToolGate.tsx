@@ -10,6 +10,13 @@ import { computerIsDown, useCloudComputer } from "../remoteTargets/useCloudCompu
 import { Banner, type BannerModel } from "../ui/notice";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 import { BRAND } from "../../../shared/brand";
+import {
+  CloudFreeGithubHold,
+  cloudFreeCreditsHoldActions,
+  freePlanGithubHold,
+  openGithubSettings,
+  useCloudFreeUnlock,
+} from "../settings/cloudDashboard/CloudFreeGithubNotice";
 
 /**
  * ADE Cloud's half of a Work tool: a person opening a tool that needs the
@@ -97,7 +104,10 @@ export function CloudToolGate({
   const down = computerIsDown(box);
   // Out of hours stops the sizes that use them; a Small computer keeps working.
   const tier = box ? cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account))) : null;
-  const outOfHours = cloudOutOfHours(account) && !(tier && !cloudTierUsesHours(tier));
+  // A free plan the GitHub rule holds has no hours for any size, Small too: the hold says why, not "out of credits".
+  const hold = account && cloudOutOfHours(account) && !account.extraHours?.enabled ? freePlanGithubHold(account) : null;
+  const outOfHours = hold != null || (cloudOutOfHours(account) && !(tier && !cloudTierUsesHours(tier)));
+  const { busy: cardBusy, addCard } = useCloudFreeUnlock({ purpose: "credits", onUnlocked: refresh });
   const instanceId = box?.instanceId ?? null;
   const openedByPerson = opened != null && opened.tool === tool && Date.now() - opened.at < OPENED_BY_PERSON_WINDOW_MS;
   const [waking, setWaking] = useState(false);
@@ -140,6 +150,25 @@ export function CloudToolGate({
       {laneId ? <CloudLaneSavedWork laneId={laneId} /> : null}
     </div>
   );
+  if (hold && down) {
+    return (
+      <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
+        <CloudFreeGithubHold
+          hold={hold}
+          purpose="credits"
+          plusIncludedMilli={account?.catalog?.plans?.plus?.includedMilli ?? null}
+          actions={cloudFreeCreditsHoldActions(hold, {
+            addCard: () => void addCard(),
+            cardBusy,
+            connectGithub: openGithubSettings,
+            seePlans: openCloudPlanSettings,
+            checkAgain: refresh,
+          })}
+        />
+        {laneId ? <CloudLaneSavedWork laneId={laneId} /> : null}
+      </div>
+    );
+  }
   if (outOfHours && down) {
     return restingGate({
       id: "cloud-tool-out-of-hours",

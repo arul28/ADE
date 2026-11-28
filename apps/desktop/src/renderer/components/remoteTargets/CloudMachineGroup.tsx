@@ -14,6 +14,14 @@ import {
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
+import { refreshCloudAccount, useCloudAccount } from "../../state/cloudAccountStore";
+import {
+  CloudFreeGithubHold,
+  cloudFreeCreditsHoldActions,
+  freePlanGithubHold,
+  openGithubSettings,
+  useCloudFreeUnlock,
+} from "../settings/cloudDashboard/CloudFreeGithubNotice";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
@@ -127,6 +135,44 @@ export function CloudGroupBanners({
     );
   }
   return banners.length ? <div style={{ display: "grid", gap: 8 }}>{banners}</div> : null;
+}
+
+/**
+ * A wake, copy or move refused at 0 hours. When the free plan's GitHub rule
+ * is why (the server's `CloudOutOfHoursDetail`, and the account's
+ * `freePlan.github`), the hold with its way out (a card, GitHub), never
+ * "out of credits". Account level, so no pin.
+ */
+function CloudBoxOutOfHours({ error, onDismissError, onOpenSettings }: {
+  error: CloudBoxActionError;
+  onDismissError: () => void;
+  onOpenSettings?: (() => void) | null;
+}) {
+  const account = useCloudAccount(true);
+  const hold = freePlanGithubHold(account);
+  const { busy, addCard } = useCloudFreeUnlock({ purpose: "credits", onUnlocked: onDismissError });
+  if (!hold) {
+    return (
+      <Banner
+        layout="inline"
+        model={{ id: "cloud-action-out-of-hours", tone: "warning", title: error.message, actions: errorActions(error, onOpenSettings), dismiss: { onDismiss: onDismissError }, report: false }}
+      />
+    );
+  }
+  return (
+    <CloudFreeGithubHold
+      hold={hold}
+      purpose="credits"
+      plusIncludedMilli={account?.catalog?.plans?.plus?.includedMilli ?? null}
+      actions={cloudFreeCreditsHoldActions(hold, {
+        addCard: () => void addCard(),
+        cardBusy: busy,
+        connectGithub: openGithubSettings,
+        seePlans: () => onOpenSettings?.(),
+        checkAgain: refreshCloudAccount,
+      })}
+    />
+  );
 }
 
 /** What a failed action blocks on, as the buttons that clear it. */
@@ -254,7 +300,11 @@ export function CloudBoxStrip({
           }}
         />
       ) : null}
-      {error ? (
+      {error?.blocker === "out_of_hours" ? (
+        <div ref={errorRef}>
+          <CloudBoxOutOfHours error={error} onDismissError={onDismissError} onOpenSettings={onOpenSettings} />
+        </div>
+      ) : error ? (
         <div ref={errorRef}>
           <Banner
             layout="inline"

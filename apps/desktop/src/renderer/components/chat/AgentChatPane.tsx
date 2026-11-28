@@ -411,6 +411,7 @@ import {
 } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatAccountNote } from "./ChatAccountNote";
+import { AdeFreeModelsComposerNote } from "./AdeFreeModelsComposerNote";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { deriveChatSources } from "../../../shared/chatSources";
@@ -20517,17 +20518,20 @@ export function AgentChatPane({
     const tierRequests = selectedSessionId && cloudTierRequestCards.length > 0
       ? <CloudTierRequestsAboveComposer cards={cloudTierRequestCards} sessionId={selectedSessionId} />
       : null;
-    if (!cloudTray && !laneStatus && !tierRequests && !aboveComposer) return providerSignInSlot;
+    // An ADE Free Models chat (or a draft on one) that the account locked, slowed or paused: one calm line (it renders nothing otherwise).
+    const freeModelsNote = freeModelChat || isAdeFreeModelId(modelId) ? <AdeFreeModelsComposerNote active={isTileVisible} /> : null;
+    if (!cloudTray && !laneStatus && !tierRequests && !aboveComposer && !freeModelsNote) return providerSignInSlot;
     return (
       <>
         {providerSignInSlot}
         {tierRequests}
         {cloudTray}
         {laneStatus}
+        {freeModelsNote}
         {aboveComposer}
       </>
     );
-  }, [aboveComposer, adeCloudNotice, chatLaneJob, cloudTierRequestCards, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
+  }, [aboveComposer, adeCloudNotice, chatLaneJob, cloudTierRequestCards, freeModelChat, isTileVisible, modelId, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same

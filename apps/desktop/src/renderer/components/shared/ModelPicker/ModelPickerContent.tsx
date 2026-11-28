@@ -275,6 +275,12 @@ export type ModelPickerContentProps = {
    */
   adeFreeModelIds?: readonly string[];
   /**
+   * The ADE Free Models are locked for this account (the GitHub rule): their
+   * rows stay listed with a lock and this short line in place of their
+   * details, and picking one opens the unlock sheet (`ModelPicker`).
+   */
+  adeFreeLockedLine?: string | null;
+  /**
    * The chat runs where OpenCode is always there (a new chat on ADE Cloud):
    * never "OpenCode needed", and no probe of the picker's machine for free
    * models.
@@ -322,6 +328,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   onCopilotContextTierChange,
   runtimePin = null,
   adeFreeModelIds = NO_ADE_FREE_MODELS,
+  adeFreeLockedLine = null,
   openCodeAssumed = false,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
@@ -1465,6 +1472,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         } : {})}
                         omitProviderInDetail={providerScopedList && m.family === activeProviderFamily}
                         freeBadge={freeModelEntry(m)?.badge ?? null}
+                        {...(adeFreeLockedLine && isAdeFreeModelId(m.id) ? { lockedLine: adeFreeLockedLine } : {})}
                         {...(onOpenSignIn && !hideSignInFamilies?.includes(pickerFamilyForModel(m))
                           ? { onSignIn: () => onOpenSignIn(pickerFamilyForModel(m), m.authTypes) }
                           : {})}

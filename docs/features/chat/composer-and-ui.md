@@ -504,12 +504,31 @@ it.
   - **Watched only.** `useFreeModelViewer` reports the open chat
     (`POST /cloud/free-models/seen`) at once and every 4 minutes while
     visible; a send reports first when the last report is over 8 minutes old.
+  - **Locked (GitHub rule).** While `freeModels.locked` is set (no GitHub,
+    too new, already used, or checking; a card saved with no charge or a
+    paid plan unlocks them), the rows stay listed with a lock. A pick opens
+    `AdeFreeModelsUnlockDialog.tsx` (the shared `CloudFreeGithubHold`):
+    **Add a card (no charge)**, **Connect GitHub** when none is connected,
+    **Not now**; `checking` offers only **Check again**. It waits for the
+    card (window focus, every 5 s for 3 minutes, **Check again**), then the
+    consent sheet, then the model is picked. Unlock first, then consent.
+  - **Slowed and paused.** `freeModels.throttle` shows one line on the
+    prompt box (`AdeFreeModelsComposerNote.tsx`); a refused turn
+    (`free_models_locked`, `free_models_no_cards`, `adeFreeModelsRefusal.ts`)
+    reads plainly in the transcript, and a reply refused for no cards still
+    asks for its card so the chat can run again (`lastFinishedTurn`).
   - **Account level.** Consent, the viewer report and card requests take no
     pin; only the chat's launch and turns go to its machine.
 - **ADE Cloud drafts.** A new chat on ADE Cloud lists `GET /cloud/models`
   (free rows carry `free: { source, badge }`). The picker gets
   `openCodeAssumed`, so the tab's machine is never probed, and the sign-in
   check never asks for a key for a free model.
+- **A held free plan on DAEX Cloud.** When `freePlan.github` holds a free
+  account (why its hours are 0), the label above the box and a resting lane
+  computer's Work tool (`cloudToolGate.tsx`) show `CloudFreeGithubHold` with
+  the server's action: **Add a card (no charge)**, **Connect GitHub**,
+  **See plans** or **Check again**. Spent hours still read as out of
+  credits.
 
 ## Voice conversations
 
