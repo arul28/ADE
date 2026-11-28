@@ -9,16 +9,17 @@ import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
 import { Section } from "../../components/Section";
 import {
-  FREE_OFFER,
   INVITE_ENTER_DAYS,
-  INVITE_REWARD_LINE,
+  freeOfferLine,
   inviteAppLink,
+  inviteRewardLine,
   inviteCodeFrom,
   lookUpInvite,
   type InviteLookup,
 } from "../../lib/invite";
 import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { usePricingView } from "../../lib/pricingView";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /**
@@ -33,6 +34,7 @@ import { BRAND } from "../../../../desktop/src/shared/brand";
 export function InvitePage() {
   useDocumentTitle(`You're invited to ${BRAND.NAME}`);
   const params = useParams<{ code: string }>();
+  const view = usePricingView();
   const code = inviteCodeFrom(params.code);
   const [lookup, setLookup] = useState<InviteLookup | null>(code ? null : { state: "not_found" });
 
@@ -67,8 +69,8 @@ export function InvitePage() {
           <Reveal delay={0.1}>
             <p className="mt-5 text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
               {invalid
-                ? `You can still get ${BRAND.NAME}. ${FREE_OFFER} in the cloud come free.`
-                : `You both get ${INVITE_REWARD_LINE}. ${FREE_OFFER} come free.`}
+                ? `You can still get ${BRAND.NAME}. ${freeOfferLine(view, " in the cloud")}`
+                : `You both get ${inviteRewardLine(view)}. ${freeOfferLine(view)}`}
             </p>
           </Reveal>
 

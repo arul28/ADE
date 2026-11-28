@@ -518,7 +518,8 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
 - **Website**: `GET /public/pricing` (no auth, CORS `*`, no-store) says whether
   Pricing v3 is on, the visitor's ad terms, and what a Small costs on Free for
   that visitor (`freeSmallMilli`, by the bill's own rule: 0 while the ad switch
-  doesn't reach everyone).
+  doesn't reach everyone). The site reads it once per page load and shows
+  today's prices when it fails (`apps/web/README.md`, "Cloud prices").
 
 ### DAEX Free Models (any plan, behind a switch)
 
