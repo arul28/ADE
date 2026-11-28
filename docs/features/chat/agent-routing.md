@@ -583,7 +583,7 @@ directive both say so.
 **Computer Use (macOS).** An enabled Codex Computer Use plugin/config adds the
 verified `SkyComputerUseClient` as `config.mcp_servers.computer_use` on every
 thread start and resume; tracked CLI launches get matching `-c` overrides. See
-[Computer-Use Backends](../computer-use/backends.md#codex-computer-use-current).
+[Computer Use › Gotchas](../computer-use/README.md#gotchas--fragile-areas).
 
 #### Codex turn telemetry
 
@@ -1416,5 +1416,5 @@ CTO sessions (`identityKey: "cto"`, the only identity session):
 - [Chat README](README.md): session lifecycle.
 - [Composer and UI](composer-and-ui.md): model selection and permission
   controls in the UI.
-- [Agents identity and personas](../agents/identity-and-personas.md): the CTO
+- [CTO](../cto/README.md): the CTO
   identity and memory.
