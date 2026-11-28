@@ -155,11 +155,11 @@ struct CloudPlansCard: View {
         } else {
           fact("clock", words.planLine(column.facts.includedMilli), current: current)
         }
-        // Pricing v3: what the month lasts on a Medium, at both prices ("Time on a plan"), then
-        // the Mac short on the same one line while the catalog offers one.
+        // Pricing v3: what the month lasts on a Medium, at both prices ("Time on a plan"). The
+        // phone's plan columns are narrow, so the Mac's time stays off this one line (it would
+        // wrap to five); VoiceOver still reads it, and the sizes card's Mac row shows it.
         if let adWords, let medium = tiers.first(where: { $0.id == "medium" }), let line = adWords.timeOn(column.facts.includedMilli, tier: medium) {
-          let mac = account.macOffer.flatMap { CloudMacWords.planShort($0, includedMilli: column.facts.includedMilli, ad: adWords) }
-          fact("hourglass", cloudCapitalized([line, mac].compactMap { $0 }.joined(separator: " · ")), current: current, lines: nil)
+          fact("hourglass", cloudCapitalized(line), current: current, lines: nil)
         } else if let offer = account.macOffer, let macLine = CloudMacWords.planLine(offer, includedMilli: column.facts.includedMilli) {
           // Before Pricing v3: a plan's credits as time on a DAEX Cloud Mac, from the catalog's rate.
           fact("apple.logo", macLine, current: current)

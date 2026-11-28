@@ -95,7 +95,8 @@ function minutesText(minutes: number): string {
   const hours = Math.floor(whole / 60);
   const rest = whole % 60;
   if (hours === 0) return `${whole} min`;
-  return rest ? `${hours.toLocaleString("en-US")} h ${rest} min` : `${hours.toLocaleString("en-US")} h`;
+  // From 10 hours on, whole hours read faster: "83 h", not "83 h 20 min".
+  return rest && hours < 10 ? `${hours.toLocaleString("en-US")} h ${rest} min` : `${hours.toLocaleString("en-US")} h`;
 }
 
 /** The rate a Mac uses now: the ad price while ads are on and it is lower, else the full price. */

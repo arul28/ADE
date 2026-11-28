@@ -688,6 +688,7 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 
 .adecd-head-note[data-tone="crit"] { color: var(--kit-crit); }
 .adecd-head-note[data-tone="warn"] { color: var(--kit-warn); }
+.adecd-head-note[data-wrap] { white-space: normal; text-overflow: clip; line-height: 1.35; }
 
 /* Quiet fine print (the plan-limits dialog). */
 .adecd-plan-fine { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--kit-text-3); }

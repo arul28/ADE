@@ -196,7 +196,7 @@ enum CloudPreviews {
   ///   (a country with no ads), `zero` (discount 0), `new` (US, notice not seen),
   ///   `asked` (asked region, notice not seen), and a reason for the awake
   ///   Medium while ads are on: `cli`, `automation`, `outside`, `idle`, `unverified`
-  /// - surface: none (the page), `plans`, `machine`, `notice`
+  /// - surface: none (the page), `plans`, `sizes`, `machine`, `notice`
   /// - `-mac` anywhere after the state: the DAEX Cloud Mac offered at both
   ///   prices, with a Mac lane in each state (the On one priced by the server);
   ///   `machine` then opens the On Mac.
@@ -269,6 +269,13 @@ enum CloudPreviews {
         .background(ADEColor.pageBackground.ignoresSafeArea())
         .navigationTitle(Brand.cloudName)
         .navigationBarTitleDisplayMode(.inline)
+      })
+    case "sizes":
+      return AnyView(NavigationStack {
+        ScrollView { CloudSizesCard(account: account, tiers: store.tiers).padding(16) }
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationTitle(Brand.cloudName)
+          .navigationBarTitleDisplayMode(.inline)
       })
     case "machine":
       return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: withMac ? "mac0running" : "zodqsue74s") })

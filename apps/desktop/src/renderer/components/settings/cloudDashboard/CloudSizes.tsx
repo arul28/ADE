@@ -145,7 +145,8 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
       <header className="kit-card-head">
         <Cpu size={14} />
         Sizes and prices
-        <span className="adecd-head-note">
+        {/* Wraps: the only place that says agents start on Linux, so it is never cut. */}
+        <span className="adecd-head-note" data-wrap="true">
           {onMac
             ? "New cloud lanes you start begin on a Mac. Agents and automations start on Linux unless they ask for a Mac."
             : "New cloud lanes start on the size you pick; each can change size later. Every size has a desktop screen the agent can use."}

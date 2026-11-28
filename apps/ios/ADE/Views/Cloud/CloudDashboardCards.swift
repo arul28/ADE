@@ -854,14 +854,16 @@ struct CloudMachineRow: View {
   /// The phone's own read carries what each computer costs now (Pricing v3).
   @ObservedObject private var accountStore = AccountCloudStore.shared
 
-  /// "Medium · 8/h with ads", "Large · 25/h · CLI session" while it is awake
+  /// "Medium · 8/h with ads", "Large · 25/h · CLI session", "Mac · 4/min with ads" while it is awake
   /// under Pricing v3; today's line otherwise (asleep: the state word says it).
   private var line: String {
     let base = cloudMachineLine(machine, tier: tier, now: now, words: words)
     guard machine.isAwake, let adWords = CloudAdPriceWords(accountStore.account),
-          let price = adWords.pricing.computer(machine.instanceId) else { return base }
-    let label = tier?.label ?? machine.size ?? ""
-    let parts = [label, adWords.compactPriceNow(price), adWords.shortReason(price)].compactMap { $0 }.filter { !$0.isEmpty }
+          let listed = adWords.pricing.computer(machine.instanceId) else { return base }
+    // The server lists a Mac's price per hour; a Mac is priced by the minute ("Mac · 4/min with ads").
+    let price = machine.isMac ? CloudMacWords.pricePerMinute(listed) : listed
+    let label = machine.isMac ? "Mac" : tier?.label ?? machine.size ?? ""
+    let parts = [label, adWords.compactPriceNow(price, unit: machine.isMac ? .minute : .hour), adWords.shortReason(price)].compactMap { $0 }.filter { !$0.isEmpty }
     return parts.joined(separator: " · ")
   }
 

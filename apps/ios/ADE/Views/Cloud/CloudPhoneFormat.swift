@@ -1126,7 +1126,8 @@ enum CloudMacWords {
     let rest = minutes % 60
     if hours == 0 { return "\(minutes) min" }
     let h = hours.formatted(.number.locale(Locale(identifier: "en_US")))
-    return rest > 0 ? "\(h) h \(rest) min" : "\(h) h"
+    // From 10 hours on, whole hours read faster: "83 h", not "83 h 20 min".
+    return rest > 0 && hours < 10 ? "\(h) h \(rest) min" : "\(h) h"
   }
 
   /// How long `leftMilli` lasts on a Mac at the price paid now, rounded down:
@@ -1143,13 +1144,6 @@ enum CloudMacWords {
     let now = rateNow(offer, ad: ad)
     if now == offer.creditMilliPerMinute { return "\(full) of Mac" }
     return "up to \(minutesText(includedMilli, per: now)) of Mac with ads · \(full) with no ads"
-  }
-
-  /// The short Mac part of a plan's one time line: "up to 2 h 5 min of Mac" with ads on, "1 h 40 min of Mac" otherwise.
-  static func planShort(_ offer: CloudMacOffer, includedMilli: Int, ad: CloudAdPriceWords? = nil) -> String? {
-    guard includedMilli > 0 else { return nil }
-    let now = rateNow(offer, ad: ad)
-    return "\(now == offer.creditMilliPerMinute ? "" : "up to ")\(minutesText(includedMilli, per: now)) of Mac"
   }
 
   /// A Mac's price now from the server's row, which carries it an hour (its minute rate times 60), per minute.
