@@ -3112,20 +3112,29 @@ describe("ADE Cloud server launcher", () => {
       expect(usedMilli(harness)).toBe(expected);
     });
 
-    it.each<[string, () => Promise<void>, string]>([
-      ["the credits ran out during the join", async () => {
-        harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
-        await harness.tick();
-      }, CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.credits],
-      ["a block", async () => {
+    const paidPlan = () => harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+    const creditsRunOut = async () => {
+      harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+      await harness.tick();
+    };
+    it.each<[string, () => void, () => Promise<void>, string]>([
+      ["the credits ran out during the join", paidPlan, creditsRunOut, CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.credits],
+      // Retry makes a Medium again, which 0 credits refuses: the way out is a new start on Small.
+      ["the credits ran out on Free with ads on, on a Medium", () => {
+        Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_ADS: "all", PRICING_V3: "all" });
+        harness.insert("cloud_settings", { key: "gravity_ads", value: "all", updated_at: NOW });
+        harness.insert("cloud_settings", { key: "pricing_v3", value: "all", updated_at: NOW });
+        harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW - DAY, notice_seen_at: NOW - DAY });
+      }, creditsRunOut, CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.ads_on_bigger],
+      ["a block", paidPlan, async () => {
         harness.insert("cloud_blocks", { user_id: OWNER, reason: "spam", created_at: clock });
         await enforceBlockOnComputer(harness.env, createCloudProvider("provider-key"), harness.row("select * from cloud_computers where instance_id = ?", MADE) as never, clock);
       }, ACCOUNT_BLOCKED_MESSAGE],
-      ["another stop", async () => {
+      ["another stop", paidPlan, async () => {
         expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/stop`, {})).status).toBe(200);
       }, CLOUD_LAUNCH_COMPUTER_STOPPED],
-    ])("a computer stopped before its chat started ends the launch at the next tick with why (%s), and nothing is charged after the stop", async (_label, stop, sentence) => {
-      harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+    ])("a computer stopped before its chat started ends the launch at the next tick with why (%s), and nothing is charged after the stop", async (_label, account, stop, sentence) => {
+      account();
       expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
       at(1);
       await stop();
