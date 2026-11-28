@@ -390,7 +390,7 @@ struct CloudSponsoredCard: View {
 /// them on every device; turning them on is the one-time sheet in the model
 /// picker, which says what Gravity receives before the yes.
 struct CloudFreeModelsCard: View {
-  let pageAccount: CloudAccountState?
+  let pageAccount: CloudPhoneAccount?
   @ObservedObject private var accountStore = AccountCloudStore.shared
   @State private var saving = false
   @State private var failure: String?
