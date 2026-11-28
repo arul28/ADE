@@ -847,10 +847,17 @@ async function join(deps: CloudBootLaunchDeps, sleep: (ms: number) => Promise<vo
     logger.info("cloud_boot_launch.headless_approval", { launchId, result: opened });
     if (opened === "signed_in" && await waitSignedIn(deps, login, joinEnds, sleep)) return true;
     // A person has to confirm: one tap in their own browser, a fresh code each 10 minutes, inside the join window.
+    // The join's own sign-in link claimed the first code, and an approval page refuses a claimed code ("Sign-in
+    // already started"), so the person gets a fresh one from the first round on.
     let current = login;
+    try {
+      current = await deps.account.startDeviceLogin();
+    } catch (error) {
+      logger.warn("cloud_boot_launch.device_login_failed", { launchId, error: errorText(error) });
+    }
     for (let round = 0; round < APPROVAL_ROUNDS && windowOpen(); round += 1) {
       try {
-        const answer = await api.joinLaunch(launchId, instanceId, { nonce: joinCode, needsApproval: true, ...(round ? { userCode: current.userCode } : {}) });
+        const answer = await api.joinLaunch(launchId, instanceId, { nonce: joinCode, needsApproval: true, userCode: current.userCode });
         if (typeof answer.joinExpiresAt === "number") joinEnds = answer.joinExpiresAt;
       } catch (error) {
         const code = error instanceof CloudApiError ? error.code : "unknown";
