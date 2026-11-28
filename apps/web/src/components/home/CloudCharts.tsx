@@ -6,7 +6,7 @@ import { usePricingView, type PricingView } from "../../lib/pricingView";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /*
- * ADE Cloud against the other agent apps that sell a cloud computer, drawn
+ * DAEX Cloud against the other agent apps that sell a cloud computer, drawn
  * the way benchmark pages draw a speed test: one metric per chart, best
  * first, one row per vendor on one line (logo, name and machine, a thick bar,
  * the value at the bar's end), and ADE as the only gold bar. The apps with no
@@ -44,10 +44,10 @@ function adeRates(view: PricingView): { medium: number; mediumFull: number; free
   };
 }
 
-/** " · with ads" on an ADE bar that shows the ad price, so a screenshot of the chart is honest on its own. */
+/** " · with ads" on a DAEX bar that shows the ad price, so a screenshot of the chart is honest on its own. */
 const withAdsTag = (view: PricingView): string => (view.withAds ? " · with ads" : "");
 
-/** Where every competitor number comes from; it closes the ADE Cloud section. */
+/** Where every competitor number comes from; it closes the DAEX Cloud section. */
 export function CloudSources({ className }: { className?: string }) {
   const view = usePricingView();
   return (
@@ -93,7 +93,7 @@ function Mark({ src, name, size = 28, className }: { src: string; name: string; 
   );
 }
 
-type Bar = { id: string; name: string; sub: string; logo: string; source?: string; value: number; label: string; ade: boolean; /** The full price, struck before the label, on an ADE bar that shows the ad price. */ struck?: string };
+type Bar = { id: string; name: string; sub: string; logo: string; source?: string; value: number; label: string; ade: boolean; /** The full price, struck before the label, on a DAEX bar that shows the ad price. */ struck?: string };
 
 /** The struck full price before a bar's value. */
 function Struck({ value }: { value?: string }) {

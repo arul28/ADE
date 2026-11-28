@@ -23,7 +23,7 @@ const ITEMS = [
   },
 ] as const;
 
-/** The ADE Cloud computers and tools that are on the way, a card each; `hide` leaves out the ones already here (the Mac, once it is open to all). */
+/** The DAEX Cloud computers and tools that are on the way, a card each; `hide` leaves out the ones already here (the Mac, once it is open to all). */
 export function ComingSoon({ className, hide }: { className?: string; hide?: ReadonlyArray<(typeof ITEMS)[number]["id"]> }) {
   const items = hide ? ITEMS.filter((item) => !hide.includes(item.id)) : ITEMS;
   return (

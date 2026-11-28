@@ -40,7 +40,7 @@ export type Rival = {
 const machineOf = (size: PricingSize): string => `${size.cpu} CPUs · ${size.memoryGb} GB`;
 
 /**
- * ADE Cloud is charted twice: its Small computer, which never uses hours (so
+ * DAEX Cloud is charted twice: its Small computer, which never uses hours (so
  * any month of it is $0 on Free, inside the plan's computers and fair use),
  * and its Medium, the size whose hour is the plan's hour and the nearest to
  * the 8 GB machines most rows compare.
@@ -50,7 +50,7 @@ const MEDIUM_SIZE = HOURLY_SIZES[0]!;
 export const ADE_MEDIUM = { label: MEDIUM_SIZE.label, machine: machineOf(MEDIUM_SIZE) };
 
 /**
- * ADE Cloud's bill for `hours` of a Medium computer in a month: the cheapest
+ * DAEX Cloud's bill for `hours` of a Medium computer in a month: the cheapest
  * plan that runs them. `rate`: stored hours each Medium hour uses (less with
  * the ad price, `pricingView.ts`).
  */
@@ -59,7 +59,7 @@ export function adeMediumMonthly(hours: number, rate = MEDIUM_SIZE.rate): PlanCo
 }
 
 /**
- * ADE Cloud's bill for `hours` of Small computers: the cheapest plan with the
+ * DAEX Cloud's bill for `hours` of Small computers: the cheapest plan with the
  * computers they need, since Small uses no hours on a paid plan. On Free it
  * uses `freeRate` stored hours an hour (Pricing v3 with no ads; 0 otherwise).
  */
