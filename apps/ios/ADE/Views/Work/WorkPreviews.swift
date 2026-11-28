@@ -1520,6 +1520,12 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// to screenshot that the list does NOT banner it. See
   /// `WorkConnectivityBannerPreviewHost`.
   case connectivityBanner = "connectivity-banner"
+  /// Every state of the focused machine's connection banner, stacked, with a
+  /// fixed age. See `FocusedConnectionBannerPreviewHost` (`ContentView.swift`).
+  case focusedConnectionBanner = "focused-connection-banner"
+  /// The same at the largest accessibility text size with a long machine name:
+  /// the line wraps and Retry stays whole.
+  case focusedConnectionBannerLarge = "focused-connection-banner-large"
   /// The real chat with a seeded draft: image, pasted-file, PR, machine and
   /// link pills in the composer, and a sent bubble naming `[Image #1]`. See
   /// `WorkComposerPillsPreviewHost`.
@@ -1914,6 +1920,11 @@ struct ADEPreviewScreenHost: View {
       WorkQueuedSteerPreviewHost()
     case .connectivityBanner:
       WorkConnectivityBannerPreviewHost()
+    case .focusedConnectionBanner:
+      FocusedConnectionBannerPreviewHost()
+    case .focusedConnectionBannerLarge:
+      FocusedConnectionBannerPreviewHost(machineName: FocusedConnectionBannerPreviewHost.longMachineName)
+        .dynamicTypeSize(.accessibility5)
     case .composerPills:
       WorkComposerPillsPreviewHost()
     case .composerModelChips:

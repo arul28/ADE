@@ -501,34 +501,23 @@ private struct FocusedConnectionBanner: View {
   /// What the rows under this banner are, so the stale marker names them.
   let staleContentNoun: String?
   let onRetry: (() -> Void)?
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   var body: some View {
     VStack(spacing: 6) {
-      HStack(spacing: 10) {
-        if notice.showsProgress {
-          ProgressView()
-            .controlSize(.small)
-        } else {
-          Image(systemName: notice.symbol)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .accessibilityHidden(true)
+      // At accessibility text sizes Retry moves under the line, so a long
+      // machine name wraps across the full width and never squeezes it out.
+      if dynamicTypeSize.isAccessibilitySize {
+        VStack(alignment: .leading, spacing: 6) {
+          statusLine
+          retryButton
         }
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-          Text(notice.line(now: context.date))
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityLabel(notice.accessibilityLabel(now: context.date))
-            .accessibilityAddTraits(.updatesFrequently)
-        }
-        Spacer(minLength: 8)
-        if let onRetry {
-          Button("Retry", action: onRetry)
-            .buttonStyle(.plain)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-            .accessibilityHint("Tries to reach \(notice.machineName) again now")
+        .frame(maxWidth: .infinity, alignment: .leading)
+      } else {
+        HStack(spacing: 10) {
+          statusLine
+          Spacer(minLength: 8)
+          retryButton
         }
       }
       if let staleContentNoun, notice.marksContentStale {
@@ -542,7 +531,96 @@ private struct FocusedConnectionBanner: View {
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("focused-connection-banner")
   }
+
+  /// The glyph and the line. The line wraps; it never truncates the cause.
+  private var statusLine: some View {
+    // Top-aligned: with a wrapped line the glyph sits beside its first row.
+    HStack(alignment: .top, spacing: 10) {
+      if notice.showsProgress {
+        ProgressView()
+          .controlSize(.small)
+      } else {
+        Image(systemName: notice.symbol)
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .accessibilityHidden(true)
+      }
+      TimelineView(.periodic(from: .now, by: 1)) { context in
+        Text(notice.line(now: context.date))
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel(notice.accessibilityLabel(now: context.date))
+          .accessibilityAddTraits(.updatesFrequently)
+      }
+    }
+  }
+
+  /// Its own width, ahead of the line: the line gives way, never Retry.
+  @ViewBuilder
+  private var retryButton: some View {
+    if let onRetry {
+      Button("Retry", action: onRetry)
+        .buttonStyle(.plain)
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(ADEColor.accent)
+        .fixedSize()
+        .layoutPriority(1)
+        .accessibilityHint("Tries to reach \(notice.machineName) again now")
+    }
+  }
 }
+
+#if DEBUG
+/// Every `FocusedConnectionBanner` state, one under another, as the project
+/// tabs show it over the Work tab's rows ("chats"). Internal (DEBUG only) so
+/// the `-adePreviewScreen focused-connection-banner` routes in
+/// `WorkPreviews.swift` can mount it; the banner itself stays private here.
+struct FocusedConnectionBannerPreviewHost: View {
+  static let longMachineName = "Arul’s MacBook Pro (Work)"
+  var machineName = "Mac Studio"
+  /// Five minutes before the preview renders: the age reads "updated 5m ago"
+  /// for a whole minute, so a rendered preview is the same every time.
+  let updatedAt = Date.now.addingTimeInterval(-5 * 60)
+  let kinds: [SyncFocusedConnectionNoticeKind] = [
+    .checking, .reconnecting, .hostBusy, .waking, .unreachable, .asleep, .cloudResting, .noNetwork,
+  ]
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 12) {
+        ForEach(Array(kinds.enumerated()), id: \.offset) { _, kind in
+          let notice = SyncFocusedConnectionNotice(kind: kind, machineName: machineName, updatedAt: updatedAt)
+          FocusedConnectionBanner(
+            notice: notice,
+            staleContentNoun: "chats",
+            onRetry: notice.offersRetry ? {} : nil
+          )
+        }
+      }
+      .padding(.vertical, 12)
+    }
+    .background(ADEColor.pageBackground)
+  }
+}
+
+#Preview("Connection banner - every state") {
+  FocusedConnectionBannerPreviewHost()
+    .preferredColorScheme(.light)
+}
+
+#Preview("Connection banner - every state, dark") {
+  FocusedConnectionBannerPreviewHost()
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Connection banner - largest text, long name") {
+  FocusedConnectionBannerPreviewHost(machineName: FocusedConnectionBannerPreviewHost.longMachineName)
+    .dynamicTypeSize(.accessibility5)
+    .preferredColorScheme(.dark)
+}
+#endif
 
 struct AccountConnectStatusToast: View {
   let label: String

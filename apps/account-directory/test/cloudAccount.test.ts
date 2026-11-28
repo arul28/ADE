@@ -2758,6 +2758,76 @@ describe("ADE Cloud server launcher", () => {
     expect(madeCalls()).toHaveLength(2);
   });
 
+  // A start whose answer was lost (the provider timed out, or the tab or the Worker went away mid-create)
+  // leaves the launch `making` with no computer, while the provider makes the computer anyway.
+  const loseStart = async () => {
+    harness.net.once.push({ match: /POST .*\/instances$/, reply: harness.net.reply({ error: { code: "upstream_timeout" } }, 504) });
+    expect((await harness.send(OWNER, "POST", "/cloud/launches", launchBody)).status).toBe(504);
+    expect(harness.row("select state, instance_id from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state: "making", instance_id: null });
+  };
+  // The computer the provider made anyway, with the metadata the lost create asked for.
+  const provideLate = (extra: Record<string, string> = {}) =>
+    provide(harness, "lateid123456", "running", { ...(madeCalls()[0]!.body!.metadata as Record<string, string>), ...extra });
+  const launchState = async () => (await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { state: string; instanceId: string | null; error: string | null };
+  const endUnjoined = () => failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+
+  it("a start whose answer was lost is linked when the tick adopts its computer: it stays awake for its join, joins, and its first message reaches the chat", async () => {
+    await loseStart();
+    provideLate();
+    clock = NOW + 60_000;
+    await harness.tick();
+    expect(await launchState()).toEqual(expect.objectContaining({ state: "joining", instanceId: "lateid123456" }));
+
+    // Past the no-check-in sleep: a computer whose launch waits for its join is left awake.
+    clock = NOW + 12 * 60_000;
+    await harness.tick();
+    expect(computer(harness, "lateid123456").status).toBe("running");
+    seedDeviceSignIn();
+    expect((await join({ nonce: joinCode(), userCode: USER_CODE }, "lateid123456")).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "running", sessionId: "chat-1" })).status).toBe(200);
+    const listed = (await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}/messages`)).json()) as { messages: Array<{ state: string }> };
+    expect(listed.messages.map((message) => message.state)).toEqual(["delivered"]);
+  });
+
+  // A start that is only slow holds its reservation until the tick adopts its computer, or releases it after 15 minutes with nothing made.
+  it.each<[string, { released: boolean; atMinutes: number }, string]>([
+    ["a slow start that still holds its reservation stays making", { released: false, atMinutes: 21 }, "making"],
+    ["a start whose reservation was released stays making for 20 minutes", { released: true, atMinutes: 19 }, "making"],
+    ["a start that made nothing fails after 20 minutes, and its Retry makes the computer", { released: true, atMinutes: 21 }, "failed"],
+  ])("%s", async (_label, { released, atMinutes }, state) => {
+    await loseStart();
+    if (released) {
+      clock = NOW + 16 * 60_000;
+      await harness.tick();
+      expect(harness.rows("select instance_id from cloud_computers where instance_id like 'pending:%' and deleted_at is null")).toEqual([]);
+    }
+    clock = NOW + atMinutes * 60_000;
+    await endUnjoined();
+
+    expect(await launchState()).toEqual(expect.objectContaining({ state, error: state === "failed" ? expect.any(String) : null }));
+    if (state !== "failed") return;
+    expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status).toBe(201);
+    expect(await launchState()).toEqual(expect.objectContaining({ state: "joining", instanceId: "madenew12345" }));
+  });
+
+  it.each<[string, { metadata?: Record<string, string>; then?: string }, boolean]>([
+    ["the computer the provider made anyway is deleted once the tick adopts it", {}, true],
+    ["a computer of another server's environment is never adopted or deleted", { metadata: { ade_env: "development" } }, false],
+    ["a computer that checked in is kept", { then: "update cloud_computers set machine_key = 'key-late' where instance_id = 'lateid123456'" }, false],
+    ["a computer whose launch's join code was used is kept", { then: `update cloud_launches set join_used_at = ${NOW} where launch_id = '${LAUNCH}'` }, false],
+  ])("a start cancelled while making: %s", async (_label, { metadata, then }, deleted) => {
+    await loseStart();
+    expect((await harness.send(OWNER, "DELETE", `/cloud/launches/${LAUNCH}`)).status).toBe(200);
+    provideLate(metadata);
+    clock = NOW + 60_000;
+    await harness.tick();
+    if (then) harness.exec(then);
+    await endUnjoined();
+
+    expect(providerCalls(harness, /DELETE .*\/instances\/lateid123456$/)).toHaveLength(deleted ? 1 : 0);
+    expect((await launchState()).state).toBe("cancelled");
+  });
+
   // A big repository's install fills the 4 GB every computer starts with: the setup grows it,
   // the computer restarts and setup runs again. The next launch starts at that disk instead,
   // inside the size's own disk (Pricing v2 has no account-wide disk).
