@@ -283,7 +283,7 @@ permission override.
 
 ### Pi
 
-- Discovery drops sessions owned by a DAEX chat (`.ade-owner` owner `sdk`) or opening with the `## ADE` guidance block. The tracked-terminal lookup uses `defaultHomeOnly`.
+- Discovery drops sessions owned by a DAEX chat (`.ade-owner` owner `sdk`) or opening with the `## DAEX` (older: `## ADE`) guidance block. The tracked-terminal lookup uses `defaultHomeOnly`.
 
 ### Muse
 
@@ -297,11 +297,11 @@ thinner row, never a throw) and stop once enough rows survive.
 
 | Provider | Store | DAEX-launched test |
 |---|---|---|
-| Qwen | `<QWEN_RUNTIME_DIR or QWEN_HOME or ~/.qwen>/projects/<cwd>/chats/<id>.jsonl` | No `attribution_snapshot` row and an `## ADE` first prompt |
-| Kimi | `KIMI_CODE_HOME` (`~/.kimi-code`) `sessions/wd_<slug>_<hash12>/<id>/` | `## ADE` first prompt; archived, deleted and child sessions dropped |
-| Grok | `$GROK_HOME/sessions/<encoded cwd>/<id>/` | `session_kind` `subagent` or `headless`, or an `## ADE` first prompt |
+| Qwen | `<QWEN_RUNTIME_DIR or QWEN_HOME or ~/.qwen>/projects/<cwd>/chats/<id>.jsonl` | No `attribution_snapshot` row and an `## DAEX` (older: `## ADE`) first prompt |
+| Kimi | `KIMI_CODE_HOME` (`~/.kimi-code`) `sessions/wd_<slug>_<hash12>/<id>/` | `## DAEX` (older: `## ADE`) first prompt; archived, deleted and child sessions dropped |
+| Grok | `$GROK_HOME/sessions/<encoded cwd>/<id>/` | `session_kind` `subagent` or `headless`, or an `## DAEX` (older: `## ADE`) first prompt |
 | Copilot | `$COPILOT_HOME/session-state/<uuid>/` | `client_name` starting with `ade` (older SDK chats: DAEX's prompt in the first system message) |
-| Antigravity | `~/.gemini/antigravity-cli/conversations/<id>.db` | ACP system prompt opening with `## ADE`; subagent conversations dropped |
+| Antigravity | `~/.gemini/antigravity-cli/conversations/<id>.db` | ACP system prompt opening with `## DAEX` (older: `## ADE`); subagent conversations dropped |
 
 Copilot discovery reads files, not the SDK's `listSessions()` (which needs a
 running runtime and lacks the fields).
