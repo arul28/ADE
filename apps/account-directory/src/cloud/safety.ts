@@ -1,5 +1,5 @@
 import { OWNER_MAC_TESTERS_PATH, handleOwnerMacTesters } from "./macSwitch";
-import { stopAccountMacs } from "./macProvider";
+import { OWNER_MAC_TEMPLATE_PATH, handleOwnerMacTemplate, stopAccountMacs } from "./macProvider";
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
 import { cancelAccountSubscription, savedCardFingerprints } from "./billing";
 import { blockedUsersAmong, forgetNotBlocked, isCloudBlocked } from "./blocks";
@@ -285,7 +285,7 @@ export async function unblockAccount(env: CloudEnv, provider: CloudProvider | nu
 /* ---- The owner routes ---- */
 
 export const isCloudOwnerRequest = (path: string): boolean =>
-  path === OWNER_BLOCK_PATH || path === OWNER_UNBLOCK_PATH || path === OWNER_PHONE_BETA_PATH || path === OWNER_ACCOUNT_PATH || path === OWNER_SETTINGS_PATH || path === OWNER_AB_PATH || path === OWNER_MAC_TESTERS_PATH;
+  path === OWNER_BLOCK_PATH || path === OWNER_UNBLOCK_PATH || path === OWNER_PHONE_BETA_PATH || path === OWNER_ACCOUNT_PATH || path === OWNER_SETTINGS_PATH || path === OWNER_AB_PATH || path === OWNER_MAC_TESTERS_PATH || path === OWNER_MAC_TEMPLATE_PATH;
 
 /** Compares the bearer with `CLOUD_OWNER_TOKEN` in constant time (both hashed first, so length leaks nothing). */
 async function ownerTokenMatches(env: Pick<CloudEnv, "CLOUD_OWNER_TOKEN">, request: Request): Promise<boolean | null> {
@@ -337,6 +337,8 @@ export async function handleCloudOwnerRequest(request: Request, env: CloudEnv, p
   if (path === OWNER_AB_PATH) return handleOwnerAb(env, body, deps.now);
   // The DAEX Cloud Mac's testers (`macSwitch.ts`): one taken off has their Macs stopped, their drives kept.
   if (path === OWNER_MAC_TESTERS_PATH) return handleOwnerMacTesters(env, body, deps.now, (userId) => stopAccountMacs(env, userId, deps.now));
+  // The Mac's template drive and DAEX release per channel (`infra/ade-cloud-mac/`).
+  if (path === OWNER_MAC_TEMPLATE_PATH) return handleOwnerMacTemplate(env as CloudEnv, body, deps.now);
   const userId = textField(body.userId, 200);
   const githubUserId = typeof body.githubUserId === "number" && Number.isSafeInteger(body.githubUserId) && body.githubUserId > 0 ? body.githubUserId : null;
   const cardFingerprint = textField(body.cardFingerprint, 100);

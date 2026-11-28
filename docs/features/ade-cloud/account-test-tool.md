@@ -36,6 +36,7 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 | `tester <account> on\|off` | On or off the sponsored testers list |
 | `mac <account> on\|off` | On or off the DAEX Cloud Mac's testers list (an email with no account yet waits for one). Not a test: it stays until changed. While `mac_computers` is `testers`, `off` stops the account's Macs and keeps their drives |
 | `mac-testers` | The Mac's testers, the emails still waiting, and the switch in force |
+| `mac-template [stable\|beta] [--drive <name>] [--min-version <x.y.z>]` | A channel's Mac template drive (`<prefix>template:<channel>`, built with `infra/ade-cloud-mac/build-template.mjs`; refused until NoMac has it) and the DAEX release its Macs start on. `""` clears either; no channel reads both |
 | `ad-format <account> below_reply\|above_prompt\|inline\|switch` | Where this account's sponsored cards show: under the reply, docked above the prompt box, or one linked sentence at the end of the reply (`switch`: whatever `gravity_format` says). Not a test: it stays until changed |
 | `ab [--days N]` | The format A/B scoreboard (default 14 days): per format its weight, accounts held to it, how many said yes or no, cards asked and filled, hides per card, and Gravity's views, clicks, CTR and revenue for that format's placements |
 | `reset <account>` | Back to the real plan |

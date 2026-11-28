@@ -23,6 +23,8 @@ Accounts (an email, or a Clerk user id that starts with user_):
   mac <account> <on|off>                 on the DAEX Cloud Mac's testers list (switch mac_computers "testers");
                                          off stops their Macs and keeps the drives
   mac-testers                            the Mac's testers and the emails still waiting for an account
+  mac-template [stable|beta] [--drive <name>] [--min-version <x.y.z>]
+                                         a channel's Mac template drive and DAEX release ("" clears); no channel: both
   ad-format <account> <below_reply|above_prompt|inline|switch>
                                          where this account's sponsored cards show (switch: gravity_format's)
   reset <account>                        back to the real plan: every test field cleared
@@ -70,6 +72,7 @@ const COMMAND_OPTIONS = {
   limits: ["computers", "hours", "days", "note"],
   set: ["note"],
   ab: ["days"],
+  "mac-template": ["drive", "min-version"],
 };
 
 function readOptions(command, args) {
@@ -195,6 +198,12 @@ switch (command) {
   case "mac": {
     if (rest[1] !== "on" && rest[1] !== "off") fail(`mac takes on or off.\n\n${USAGE}`);
     console.log(JSON.stringify(await call("mac-testers", { ...accountRef(rest[0]), enabled: rest[1] === "on" }), null, 2));
+    break;
+  }
+  case "mac-template": {
+    const change = rest[0] ? { channel: rest[0], ...(options.drive !== undefined ? { drive: options.drive } : {}), ...(options["min-version"] !== undefined ? { minVersion: options["min-version"] } : {}) } : {};
+    const answer = await call("mac-template", change);
+    console.table(Object.entries(answer.channels).map(([channel, value]) => ({ channel, drive: value.drive ?? "-", "min version": value.minVersion ?? "-" })));
     break;
   }
   case "mac-testers": {
