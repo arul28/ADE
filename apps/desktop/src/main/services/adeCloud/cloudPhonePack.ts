@@ -11,6 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 import { CloudPhoneError, type CloudPhonePacked as Packed } from "./cloudPhoneDriver";
@@ -83,7 +84,8 @@ async function projectFiles(root: string, prefix = "", stats = new Map<string, {
 async function packWithTar(noun: "project" | "app", tarArgs: (out: string) => string[], options: { cwd: string; input?: Buffer }): Promise<Packed> {
   const out = path.join(os.tmpdir(), `ade-cloud-phone-${noun === "app" ? "app-" : ""}${randomUUID()}.tar.gz`);
   try {
-    const packed = await run("tar", tarArgs(out), options);
+    // On Windows, System32's bsdtar by its absolute path: a GNU tar earlier on PATH (Git's) reads `C:\…` as a remote host.
+    const packed = await run(process.platform === "win32" ? resolveTrustedWindowsTool("tar") : "tar", tarArgs(out), options);
     if (packed.code !== 0) throw new CloudPhoneError(`Could not pack the ${noun}: ${packed.stderr.trim() || "tar failed"}.`, "pack_failed");
     const { size } = await fs.promises.stat(out);
     if (size > UPLOAD_LIMIT_BYTES) throw new CloudPhoneError(`The ${noun} is over 2 GB packed, more than a cloud iPhone takes.`, "pack_too_large");

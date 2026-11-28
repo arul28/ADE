@@ -77,7 +77,7 @@ import { CLOUD_PLANS } from "./plans";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { isRevylBuildAction, routeRevylBuild } from "./phoneRevylBuild";
+import { isRevylBuildAction, routeRevylBuild, type RevylBuildEnd } from "./phoneRevylBuild";
 import { PHONE_PROVIDERS, abilityWords, buildGaps, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, recordBuildGap, revylLimitEndsAt, revylLimitMicros, revylMinutesLeft, revylSpentMicros, routeForBuilds, routeOf, startOnRoute, type PhoneRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
@@ -940,6 +940,7 @@ async function routePhoneCall(request: Request, env: CloudEnv, userId: string, p
     return routeRevylBuild(env, userId, body, now, {
       phoneId: revylPhone,
       mayBuild: revylPhone ? async () => null : () => buildRefusal(env, userId, body, picked, now, waitUntil),
+      onEnded: (end, job) => captureBuildEnd(env, userId, end, job, now, waitUntil),
     });
   }
   if (!row) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
@@ -952,6 +953,31 @@ async function routePhoneCall(request: Request, env: CloudEnv, userId: string, p
   if (!call) return fail("bad_request", "This phone takes its calls directly.", 400);
   if (row.ready_at == null) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
   return call(env, userId, { id: row.phone_id, ref: where.ref }, body, now);
+}
+
+/**
+ * A build's end in PostHog (`ade_cloud_phone` step `built`): its outcome, the
+ * runner minutes it used and whether a phone was up. Once per build (its job
+ * hashed into the uuid, never sent). The plan is read now (one D1 read, once
+ * per build).
+ */
+async function captureBuildEnd(env: CloudEnv, userId: string, end: RevylBuildEnd, job: string, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
+  if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  // Read before the answer goes back (the send itself is held by `waitUntil`); a failed read never fails the call.
+  const account = await env.DB.prepare("select plan, paid_plan, stripe_status from cloud_accounts where user_id = ?").bind(userId)
+    .first<Pick<AccountRow, "plan" | "paid_plan" | "stripe_status">>()
+    .catch((error: unknown) => {
+      logCloud("cloud.phone_build_capture_failed", { message: error instanceof Error ? error.message : "unknown" });
+      return null;
+    });
+  captureCloudPhone(env, waitUntil, userId, {
+    step: "built",
+    plan: account ? planIdOf(account) : "free",
+    reason: end.outcome,
+    billedMinutes: Math.ceil(end.seconds / 60),
+    provider: "revyl",
+    route: end.withPhone ? "with_phone" : "before_phone",
+  }, job, now);
 }
 
 /**

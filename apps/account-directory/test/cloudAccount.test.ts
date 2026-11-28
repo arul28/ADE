@@ -4918,7 +4918,7 @@ describe("ADE Cloud iPhone", () => {
    * Revyl's build calls for a build with no phone: the workspace, its app, the upload link, the start (`start`:
    * Revyl's status for it), and the job's status (`job`). Answers the calls made, as `METHOD path`.
    */
-  function revylBuildNetwork(state: { start: number; job: string; durationMs?: number; recipe?: unknown }): string[] {
+  function revylBuildNetwork(state: { start: number; job: string; durationMs?: number; recipe?: unknown; statusCode?: number }): string[] {
     const calls: string[] = [];
     const network = harness.net.fetchStub;
     const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -4936,7 +4936,7 @@ describe("ADE Cloud iPhone", () => {
         state.recipe = (JSON.parse(String(init?.body ?? "{}")) as { recipe?: unknown }).recipe;
         return reply(state.start, state.start < 300 ? { build_job_id: BUILD_JOB } : { detail: "no" });
       }
-      if (path === `/apps/remote/${BUILD_JOB}/status`) return reply(200, { status: state.job, duration_ms: state.durationMs ?? null });
+      if (path === `/apps/remote/${BUILD_JOB}/status`) return reply(state.statusCode ?? 200, { status: state.job, duration_ms: state.durationMs ?? null });
       return reply(404, { detail: "Not Found" });
     });
     return calls;
@@ -4965,7 +4965,7 @@ describe("ADE Cloud iPhone", () => {
 
   it("one build at a time per account, freed by its end, and its runner time counts in the plan's Revyl limit", async () => {
     seedPhoneTester("revyl", "on");
-    const state: { start: number; job: string; durationMs?: number; recipe?: unknown } = { start: 200, job: "running" };
+    const state: { start: number; job: string; durationMs?: number; recipe?: unknown; statusCode?: number } = { start: 200, job: "running" };
     const calls = revylBuildNetwork(state);
     const start = () => buildCall("build.start", { source_key: `org/x/build-sources/${BUILD_APP}/a.tar.gz`, path: "apps/ios", cache_key: "proj-1", lockfiles: ["apps/ios/A.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"] });
     expect((await buildCall("build.upload_url", { file_size: 1000 })).status).toBe(200);
@@ -5003,6 +5003,21 @@ describe("ADE Cloud iPhone", () => {
     expect((await start()).status).toBe(502);
     state.start = 200;
     expect((await start()).status).toBe(409);
+
+    // Past the hold, that lost start lapses, counted as a build's longest (900 s) in the limit, and a new one starts.
+    clock += 31 * 60_000;
+    state.job = "running";
+    expect((await start()).status).toBe(200);
+    expect(await revylSpentMicros(harness.env, OWNER, PERIOD, clock)).toBe((600 + 600 + 900) * 1_000);
+
+    // Revyl's "no such build" right after a start never frees the claim; on a claim two minutes old it does.
+    state.statusCode = 404;
+    expect((await buildCall("build.status", { job: BUILD_JOB })).status).toBe(404);
+    expect((await start()).status).toBe(409);
+    clock += 3 * 60_000;
+    expect((await buildCall("build.status", { job: BUILD_JOB })).status).toBe(404);
+    state.statusCode = 200;
+    expect((await start()).status).toBe(200);
   });
 });
 

@@ -218,20 +218,25 @@ function buildSecondsOf(status: Record<string, unknown> | null, startedAt: numbe
 const buildEnded = (answer: { status: number; body: Record<string, unknown> | null }): boolean =>
   answer.status === 404 || (answer.status === 200 && BUILD_ENDED.has(String(answer.body?.status ?? "").toLowerCase()));
 
+/** How a build ended (Revyl's word, `gone`), what it ran, and with a phone up or not: for the build's analytics. */
+export type RevylBuildEnd = { outcome: string; seconds: number; withPhone: boolean };
+
 /**
  * A build Revyl answers ended: its claim ends with what it ran (only that
- * job's, never a newer build's). Answers whether it ended: Revyl's "no such
- * build" counts only for a claim older than `BUILD_GONE_AFTER_MS`.
+ * job's, never a newer build's). Answers how it ended, or null when it didn't
+ * end here (another read ended it, or Revyl's "no such build" on a claim
+ * younger than `BUILD_GONE_AFTER_MS`).
  */
-async function endBuild(env: Pick<CloudEnv, "DB">, userId: string, job: string, answer: { status: number; body: Record<string, unknown> | null }, now: number): Promise<boolean> {
-  const row = await env.DB.prepare("select id, started_at from cloud_phone_builds where user_id = ? and job = ? and ended_at is null").bind(userId, job).first<{ id: string; started_at: number }>();
-  if (!row) return false;
+async function endBuild(env: Pick<CloudEnv, "DB">, userId: string, job: string, answer: { status: number; body: Record<string, unknown> | null }, now: number): Promise<RevylBuildEnd | null> {
+  const row = await env.DB.prepare("select id, started_at, phone_id from cloud_phone_builds where user_id = ? and job = ? and ended_at is null").bind(userId, job).first<{ id: string; started_at: number; phone_id: string | null }>();
+  if (!row) return null;
   const gone = answer.status === 404;
-  if (gone && now - row.started_at < BUILD_GONE_AFTER_MS) return false;
-  const status = gone ? "gone" : String(answer.body?.status ?? "ended").toLowerCase().slice(0, 40);
+  if (gone && now - row.started_at < BUILD_GONE_AFTER_MS) return null;
+  const outcome = gone ? "gone" : String(answer.body?.status ?? "ended").toLowerCase().slice(0, 40);
+  const seconds = buildSecondsOf(gone ? null : answer.body, row.started_at, now);
   const ended = await env.DB.prepare("update cloud_phone_builds set ended_at = ?, status = ?, seconds = ? where id = ? and ended_at is null")
-    .bind(now, status, buildSecondsOf(gone ? null : answer.body, row.started_at, now), row.id).run();
-  return (ended.meta?.changes ?? 0) === 1;
+    .bind(now, outcome, seconds, row.id).run();
+  return (ended.meta?.changes ?? 0) === 1 ? { outcome, seconds, withPhone: row.phone_id != null } : null;
 }
 
 /**
@@ -246,7 +251,7 @@ async function endBuild(env: Pick<CloudEnv, "DB">, userId: string, job: string, 
  * or grows its Revyl spend, for good. Answers the claim's id, or null while
  * another build runs.
  */
-async function claimBuild(env: CloudEnv, workspace: WorkspaceRow, phoneId: string | null, now: number): Promise<string | null> {
+async function claimBuild(env: CloudEnv, workspace: WorkspaceRow, phoneId: string | null, now: number, onEnded: (end: RevylBuildEnd, job: string) => Promise<void>): Promise<string | null> {
   const userId = workspace.user_id;
   const lapse = (where: string, ...binds: unknown[]) => env.DB.prepare(`update cloud_phone_builds set ended_at = ?, status = 'lapsed',
       seconds = min(?, max(0, ? - started_at) / 1000)
@@ -266,8 +271,9 @@ async function claimBuild(env: CloudEnv, workspace: WorkspaceRow, phoneId: strin
   const held = await env.DB.prepare("select id, job from cloud_phone_builds where user_id = ? and ended_at is null limit 1").bind(userId).first<{ id: string; job: string | null }>();
   if (!held?.job || !UUID.test(held.job)) return null;
   const status = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(held.job)}/status`);
-  const ended = buildEnded(status) && await endBuild(env, userId, held.job, status, now);
-  if (!ended) {
+  const ended = buildEnded(status) ? await endBuild(env, userId, held.job, status, now) : null;
+  if (ended) await onEnded(ended, held.job);
+  else {
     const running = status.status === 200 && !buildEnded(status);
     if (running) return null;
     await lapse("id = ? and started_at <= ?", held.id, now - BUILD_JOB_HOLD_MS);
@@ -289,7 +295,7 @@ export async function routeRevylBuild(
   userId: string,
   body: Record<string, unknown>,
   now: number,
-  { phoneId, mayBuild }: { phoneId: string | null; mayBuild: () => Promise<Response | null> },
+  { phoneId, mayBuild, onEnded }: { phoneId: string | null; mayBuild: () => Promise<Response | null>; onEnded: (end: RevylBuildEnd, job: string) => Promise<void> },
 ): Promise<Response> {
   const { action, args, query } = callParts(body);
   const job = stringArg(args.job);
@@ -299,7 +305,10 @@ export async function routeRevylBuild(
     if (!workspace) return fail("build_not_found", "That build isn't one of this account's.", 404);
     const answer = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(job)}/${action === "build.status" ? "status" : "logs"}`, { query });
     // A finished build (whichever way) frees the account for the next one: only its own claim.
-    if (action === "build.status" && buildEnded(answer)) await endBuild(env, userId, job, answer, now);
+    if (action === "build.status" && buildEnded(answer)) {
+      const ended = await endBuild(env, userId, job, answer, now);
+      if (ended) await onEnded(ended, job);
+    }
     return json(answer.body ?? {}, answer.status);
   }
   if (action !== "build.upload_url" && action !== "build.start") return fail("bad_request", `${action || "That"} isn't a cloud iPhone action.`, 400);
@@ -343,7 +352,7 @@ export async function routeRevylBuild(
     cacheKey,
     lockfiles,
   });
-  const claim = await claimBuild(env, workspace, phoneId, now);
+  const claim = await claimBuild(env, workspace, phoneId, now, onEnded);
   if (!claim) return fail("build_running", "A build is already running for your ADE Cloud iPhone. Wait for it to finish, then try again.", 409);
   const answer = await workspaceJson(env, workspace, "POST", "/apps/remote", {
     body: { build_definition_hash: await sha256Hex(JSON.stringify(recipe)), git_branch_name: "ade", recipe, source: { key, type: "archive" }, timeout_seconds: REVYL_BUILD_MAX_SECONDS },

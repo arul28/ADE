@@ -494,7 +494,10 @@ one sentence. The screen reads as text: one element per line,
   `*.key`, `*.mobileprovision`, `*.provisionprofile`, `*.keystore`, `*.jks`,
   `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519` and their `.pub`, and `.netrc`.
   `Pods/`, `node_modules/`, `DerivedData/`, `build/`, `.build/`, `.swiftpm/`,
-  `.ade/` and the other dependency folders are skipped whole.
+  `.ade/` and the other dependency folders are skipped whole. On Windows the
+  archive is made with System32's bsdtar by its absolute path
+  (`resolveTrustedWindowsTool`): a GNU tar earlier on PATH (Git's) reads the
+  `C:\…` archive path as a remote host and fails.
 
 ## Limits
 
