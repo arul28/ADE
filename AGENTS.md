@@ -1,18 +1,28 @@
-# ADE Project Instructions
+# DAEX Project Instructions
+
+> **The product is DAEX (formerly ADE, renamed 2026-11-28).** Write "DAEX" in
+> all copy and docs (all caps; "a DAEX chat"), and "DAEX Cloud", "DAEX MCP" and
+> so on for feature names. The CLI is `daex`; `ade` still works as an alias.
+> Code identifiers (`AdeFoo`, `window.ade`), `ADE_*` env vars, `.ade/` folders
+> and `~/.ade`, file and folder names (`apps/ade-cli`, `docs/features/ade-cloud`),
+> bundle IDs and action/IPC names keep the old name on purpose: never rename
+> them. For copy in code, use `BRAND` from `apps/desktop/src/shared/brand.ts`
+> (Swift: `Brand` in `apps/ios/ADE/Shared/Brand.swift`). Rules and the frozen
+> list: `docs/brand/README.md`.
 
 ## About this project
 
-- ADE orchestrates coding agents, lanes, PR workflows, and proof/artifact capture across the person's machines.
-- ADE works fully with no computer of your own. Every account always has **ADE Cloud**, one machine shown next to the person's own computers on web, iPhone and desktop. Each cloud lane has its own computer underneath, which the person never sees. Reads come from the account and GitHub; only doing wakes a computer. See `docs/PRD.md` and `docs/ARCHITECTURE.md` section 1.1.
-- The account servers are Cloudflare Workers: `apps/account-directory` (machines, ADE Cloud, saved cloud work), `apps/push-relay` (vault, settings, Activity), `apps/tunnel-relay`, `apps/webhook-relay`.
+- DAEX orchestrates coding agents, lanes, PR workflows, and proof/artifact capture across the person's machines.
+- DAEX works fully with no computer of your own. Every account always has **DAEX Cloud**, one machine shown next to the person's own computers on web, iPhone and desktop. Each cloud lane has its own computer underneath, which the person never sees. Reads come from the account and GitHub; only doing wakes a computer. See `docs/PRD.md` and `docs/ARCHITECTURE.md` section 1.1.
+- The account servers are Cloudflare Workers: `apps/account-directory` (machines, DAEX Cloud, saved cloud work), `apps/push-relay` (vault, settings, Activity), `apps/tunnel-relay`, `apps/webhook-relay`.
 - The main product lives in `apps/desktop` and is built with Electron, React, and TypeScript. The hosted web client is built from the same renderer; the iPhone app is `apps/ios`.
-- The ADE CLI lives in `apps/ade-cli` and shares core services with the desktop app.
+- The DAEX CLI (`daex`) lives in `apps/ade-cli` and shares core services with the desktop app.
 - State is primarily stored under `.ade/` inside the active project, with runtime metadata in SQLite and machine-local files under `.ade/secrets`, `.ade/cache`, and `.ade/artifacts`.
 
 ## Dev loop
 
 Day-to-day work follows a five-stage loop, each stage an agent-folder skill under
-`.agents/skills/` (invocable as `/<name>` across runtimes — ADE discovers them via
+`.agents/skills/` (invocable as `/<name>` across runtimes — DAEX discovers them via
 `apps/desktop/src/shared/agentSkillRoots.ts`, and `.claude/skills` symlinks to
 `.agents/skills` for native Claude):
 
@@ -23,7 +33,7 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 - **/test** — test steward: prune/consolidate/add + docs/mobile/CLI parity + CI-mirrored shards. Adds a test for a fixed bug only when no existing test would catch it, and never a tautological or change-detector test. Harvests the PR again before it finishes.
 - **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). It adopts the early PR with one round already fixed, so it mostly closes the PR out. After any ship-loop mutation it reruns commit-bound `/quality` revalidation on the delta only. Wraps `docs/playbooks/ship-lane.md`.
 
-Anything new must survive a project switch: declare each new runtime action `read` or `write` in `apps/desktop/src/shared/adeActionAccess.ts`, and make a surface that loads data say "couldn't load" with a retry, never a false empty state (`/quality` checks this: ADE review rule 4.5).
+Anything new must survive a project switch: declare each new runtime action `read` or `write` in `apps/desktop/src/shared/adeActionAccess.ts`, and make a surface that loads data say "couldn't load" with a retry, never a false empty state (`/quality` checks this: review rule 4.5).
 
 The PR opens at the start of `/quality`, not at `/ship`. CI and the bots then work in parallel with quality and test, and each phase harvests their results (playbook: **Early PR and harvests**). Do not push while a review bot is in flight on the remote head — a push restarts Greptile.
 
@@ -39,10 +49,10 @@ cat /tmp/ade-dev-<lane>.log
 ```
 
 Detach it, give the lane its own socket, read the isolation report (stop if
-sync is ON), and never hand-start `ade serve`. The dev app does not connect to
+sync is ON), and never hand-start `daex serve`. The dev app does not connect to
 the user's other machines unless someone presses Connect in it; never press
 Connect or Disconnect for a paired machine in a dev app unless the task is
-remote machines, because that takes the machine from the user's installed ADE.
+remote machines, because that takes the machine from the user's installed DAEX.
 Close the app before you edit its main-process, preload or shared code, and
 reopen it when you need to look again: each such save rebuilds main and
 relaunches the window, which jumps to the front over whatever the user is
@@ -70,7 +80,7 @@ Utilities (run when relevant, not part of the core loop): **/audit** (targeted b
 Claude Code does not load this file, so `CLAUDE.md` has a copy of this
 section. Keep the two the same.
 
-`docs/perf/macos-baseline.md` holds ADE's measured performance numbers
+`docs/perf/macos-baseline.md` holds DAEX's measured performance numbers
 (macOS dev build) and a ceiling for each. They came out of a pass that took
 the app from unusable to smooth. Do not let them climb back.
 
@@ -80,8 +90,8 @@ the app from unusable to smooth. Do not let them climb back.
    (git, shells); reads files or databases on a hot path; builds caches or
    large in-memory structures; or adds a surface that loads its own data. CPU,
    GPU and memory all count. When in doubt, it applies.
-   Before you add a poll, timer, spawn or periodic job, read **Patterns that
-   bloat ADE** in the doc.
+   Before you add a poll, timer, spawn or periodic job, read the doc's
+   **Patterns that bloat** section.
 2. **Measure before and after, during the work,** with the scripts the doc
    lists, on the same machine and under the same conditions. Follow the doc's
    gotchas: no perf run for idle, GPU, typing or memory numbers; close extra
@@ -100,20 +110,20 @@ the app from unusable to smooth. Do not let them climb back.
    after numbers. If you could not measure (not on macOS, no display), say so
    and give what you did measure; the service benches run anywhere.
 
-Numbers drift as ADE grows, and that is expected. A spike is not.
+Numbers drift as DAEX grows, and that is expected. A spike is not.
 
 ## Built for remote machines
 
 Claude Code does not load this file, so `CLAUDE.md` has a copy of this
 section. Keep the two the same.
 
-ADE is built around remote connections. One window drives several machines: a
+DAEX is built around remote connections. One window drives several machines: a
 laptop works on lanes that live on a desktop, a phone drives the brain at home,
 and the Work tab lists chats, CLIs and shells from every connected machine at
 once. A lane owns its machine, and its chats and terminals live there and only
 there.
 
-ADE also works with no computer of your own. Every account has ADE Cloud, one
+DAEX also works with no computer of your own. Every account has DAEX Cloud, one
 machine in every machine list and "Run on" menu. Underneath, each cloud lane
 has its own computer with its own pin, so the rules below apply to it too.
 Reading a cloud lane (saved chats, session copies, its Git summary) comes from
@@ -154,12 +164,12 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 
 ## Account-wide features live on the account server
 
-Some things belong to the person, not to a machine: the plan, ADE Cloud credits
+Some things belong to the person, not to a machine: the plan, DAEX Cloud credits
 (computers and the iPhone), billing, usage counted against a plan, consents and
-opt-ins, and services ADE pays for or a partner sponsors (hosted models, ads,
+opt-ins, and services DAEX pays for or a partner sponsors (hosted models, ads,
 sponsored recommendations). They live on the account server
 (`apps/account-directory`, or the Worker that owns that data) and work the
-same for an ADE Cloud lane, the person's own computers, the web client and the
+same for a DAEX Cloud lane, the person's own computers, the web client and the
 phone.
 
 1. **The server decides.** It holds the outside service's keys, stores the
@@ -179,7 +189,7 @@ phone.
 5. **Test as any plan with the account test tool.** To act as another plan,
    change an account's limits, add a sponsored tester or flip a server switch
    (ads, the Free rule), use `scripts/cloud-owner.mjs` through
-   `ade secrets exec --env CLOUD_OWNER_TOKEN`. It is instant and never
+   `daex secrets exec --env CLOUD_OWNER_TOKEN`. It is instant and never
    touches Stripe. Guide: `docs/features/ade-cloud/account-test-tool.md`.
 
 ## Every provider, both surfaces
@@ -187,16 +197,16 @@ phone.
 Claude Code does not load this file, so `CLAUDE.md` has a copy of this
 section. Keep the two the same.
 
-ADE runs 13 agent providers, not two: Claude, Codex, Cursor, Droid, OpenCode,
+DAEX runs 13 agent providers, not two: Claude, Codex, Cursor, Droid, OpenCode,
 Pi, Muse, Qwen, Kimi, Grok, Copilot, Devin and Antigravity. The list grows;
 read it from `AgentChatProvider` (`apps/desktop/src/shared/types/chat.ts`) and
 `LAUNCH_PROFILE_TOOL_TYPE` (`apps/desktop/src/shared/cliLaunch.ts`).
 
-Each provider reaches ADE in two ways, and they behave differently:
-- **Chat:** ADE drives the agent through an SDK or protocol (Claude Agent SDK,
-  `codex app-server`, the SDK workers, OpenCode's server, ACP). ADE gets typed
+Each provider reaches DAEX in two ways, and they behave differently:
+- **Chat:** DAEX drives the agent through an SDK or protocol (Claude Agent SDK,
+  `codex app-server`, the SDK workers, OpenCode's server, ACP). DAEX gets typed
   events: turns, tools, subagents, approvals.
-- **CLI:** the provider's own program runs in an ADE terminal. ADE sees the
+- **CLI:** the provider's own program runs in a DAEX terminal. DAEX sees the
   screen plus whatever signal that CLI gives: Claude Code hooks, Codex's
   OSC 7501 state, or nothing (output guesses).
 
@@ -217,16 +227,16 @@ Each provider reaches ADE in two ways, and they behave differently:
 - `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge), plus the **Early PR and harvests** procedure that `/quality` and `/test` run. Baseline `/quality` and `/test` run before ship; delta-only commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
 - `docs/playbooks/windows-signed-release.md` — maintainer handoff for taking the gated Windows x64 build through signing, clean-host and installed-update proof, draft verification, publication, and website enablement without changing the macOS or iOS release paths.
 
-## Hit every ADE surface
+## Hit every DAEX surface
 
 The most common defect class in this repo is a change that works on the path you tested and is missing everywhere else. Before you call a change done (and again in `/quality`), walk this list and state which entries applied:
 
-- **Entry points.** A behavior reachable from the desktop UI is usually also reachable from the `ade` CLI, deeplinks, the command palette, and keybindings. Fixing one entry point is not fixing the feature.
-- **Clients.** Desktop (Electron), hosted web, and iOS attach to the same brains and read the same account. A person with no computer of their own uses web and iOS on ADE Cloud only, so every flow must work there. Shared logic belongs in shared services and types, not re-implemented per client.
+- **Entry points.** A behavior reachable from the desktop UI is usually also reachable from the `daex` CLI, deeplinks, the command palette, and keybindings. Fixing one entry point is not fixing the feature.
+- **Clients.** Desktop (Electron), hosted web, and iOS attach to the same brains and read the same account. A person with no computer of their own uses web and iOS on DAEX Cloud only, so every flow must work there. Shared logic belongs in shared services and types, not re-implemented per client.
 - **Providers.** Every provider, on both its chat and its CLI surface; see **Every provider, both surfaces**.
 - **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
 - **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
-- **Connection modes.** Local runtime, remote runtime, relay, and an ADE Cloud lane whose computer is asleep or deleted behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
+- **Connection modes.** Local runtime, remote runtime, relay, and a DAEX Cloud lane whose computer is asleep or deleted behave differently. Multi-device and offline cases are real; the phone can be newer than the host. Anything that acts on a chat, session or lane must reach the machine that owns it; see **Built for remote machines**.
 - **Windows and Linux.** Desktop parity is part of "done" for all new code, never a follow-up. Use the Linux evidence guidance in `docs/development/linux-support.md`.
 - **Docs.** User-visible behavior changes update the matching `docs/features/` doc in present tense.
 
@@ -235,9 +245,9 @@ The most common defect class in this repo is a change that works on the path you
 - Preserve existing desktop app patterns before introducing new abstractions.
 - Prefer fixing the underlying service or shared type rather than layering renderer-only workarounds on top.
 - Keep IPC contracts, preload types, shared types, and renderer usage in sync whenever an interface changes.
-- For ADE CLI changes, verify both headless mode and the desktop socket-backed ADE RPC path.
+- For CLI changes, verify both headless mode and the desktop socket-backed RPC path.
 - For computer-use changes, treat policy enforcement and artifact ownership as hard requirements, not prompt guidance.
-- `ade search "<query>" --text` searches everything in ADE (chats, terminal scrollback, PRs, commits, branches, lanes, files, Linear) instead of grepping `.ade/` internals; see the ade-search skill.
+- `daex search "<query>" --text` searches everything in DAEX (chats, terminal scrollback, PRs, commits, branches, lanes, files, Linear) instead of grepping `.ade/` internals; see the daex-search skill.
 
 ## Subagents
 
@@ -275,28 +285,28 @@ For the look of everything else (cards, pages, settings, charts, backdrops), rea
 
 ## Ways to hurt yourself
 
-These are the operational hazards of developing ADE from inside ADE. Each one has caused real damage.
+These are the operational hazards of developing DAEX from inside DAEX. Each one has caused real damage.
 
-1. **Killing by pattern.** Do not `pkill -f`, `pgrep | kill`, or kill a PID you found by matching a name or path. Your own agent process carries this worktree's path in its argv, `pgrep -f xcodebuild` also matches xcodebuildmcp and its wrapper shell, and this machine runs the real ADE brain plus other dev runtimes. Kill only a PID you captured at spawn time, after confirming its cwd is your worktree.
-2. **Writing to live state.** The project root's `.ade/` (database, secrets, artifacts) and the installed brain are the developer's real, in-use ADE instance. Read from them for realistic data; never point a dev server at them, never open them read-write, never "clean them up". Isolated dev state belongs under your worktree or a temp directory.
+1. **Killing by pattern.** Do not `pkill -f`, `pgrep | kill`, or kill a PID you found by matching a name or path. Your own agent process carries this worktree's path in its argv, `pgrep -f xcodebuild` also matches xcodebuildmcp and its wrapper shell, and this machine runs the real DAEX brain plus other dev runtimes. Kill only a PID you captured at spawn time, after confirming its cwd is your worktree.
+2. **Writing to live state.** The project root's `.ade/` (database, secrets, artifacts) and the installed brain are the developer's real, in-use DAEX instance. Read from them for realistic data; never point a dev server at them, never open them read-write, never "clean them up". Isolated dev state belongs under your worktree or a temp directory.
 3. **Editing outside the lane worktree.** Every edit targets `.ade/worktrees/<lane>/...`, never the project-root checkout. Search tools may print root-checkout paths — translate them before editing, or the change lands on the wrong branch.
-4. **Restarting shared runtimes casually.** `ensureRuntime`-style commands can restart a brain another session is using. Check what is running before starting or restarting sockets, brains, or dev servers: `pgrep -alf "cli.cjs serve|/bin/ade serve"`, then `ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME` for each — no `ADE_HOME` means it is on the shared `~/.ade`. `--no-sync` guards only the sync lease, not the database: two brains on one home share one database and a chat can be owned by just one of them, so the other's agents can stop unexplained. Starting a brain on an occupied home prints who else is there and logs `brain.home_shared`. Give a brain you start its own `ADE_HOME` unless you specifically need the shared one, and confirm it exited when you are done. A separate home is not enough on its own: each project keeps its database in `<project>/.ade/ade.db`, so a brain on another home that opens a real project shares that project's database with the installed brain. Test against a throwaway project registered only in your home (`lsof <project>/.ade/ade.db` shows every brain holding it). A brain a desktop will connect to must be started as `ade --role cto serve`: a plain `ade serve` serves at role `agent` and refuses the desktop.
+4. **Restarting shared runtimes casually.** `ensureRuntime`-style commands can restart a brain another session is using. Check what is running before starting or restarting sockets, brains, or dev servers: `pgrep -alf "cli.cjs serve|/bin/(daex|ade) serve"`, then `ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME` for each — no `ADE_HOME` means it is on the shared `~/.ade`. `--no-sync` guards only the sync lease, not the database: two brains on one home share one database and a chat can be owned by just one of them, so the other's agents can stop unexplained. Starting a brain on an occupied home prints who else is there and logs `brain.home_shared`. Give a brain you start its own `ADE_HOME` unless you specifically need the shared one, and confirm it exited when you are done. A separate home is not enough on its own: each project keeps its database in `<project>/.ade/ade.db`, so a brain on another home that opens a real project shares that project's database with the installed brain. Test against a throwaway project registered only in your home (`lsof <project>/.ade/ade.db` shows every brain holding it). A brain a desktop will connect to must be started as `daex --role cto serve`: a plain `daex serve` serves at role `agent` and refuses the desktop.
 
 ## Work artifacts
 
 - Keep implementation plans, research notes, and agent scratch files out of the repository. They are inputs to the work, not project documentation. The merged PR is the implementation record.
 - Docs describe the present tense. When behavior changes, update the matching `docs/features/` doc in the same branch. A task-tracking list in a feature doc must be kept current by the branch that changes the feature, or deleted — a stale checklist misleads every later agent.
-- Track future work in Linear (see the ade-linear skill), not in committed TODO files.
+- Track future work in Linear (see the daex-linear skill), not in committed TODO files.
 
 ## Pull requests
 
-- Open the PR with `ade prs create` (the **ade-pr-workflows** skill holds the full writing guide and the commands). `gh pr create` is the fallback.
+- Open the PR with `daex prs create` (the **daex-pr-workflows** skill holds the full writing guide and the commands). `gh pr create` is the fallback.
 - Conventional commit titles in plain language: `fix(desktop): new chats no longer spike CPU`.
 - The text is a Brief, written for a person who has two minutes and did not see the work. Parts, in order: **Why** (the problem, a sentence or two), **What changed** (what is different for the person who uses it, and what was left alone on purpose), **Evidence** (how you checked it and what you saw: the focused tests and their counts, the checks in the running app), **Not checked** (what you could not check, or "Nothing"), and **Choices I made** only when you settled a trade-off alone. End with the model and harness that did the work.
 - Plain words. Explain a technical term in the sentence where it first appears. Keep code names out of Why and What changed.
-- Match the evidence to the change: a picture for a layout change, a short video for motion or timing, numbers for speed. Cite proof in the text (`![caption](ade-proof://<id>)`, or a `proof-compare` block for before and after); `ade prs create` uploads it. Never commit screenshots or PR-only assets to the repo.
+- Match the evidence to the change: a picture for a layout change, a short video for motion or timing, numbers for speed. Cite proof in the text (`![caption](ade-proof://<id>)`, or a `proof-compare` block for before and after); `daex prs create` uploads it. Never commit screenshots or PR-only assets to the repo.
 - One concern per PR. If the description says "also", consider splitting it.
-- Close out every review thread you handle, in the same turn: reply with what changed or why you did not change it, then resolve it (`ade prs reply`, `ade prs resolve-thread`). ADE lists each open thread as work that waits for a person, so a handled thread left open is a false alarm. Leave a thread open only when a person must decide.
+- Close out every review thread you handle, in the same turn: reply with what changed or why you did not change it, then resolve it (`daex prs reply`, `daex prs resolve-thread`). DAEX lists each open thread as work that waits for a person, so a handled thread left open is a false alarm. Leave a thread open only when a person must decide.
 
 ## Validation
 
@@ -305,7 +315,7 @@ These are the operational hazards of developing ADE from inside ADE. Each one ha
   - `npm run test:desktop:sharded`
   - `npm --prefix apps/desktop run build`
   - `npm --prefix apps/desktop run lint:ci` (lint + `ade-ui` ratchet, what CI runs)
-- ADE CLI checks:
+- CLI checks:
   - `npm --prefix apps/ade-cli run typecheck`
   - `npm --prefix apps/ade-cli run test`
   - `npm --prefix apps/ade-cli run build`
@@ -390,7 +400,7 @@ in `.agents/skills/test/SKILL.md`. Change all three together.
 
 Typecheck, lint, and tests cost real agent time. One desktop typecheck is
 15–60 seconds, and agents have run typecheck about 5,800 times and tests
-about 12,000 times across ADE threads, mostly re-runs after tiny edits. These
+about 12,000 times across DAEX threads, mostly re-runs after tiny edits. These
 rules apply to every agent and every skill.
 
 1. **One check pass, at the end of `/quality`.** After every review fix is
@@ -416,15 +426,16 @@ only:
    and write new copy as "main checkout", never "Primary lane".
 2. Do not change the stored name, the `laneType: "primary"` value, or code
    that matches the primary lane by name (`useDraftMachineRouting.ts`).
-3. An ADE Cloud lane computer exists for its one lane. The lane lists leave
+3. A DAEX Cloud lane computer exists for its one lane. The lane lists leave
    out its main checkout (`crossMachineLanes.ts`).
 
 ## Terminology
 
-- Use "lane" for ADE worktrees/branches.
-- Use "ADE Cloud" for the one cloud machine. Never show an individual cloud computer, its lane-named machine, or an instance id to the person.
+- Use "lane" for DAEX worktrees/branches.
+- Use "DAEX Cloud" for the one cloud machine. Never show an individual cloud computer, its lane-named machine, or an instance id to the person.
 - An own computer is "offline" (hidden). A cloud computer is "asleep", never "offline".
 - Use "computer use" for screenshot/video/GUI/browser proof flows.
+
 ## Style preferences
 
 - Prefer direct, operational language over marketing phrasing.
@@ -433,7 +444,7 @@ only:
 
 ## Content boundaries
 
-- Do not reframe ADE as a docs site, Mintlify project, or generic template app.
+- Do not reframe DAEX as a docs site, Mintlify project, or generic template app.
 - Do not store secrets in plaintext project files when an encrypted store already exists.
 - Do not leave policy enforcement in prompts alone when a code path can enforce it directly.
 
@@ -444,7 +455,7 @@ Release flows live behind `asc` (installed at `/opt/homebrew/bin/asc`). There's 
 iOS signing gotchas (don't repeat these):
 
 - The iOS project uses **automatic** signing (`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = VQ372F39G6`). `apps/ios/ExportOptions.plist` ships with `signingStyle = manual` + named profiles for CI/archive determinism, but local ad-hoc exports need `signingStyle = automatic` instead (drop the per-bundle profile map).
-- The ADE app **embeds an App Clip** (`com.ade.ios.Clip`, target `ADEClip`, added in PR #706) alongside the app (`com.ade.ios`) and widgets (`com.ade.ios.widgets`). A manual-signing export needs a distribution profile for **every** embedded bundle. The clip's — **`ADE App Clip App Store`** (already minted in ASC, bound to the same distribution certs as the app) — is mapped in `ExportOptions.plist`. If a manual export ever fails signing the clip, the profile is missing/expired: re-mint with `asc profiles create --name "ADE App Clip App Store" --profile-type IOS_APP_STORE --bundle 97ZL5TPJB8 --certificate <dist-cert-ids>`. `ExportOptions.auto.plist` avoids the whole issue — Xcode provisions the clip via `-allowProvisioningUpdates`.
+- The iOS app **embeds an App Clip** (`com.ade.ios.Clip`, target `ADEClip`) alongside the app (`com.ade.ios`) and widgets (`com.ade.ios.widgets`). A manual-signing export needs a distribution profile for **every** embedded bundle. The clip's — **`ADE App Clip App Store`** (already minted in ASC, bound to the same distribution certs as the app) — is mapped in `ExportOptions.plist`. If a manual export ever fails signing the clip, the profile is missing/expired: re-mint with `asc profiles create --name "ADE App Clip App Store" --profile-type IOS_APP_STORE --bundle 97ZL5TPJB8 --certificate <dist-cert-ids>`. `ExportOptions.auto.plist` avoids the whole issue — Xcode provisions the clip via `-allowProvisioningUpdates`.
 - `asc signing fetch` only downloads provisioning profiles and the `.cer` — it does **not** include the private key. Don't expect it to make local signing work on its own.
 - Local exports need the App Store Connect API key passed to `xcodebuild` so it can create/fetch missing Distribution assets on demand. Add these flags (in addition to `-allowProvisioningUpdates`):
   ```
@@ -464,54 +475,31 @@ Desktop release:
 
 ## Cursor Cloud agents only (ignore outside Cursor Cloud)
 
-**Scope:** The rest of this file applies to every ADE contributor and agent. **This section applies only to agents running in [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent)** (the remote VM environment). Claude Code, Codex, local Cursor IDE, and other harnesses must **not** treat these bullets as repo-wide requirements — skip this section unless you are on a Cursor Cloud VM.
-
-If your environment is not Cursor Cloud, use the general **Validation** section above and the normal desktop/macOS/Windows docs elsewhere in this file.
+**Scope:** this section applies only to agents running in [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent) (the remote Linux VM). Claude Code, Codex, local Cursor IDE and other harnesses skip it and use **Validation** above.
 
 ### Environment overview
 
-- **Node.js 22.x** is required (`node:sqlite` is used as the primary database engine).
-- Each app under `apps/` has its own independent `node_modules` and `package-lock.json` (no npm workspaces).
-- Validation commands are documented in the "Validation" section above.
-- The desktop test suite is large; CI shards it. For local iteration, run a single file or one CI-style shard rather than the full suite.
+- Use Node 24, the version in `.nvmrc` (`node:sqlite` is the primary database engine).
+- Each app under `apps/` has its own `node_modules` and `package-lock.json` (no npm workspaces).
+- The desktop test suite is large; CI shards it. Locally, run a single file or one CI-style shard.
 
-### Working in ADE lanes (worktrees)
+### Working in DAEX lanes (worktrees)
 
-- When an agent session runs inside an ADE lane, its working directory is the lane's worktree (e.g. `/path/to/ADE/.ade/worktrees/<lane-slug>/`). **All file reads, edits, and writes MUST target paths under that worktree, never under the main project-root checkout.**
-- `grep`, `find`, and Explore agents may return absolute paths rooted at the main checkout. Before editing, translate those paths to the worktree: replace the project root prefix with the worktree root. For example, `/Users/admin/Projects/ADE/apps/desktop/src/foo.ts` becomes `<worktree>/apps/desktop/src/foo.ts`.
-- Use relative paths from your working directory whenever possible — they resolve to the worktree automatically.
-- If `ADE_REPO_ROOT` is set in the environment, use it as the canonical base for all file operations.
-- When launching dev servers (Vite, Electron, etc.) for a lane, run them from the worktree, not the main checkout: `cd <worktree>/apps/desktop && npm run dev:vite`.
+- Inside a DAEX lane, the working directory is the lane's worktree (`<project>/.ade/worktrees/<lane-slug>/`). **Every read, edit and write targets that worktree, never the project-root checkout.**
+- `grep`, `find` and search agents may print paths rooted at the main checkout. Translate them to the worktree before editing: `/Users/admin/Projects/ADE/apps/desktop/src/foo.ts` becomes `<worktree>/apps/desktop/src/foo.ts`.
+- Prefer relative paths; they resolve to the worktree.
+- Start dev servers (Vite, Electron) from the worktree: `cd <worktree>/apps/desktop && npm run dev:vite`.
 
-### Running the ADE desktop web renderer (Vite-only preview)
+### Running the desktop web renderer (Vite-only preview)
 
-- The desktop renderer can run standalone in a browser without Electron via `npm run dev:vite` in `apps/desktop`. This starts Vite on port 5173 with a browser mock for `window.ade`.
-- To seed the mock with real data from the ADE database, run `npm run export:browser-mock-ade` in `apps/desktop` first, or let the `predev:vite` hook do it automatically. The export script reads `.ade/ade.db` from the primary project root and writes a snapshot to `src/renderer/browser-mock-ade-snapshot.generated.json`.
-- This works from any lane worktree: `cd <worktree>/apps/desktop && npm run dev:vite`. The export script detects worktree paths and resolves the `.ade/ade.db` location from the parent project root.
-- For live data (connected to the ADE runtime socket instead of mock data), use `npm run dev:vite:live`. This starts both Vite and a browser-runtime bridge. Note: this calls `ensureRuntime` which may restart a stale dev runtime — avoid if the ADE beta or another runtime is already running on the target socket.
-- Open `http://localhost:5173/work` in a browser or ADE's built-in browser to view the Work tab.
-
-### Inspecting the local Electron desktop app with Codex Computer Use on macOS
-
-- To inspect ADE desktop parity locally with Codex Computer Use, launch the dev app from the worktree with `npm run dev` in `apps/desktop`.
-- Treat the Electron process spawned by that command as the source of truth, even if the window title or bundle branding says "ADE". In Codex Computer Use, call `list_apps` / `get_app_state` and prefer the `Electron` app entry (`App=com.github.Electron`) over the installed `ADE` app entry (`App=com.ade.desktop`).
-- Confirm the Codex Computer Use app state shows an ADE window whose HTML content URL contains `localhost:5173`. That is the local dev Electron surface.
-- The first `Electron` window exposed to Codex Computer Use may be DevTools (`Developer Tools - http://localhost:5173/`). Press `Cmd+\`` in the `Electron` app to cycle to the main ADE window before interacting with the app.
-- On first launch, the dev app may open to `localhost:5173/#/project` with no project selected. Open the recent `ADE /Users/admin/Projects/ADE` project inside that dev window before comparing desktop parity.
-- Do not use Safari as the desktop parity reference. ADE desktop parity should be checked against the Electron app surface unless the task explicitly asks for renderer-only Vite behavior.
-- Keep the dev terminal logs visible while inspecting. Useful confirmation lines include `dev launcher using http://localhost:5173`, `DevTools listening on ws://127.0.0.1:9222`, `window.loading_url`, and `renderer.route_change`.
-
-### Pairing the iOS simulator with the desktop dev app on macOS
-
-- When the user wants the ADE iOS app paired to desktop, run the desktop dev app from the active lane's `apps/desktop`, but set `ADE_PROJECT_ROOT` to the ADE project root the phone should sync with. For this local setup, that is commonly `ADE_PROJECT_ROOT=/Users/arul/ADE npm run dev`, even when the code under test is in `/Users/arul/ADE/.ade/worktrees/...`.
-- Do not interact with an already-open Xcode GUI window unless the user explicitly says it is the ADE iOS project. Other projects may be open. Prefer `xcodebuild` and `xcrun simctl` for building, installing, launching, and inspecting the simulator.
-- The desktop sync PIN can be read or configured through the dev Electron preload once the `localhost:5173` page is running. Use the CDP endpoint printed by the dev app (`http://127.0.0.1:9222/json/list`) and evaluate `window.ade.sync.getStatus()` to verify `pairingPinConfigured`, `pairingPin`, the sync port, and `connectedPeers`.
-- A successful simulator pairing is not just the Settings screen showing "Connected". Also verify desktop `connectedPeers > 0`, inspect the simulator database under `xcrun simctl get_app_container <UDID> com.ade.ios data`, and check recent simulator logs for `incoming message failed`, `FOREIGN KEY`, or changeset errors.
-- If pairing reaches WebSocket but the phone reports `FOREIGN KEY constraint failed` while applying `changeset_batch`, treat it as an iOS sync/materialization bug until disproven. Desktop CRR tables may not enforce the same foreign keys as the iOS SQLite schema, so valid remote CRDT batches can arrive in an order that local foreign-key checks reject.
+- `npm run dev:vite` in `apps/desktop` serves the renderer on port 5173 in a plain browser, with a browser mock for `window.ade`.
+- The `predev:vite` hook seeds the mock from the project's `.ade/ade.db` (`npm run export:browser-mock-ade` does it by hand) and writes `src/renderer/browser-mock-ade-snapshot.generated.json`. From a lane worktree it finds the database in the parent project root.
+- For live data from the runtime socket, use `npm run dev:vite:live` (Vite plus a browser-runtime bridge). It calls `ensureRuntime`, which may restart a stale dev runtime, so avoid it when another runtime is already on the target socket.
+- Open `http://localhost:5173/work` to view the Work tab.
 
 ### Running the Electron desktop app on Linux
 
-Linux supports the ADE desktop and a standalone headless brain. Follow
+Linux supports the DAEX desktop and a standalone headless brain. Follow
 `docs/development/linux-support.md` for isolated development, packaging,
 network discovery and release verification. A lane screen uses Xvfb even when
 the desktop session uses Wayland. Do not disable Chromium's sandbox globally.

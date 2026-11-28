@@ -1,3 +1,13 @@
+> **The product is DAEX (formerly ADE, renamed 2026-11-28).** Write "DAEX" in
+> all copy and docs (all caps; "a DAEX chat"), and "DAEX Cloud", "DAEX MCP" and
+> so on for feature names. The CLI is `daex`; `ade` still works as an alias.
+> Code identifiers (`AdeFoo`, `window.ade`), `ADE_*` env vars, `.ade/` folders
+> and `~/.ade`, file and folder names (`apps/ade-cli`, `docs/features/ade-cloud`),
+> bundle IDs and action/IPC names keep the old name on purpose: never rename
+> them. For copy in code, use `BRAND` from `apps/desktop/src/shared/brand.ts`
+> (Swift: `Brand` in `apps/ios/ADE/Shared/Brand.swift`). Rules and the frozen
+> list: `docs/brand/README.md`.
+
 ## Model roles (Claude-specific)
 
 If you are Fable 5.2, you are always the PM/coordinator. You research, decide, and write the specs; you do not implement by default. Delegate the implementation to Claude Opus 5 subagents — medium effort for routine tasks, high effort for hard ones. Judge each result on its merits; if a subagent's output misses the bar, tighten the spec or raise the effort and redo it.
@@ -9,13 +19,13 @@ If you are any other Claude model, do the work yourself, and use Opus 5 subagent
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Built for
 remote machines** section. Keep the two the same.
 
-ADE is built around remote connections. One window drives several machines: a
+DAEX is built around remote connections. One window drives several machines: a
 laptop works on lanes that live on a desktop, a phone drives the brain at home,
 and the Work tab lists chats, CLIs and shells from every connected machine at
 once. A lane owns its machine, and its chats and terminals live there and only
 there.
 
-ADE also works with no computer of your own. Every account has ADE Cloud, one
+DAEX also works with no computer of your own. Every account has DAEX Cloud, one
 machine in every machine list and "Run on" menu. Underneath, each cloud lane
 has its own computer with its own pin, so the rules below apply to it too.
 Reading a cloud lane (saved chats, session copies, its Git summary) comes from
@@ -59,12 +69,12 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Account-wide
 features live on the account server** section. Keep the two the same.
 
-Some things belong to the person, not to a machine: the plan, ADE Cloud credits
+Some things belong to the person, not to a machine: the plan, DAEX Cloud credits
 (computers and the iPhone), billing, usage counted against a plan, consents and
-opt-ins, and services ADE pays for or a partner sponsors (hosted models, ads,
+opt-ins, and services DAEX pays for or a partner sponsors (hosted models, ads,
 sponsored recommendations). They live on the account server
 (`apps/account-directory`, or the Worker that owns that data) and work the
-same for an ADE Cloud lane, the person's own computers, the web client and the
+same for a DAEX Cloud lane, the person's own computers, the web client and the
 phone.
 
 1. **The server decides.** It holds the outside service's keys, stores the
@@ -84,7 +94,7 @@ phone.
 5. **Test as any plan with the account test tool.** To act as another plan,
    change an account's limits, add a sponsored tester or flip a server switch
    (ads, the Free rule), use `scripts/cloud-owner.mjs` through
-   `ade secrets exec --env CLOUD_OWNER_TOKEN`. It is instant and never
+   `daex secrets exec --env CLOUD_OWNER_TOKEN`. It is instant and never
    touches Stripe. Guide: `docs/features/ade-cloud/account-test-tool.md`.
 
 ## Main checkout
@@ -101,7 +111,7 @@ only:
    and write new copy as "main checkout", never "Primary lane".
 2. Do not change the stored name, the `laneType: "primary"` value, or code
    that matches the primary lane by name (`useDraftMachineRouting.ts`).
-3. An ADE Cloud lane computer exists for its one lane. The lane lists leave
+3. A DAEX Cloud lane computer exists for its one lane. The lane lists leave
    out its main checkout (`crossMachineLanes.ts`).
 
 ## Every provider, both surfaces
@@ -109,16 +119,16 @@ only:
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Every
 provider, both surfaces** section. Keep the two the same.
 
-ADE runs 13 agent providers, not two: Claude, Codex, Cursor, Droid, OpenCode,
+DAEX runs 13 agent providers, not two: Claude, Codex, Cursor, Droid, OpenCode,
 Pi, Muse, Qwen, Kimi, Grok, Copilot, Devin and Antigravity. The list grows;
 read it from `AgentChatProvider` (`apps/desktop/src/shared/types/chat.ts`) and
 `LAUNCH_PROFILE_TOOL_TYPE` (`apps/desktop/src/shared/cliLaunch.ts`).
 
-Each provider reaches ADE in two ways, and they behave differently:
-- **Chat:** ADE drives the agent through an SDK or protocol (Claude Agent SDK,
-  `codex app-server`, the SDK workers, OpenCode's server, ACP). ADE gets typed
+Each provider reaches DAEX in two ways, and they behave differently:
+- **Chat:** DAEX drives the agent through an SDK or protocol (Claude Agent SDK,
+  `codex app-server`, the SDK workers, OpenCode's server, ACP). DAEX gets typed
   events: turns, tools, subagents, approvals.
-- **CLI:** the provider's own program runs in an ADE terminal. ADE sees the
+- **CLI:** the provider's own program runs in a DAEX terminal. DAEX sees the
   screen plus whatever signal that CLI gives: Claude Code hooks, Codex's
   OSC 7501 state, or nothing (output guesses).
 
@@ -163,7 +173,7 @@ including agents started by a skill.
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Performance
 budget** section. Keep the two the same.
 
-`docs/perf/macos-baseline.md` holds ADE's measured performance numbers
+`docs/perf/macos-baseline.md` holds DAEX's measured performance numbers
 (macOS dev build) and a ceiling for each. They came out of a pass that took
 the app from unusable to smooth. Do not let them climb back.
 
@@ -173,8 +183,8 @@ the app from unusable to smooth. Do not let them climb back.
    (git, shells); reads files or databases on a hot path; builds caches or
    large in-memory structures; or adds a surface that loads its own data. CPU,
    GPU and memory all count. When in doubt, it applies.
-   Before you add a poll, timer, spawn or periodic job, read **Patterns that
-   bloat ADE** in the doc.
+   Before you add a poll, timer, spawn or periodic job, read the doc's
+   **Patterns that bloat** section.
 2. **Measure before and after, during the work,** with the scripts the doc
    lists, on the same machine and under the same conditions. Follow the doc's
    gotchas: no perf run for idle, GPU, typing or memory numbers; close extra
@@ -193,7 +203,7 @@ the app from unusable to smooth. Do not let them climb back.
    after numbers. If you could not measure (not on macOS, no display), say so
    and give what you did measure; the service benches run anywhere.
 
-Numbers drift as ADE grows, and that is expected. A spike is not.
+Numbers drift as DAEX grows, and that is expected. A spike is not.
 
 ## Writing tests
 
@@ -278,7 +288,7 @@ checks** section. Keep the two the same.
 
 Typecheck, lint, and tests cost real agent time. One desktop typecheck is
 15–60 seconds, and agents have run typecheck about 5,800 times and tests
-about 12,000 times across ADE threads, mostly re-runs after tiny edits. These
+about 12,000 times across DAEX threads, mostly re-runs after tiny edits. These
 rules apply to every agent and every skill.
 
 1. **One check pass, at the end of `/quality`.** After every review fix is
