@@ -1,8 +1,8 @@
-# App Store metadata for Daex (main app, `com.ade.ios`, App Store Connect id 6762759870)
+# App Store metadata for DAEX (main app, `com.ade.ios`, App Store Connect id 6762759870)
 
 Ready to push with the first rebranded build. Canonical `asc metadata` layout.
 
-- `app-info/en-US.json`: store name (30 chars max: "Daex - Agentic Dev Environment" is exactly 30), subtitle, privacy URL.
+- `app-info/en-US.json`: store name (30 chars max: "DAEX - Agentic Dev Environment" is exactly 30), subtitle, privacy URL.
 - `version/NEXT/en-US.json`: description, keywords (keeps "ade" so old searches still find the app), promotional text, URLs.
 - `review-notes.txt`: App Review notes with the product renamed (the sign-in steps are unchanged).
 
@@ -18,4 +18,4 @@ asc review details-update --id <review-detail-id> --notes "$(cat apps/ios/market
 ```
 
 Screenshots still show the old app; re-capture them from the rebranded build (`apps/ios/marketing/appstore-screenshots`).
-The Beta app (id 6829373114) is already renamed "Daex Beta", and both apps' TestFlight descriptions already say Daex (2026-11-27).
+The Beta app (id 6829373114) is already renamed "DAEX Beta", and both apps' TestFlight descriptions already say DAEX (2026-11-27).
