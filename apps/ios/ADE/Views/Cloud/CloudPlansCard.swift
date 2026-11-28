@@ -486,9 +486,7 @@ struct CloudAdsCard: View {
           Toggle(CloudAdPriceWords.switchLabel, isOn: Binding(
             get: { on || confirming },
             set: { turnOn in
-              let confirm = turnOn && accountStore.account?.sponsored?.confirmYes == true
-              cloudSponsoredLog.notice("ads switch on=\(turnOn, privacy: .public) confirm=\(confirm, privacy: .public) saving=\(saving, privacy: .public)")
-              if confirm {
+              if turnOn, accountStore.account?.sponsored?.confirmYes == true {
                 confirmGeneration = AccountCloudStore.shared.generation
                 confirming = true
               } else {
