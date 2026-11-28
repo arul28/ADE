@@ -115,6 +115,13 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "cto.uploadLinearFile",
   "cto.countLinearIssues",
   "cto.getLinearCustomViews",
+  // Linear's display settings, rail lists, documents and the branch lookup.
+  // Optional: an older brain has none, and the phone uses Linear's defaults.
+  "cto.getLinearViewPreferences",
+  "cto.updateLinearViewPreferences",
+  "cto.getLinearRailData",
+  "cto.getLinearDocument",
+  "cto.findLinearIssueByBranch",
   // Whether the CTO thread is blocked on the user. The CTO chat is hidden from
   // every session roster, so the phone cannot derive this from its chat list —
   // it must ask. Optional so a phone on a newer build simply never lights the

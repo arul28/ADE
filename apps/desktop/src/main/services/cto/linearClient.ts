@@ -31,6 +31,7 @@ import {
 import { createLinearIssueSearch } from "./linearIssueSearch";
 import { createLinearQuickView } from "./linearQuickView";
 import { createLinearInbox } from "./linearInbox";
+import { createLinearViewData } from "./linearViewData";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
 const MAX_LINEAR_ID_LENGTH = 128;
@@ -49,6 +50,17 @@ function toAuthorizationHeaderValue(token: string, authMode: "manual" | "oauth" 
   }
   return trimmed;
 }
+
+/** Linear `WorkflowState.position` (order within the team's workflow), or null. */
+function statePosition(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export type LinearGraphQLErrorEntry = {
+  message?: string;
+  path?: Array<string | number>;
+  extensions?: { code?: string };
+};
 
 export type LinearClientArgs = {
   credentials: LinearCredentialService;
@@ -110,6 +122,12 @@ export function createLinearClient(args: LinearClientArgs) {
     operationName?: string | null;
     maxRetries?: number;
     meter?: LinearRequestMeter;
+    /**
+     * Keep the data Linear did return when some fields failed (a missing
+     * scope, one bad section): the errors go here instead of throwing. Auth
+     * and rate-limit errors still take their usual paths.
+     */
+    onPartialErrors?: (errors: LinearGraphQLErrorEntry[]) => void;
   }): Promise<TData> => {
     // Proactively refresh an OAuth token that is at/near expiry before sending.
     await ensureFreshAuth();
@@ -149,7 +167,7 @@ export function createLinearClient(args: LinearClientArgs) {
       readRateHeaders(res, params.meter);
       const payload = await res.json().catch(() => ({})) as {
         data?: TData;
-        errors?: Array<{ message?: string; extensions?: { code?: string } }>;
+        errors?: LinearGraphQLErrorEntry[];
       };
 
       const message = payload.errors?.[0]?.message ?? null;
@@ -179,6 +197,11 @@ export function createLinearClient(args: LinearClientArgs) {
         continue;
       }
 
+      if (res.ok && payload.data && payload.errors?.length && params.onPartialErrors && !isRateLimited && !isAuthError) {
+        params.onPartialErrors(payload.errors);
+        return payload.data;
+      }
+
       if (!res.ok || payload.errors?.length || !payload.data) {
         const detail = message ?? `Linear GraphQL request failed (HTTP ${res.status})`;
         // A Linear sign-in that is gone or was revoked, even after a refresh:
@@ -193,6 +216,7 @@ export function createLinearClient(args: LinearClientArgs) {
   const issueSearch = createLinearIssueSearch({ request, logger: args.logger, getRateBudget: () => rateBudget });
   const quickView = createLinearQuickView({ request, searchIssues: issueSearch.searchIssues });
   const inbox = createLinearInbox({ request });
+  const viewData = createLinearViewData({ request, logger: args.logger });
 
   const getViewer = async (): Promise<{ id: string | null; name: string | null }> => {
     const data = await request<{ viewer?: { id?: string; name?: string; displayName?: string } }>({
@@ -541,13 +565,13 @@ export function createLinearClient(args: LinearClientArgs) {
     return results;
   };
 
-  const fetchWorkflowStates = async (teamKey: string): Promise<Array<{ id: string; name: string; type: string; teamId: string; teamKey: string }>> => {
+  const fetchWorkflowStates = async (teamKey: string): Promise<Array<{ id: string; name: string; type: string; teamId: string; teamKey: string; position?: number | null }>> => {
     const data = await request<{
       teams?: {
         nodes?: Array<{
           id?: string;
           key?: string;
-          states?: { nodes?: Array<{ id?: string; name?: string; type?: string }> };
+          states?: { nodes?: Array<{ id?: string; name?: string; type?: string; position?: number }> };
         }>;
       };
     }>({
@@ -562,6 +586,7 @@ export function createLinearClient(args: LinearClientArgs) {
                   id
                   name
                   type
+                  position
                 }
               }
             }
@@ -586,7 +611,7 @@ export function createLinearClient(args: LinearClientArgs) {
         const stateName = asString(entry.name);
         const stateType = asString(entry.type);
         if (!stateId || !stateName || !stateType) return null;
-        return { id: stateId, name: stateName, type: stateType, teamId: id, teamKey: key };
+        return { id: stateId, name: stateName, type: stateType, teamId: id, teamKey: key, position: statePosition(entry.position) };
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry != null);
   };
@@ -601,7 +626,7 @@ export function createLinearClient(args: LinearClientArgs) {
         nodes?: Array<{
           id?: string;
           key?: string;
-          states?: { nodes?: Array<{ id?: string; name?: string; type?: string }> };
+          states?: { nodes?: Array<{ id?: string; name?: string; type?: string; position?: number }> };
         }>;
       };
     }>({
@@ -616,6 +641,7 @@ export function createLinearClient(args: LinearClientArgs) {
                   id
                   name
                   type
+                  position
                 }
               }
             }
@@ -644,7 +670,8 @@ export function createLinearClient(args: LinearClientArgs) {
             type: stateType,
             teamId: id,
             teamKey: key,
-          };
+            position: statePosition(entry.position),
+          } satisfies LinearCatalogState as LinearCatalogState;
         })
         .filter((entry): entry is LinearCatalogState => entry != null);
     });
@@ -1348,6 +1375,15 @@ export function createLinearClient(args: LinearClientArgs) {
   };
 
   return {
+    /** A Linear sign-in is stored (reads with none answer empty, not an error). */
+    isConnected: (): boolean => Boolean(args.credentials.getStatus().tokenStored),
+    /** Linear's latest reported rate budget (extras skip themselves when it runs low). */
+    getRateBudget: (): LinearRateBudget | null => rateBudget,
+    readViewPreferences: viewData.readViewPreferences,
+    writeViewPreferences: viewData.writeViewPreferences,
+    getRailData: viewData.getRailData,
+    getDocument: viewData.getDocument,
+    findIssueByBranch: viewData.findIssueByBranch,
     ...issueSearch,
     ...quickView,
     ...inbox,

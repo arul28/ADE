@@ -772,6 +772,12 @@ import type {
   LinearProjectMilestone,
   LinearUploadResult,
   CtoLinearCustomView,
+  CtoGetLinearViewPreferencesArgs,
+  CtoUpdateLinearViewPreferencesArgs,
+  CtoUpdateLinearViewPreferencesResult,
+  LinearDisplayPreferences,
+  CtoLinearRailData,
+  CtoLinearDocument,
   CtoUpdateLinearIssueArgs,
   NormalizedLinearIssue,
   CtoLinearIssueComment,
@@ -1112,6 +1118,7 @@ import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagno
 import { forgetLocalProjectDatabaseIdentity, ProjectRegistry } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
+import { defaultLinearDisplayPreferences } from "../cto/linearViewData";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
 import type { ProjectHealthService } from "../../../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
@@ -14742,6 +14749,53 @@ export function registerIpc({
     if (!ctx.linearIssueTracker) return [];
     return ctx.linearIssueTracker.listCustomViews();
   });
+
+  // Display settings, rail lists, documents and the branch lookup. Reads with
+  // no tracker answer empty (the renderer shows Linear's defaults).
+  handle(
+    IPC.ctoGetLinearViewPreferences,
+    async (_event, arg: CtoGetLinearViewPreferencesArgs): Promise<LinearDisplayPreferences> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) return defaultLinearDisplayPreferences();
+      return ctx.linearIssueTracker.getViewPreferences(arg ?? { viewType: "allIssues" });
+    }
+  );
+
+  handle(
+    IPC.ctoUpdateLinearViewPreferences,
+    async (_event, arg: CtoUpdateLinearViewPreferencesArgs): Promise<CtoUpdateLinearViewPreferencesResult> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      return ctx.linearIssueTracker.updateViewPreferences(arg);
+    }
+  );
+
+  handle(
+    IPC.ctoGetLinearRailData,
+    async (_event, arg?: { teamKey?: string | null }): Promise<CtoLinearRailData> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker) return { cycles: [], initiatives: [], favorites: [], documents: [] };
+      return ctx.linearIssueTracker.getRailData(arg ?? null);
+    }
+  );
+
+  handle(
+    IPC.ctoGetLinearDocument,
+    async (_event, arg: { documentId: string }): Promise<CtoLinearDocument | null> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker || typeof arg?.documentId !== "string") return null;
+      return ctx.linearIssueTracker.getDocument(arg);
+    }
+  );
+
+  handle(
+    IPC.ctoFindLinearIssueByBranch,
+    async (_event, arg: { branch: string }): Promise<NormalizedLinearIssue | null> => {
+      const ctx = getCtx();
+      if (!ctx.linearIssueTracker || typeof arg?.branch !== "string") return null;
+      return ctx.linearIssueTracker.findIssueByBranch(arg);
+    }
+  );
 
   handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
     const ctx = getCtx();

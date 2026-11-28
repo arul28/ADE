@@ -309,7 +309,62 @@ func linearIssueObject(_ node: [String: Any]) -> [String: Any]? {
   let related = relations.filter { ($0["type"] as? String) == "related" }.compactMap { linearRefObject($0["relatedIssue"]) }
   if !blocking.isEmpty { object["blockingIssues"] = blocking }
   if !related.isEmpty { object["relatedIssues"] = related }
+  // Read when the account server's query asks for them; absent otherwise.
+  let cycle = node["cycle"] as? [String: Any]
+  let milestone = node["projectMilestone"] as? [String: Any]
+  let delegate = node["delegate"] as? [String: Any]
+  put("number", (node["number"] as? NSNumber)?.intValue)
+  put("sortOrder", node["sortOrder"])
+  put("subIssueSortOrder", node["subIssueSortOrder"])
+  put("cycleId", cycle?["id"])
+  put("cycleName", (cycle?["name"] as? String) ?? (cycle?["number"] as? NSNumber).map { "Cycle \($0.intValue)" })
+  put("projectMilestoneId", milestone?["id"])
+  put("projectMilestoneName", milestone?["name"])
+  put("delegateId", delegate?["id"])
+  put("delegateName", (delegate?["displayName"] as? String) ?? (delegate?["name"] as? String))
+  put("delegateAvatarUrl", delegate?["avatarUrl"])
+  put("assigneeAvatarUrl", assignee?["avatarUrl"])
+  let labelColors = linearNodes(node["labels"]).compactMap { label -> [String: Any]? in
+    guard let name = label["name"] as? String else { return nil }
+    return ["id": label["id"] ?? NSNull(), "name": name, "color": label["color"] ?? NSNull()]
+  }
+  if !labelColors.isEmpty { object["labelColors"] = labelColors }
+  let pullRequests = linearNodes(node["attachments"]).compactMap(linearPullRequestObject)
+  if !pullRequests.isEmpty { object["pullRequests"] = pullRequests }
   return object
+}
+
+/// A GitHub/GitLab attachment that is a pull request (not an issue link), in
+/// the `LinearIssuePullRequest` shape.
+func linearPullRequestObject(_ attachment: [String: Any]) -> [String: Any]? {
+  guard let url = attachment["url"] as? String,
+        url.contains("/pull/") || url.contains("/merge_requests/") else { return nil }
+  let metadata = attachment["metadata"] as? [String: Any] ?? [:]
+  let number = (metadata["number"] as? NSNumber)?.intValue
+    ?? url.split(separator: "/").last.flatMap { Int($0) }
+  let rawStatus = (metadata["status"] as? String)?.lowercased()
+  let status: String
+  if metadata["draft"] as? Bool == true, rawStatus == nil || rawStatus == "open" {
+    status = "draft"
+  } else if let rawStatus, ["open", "draft", "merged", "closed"].contains(rawStatus) {
+    status = rawStatus
+  } else {
+    status = "unknown"
+  }
+  var repo: String?
+  if let login = metadata["repoLogin"] as? String, let name = metadata["repoName"] as? String {
+    repo = "\(login)/\(name)"
+  }
+  return [
+    "url": url,
+    "number": number ?? NSNull(),
+    "title": (metadata["title"] as? String) ?? (attachment["title"] as? String) ?? "",
+    "status": status,
+    "repo": repo ?? NSNull(),
+    "branch": metadata["branch"] ?? NSNull(),
+    "linkKind": metadata["linkKind"] ?? NSNull(),
+    "updatedAt": metadata["updatedAt"] ?? NSNull(),
+  ]
 }
 
 private func linearQuickViewProjectObject(_ node: [String: Any]) -> [String: Any]? {

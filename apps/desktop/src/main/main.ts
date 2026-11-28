@@ -5447,6 +5447,8 @@ app.whenReady().then(async () => {
     });
     const linearIssueTracker = createLinearIssueTracker({
       client: linearClient,
+      displayStore: db,
+      logger,
     });
     linearIssueTrackerRef = linearIssueTracker;
     // Live status round-trip (gated OFF unless ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1).

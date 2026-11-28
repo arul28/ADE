@@ -117,6 +117,7 @@ export function initialIssueProvider(request: IssueCreateRequest): IssueProvider
   if (request.prefill?.parent) {
     return request.prefill.parent.provider;
   }
+  if (request.prefill?.linear) return "linear";
   if (request.provider === "linear" || request.provider === "github" || request.provider === "jira") return request.provider;
   try {
     const last = window.localStorage.getItem(LAST_PROVIDER_KEY);
@@ -152,7 +153,11 @@ export function initialIssueForm(request: IssueCreateRequest, scope: string | nu
   const provider = initialIssueProvider(request);
   const hasPrefill = Boolean(request.prefill?.title || request.prefill?.body);
   const draft = hasPrefill ? null : readIssueDraft(provider, scope);
-  const linear = { ...EMPTY_LINEAR, ...(hasPrefill ? {} : readIssueDraft("linear", scope)?.linear ?? {}) };
+  // Fields given by the request (a list group's "+") start a fresh set of Linear fields.
+  const linearPrefill = request.prefill?.linear ?? null;
+  const linear = linearPrefill
+    ? { ...EMPTY_LINEAR, ...linearPrefill, labelIds: linearPrefill.labelIds ?? [] }
+    : { ...EMPTY_LINEAR, ...(hasPrefill ? {} : readIssueDraft("linear", scope)?.linear ?? {}) };
   const githubDraft = hasPrefill ? null : readIssueDraft("github", scope);
   const github = { ...EMPTY_GITHUB, ...(githubDraft?.github ?? {}) };
   const jira = { ...EMPTY_JIRA, ...(hasPrefill ? {} : readIssueDraft("jira", scope)?.jira ?? {}) };

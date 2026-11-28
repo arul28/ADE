@@ -1,6 +1,12 @@
 import type {
   CtoCountLinearIssuesResult,
   CtoGetLinearIssuePickerDataResult,
+  CtoGetLinearViewPreferencesArgs,
+  CtoLinearDocument,
+  CtoLinearRailData,
+  CtoUpdateLinearViewPreferencesArgs,
+  CtoUpdateLinearViewPreferencesResult,
+  LinearDisplayPreferences,
   CtoLinearCustomView,
   CtoLinearProject,
   CtoLinearQuickView,
@@ -14,6 +20,7 @@ import type {
   LinearProjectMilestone,
   LinearUploadResult,
   LinearIssueRelationKind,
+  LinearIssueOrdering,
   NormalizedLinearIssue,
 } from "../../../shared/types";
 
@@ -34,6 +41,11 @@ export type IssueTrackerIssueSearchQuery = {
   customViewId?: string | null;
   priority?: number | null;
   query?: string | null;
+  cycleId?: string | null;
+  initiativeId?: string | null;
+  labelId?: string | null;
+  ordering?: LinearIssueOrdering | null;
+  orderingDirection?: "asc" | "desc" | null;
   first?: number;
   after?: string | null;
   includeArchived?: boolean;
@@ -119,6 +131,16 @@ export type IssueTracker = {
   countIssues(query: IssueTrackerIssueCountQuery): Promise<CtoCountLinearIssuesResult>;
   /** The viewer's issue custom views whose saved filter can be applied. */
   listCustomViews(): Promise<CtoLinearCustomView[]>;
+  /** Linear's display settings for an issue tab or custom view; Linear's defaults when none are saved or Linear is unreachable. */
+  getViewPreferences(args: CtoGetLinearViewPreferencesArgs): Promise<LinearDisplayPreferences>;
+  /** Writes a display change back to Linear; a refusal keeps it in ADE for this session. Never throws for a refusal. */
+  updateViewPreferences(args: CtoUpdateLinearViewPreferencesArgs): Promise<CtoUpdateLinearViewPreferencesResult>;
+  /** Cycles, initiatives, favorites and documents; each list is empty when Linear has none or refuses it. */
+  getRailData(args?: { teamKey?: string | null } | null): Promise<CtoLinearRailData>;
+  /** One document with its markdown, or null when it is gone. */
+  getDocument(args: { documentId: string }): Promise<CtoLinearDocument | null>;
+  /** Linear's exact branch -> issue match (`issueVcsBranchSearch`), cached; null when none. */
+  findIssueByBranch(args: { branch: string }): Promise<NormalizedLinearIssue | null>;
   fetchCandidateIssues(query: IssueTrackerCandidateQuery): Promise<NormalizedLinearIssue[]>;
   fetchIssueById(issueId: string): Promise<NormalizedLinearIssue | null>;
   fetchIssuesByIds(issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>>;

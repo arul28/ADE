@@ -73,8 +73,9 @@ import { extractError } from "../../lib/format";
  *   create (`issueCreateDraft.ts`).
  * - Pictures pasted or dropped into the description upload to Linear at once,
  *   or go to GitHub with the issue through `gh --attach`.
- * - Similar open issues ADE already read show under the title, without a
- *   request, so a duplicate is caught before it is filed.
+ * - Similar issues show under the title, so a duplicate is caught before it
+ *   is filed: those ADE already read at once, and for Linear a debounced
+ *   server search once the title has three meaningful words.
  * - An issue started from a chat gets a "Context" footer linking back to it.
  */
 
@@ -344,8 +345,13 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     if (next?.title && !title.trim()) setTitle(next.title);
   };
 
-  /* Similar issues, from what ADE already read */
-  const similar = useSimilarIssues(provider === "linear" ? "linear" : "github", provider === "github" ? repo : null, title);
+  /* Similar issues: what ADE already read, plus a Linear search once the title says enough */
+  const similar = useSimilarIssues(provider === "linear" ? "linear" : "github", provider === "github" ? repo : null, title, {
+    // The same reader machine every Linear call in this dialog (and the Linear pane) uses.
+    pin,
+    // The picker catalog only loads when Linear answers for this project.
+    linearConnected: (catalog?.states.length ?? 0) > 0,
+  });
 
   /* Pictures */
   const insertAtCursor = useCallback((text: string) => {
@@ -682,7 +688,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           />
           {similar.length ? (
             <div className="mt-2 flex flex-col gap-0.5 rounded-md border border-[color:var(--kit-panel-edge)] bg-[color:var(--kit-panel-bg)] px-2 py-1.5">
-              <div className="kit-eyebrow">Similar open issues</div>
+              <div className="kit-eyebrow">{similar.some((entry) => entry.closed) ? "Similar issues" : "Similar open issues"}</div>
               {similar.map((entry) => (
                 <button
                   key={entry.key}
@@ -696,7 +702,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                 >
                   {entry.icon}
                   <span className="kit-num shrink-0 text-[11px] text-[color:var(--kit-text-2)]">{entry.label}</span>
-                  <span className="truncate text-fg/85">{entry.title}</span>
+                  <span className={entry.closed ? "truncate text-fg/55" : "truncate text-fg/85"}>{entry.title}</span>
                 </button>
               ))}
             </div>

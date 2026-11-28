@@ -18,6 +18,20 @@ export type IssueCreateRequest = {
       | { provider: "github"; owner: string; repo: string; number: number }
       | { provider: "jira"; siteUrl: string; key: string }
       | null;
+    /**
+     * Linear fields to start with, e.g. from a list group's "+" (its status,
+     * assignee, project, ...). Replaces the saved draft's fields.
+     */
+    linear?: {
+      teamKey?: string | null;
+      stateId?: string | null;
+      priority?: number | null;
+      assigneeId?: string | null;
+      labelIds?: string[];
+      projectId?: string | null;
+      milestoneId?: string | null;
+      cycleId?: string | null;
+    } | null;
   };
   /** Where the issue was started from, for its "Context" footer. */
   context?: { sessionId?: string | null; laneId?: string | null; laneName?: string | null } | null;

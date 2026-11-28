@@ -2082,33 +2082,37 @@ const MOCK_LINEAR_CONNECTION = {
   message: null,
 };
 
+// ── Linear mock workspace ─────────────────────────────────────
+// Rich enough to design the Linear-style list against: two teams, every state
+// type, parents with sub-issues (one with 30, past the list's 25-child cap),
+// a sub-issue whose parent is not in the data, a finished parent whose open
+// children still match, PRs in every state (and a GitHub issue that is not a
+// PR), delegates, milestones, 0..7 labels, long / emoji / RTL titles.
+// Flags: `?mockLinearRailEmpty` (rail like the real workspace: all empty),
+// `?mockLinearPrefsRefuse` (Linear refuses display writes: "Saved in ADE only").
 const MOCK_LINEAR_PROJECTS = [
-  {
-    id: "mock-linear-project",
-    name: "Desktop polish",
-    slug: "desktop-polish",
-    teamName: "ADE",
-    teamKey: "ADE",
-    icon: null,
-    color: "#5E6AD2",
-  },
-  {
-    id: "mock-linear-project-sync",
-    name: "Sync reliability",
-    slug: "sync-reliability",
-    teamName: "ADE",
-    teamKey: "ADE",
-    icon: null,
-    color: "#4CB782",
-  },
+  { id: "mock-linear-project", name: "Desktop polish", slug: "desktop-polish", teamName: "ADE", teamKey: "ADE", icon: null, color: "#5E6AD2" },
+  { id: "mock-linear-project-sync", name: "Sync reliability", slug: "sync-reliability", teamName: "ADE", teamKey: "ADE", icon: null, color: "#4CB782" },
+  { id: "mock-linear-project-infra", name: "Infrastructure", slug: "infrastructure", teamName: "Operations", teamKey: "OPS", icon: null, color: "#F2994A" },
+];
+
+const MOCK_LINEAR_TEAMS = [
+  { id: "mock-linear-team", key: "ADE", name: "ADE" },
+  { id: "mock-linear-team-ops", key: "OPS", name: "Operations" },
 ];
 
 const MOCK_LINEAR_STATES = [
-  { id: "mock-linear-state-started", name: "In Progress", type: "started", teamId: "mock-linear-team", teamKey: "ADE" },
-  { id: "mock-linear-state-todo", name: "Todo", type: "unstarted", teamId: "mock-linear-team", teamKey: "ADE" },
-  { id: "mock-linear-state-backlog", name: "Backlog", type: "backlog", teamId: "mock-linear-team", teamKey: "ADE" },
-  { id: "mock-linear-state-done", name: "Done", type: "completed", teamId: "mock-linear-team", teamKey: "ADE" },
-  { id: "mock-linear-state-canceled", name: "Canceled", type: "canceled", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-state-triage", name: "Triage", type: "triage", teamId: "mock-linear-team", teamKey: "ADE", position: 0 },
+  { id: "mock-linear-state-backlog", name: "Backlog", type: "backlog", teamId: "mock-linear-team", teamKey: "ADE", position: 0 },
+  { id: "mock-linear-state-todo", name: "Todo", type: "unstarted", teamId: "mock-linear-team", teamKey: "ADE", position: 1 },
+  { id: "mock-linear-state-started", name: "In Progress", type: "started", teamId: "mock-linear-team", teamKey: "ADE", position: 2 },
+  { id: "mock-linear-state-review", name: "In Review", type: "started", teamId: "mock-linear-team", teamKey: "ADE", position: 3 },
+  { id: "mock-linear-state-done", name: "Done", type: "completed", teamId: "mock-linear-team", teamKey: "ADE", position: 4 },
+  { id: "mock-linear-state-canceled", name: "Canceled", type: "canceled", teamId: "mock-linear-team", teamKey: "ADE", position: 5 },
+  { id: "mock-linear-ops-state-backlog", name: "Backlog", type: "backlog", teamId: "mock-linear-team-ops", teamKey: "OPS", position: 0 },
+  { id: "mock-linear-ops-state-todo", name: "Todo", type: "unstarted", teamId: "mock-linear-team-ops", teamKey: "OPS", position: 1 },
+  { id: "mock-linear-ops-state-started", name: "In Progress", type: "started", teamId: "mock-linear-team-ops", teamKey: "OPS", position: 2 },
+  { id: "mock-linear-ops-state-done", name: "Done", type: "completed", teamId: "mock-linear-team-ops", teamKey: "OPS", position: 3 },
 ];
 
 const MOCK_LINEAR_LABELS = [
@@ -2116,61 +2120,231 @@ const MOCK_LINEAR_LABELS = [
   { id: "mock-linear-label-feature", name: "Feature", color: "#5E6AD2", teamId: "mock-linear-team", teamKey: "ADE" },
   { id: "mock-linear-label-perf", name: "Performance", color: "#F2C94C", teamId: null, teamKey: null },
   { id: "mock-linear-label-ux", name: "UX", color: "#4CB782", teamId: null, teamKey: null },
+  { id: "mock-linear-label-windows", name: "Windows", color: "#26B5CE", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-label-ios", name: "iOS", color: "#BB87FC", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-label-sync", name: "Sync", color: "#0F7488", teamId: "mock-linear-team", teamKey: "ADE" },
+  { id: "mock-linear-label-docs", name: "Docs", color: "#95A2B3", teamId: null, teamKey: null },
+  { id: "mock-linear-label-security", name: "Security", color: "#F7C8C1", teamId: null, teamKey: null },
+  { id: "mock-linear-label-debt", name: "Tech debt", color: "#8E7A5A", teamId: null, teamKey: null },
+  { id: "mock-linear-label-gfi", name: "Good first issue", color: "#6FCF97", teamId: null, teamKey: null },
 ];
 
 const MOCK_LINEAR_USERS = [
   { id: "mock-linear-user", name: "Mock Linear User", displayName: "Mock Linear User", email: "mock@example.com", avatarUrl: null, active: true },
   { id: "mock-linear-user-2", name: "Riley Chen", displayName: "Riley Chen", email: "riley@example.com", avatarUrl: null, active: true },
+  { id: "mock-linear-user-3", name: "Priya Natarajan", displayName: "Priya Natarajan", email: "priya@example.com", avatarUrl: null, active: true },
+  { id: "mock-linear-user-4", name: "Jonas Weber", displayName: "Jonas Weber", email: "jonas@example.com", avatarUrl: null, active: true },
 ];
+
+const MOCK_LINEAR_DELEGATES = {
+  ade: { id: "mock-linear-agent-ade", name: "ADE", displayName: "ADE agent", avatarUrl: null },
+  cursor: { id: "mock-linear-agent-cursor", name: "Cursor", displayName: "Cursor", avatarUrl: null },
+} as const;
+
+const MOCK_LINEAR_MILESTONES = [
+  { id: "mock-linear-milestone-beta", name: "Beta", projectId: "mock-linear-project" },
+  { id: "mock-linear-milestone-ga", name: "GA", projectId: "mock-linear-project" },
+  { id: "mock-linear-milestone-relay", name: "Relay v2", projectId: "mock-linear-project-sync" },
+];
+
+const MOCK_LINEAR_DAY = 86_400_000;
+const mockLinearIsoDay = (offsetDays: number) => new Date(Date.now() + offsetDays * MOCK_LINEAR_DAY).toISOString().slice(0, 10);
+
+const MOCK_LINEAR_CYCLES = [
+  { id: "mock-linear-cycle", number: 12, name: "Cycle 12", teamId: "mock-linear-team", teamKey: "ADE", startsAt: new Date(Date.now() - 6 * MOCK_LINEAR_DAY).toISOString(), endsAt: new Date(Date.now() + 8 * MOCK_LINEAR_DAY).toISOString(), isActive: true, isNext: false, isPrevious: false, progress: 0.38, issueCount: 7 },
+  { id: "mock-linear-cycle-next", number: 13, name: null, teamId: "mock-linear-team", teamKey: "ADE", startsAt: new Date(Date.now() + 8 * MOCK_LINEAR_DAY).toISOString(), endsAt: new Date(Date.now() + 22 * MOCK_LINEAR_DAY).toISOString(), isActive: false, isNext: true, isPrevious: false, progress: 0, issueCount: 2 },
+];
+
+const MOCK_LINEAR_INITIATIVES = [
+  { id: "mock-linear-initiative-windows", name: "Windows parity", icon: null, color: "#26B5CE", status: "Active", targetDate: mockLinearIsoDay(40), url: "https://linear.app/ade/initiative/windows-parity", projectIds: ["mock-linear-project"] },
+  { id: "mock-linear-initiative-reliability", name: "Reliability", icon: null, color: "#4CB782", status: "Planned", targetDate: null, url: "https://linear.app/ade/initiative/reliability", projectIds: ["mock-linear-project-sync", "mock-linear-project-infra"] },
+];
+
+type MockLinearPrSeed = { num: number; status: "open" | "draft" | "merged" | "closed"; repo?: string; title?: string; branch?: string };
 
 type MockLinearIssueSeed = {
   n: number;
   title: string;
-  state: string;
+  state: "triage" | "backlog" | "todo" | "started" | "review" | "done" | "canceled";
   priority: number;
+  team?: "ADE" | "OPS";
   labels?: string[];
-  assignee?: string | null;
-  project?: string;
-  cycle?: boolean;
+  assignee?: "me" | "riley" | "priya" | "jonas";
+  project?: string | null;
+  cycle?: "current" | "next";
+  parent?: number;
+  due?: number;
+  estimate?: number | null;
+  delegate?: keyof typeof MOCK_LINEAR_DELEGATES;
+  milestone?: string;
+  prs?: MockLinearPrSeed[];
+  /** A GitHub issue (not a PR) attached in Linear. */
+  githubIssue?: number;
+  archived?: boolean;
 };
 
-const MOCK_LINEAR_SEEDS: MockLinearIssueSeed[] = [
-  { n: 101, title: "Polish Work tab header layout", state: "mock-linear-state-started", priority: 2, labels: ["mock-linear-label-ux"], assignee: "mock-linear-user", cycle: true },
-  { n: 102, title: "Chat actions drawer parity", state: "mock-linear-state-todo", priority: 3, labels: ["mock-linear-label-feature"], cycle: true },
-  { n: 103, title: "Sync reconnect drops the last changeset", state: "mock-linear-state-started", priority: 1, labels: ["mock-linear-label-bug", "mock-linear-label-perf"], assignee: "mock-linear-user-2", project: "mock-linear-project-sync" },
-  { n: 104, title: "Split header into reusable pane chrome", state: "mock-linear-state-todo", priority: 4, assignee: "mock-linear-user", cycle: true },
-  { n: 105, title: "Lane list flickers on project switch", state: "mock-linear-state-todo", priority: 2, labels: ["mock-linear-label-bug"], project: "mock-linear-project-sync" },
-  { n: 106, title: "Keyboard shortcuts for the Linear pane", state: "mock-linear-state-backlog", priority: 0, labels: ["mock-linear-label-feature", "mock-linear-label-ux", "mock-linear-label-perf"] },
-  { n: 107, title: "Retry budget for relay heartbeats", state: "mock-linear-state-backlog", priority: 3, project: "mock-linear-project-sync" },
-  { n: 108, title: "Settings search misses nested sections", state: "mock-linear-state-done", priority: 3, labels: ["mock-linear-label-bug"], assignee: "mock-linear-user-2" },
-  { n: 109, title: "Remove legacy toast host", state: "mock-linear-state-canceled", priority: 4 },
+const MOCK_LINEAR_WINDOWS_AREAS = [
+  "terminal fonts", "path separators in diffs", "long path support", "CRLF in patches", "file watcher limits",
+  "PowerShell profile loading", "Git Bash detection", "tray icon menu", "auto-update restart", "notification toasts",
+  "high-DPI scaling", "dark title bar", "drag and drop from Explorer", "symlinks in worktrees", "Defender scan slowdown",
+  "WSL lanes", "credential manager", "ARM64 builds", "installer upgrade path", "jump list entries",
+  "clipboard images", "IME composition", "Ctrl+Backspace in inputs", "window snap layouts", "process tree kill",
+  "named pipes for the CLI", "default shell picker", "env var casing", "case-insensitive paths", "uninstaller cleanup",
 ];
+
+const MOCK_LINEAR_SEEDS: MockLinearIssueSeed[] = [
+  { n: 101, title: "Polish Work tab header layout", state: "started", priority: 2, labels: ["ux"], assignee: "me", cycle: "current", estimate: 3, prs: [{ num: 142, status: "open", branch: "feature/auth-flow" }] },
+  { n: 102, title: "Chat actions drawer parity", state: "todo", priority: 3, labels: ["feature"], cycle: "current" },
+  { n: 103, title: "Sync reconnect drops the last changeset", state: "review", priority: 1, labels: ["bug", "perf", "sync"], assignee: "riley", project: "mock-linear-project-sync", milestone: "mock-linear-milestone-relay", prs: [{ num: 145, status: "open", branch: "feature/dashboard-v2" }, { num: 139, status: "merged" }, { num: 131, status: "closed" }] },
+  { n: 104, title: "Split header into reusable pane chrome", state: "todo", priority: 4, assignee: "me", cycle: "current" },
+  { n: 105, title: "Lane list flickers on project switch", state: "todo", priority: 2, labels: ["bug"], project: "mock-linear-project-sync", githubIssue: 2210 },
+  { n: 106, title: "Keyboard shortcuts for the Linear pane", state: "backlog", priority: 0, labels: ["feature", "ux", "perf"] },
+  { n: 107, title: "Retry budget for relay heartbeats", state: "backlog", priority: 3, project: "mock-linear-project-sync" },
+  { n: 108, title: "Settings search misses nested sections", state: "done", priority: 3, labels: ["bug"], assignee: "riley", prs: [{ num: 2470, status: "merged" }] },
+  { n: 109, title: "Remove legacy toast host", state: "canceled", priority: 4 },
+  { n: 110, title: "Crash when pasting a 40 MB log into the composer", state: "triage", priority: 1, labels: ["bug"], project: null },
+  { n: 111, title: "Dark mode for the PR diff minimap", state: "triage", priority: 0, project: null },
+  { n: 112, title: "التحقق من مزامنة الفروع عند إعادة الاتصال", state: "triage", priority: 3, labels: ["sync"], project: null },
+  { n: 113, title: "🚀 Ship the new onboarding checklist 🎉", state: "todo", priority: 2, labels: ["feature", "ux"], assignee: "priya", due: 3 },
+  {
+    n: 114,
+    title: "When a lane is opened from a pull request on a fork whose default branch is not main and the remote was renamed after the clone, the Git summary shows the wrong ahead and behind counts and the sync button stays disabled forever",
+    state: "todo",
+    priority: 2,
+    labels: ["bug", "windows", "sync", "perf", "ux", "debt", "security"],
+    assignee: "jonas",
+    estimate: 5,
+  },
+  { n: 115, title: "Terminal resize jank on high-DPI Windows displays", state: "started", priority: 2, labels: ["windows", "perf"], assignee: "me", delegate: "ade", prs: [{ num: 151, status: "open", branch: "fix/perf-regression" }] },
+  { n: 116, title: "Document the ade CLI JSON output", state: "backlog", priority: 4, labels: ["docs", "gfi"] },
+  { n: 117, title: "Audit token storage on Linux keyrings", state: "done", priority: 1, labels: ["security"], assignee: "priya" },
+  { n: 118, title: "iOS: Work tab rows jump when a chat finishes", state: "review", priority: 2, labels: ["ios", "ux"], assignee: "jonas", prs: [{ num: 88, status: "open", repo: "acme/ade-ios" }] },
+  { n: 119, title: "Reduce memory of the chat transcript cache", state: "backlog", priority: 3, labels: ["perf", "debt"], estimate: 8, due: -2 },
+  // Parent with 8 sub-issues in mixed states.
+  { n: 120, title: "Linear-style issue list in ADE", state: "started", priority: 2, labels: ["feature", "ux"], assignee: "me", cycle: "current", milestone: "mock-linear-milestone-beta", estimate: 8 },
+  { n: 121, title: "Group header with counts and create button", state: "done", priority: 3, parent: 120, assignee: "me" },
+  { n: 122, title: "Priority bars and state icons", state: "done", priority: 3, parent: 120, assignee: "riley" },
+  { n: 123, title: "Nested sub-issues with tree lines", state: "started", priority: 2, parent: 120, assignee: "me", cycle: "current", prs: [{ num: 148, status: "draft", branch: "feature/api-refactor" }] },
+  { n: 124, title: "PR chips on rows", state: "review", priority: 3, parent: 120, assignee: "riley", prs: [{ num: 2533, status: "open" }] },
+  { n: 125, title: "Display menu writes back to Linear", state: "todo", priority: 2, parent: 120, labels: ["feature"] },
+  { n: 126, title: "Keyboard navigation over nested rows", state: "todo", priority: 3, parent: 120, labels: ["ux"] },
+  { n: 127, title: "Sticky group headers", state: "backlog", priority: 4, parent: 120 },
+  { n: 128, title: "Infinite scroll prototype", state: "canceled", priority: 0, parent: 120 },
+  // Parent with 30 sub-issues (the list fragment caps children at 25).
+  { n: 130, title: "Windows parity sweep", state: "todo", priority: 1, labels: ["windows"], assignee: "priya", milestone: "mock-linear-milestone-ga", due: 21 },
+  ...MOCK_LINEAR_WINDOWS_AREAS.map((area, index): MockLinearIssueSeed => ({
+    n: 131 + index,
+    title: `Windows: ${area}`,
+    state: (["done", "done", "started", "todo", "todo", "backlog", "review", "canceled"] as const)[index % 8],
+    priority: (index % 5),
+    parent: 130,
+    labels: ["windows"],
+    assignee: index % 3 === 0 ? "priya" : index % 3 === 1 ? "jonas" : undefined,
+  })),
+  // Finished parent whose open sub-issues still match an "Active" filter.
+  { n: 165, title: "Onboarding redesign", state: "done", priority: 3, labels: ["ux"], assignee: "priya" },
+  { n: 166, title: "Welcome screen copy pass", state: "started", priority: 3, parent: 165, assignee: "priya" },
+  { n: 167, title: "Project picker empty state", state: "todo", priority: 4, parent: 165 },
+  { n: 168, title: "First-run tour", state: "backlog", priority: 0, parent: 165 },
+  { n: 170, title: "Sync reconnect hardening", state: "review", priority: 1, labels: ["sync"], assignee: "riley", project: "mock-linear-project-sync", milestone: "mock-linear-milestone-relay" },
+  { n: 171, title: "Backoff with jitter on relay reconnect", state: "done", priority: 2, parent: 170, project: "mock-linear-project-sync", prs: [{ num: 2440, status: "merged" }] },
+  { n: 172, title: "Replay unacked changesets after reconnect", state: "started", priority: 1, parent: 170, project: "mock-linear-project-sync", assignee: "riley", prs: [{ num: 2511, status: "open" }] },
+  { n: 173, title: "Surface a reconnect banner in the top bar", state: "todo", priority: 3, parent: 170, project: "mock-linear-project-sync", labels: ["ux"] },
+  { n: 175, title: "Proof drawer cleanup", state: "backlog", priority: 3, labels: ["debt"] },
+  { n: 176, title: "Drop the legacy proof thumbnail cache", state: "backlog", priority: 4, parent: 175 },
+  { n: 177, title: "Group proof by chat turn", state: "todo", priority: 3, parent: 175, assignee: "jonas" },
+  // Sub-issue whose parent (ADE-12, archived) is not in any result set.
+  { n: 179, title: "Migrate old relay settings", state: "todo", priority: 3, project: "mock-linear-project-sync", labels: ["sync"] },
+  { n: 180, title: "Flaky e2e: lane archive restores the wrong tab", state: "started", priority: 2, labels: ["bug"], delegate: "cursor" },
+  { n: 181, title: "Add estimate field to the issue detail pane", state: "todo", priority: 3, estimate: 3 },
+  { n: 182, title: "Translate the onboarding into Japanese 日本語", state: "backlog", priority: 4, labels: ["docs"] },
+  { n: 183, title: "Remove the old sidebar pin animation", state: "done", priority: 4, assignee: "jonas" },
+  { n: 184, title: "Investigate Electron 40 upgrade", state: "canceled", priority: 3, labels: ["debt"] },
+  { n: 185, title: "Usage meter shows stale credits after a top-up", state: "todo", priority: 1, labels: ["bug"], assignee: "me", due: 1, cycle: "next" },
+  { n: 186, title: "Make lane colors follow the system accent", state: "backlog", priority: 0, labels: ["ux"], cycle: "next" },
+  { n: 187, title: "Retire the v1 relay endpoints", state: "done", priority: 3, project: "mock-linear-project-sync", archived: true },
+  // Second team.
+  { n: 1, team: "OPS", title: "Rotate the relay TLS certificates", state: "started", priority: 1, labels: ["security"], assignee: "jonas", project: "mock-linear-project-infra", due: 5 },
+  { n: 2, team: "OPS", title: "Nightly backup check fails on Sundays", state: "todo", priority: 2, labels: ["bug"], project: "mock-linear-project-infra" },
+  { n: 3, team: "OPS", title: "Move the build cache to the new bucket", state: "backlog", priority: 3, project: "mock-linear-project-infra" },
+  { n: 4, team: "OPS", title: "Postmortem: relay outage", state: "done", priority: 2, labels: ["docs"], assignee: "riley", project: "mock-linear-project-infra" },
+];
+
+const MOCK_LINEAR_USER_KEYS: Record<string, string> = {
+  me: "mock-linear-user",
+  riley: "mock-linear-user-2",
+  priya: "mock-linear-user-3",
+  jonas: "mock-linear-user-4",
+};
 
 function mockLinearRef(issue: { id: string; identifier: string; title: string; stateId: string; stateName: string; stateType: string }) {
   return { id: issue.id, identifier: issue.identifier, title: issue.title, stateId: issue.stateId, stateName: issue.stateName, stateType: issue.stateType };
 }
 
+function mockLinearPullRequests(prs: MockLinearPrSeed[] | undefined, updatedAt: string) {
+  return (prs ?? []).map((pr) => {
+    const repo = pr.repo ?? "acme/ade";
+    return {
+      url: `https://github.com/${repo}/pull/${pr.num}`,
+      number: pr.num,
+      title: pr.title ?? `PR #${pr.num}`,
+      status: pr.status,
+      repo,
+      branch: pr.branch ?? `ade/pr-${pr.num}`,
+      linkKind: pr.status === "merged" ? "closes" : "links",
+      updatedAt,
+    };
+  });
+}
+
 function buildMockLinearIssue(seed: MockLinearIssueSeed) {
-  const state = MOCK_LINEAR_STATES.find((entry) => entry.id === seed.state)!;
-  const project = MOCK_LINEAR_PROJECTS.find((entry) => entry.id === (seed.project ?? "mock-linear-project"))!;
-  const assignee = MOCK_LINEAR_USERS.find((entry) => entry.id === seed.assignee) ?? null;
-  const labels = (seed.labels ?? []).map((id) => MOCK_LINEAR_LABELS.find((entry) => entry.id === id)!);
-  const identifier = `ADE-${seed.n}`;
+  const teamKey = seed.team ?? "ADE";
+  const team = MOCK_LINEAR_TEAMS.find((entry) => entry.key === teamKey)!;
+  const stateId = teamKey === "OPS"
+    ? `mock-linear-ops-state-${seed.state === "triage" || seed.state === "review" || seed.state === "canceled" ? "todo" : seed.state}`
+    : `mock-linear-state-${seed.state}`;
+  const state = MOCK_LINEAR_STATES.find((entry) => entry.id === stateId)!;
+  const projectId = seed.project === null ? null : (seed.project ?? "mock-linear-project");
+  const project = projectId ? MOCK_LINEAR_PROJECTS.find((entry) => entry.id === projectId)! : null;
+  const assignee = seed.assignee ? MOCK_LINEAR_USERS.find((entry) => entry.id === MOCK_LINEAR_USER_KEYS[seed.assignee!]) ?? null : null;
+  const labels = (seed.labels ?? []).map((key) => MOCK_LINEAR_LABELS.find((entry) => entry.id === `mock-linear-label-${key}`)!);
+  const identifier = `${teamKey}-${seed.n}`;
   const priorityLabel = (["none", "urgent", "high", "normal", "low"] as const)[seed.priority] ?? "none";
-  const slug = seed.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const slug = seed.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "issue";
+  const cycle = seed.cycle === "current" ? MOCK_LINEAR_CYCLES[0] : seed.cycle === "next" ? MOCK_LINEAR_CYCLES[1] : null;
+  const milestone = seed.milestone ? MOCK_LINEAR_MILESTONES.find((entry) => entry.id === seed.milestone) ?? null : null;
+  const delegate = seed.delegate ? MOCK_LINEAR_DELEGATES[seed.delegate] : null;
+  const updatedAt = new Date(Date.now() - ((seed.n * 7919) % 240) * 1_800_000).toISOString();
+  const pullRequests = mockLinearPullRequests(seed.prs, updatedAt);
+  const attachments = [
+    ...pullRequests.map((pr) => ({
+      url: pr.url,
+      title: pr.title,
+      sourceType: "github",
+      updatedAt,
+      metadata: { number: pr.number, status: pr.status === "draft" ? "open" : pr.status, draft: pr.status === "draft", branch: pr.branch, title: pr.title, repoLogin: pr.repo.split("/")[0], repoName: pr.repo.split("/")[1], linkKind: pr.linkKind },
+    })),
+    ...(seed.githubIssue
+      ? [{ url: `https://github.com/acme/ade/issues/${seed.githubIssue}`, title: `GitHub issue #${seed.githubIssue}`, sourceType: "github", updatedAt, metadata: { number: seed.githubIssue, status: "open", repoLogin: "acme", repoName: "ade" } }]
+      : []),
+  ];
+  const archivedAt = seed.archived ? new Date(Date.now() - 3 * MOCK_LINEAR_DAY).toISOString() : null;
   return {
-    id: `mock-linear-issue-${seed.n}`,
+    id: `mock-linear-issue-${teamKey === "ADE" ? "" : `${teamKey.toLowerCase()}-`}${seed.n}`,
+    number: seed.n,
     identifier,
     title: seed.title,
     description: `${seed.title}.\n\n- Reproduce in the Vite preview\n- Keep Windows parity`,
     url: `https://linear.app/ade/issue/${identifier}/${slug}`,
     branchName: `mock/${identifier.toLowerCase()}-${slug}`.slice(0, 60),
-    projectId: project.id,
-    projectSlug: project.slug,
-    projectName: project.name,
-    teamId: "mock-linear-team",
-    teamKey: "ADE",
-    teamName: "ADE",
+    projectId: project?.id ?? "",
+    projectSlug: project?.slug ?? "",
+    projectName: project?.name ?? null,
+    projectMilestoneId: milestone?.id ?? null,
+    projectMilestoneName: milestone?.name ?? null,
+    teamId: team.id,
+    teamKey,
+    teamName: team.name,
     stateId: state.id,
     stateName: state.name,
     stateType: state.type,
@@ -2178,12 +2352,18 @@ function buildMockLinearIssue(seed: MockLinearIssueSeed) {
     priorityLabel,
     labels: labels.map((label) => label.name.toLowerCase()),
     labelColors: labels.map((label) => ({ id: label.id, name: label.name, color: label.color })),
-    cycleId: seed.cycle ? "mock-linear-cycle" : null,
-    cycleName: seed.cycle ? "Cycle 12" : null,
+    cycleId: cycle?.id ?? null,
+    cycleName: cycle ? (cycle.name ?? `Cycle ${cycle.number}`) : null,
+    cycleStartsAt: cycle?.startsAt ?? null,
+    cycleEndsAt: cycle?.endsAt ?? null,
     metadataTags: [],
     assigneeId: assignee?.id ?? null,
     assigneeName: assignee?.displayName ?? null,
     assigneeAvatarUrl: null,
+    delegateId: delegate?.id ?? null,
+    delegateName: delegate?.displayName ?? null,
+    delegateAvatarUrl: null,
+    ownerId: null,
     creatorId: "mock-linear-user",
     creatorName: "Mock Linear User",
     childIssues: [] as ReturnType<typeof mockLinearRef>[],
@@ -2193,25 +2373,45 @@ function buildMockLinearIssue(seed: MockLinearIssueSeed) {
     relatedIssues: [] as ReturnType<typeof mockLinearRef>[],
     blockerIssueIds: [] as string[],
     hasOpenBlockers: false,
-    dueDate: null,
-    estimate: seed.priority === 0 ? null : 5 - seed.priority,
-    archivedAt: null,
+    pullRequests,
+    adeLinks: [] as Array<{ laneId: string | null; sessionId: string | null }>,
+    // Manual order: a stable spread so "manual" differs from every other ordering.
+    sortOrder: ((seed.n * 6151) % 1000) - 500 + (seed.n % 7) / 10,
+    subIssueSortOrder: seed.parent ? seed.n - seed.parent : null,
+    dueDate: typeof seed.due === "number" ? mockLinearIsoDay(seed.due) : null,
+    estimate: seed.estimate !== undefined ? seed.estimate : (seed.priority === 0 ? null : 5 - seed.priority),
+    archivedAt,
     completedAt: state.type === "completed" ? now : null,
     canceledAt: state.type === "canceled" ? now : null,
     startedAt: state.type === "started" ? now : null,
-    createdAt: new Date(Date.now() - seed.n * 3_600_000).toISOString(),
-    updatedAt: new Date(Date.now() - (seed.n - 100) * 1_800_000).toISOString(),
-    raw: {},
+    createdAt: new Date(Date.now() - (seed.n % 90) * 3 * 3_600_000 - 3_600_000).toISOString(),
+    updatedAt,
+    raw: { attachments: { nodes: attachments } } as Record<string, unknown>,
   };
 }
 
 const MOCK_LINEAR_ISSUES = MOCK_LINEAR_SEEDS.map(buildMockLinearIssue);
+type MockLinearIssue = (typeof MOCK_LINEAR_ISSUES)[number];
 
 function relinkMockLinearIssues(): void {
   const byNumber = (n: number) => MOCK_LINEAR_ISSUES.find((issue) => issue.identifier === `ADE-${n}`)!;
-  const [a, b, c, d, e] = [byNumber(101), byNumber(102), byNumber(103), byNumber(104), byNumber(105)];
-  a.childIssues = [mockLinearRef(d)];
-  d.parentIssue = mockLinearRef(a);
+  for (const seed of MOCK_LINEAR_SEEDS) {
+    if (!seed.parent) continue;
+    const child = byNumber(seed.n);
+    const parent = byNumber(seed.parent);
+    child.parentIssue = mockLinearRef(parent);
+    parent.childIssues.push(mockLinearRef(child));
+  }
+  // ADE-179's parent is an archived epic that no search returns.
+  byNumber(179).parentIssue = {
+    id: "mock-linear-issue-12",
+    identifier: "ADE-12",
+    title: "Relay v1 epic",
+    stateId: "mock-linear-state-done",
+    stateName: "Done",
+    stateType: "completed",
+  };
+  const [a, b, c, e] = [byNumber(101), byNumber(102), byNumber(103), byNumber(105)];
   a.blockingIssues = [mockLinearRef(b)];
   b.blockedByIssues = [mockLinearRef(a)];
   c.relatedIssues = [mockLinearRef(e)];
@@ -2222,6 +2422,67 @@ function relinkMockLinearIssues(): void {
   }
 }
 relinkMockLinearIssues();
+for (const [identifier, laneId, sessionId] of [
+  ["ADE-101", "lane-auth", "mock-session-linear-101"],
+  ["ADE-103", "lane-dashboard", "mock-session-linear-103"],
+  ["ADE-115", "lane-perf", null],
+  ["ADE-123", "lane-api", null],
+] as const) {
+  const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.identifier === identifier);
+  if (issue) issue.adeLinks = [{ laneId, sessionId }];
+}
+
+function mockLinearIssueByIdentifier(identifier: string): MockLinearIssue {
+  return MOCK_LINEAR_ISSUES.find((issue) => issue.identifier === identifier)!;
+}
+
+/** A lane's `linearIssue` snapshot, built from the mock issue so ids and states agree. */
+function mockLaneLinearIssue(identifier: string) {
+  const issue = mockLinearIssueByIdentifier(identifier);
+  return {
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    description: issue.description,
+    url: issue.url,
+    projectId: issue.projectId,
+    projectSlug: issue.projectSlug,
+    projectName: issue.projectName,
+    teamId: issue.teamId,
+    teamKey: issue.teamKey,
+    teamName: issue.teamName,
+    stateId: issue.stateId,
+    stateName: issue.stateName,
+    stateType: issue.stateType,
+    priority: issue.priority,
+    priorityLabel: issue.priorityLabel,
+    labels: issue.labels,
+    assigneeId: issue.assigneeId,
+    assigneeName: issue.assigneeName,
+    branchName: issue.branchName,
+    createdAt: issue.createdAt,
+    updatedAt: issue.updatedAt,
+  };
+}
+
+function mockLaneLinearIssueOpts(laneId: string, identifier: string) {
+  const linearIssue = mockLaneLinearIssue(identifier);
+  return {
+    linearIssue,
+    linearIssueLinks: [{
+      id: `mock-lane-linear-link-${laneId}`,
+      laneId,
+      issue: linearIssue,
+      role: "primary" as const,
+      source: "lane_create" as const,
+      includeInPr: true,
+      closeOnMerge: true,
+      evidence: null,
+      createdAt: twoDaysAgo,
+      updatedAt: now,
+    }],
+  };
+}
 
 const MOCK_LINEAR_VIEWS = [
   { id: "mock-linear-view-bugs", name: "Open bugs", description: "Bugs not done", icon: null, color: "#EB5757", teamKey: "ADE", shared: true },
@@ -2229,6 +2490,7 @@ const MOCK_LINEAR_VIEWS = [
 
 type MockLinearSearchArgs = {
   projectId?: string | null;
+  teamKey?: string | null;
   stateTypes?: string[];
   stateIds?: string[];
   assigneeId?: string | null;
@@ -2237,20 +2499,81 @@ type MockLinearSearchArgs = {
   customViewId?: string | null;
   priority?: number | null;
   query?: string | null;
+  cycleId?: string | null;
+  initiativeId?: string | null;
+  labelId?: string | null;
+  ordering?: string | null;
+  orderingDirection?: "asc" | "desc" | null;
+  first?: number;
+  after?: string | null;
+  includeArchived?: boolean;
 };
 
-function mockLinearMatches(issue: (typeof MOCK_LINEAR_ISSUES)[number], args: MockLinearSearchArgs = {}): boolean {
+function mockLinearMatches(issue: MockLinearIssue, args: MockLinearSearchArgs = {}): boolean {
+  if (issue.archivedAt && !args.includeArchived) return false;
   if (args.projectId && issue.projectId !== args.projectId) return false;
+  if (args.teamKey && issue.teamKey !== args.teamKey) return false;
   if (args.stateTypes?.length && !args.stateTypes.includes(issue.stateType)) return false;
   if (args.stateIds?.length && !args.stateIds.includes(issue.stateId)) return false;
   if (args.assigneeId && issue.assigneeId !== args.assigneeId) return false;
   if (!args.assigneeId && args.assignedToViewer && issue.assigneeId !== "mock-linear-user") return false;
-  if (args.activeCycle && !issue.cycleId) return false;
+  if (args.activeCycle && issue.cycleId !== "mock-linear-cycle") return false;
+  if (args.cycleId && issue.cycleId !== args.cycleId) return false;
+  if (args.initiativeId) {
+    const initiative = MOCK_LINEAR_INITIATIVES.find((entry) => entry.id === args.initiativeId);
+    if (!initiative || !initiative.projectIds.includes(issue.projectId)) return false;
+  }
+  if (args.labelId && !issue.labelColors.some((label) => label.id === args.labelId)) return false;
   if (args.customViewId === "mock-linear-view-bugs" && (!issue.labels.includes("bug") || issue.stateType === "completed" || issue.stateType === "canceled")) return false;
   if (typeof args.priority === "number" && issue.priority !== args.priority) return false;
   const query = args.query?.trim().toLowerCase();
   if (query && !`${issue.identifier} ${issue.title} ${issue.description}`.toLowerCase().includes(query)) return false;
   return true;
+}
+
+/** Same order Linear's `sort` gives: each ordering's natural direction, `orderingDirection` flips it. */
+function mockLinearCompare(ordering: string | null | undefined, direction: "asc" | "desc" | null | undefined) {
+  // Urgent 4 ... Low 1, No priority 0: Linear's "desc" puts Urgent first and No priority last.
+  const priorityWeight = (issue: MockLinearIssue) => (issue.priority === 0 ? 0 : 5 - issue.priority);
+  const nullsLast = (value: number | null | undefined, fallback: number) => (value == null ? fallback : value);
+  type Spec = { natural: "asc" | "desc"; value: (issue: MockLinearIssue) => number | string };
+  const specs: Record<string, Spec> = {
+    manual: { natural: "asc", value: (issue) => issue.sortOrder },
+    priority: { natural: "desc", value: priorityWeight },
+    updatedAt: { natural: "desc", value: (issue) => issue.updatedAt },
+    createdAt: { natural: "desc", value: (issue) => issue.createdAt },
+    dueDate: { natural: "asc", value: (issue) => issue.dueDate ?? "9999-12-31" },
+    estimate: { natural: "desc", value: (issue) => nullsLast(issue.estimate, -1) },
+    title: { natural: "asc", value: (issue) => issue.title.toLowerCase() },
+  };
+  const spec = specs[ordering ?? ""] ?? specs.updatedAt;
+  const sign = (direction ?? spec.natural) === "asc" ? 1 : -1;
+  return (left: MockLinearIssue, right: MockLinearIssue) => {
+    const a = spec.value(left);
+    const b = spec.value(right);
+    if (a < b) return -sign;
+    if (a > b) return sign;
+    return left.sortOrder - right.sortOrder;
+  };
+}
+
+/** A list read: children capped at 25 like the real list fragment. */
+function mockLinearListIssue(issue: MockLinearIssue) {
+  return { ...issue, childIssues: issue.childIssues.slice(0, 25) };
+}
+
+function mockLinearSearch(args: MockLinearSearchArgs = {}) {
+  const matches = MOCK_LINEAR_ISSUES.filter((issue) => mockLinearMatches(issue, args))
+    .sort(mockLinearCompare(args.ordering, args.orderingDirection));
+  const first = Math.max(1, Math.min(250, args.first ?? 50));
+  const offset = Math.max(0, Number.parseInt(args.after ?? "0", 10) || 0);
+  const page = matches.slice(offset, offset + first);
+  const nextOffset = offset + page.length;
+  return {
+    issues: page.map(mockLinearListIssue),
+    pageInfo: { hasNextPage: nextOffset < matches.length, endCursor: page.length ? String(nextOffset) : null },
+    ...(args.query?.trim() ? { totalCount: matches.length } : {}),
+  };
 }
 
 function mockLinearUpdate(args: {
@@ -2293,6 +2616,131 @@ const MOCK_LINEAR_PICKER = {
   states: MOCK_LINEAR_STATES,
   labels: MOCK_LINEAR_LABELS,
 };
+
+type MockLinearDisplayPrefs = {
+  grouping: string;
+  subGrouping: string;
+  ordering: string;
+  orderingDirection: "asc" | "desc";
+  nesting: string;
+  showEmptyGroups: boolean;
+  showCompletedIssues: boolean;
+  hiddenGroups: string[];
+  fields: Record<string, boolean>;
+  source: "linear-view" | "linear-user" | "default";
+};
+
+/** Linear's defaults when nothing is saved (the real workspace's common case). */
+function mockLinearDefaultPrefs(): MockLinearDisplayPrefs {
+  return {
+    grouping: "workflowState",
+    subGrouping: "none",
+    ordering: "manual",
+    orderingDirection: "asc",
+    nesting: "showAll",
+    showEmptyGroups: false,
+    showCompletedIssues: true,
+    hiddenGroups: [],
+    fields: {
+      id: true, status: true, priority: true, assignee: true, labels: true, project: true, cycle: false,
+      milestone: false, estimate: false, dueDate: true, pullRequests: true, createdAt: true, updatedAt: false, adeStatus: true,
+    },
+    source: "default",
+  };
+}
+
+/** Display settings saved this session, per (viewType, customViewId). */
+const mockLinearPrefsStore = new Map<string, MockLinearDisplayPrefs>();
+const mockLinearPrefsKey = (args: { viewType?: string; customViewId?: string | null } = {}) => `${args.viewType ?? "allIssues"}|${args.customViewId ?? ""}`;
+
+function mockLinearGetPrefs(args: { viewType?: string; customViewId?: string | null } = {}): MockLinearDisplayPrefs {
+  const saved = mockLinearPrefsStore.get(mockLinearPrefsKey(args));
+  return saved ? { ...saved, fields: { ...saved.fields }, hiddenGroups: [...saved.hiddenGroups] } : mockLinearDefaultPrefs();
+}
+
+function mockLinearUpdatePrefs(args: { viewType?: string; customViewId?: string | null; patch?: Partial<MockLinearDisplayPrefs> }) {
+  const current = mockLinearGetPrefs(args);
+  const { fields, ...rest } = args.patch ?? {};
+  const refused = browserMockFlag("mockLinearPrefsRefuse");
+  const next: MockLinearDisplayPrefs = {
+    ...current,
+    ...rest,
+    fields: { ...current.fields, ...(fields ?? {}) },
+    source: refused ? current.source : (args.customViewId ? "linear-view" : "linear-user"),
+  };
+  mockLinearPrefsStore.set(mockLinearPrefsKey(args), next);
+  return refused
+    ? { preferences: next, savedToLinear: false, reason: "Linear did not accept the change. It is kept in ADE until you reload." }
+    : { preferences: next, savedToLinear: true, reason: null };
+}
+
+const MOCK_LINEAR_DOCUMENTS = [
+  { id: "mock-linear-doc-spec", title: "Issue list redesign spec", icon: null, color: "#5E6AD2", url: "https://linear.app/ade/document/issue-list-redesign-spec", projectName: "Desktop polish", updatedAt: new Date(Date.now() - 2 * 3_600_000).toISOString() },
+  { id: "mock-linear-doc-runbook", title: "Relay on-call runbook", icon: null, color: "#F2994A", url: "https://linear.app/ade/document/relay-on-call-runbook", projectName: "Infrastructure", updatedAt: new Date(Date.now() - 3 * MOCK_LINEAR_DAY).toISOString() },
+  { id: "mock-linear-doc-notes", title: "Windows parity notes 🪟", icon: null, color: null, url: "https://linear.app/ade/document/windows-parity-notes", projectName: null, updatedAt: new Date(Date.now() - 9 * MOCK_LINEAR_DAY).toISOString() },
+];
+
+const MOCK_LINEAR_DOCUMENT_CONTENT = [
+  "# Issue list redesign",
+  "",
+  "The list should feel like Linear's own: dense, quiet, and fast.",
+  "",
+  "## Goals",
+  "",
+  "- Group by status with sticky headers",
+  "- Nest sub-issues under their parent",
+  "  - Show a progress ring on the parent",
+  "- Show linked pull requests on each row",
+  "",
+  "## Steps",
+  "",
+  "1. Read Linear's display settings",
+  "2. Render the grouped list",
+  "3. Write changes back",
+  "",
+  "### Row anatomy",
+  "",
+  "| Part | Source | Notes |",
+  "| --- | --- | --- |",
+  "| Priority | `issue.priority` | Bars, not text |",
+  "| Identifier | `issue.identifier` | Muted |",
+  "| PR chip | attachments | `/pull/` urls only |",
+  "",
+  "```ts",
+  "const rows = groupIssues(issues, preferences);",
+  "virtualizer.measure();",
+  "```",
+  "",
+  "> Keep it quiet. No heavy borders.",
+  "",
+  "![Row mockup](https://placehold.co/640x120/png)",
+  "",
+  "See [Linear's docs](https://linear.app/docs) for the display options.",
+].join("\n");
+
+function mockLinearRailData(args: { teamKey?: string | null } = {}) {
+  if (browserMockFlag("mockLinearRailEmpty")) return { cycles: [], initiatives: [], favorites: [], documents: [] };
+  const teamKey = args.teamKey?.trim() || null;
+  return {
+    cycles: MOCK_LINEAR_CYCLES.filter((cycle) => !teamKey || cycle.teamKey === teamKey).map((cycle) => ({ ...cycle })),
+    initiatives: MOCK_LINEAR_INITIATIVES.map(({ projectIds, ...initiative }) => ({ ...initiative, projectCount: projectIds.length })),
+    favorites: [
+      { id: "mock-linear-fav-1", type: "issue", title: "ADE-120 Linear-style issue list in ADE", targetId: "mock-linear-issue-120", url: mockLinearIssueByIdentifier("ADE-120").url, icon: null, color: null, sortOrder: 1 },
+      { id: "mock-linear-fav-2", type: "project", title: "Desktop polish", targetId: "mock-linear-project", url: "https://linear.app/ade/project/desktop-polish", icon: null, color: "#5E6AD2", sortOrder: 2 },
+      { id: "mock-linear-fav-3", type: "customView", title: "Open bugs", targetId: "mock-linear-view-bugs", url: "https://linear.app/ade/view/open-bugs", icon: null, color: "#EB5757", sortOrder: 3 },
+      { id: "mock-linear-fav-4", type: "label", title: "Windows", targetId: "mock-linear-label-windows", url: null, icon: null, color: "#26B5CE", sortOrder: 4 },
+    ],
+    documents: MOCK_LINEAR_DOCUMENTS.map((doc) => ({ ...doc })),
+  };
+}
+
+function mockLinearFindByBranch(branch: string) {
+  const name = branch.trim().replace(/^refs\/heads\//, "").toLowerCase();
+  if (!name) return null;
+  const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.branchName.toLowerCase() === name)
+    ?? MOCK_LINEAR_ISSUES.find((entry) => new RegExp(`(^|[^a-z0-9])${entry.identifier.toLowerCase()}([^0-9]|$)`).test(name));
+  return issue ? { ...issue } : null;
+}
 
 /** Browser mock lane health; matches `LaneHealthCheck` in shared types. */
 function mockBrowserLaneHealth(laneId: string) {
@@ -2364,21 +2812,25 @@ const BUILTIN_MOCK_LANES: any[] = [
   // Primary
   makeLane("lane-main", "main", "refs/heads/main"),
   // Normal PR lanes
-  makeLane("lane-auth", "feature/auth-flow", "refs/heads/feature/auth-flow"),
+  // Lanes linked to Linear issues (Linear issue list ADE status column).
+  makeLane("lane-auth", "feature/auth-flow", "refs/heads/feature/auth-flow", mockLaneLinearIssueOpts("lane-auth", "ADE-101")),
   makeLane(
     "lane-dashboard",
     "feature/dashboard-v2",
     "refs/heads/feature/dashboard-v2",
+    mockLaneLinearIssueOpts("lane-dashboard", "ADE-103"),
   ),
   makeLane(
     "lane-api",
     "feature/api-refactor",
     "refs/heads/feature/api-refactor",
+    mockLaneLinearIssueOpts("lane-api", "ADE-123"),
   ),
   makeLane(
     "lane-perf",
     "fix/perf-regression",
     "refs/heads/fix/perf-regression",
+    mockLaneLinearIssueOpts("lane-perf", "ADE-115"),
   ),
   makeLane(
     "lane-onboard",
@@ -2547,6 +2999,37 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
     resumeCommand: null,
     resumeMetadata: null,
   },
+  // Linear issue list ADE status: a chat working on ADE-101 (lane-auth) and one
+  // waiting for the person on ADE-103 (lane-dashboard).
+  ...[
+    { id: "mock-session-linear-101", laneId: "lane-auth", laneName: "feature/auth-flow", goal: "Polish Work tab header layout", waiting: false },
+    { id: "mock-session-linear-103", laneId: "lane-dashboard", laneName: "feature/dashboard-v2", goal: "Fix sync reconnect changeset loss", waiting: true },
+  ].map((entry) => ({
+    id: entry.id,
+    laneId: entry.laneId,
+    laneName: entry.laneName,
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    manuallyNamed: false,
+    goal: entry.goal,
+    toolType: "claude-chat",
+    title: `Claude · ${entry.goal}`,
+    status: "running",
+    startedAt: oneHourAgo,
+    endedAt: null,
+    archivedAt: null,
+    exitCode: null,
+    transcriptPath: `.ade/transcripts/${entry.id}.chat.jsonl`,
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: "Working…",
+    summary: null,
+    runtimeState: "running",
+    resumeCommand: null,
+    resumeMetadata: { provider: "claude", targetKind: "session", targetId: entry.id, launch: {} },
+    ...(entry.waiting ? { attentionRequestedAt: oneHourAgo } : {}),
+  })),
 ];
 
 function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
@@ -9738,9 +10221,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             cyclesEnabled: true,
             private: false,
           },
+          {
+            id: "mock-linear-team-ops",
+            key: "OPS",
+            name: "Operations",
+            displayName: "Operations",
+            color: "#F2994A",
+            issueCount: 4,
+            cyclesEnabled: false,
+            private: false,
+          },
         ],
-        assignedIssues: MOCK_LINEAR_ISSUES,
-        recentIssues: MOCK_LINEAR_ISSUES,
+        assignedIssues: MOCK_LINEAR_ISSUES.filter((issue) => issue.assigneeId === "mock-linear-user" && !issue.archivedAt),
+        recentIssues: MOCK_LINEAR_ISSUES.filter((issue) => !issue.archivedAt),
         fetchedAt: now,
         sdk: {
           packageName: "@linear/sdk",
@@ -9755,19 +10248,25 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
       getLinearIssuePickerData: resolvedArg(MOCK_LINEAR_PICKER),
-      searchLinearIssues: async (args: MockLinearSearchArgs = {}) => ({
-        issues: MOCK_LINEAR_ISSUES.filter((issue) => mockLinearMatches(issue, args)).map((issue) => ({ ...issue })),
-        pageInfo: { hasNextPage: false, endCursor: null },
-      }),
-      countLinearIssues: async (args: { queries?: Record<string, MockLinearSearchArgs> } = {}) => ({
-        counts: Object.fromEntries(Object.entries(args.queries ?? {}).map(([key, query]) => [
-          key,
-          { count: MOCK_LINEAR_ISSUES.filter((issue) => mockLinearMatches(issue, query)).length, capped: false },
-        ])),
+      searchLinearIssues: async (args: MockLinearSearchArgs = {}) => mockLinearSearch(args),
+      countLinearIssues: async (args: { queries?: Record<string, MockLinearSearchArgs>; cap?: number } = {}) => ({
+        counts: Object.fromEntries(Object.entries(args.queries ?? {}).map(([key, query]) => {
+          const count = MOCK_LINEAR_ISSUES.filter((issue) => mockLinearMatches(issue, query)).length;
+          const cap = typeof args.cap === "number" && args.cap > 0 ? args.cap : null;
+          return [key, cap !== null && count > cap ? { count: cap, capped: true } : { count, capped: false }];
+        })),
       }),
       getLinearCustomViews: resolvedArg(MOCK_LINEAR_VIEWS),
+      getLinearViewPreferences: async (args: { viewType?: string; customViewId?: string | null } = {}) => mockLinearGetPrefs(args),
+      updateLinearViewPreferences: async (args: Parameters<typeof mockLinearUpdatePrefs>[0]) => mockLinearUpdatePrefs(args),
+      getLinearRailData: async (args: { teamKey?: string | null } | undefined) => mockLinearRailData(args ?? {}),
+      getLinearDocument: async (args: { documentId: string }) => {
+        const doc = MOCK_LINEAR_DOCUMENTS.find((entry) => entry.id === args?.documentId);
+        return doc ? { ...doc, content: doc.id === "mock-linear-doc-spec" ? MOCK_LINEAR_DOCUMENT_CONTENT : `# ${doc.title}\n\nShort document in the browser preview.\n\n- One\n- Two` } : null;
+      },
+      findLinearIssueByBranch: async (args: { branch: string }) => mockLinearFindByBranch(args?.branch ?? ""),
       getLinearIssue: async (args: { issueId: string }) => {
-        const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.id === args.issueId);
+        const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.id === args.issueId || entry.identifier === args.issueId);
         return issue ? { ...issue } : null;
       },
       updateLinearIssue: async (args: Parameters<typeof mockLinearUpdate>[0]) => mockLinearUpdate(args),

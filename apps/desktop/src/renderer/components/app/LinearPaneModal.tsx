@@ -15,6 +15,12 @@ import {
 export type { IssuePaneBrand } from "./LinearPaneHeader";
 
 /**
+ * Same string as `LINEAR_PANE_CLOSE_REQUEST_EVENT` in `linear/adeStatus.tsx`;
+ * kept literal so the GitHub pane does not load the Linear status index.
+ */
+const LINEAR_PANE_CLOSE_REQUEST_EVENT = "ade:linear-pane:close-request";
+
+/**
  * Shared popover chrome for Linear and GitHub issue panes: a centered, portal'd
  * dialog with a blurred backdrop, a branded header, and a flex column body.
  */
@@ -57,6 +63,16 @@ export function LinearPaneModal({
     return () => {
       window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
     };
+  }, [open]);
+
+  // A chip inside the pane that moves the app (to a lane, a PR) asks the pane to close.
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return undefined;
+    const handle = () => onCloseRef.current();
+    window.addEventListener(LINEAR_PANE_CLOSE_REQUEST_EVENT, handle);
+    return () => window.removeEventListener(LINEAR_PANE_CLOSE_REQUEST_EVENT, handle);
   }, [open]);
 
   if (!open) return null;

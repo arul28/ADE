@@ -37,12 +37,21 @@ export type LinearRequestParams = {
   operationName?: string | null;
   maxRetries?: number;
   meter?: LinearRequestMeter;
+  /** Return partial data and hand GraphQL field errors here instead of throwing. */
+  onPartialErrors?: (errors: Array<{ message?: string; path?: Array<string | number> }>) => void;
 };
 
 /** The client's GraphQL transport (auth refresh, retries, rate headers). */
 export type LinearRequest = <TData = Record<string, unknown>>(params: LinearRequestParams) => Promise<TData>;
 
 const ISSUE_REF_FIELDS = `id identifier title state { id name type }`;
+
+// Linked pull requests and ADE's own lane/chat links live in the issue's
+// attachments. GitHub issues share the "github" source type; the normalizer
+// keeps only `/pull/` and `/merge_requests/` urls as PRs, and `oauthClient`
+// attachments with a laneId/sessionId as ADE links. 15 per issue, most recent
+// first: the list page stays within Linear's complexity budget.
+const ISSUE_PULL_REQUEST_ATTACHMENTS = `attachments(first: 15, orderBy: updatedAt, filter: { sourceType: { in: ["github", "gitlab", "oauthClient"] } }) { nodes { url title sourceType metadata updatedAt } }`;
 
 const ISSUE_BASE_FIELDS = `
     id
@@ -68,6 +77,12 @@ const ISSUE_BASE_FIELDS = `
     labels { nodes { id name color } }
     cycle { id name startsAt endsAt }
     parent { ${ISSUE_REF_FIELDS} }
+    number
+    sortOrder
+    subIssueSortOrder
+    delegate { id name displayName avatarUrl }
+    projectMilestone { id name }
+    ${ISSUE_PULL_REQUEST_ATTACHMENTS}
   `;
 
 // List reads stay light: sub-issues and "blocked by" only. Outgoing relations

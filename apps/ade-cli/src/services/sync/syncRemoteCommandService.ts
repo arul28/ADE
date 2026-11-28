@@ -289,6 +289,12 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, normalizeCtoArchiveQuery, normalizeCtoRecallArgs, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
 import { SHELL_BLOCK_RUN_ENV } from "../../../../desktop/src/shared/types/sync";
+import type {
+  CtoUpdateLinearViewPreferencesArgs,
+  LinearIssueOrdering,
+  LinearIssueViewType,
+} from "../../../../desktop/src/shared/types";
+import { defaultLinearDisplayPreferences } from "../../../../desktop/src/main/services/cto/linearViewData";
 import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
   parseSessionSettleOverride,
@@ -7200,7 +7206,19 @@ function parseLinearIssueSearchPayload(payload: Record<string, unknown>) {
   const first = asOptionalNumber(payload.first);
   const after = asNullableTrimmedString(payload.after);
   const includeArchived = asOptionalBoolean(payload.includeArchived);
+  const cycleId = asNullableTrimmedString(payload.cycleId);
+  const initiativeId = asNullableTrimmedString(payload.initiativeId);
+  const labelId = asNullableTrimmedString(payload.labelId);
+  const ordering = asNullableTrimmedString(payload.ordering);
+  const orderingDirection: "asc" | "desc" | undefined = payload.orderingDirection === "asc" || payload.orderingDirection === "desc"
+    ? payload.orderingDirection
+    : undefined;
   return {
+    ...(cycleId !== undefined ? { cycleId } : {}),
+    ...(initiativeId !== undefined ? { initiativeId } : {}),
+    ...(labelId !== undefined ? { labelId } : {}),
+    ...(ordering ? { ordering: ordering as LinearIssueOrdering } : {}),
+    ...(orderingDirection ? { orderingDirection } : {}),
     ...(projectId !== undefined ? { projectId } : {}),
     ...(projectSlug !== undefined ? { projectSlug } : {}),
     ...(teamKey !== undefined ? { teamKey } : {}),
@@ -7493,6 +7511,58 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) return [];
     return linearIssueTracker.listCustomViews();
+  });
+  // Linear's own display settings (read and written back), the rail's lists,
+  // one document, and the exact branch lookup. Reads with Linear not
+  // connected answer Linear's defaults / empty.
+  register("cto.getLinearViewPreferences", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    const viewType = asTrimmedString(payload.viewType) ?? "allIssues";
+    const customViewId = asNullableTrimmedString(payload.customViewId);
+    const request = { viewType: viewType as LinearIssueViewType, ...(customViewId ? { customViewId } : {}) };
+    if (!linearIssueTracker) return defaultLinearDisplayPreferences();
+    return linearIssueTracker.getViewPreferences(request);
+  });
+  register("cto.updateLinearViewPreferences", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    const viewType = asTrimmedString(payload.viewType) ?? "allIssues";
+    const customViewId = asNullableTrimmedString(payload.customViewId);
+    const patch = isRecord(payload.patch) ? payload.patch : {};
+    if (!linearIssueTracker) {
+      return {
+        preferences: (() => {
+          const defaults = defaultLinearDisplayPreferences();
+          const { fields, ...rest } = patch as { fields?: Record<string, unknown> };
+          return { ...defaults, ...rest, fields: { ...defaults.fields, ...(isRecord(fields) ? fields : {}) } };
+        })(),
+        savedToLinear: false,
+        reason: "Linear isn't connected on this machine, so ADE kept the change here only.",
+      };
+    }
+    return linearIssueTracker.updateViewPreferences({
+      viewType: viewType as LinearIssueViewType,
+      ...(customViewId ? { customViewId } : {}),
+      patch: patch as CtoUpdateLinearViewPreferencesArgs["patch"],
+    });
+  });
+  register("cto.getLinearRailData", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return { cycles: [], initiatives: [], favorites: [], documents: [] };
+    return linearIssueTracker.getRailData({ teamKey: asNullableTrimmedString(payload.teamKey) ?? null });
+  });
+  register("cto.getLinearDocument", { viewerAllowed: true }, async (payload) => {
+    const documentId = asTrimmedString(payload.documentId);
+    if (!documentId) return null;
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return null;
+    return linearIssueTracker.getDocument({ documentId });
+  });
+  register("cto.findLinearIssueByBranch", { viewerAllowed: true }, async (payload) => {
+    const branch = asTrimmedString(payload.branch);
+    if (!branch) return null;
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return null;
+    return linearIssueTracker.findIssueByBranch({ branch });
   });
   register("cto.getLinearIssue", { viewerAllowed: true }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);

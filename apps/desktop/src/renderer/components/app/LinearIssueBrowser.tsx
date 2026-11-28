@@ -1,12 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  CaretDown,
-  CaretRight,
   Check,
   CircleNotch,
   Funnel,
-  MagnifyingGlass,
   Minus,
   RocketLaunch,
   Stack,
@@ -25,43 +22,61 @@ import type {
   CtoSearchLinearIssuesArgs,
   CtoSearchLinearIssuesResult,
   LaneLinearIssue,
+  LinearIssueDisplayFields,
+  LinearIssueOrdering,
+  LinearIssueViewType,
   OpenProjectBinding,
   LinearIssueRef,
   NormalizedLinearIssue,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice/Banner";
-import { LinearStateIcon } from "../lanes/linearBrand";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { showToast } from "./toast/toastStore";
 import type { IssueConflict } from "../../lib/linearBatchLaunch";
 import {
+  CONTEXT_ROW_HEIGHT,
   GROUP_HEADER_HEIGHT,
   ISSUE_ROW_HEIGHT,
+  SUBGROUP_HEADER_HEIGHT,
   LinearBrowserIssueRow,
+  LinearContextRow,
+  LinearGroupHeader,
   ProjectFilterButton,
   ScopeNavButton,
+  type LinearRowLayout,
 } from "./LinearIssueBrowserRows";
 // The detail views (and the markdown they render) load with the first selection.
 const LinearBatchActionView = React.lazy(() => import("./LinearIssueDetailPane").then((module) => ({ default: module.LinearBatchActionView })));
 const LinearIssueDetails = React.lazy(() => import("./LinearIssueDetailPane").then((module) => ({ default: module.LinearIssueDetails })));
 import { LinearInboxList } from "./LinearInboxList";
-import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
+import { requestIssueCreate, subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import {
   applyIssueEdit,
   formatLinearCount,
   isNormalizedIssue,
-  stateGroupRank,
   type BrowserIssue,
   type LinearIssueEdit,
 } from "./linearIssueBrowserModel";
-import { isImeComposing } from "../../lib/imeComposition";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
+import {
+  buildLinearListModel,
+  groupPrefill,
+  type LinearGroupPrefill,
+  type LinearListCatalog,
+  type LinearListContextRow,
+  type LinearListGroupRow,
+  type LinearListRow,
+} from "./linear/linearListModel";
+import { useLinearDisplayPreferences } from "./linear/linearDisplayPreferences";
+import { LinearListToolbar } from "./linear/LinearListToolbar";
+import { useLinearIssueAdeStatusIndex } from "./linear/adeStatus";
+import { LinearRailSections } from "./linear/LinearRailSections";
+import { LinearDocumentReader } from "./linear/LinearDocumentReader";
+import { useEscapeLayer } from "./linear/LinearPopover";
 
 export { linearBrowserIssueToLaneIssue } from "./linearIssueBrowserModel";
 export type { BrowserIssue } from "./linearIssueBrowserModel";
-
-type IssueSort = "updated_desc" | "created_desc" | "priority" | "due_soon" | "identifier_asc";
 
 /**
  * Shape of the in-flight batch-launch progress the host passes down. Declared
@@ -78,8 +93,10 @@ export type BatchProgress = {
 
 /**
  * `scope` is the left rail's saved-view entry: "all", "mine" (assigned to the
- * viewer), "cycle" (team's active cycle), or `view:<id>` (a Linear custom
- * view). A project pick and a scope are mutually exclusive in the rail.
+ * viewer), "cycle" (team's active cycle), `view:<id>` (a Linear custom view),
+ * or a rail section's `cycle:<id>` / `initiative:<id>` / `label:<id>`. A
+ * project pick and a scope are mutually exclusive in the rail. The order of
+ * the list is the Display menu's (Linear's own view preferences), not a filter.
  */
 type LinearIssueBrowserFilters = {
   scope: string;
@@ -88,16 +105,16 @@ type LinearIssueBrowserFilters = {
   assigneeId: string;
   priority: string;
   query: string;
-  sort: IssueSort;
 };
 
 const STATE_TABS = [
-  { value: "all", label: "All issues" },
   { value: "active", label: "Active" },
   { value: "backlog", label: "Backlog" },
+  { value: "all", label: "All issues" },
 ] as const;
 
-const ACTIVE_LINEAR_STATE_TYPES = ["backlog", "unstarted", "started"];
+// Linear's "Active" tab: started and not-started work; Backlog has its own tab.
+const ACTIVE_LINEAR_STATE_TYPES = ["unstarted", "started"];
 const FILTER_STORAGE_PREFIX = "ade.linear.quickView.filters.v1:";
 const SELECTION_STORAGE_PREFIX = "ade.linear.quickView.selection.v1:";
 const SELECTION_STORAGE_MAX = 100;
@@ -124,6 +141,12 @@ const SCOPE_INBOX = "inbox";
 const READY_STATE_TYPES = ["unstarted", "backlog"];
 const SCOPE_CYCLE = "cycle";
 const VIEW_SCOPE_PREFIX = "view:";
+const CYCLE_SCOPE_PREFIX = "cycle:";
+const INITIATIVE_SCOPE_PREFIX = "initiative:";
+const LABEL_SCOPE_PREFIX = "label:";
+const PROJECT_SCOPE_PREFIX = "project:";
+const DOCUMENT_SCOPE_PREFIX = "document:";
+const DETAIL_PANE_STORAGE_KEY = "ade.linear.quickView.detailPane.v1";
 
 const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
   scope: SCOPE_ALL,
@@ -132,7 +155,6 @@ const DEFAULT_FILTERS: LinearIssueBrowserFilters = {
   assigneeId: "",
   priority: "",
   query: "",
-  sort: "updated_desc",
 };
 
 const PRIORITY_OPTIONS = [
@@ -143,14 +165,6 @@ const PRIORITY_OPTIONS = [
   { value: "4", label: "Low" },
   { value: "0", label: "No priority" },
 ] as const;
-
-const SORT_OPTIONS: ReadonlyArray<{ value: IssueSort; label: string }> = [
-  { value: "updated_desc", label: "Recently updated" },
-  { value: "created_desc", label: "Recently created" },
-  { value: "priority", label: "Priority" },
-  { value: "due_soon", label: "Due soon" },
-  { value: "identifier_asc", label: "Issue key" },
-];
 
 type TimedCacheEntry<T, P = T> = {
   result: T | null;
@@ -252,21 +266,29 @@ function stateTypesForPreset(preset: string): string[] {
   return preset ? [preset] : [];
 }
 
-function scopeArgs(scope: string): Pick<CtoSearchLinearIssuesArgs, "assignedToViewer" | "activeCycle" | "customViewId" | "stateTypes"> {
+function scopeArgs(scope: string): Pick<CtoSearchLinearIssuesArgs, "assignedToViewer" | "activeCycle" | "customViewId" | "stateTypes" | "cycleId" | "initiativeId" | "labelId"> {
   // Ready = not started yet. Issues whose blockers are still open are removed
   // in the pane (Linear's filter only knows whether a blocker relation exists).
   if (scope === SCOPE_READY) return { stateTypes: READY_STATE_TYPES };
   if (scope === SCOPE_MINE) return { assignedToViewer: true };
   if (scope === SCOPE_CYCLE) return { activeCycle: true };
   if (scope.startsWith(VIEW_SCOPE_PREFIX)) return { customViewId: scope.slice(VIEW_SCOPE_PREFIX.length) };
+  if (scope.startsWith(CYCLE_SCOPE_PREFIX)) return { cycleId: scope.slice(CYCLE_SCOPE_PREFIX.length) };
+  if (scope.startsWith(INITIATIVE_SCOPE_PREFIX)) return { initiativeId: scope.slice(INITIATIVE_SCOPE_PREFIX.length) };
+  if (scope.startsWith(LABEL_SCOPE_PREFIX)) return { labelId: scope.slice(LABEL_SCOPE_PREFIX.length) };
   return {};
 }
+
+type ServerOrder = { ordering: LinearIssueOrdering; direction: "asc" | "desc" } | null;
 
 function buildIssueSearchArgs(
   filters: LinearIssueBrowserFilters,
   after: string | null,
+  order: ServerOrder = null,
 ): CtoSearchLinearIssuesArgs {
   return {
+    // Pages arrive in the Display order, so the first page holds the top of the list.
+    ...(order && order.ordering !== "manual" ? { ordering: order.ordering, orderingDirection: order.direction } : {}),
     projectId: filters.projectId || null,
     stateTypes: stateTypesForPreset(filters.statePreset),
     assigneeId: filters.assigneeId || null,
@@ -287,6 +309,11 @@ function searchCacheKey(args: CtoSearchLinearIssuesArgs): string {
     assignedToViewer: args.assignedToViewer ?? false,
     activeCycle: args.activeCycle ?? false,
     customViewId: args.customViewId ?? null,
+    cycleId: args.cycleId ?? null,
+    initiativeId: args.initiativeId ?? null,
+    labelId: args.labelId ?? null,
+    ordering: args.ordering ?? null,
+    orderingDirection: args.orderingDirection ?? null,
     priority: args.priority ?? null,
     query: args.query ?? null,
     first: args.first ?? ISSUE_PAGE_SIZE,
@@ -298,8 +325,9 @@ function searchCacheKey(args: CtoSearchLinearIssuesArgs): string {
 function readCachedSearch(
   key: string,
   filters: LinearIssueBrowserFilters,
+  order: ServerOrder = null,
 ): CtoSearchLinearIssuesResult | null {
-  return getBrowserCacheEntry(key).searches.get(searchCacheKey(buildIssueSearchArgs(filters, null)))?.result ?? null;
+  return getBrowserCacheEntry(key).searches.get(searchCacheKey(buildIssueSearchArgs(filters, null, order)))?.result ?? null;
 }
 
 function rememberSearchResult(
@@ -330,7 +358,6 @@ function safeLoadFilters(projectRoot: string | null | undefined): LinearIssueBro
       assigneeId: typeof parsed.assigneeId === "string" ? parsed.assigneeId : "",
       priority: typeof parsed.priority === "string" ? parsed.priority : "",
       query: typeof parsed.query === "string" ? parsed.query : "",
-      sort: SORT_OPTIONS.some((option) => option.value === parsed.sort) ? (parsed.sort as IssueSort) : DEFAULT_FILTERS.sort,
     };
   } catch {
     return DEFAULT_FILTERS;
@@ -407,26 +434,6 @@ function toTimestamp(value: string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function sortedIssues(issues: NormalizedLinearIssue[], sort: IssueSort): NormalizedLinearIssue[] {
-  const out = [...issues];
-  out.sort((left, right) => {
-    if (sort === "created_desc") return toTimestamp(right.createdAt) - toTimestamp(left.createdAt);
-    if (sort === "priority") {
-      const leftRank = left.priority === 0 ? 99 : left.priority;
-      const rightRank = right.priority === 0 ? 99 : right.priority;
-      return leftRank - rightRank || toTimestamp(right.updatedAt) - toTimestamp(left.updatedAt);
-    }
-    if (sort === "due_soon") {
-      const leftDue = left.dueDate ? toTimestamp(left.dueDate) : Number.POSITIVE_INFINITY;
-      const rightDue = right.dueDate ? toTimestamp(right.dueDate) : Number.POSITIVE_INFINITY;
-      return leftDue - rightDue || toTimestamp(right.updatedAt) - toTimestamp(left.updatedAt);
-    }
-    if (sort === "identifier_asc") return left.identifier.localeCompare(right.identifier, undefined, { numeric: true });
-    return toTimestamp(right.updatedAt) - toTimestamp(left.updatedAt);
-  });
-  return out;
-}
-
 function hasActiveFilters(filters: LinearIssueBrowserFilters): boolean {
   return (
     filters.scope !== DEFAULT_FILTERS.scope
@@ -435,42 +442,8 @@ function hasActiveFilters(filters: LinearIssueBrowserFilters): boolean {
     || filters.assigneeId !== DEFAULT_FILTERS.assigneeId
     || filters.priority !== DEFAULT_FILTERS.priority
     || filters.query !== DEFAULT_FILTERS.query
-    || filters.sort !== DEFAULT_FILTERS.sort
   );
 }
-
-type IssueGroup = {
-  key: string;
-  stateId: string | null;
-  stateName: string;
-  stateType: string;
-  issues: BrowserIssue[];
-};
-
-function groupIssuesByState(issues: BrowserIssue[]): IssueGroup[] {
-  const order: string[] = [];
-  const groups = new Map<string, Omit<IssueGroup, "key">>();
-  for (const issue of issues) {
-    const key = issue.stateId || `${issue.stateType}:${issue.stateName}`;
-    let group = groups.get(key);
-    if (!group) {
-      group = { stateId: issue.stateId || null, stateName: issue.stateName, stateType: issue.stateType, issues: [] };
-      groups.set(key, group);
-      order.push(key);
-    }
-    group.issues.push(issue);
-  }
-  return order
-    .map((key) => ({ key, ...groups.get(key)! }))
-    .sort((left, right) => (
-      stateGroupRank(left.stateType) - stateGroupRank(right.stateType)
-      || left.stateName.localeCompare(right.stateName)
-    ));
-}
-
-type ListRow =
-  | { kind: "header"; group: IssueGroup; collapsed: boolean }
-  | { kind: "issue"; issue: BrowserIssue };
 
 function isConnectionError(message: string): boolean {
   return /token|oauth|auth|connect|settings|linear/i.test(message);
@@ -537,6 +510,62 @@ function formatInboxCount(unread: number | null): string | null {
   return unread >= 50 ? "50+" : String(unread);
 }
 
+/** Hides low-value chips first as the list column narrows; the title never wraps. */
+function fieldsForWidth(fields: LinearIssueDisplayFields, width: number): LinearIssueDisplayFields {
+  if (width <= 0 || width >= 980) return fields;
+  const next = { ...fields };
+  if (width < 980) next.estimate = false;
+  if (width < 880) { next.milestone = false; next.cycle = false; }
+  if (width < 820) next.project = false;
+  if (width < 660) { next.labels = false; next.updatedAt = false; next.dueDate = false; }
+  if (width < 560) next.createdAt = false;
+  if (width < 480) { next.pullRequests = false; next.adeStatus = false; }
+  return next;
+}
+
+/** Column widths for the window: rail, list, details. Narrow windows show the list alone. */
+function paneColumns(width: number): { rail: number; detail: number; narrow: boolean } {
+  if (width > 0 && width < 760) return { rail: 0, detail: 0, narrow: true };
+  if (width < 1100) return { rail: 200, detail: 380, narrow: false };
+  if (width < 1400) return { rail: 224, detail: 420, narrow: false };
+  if (width < 1700) return { rail: 240, detail: 480, narrow: false };
+  return { rail: 256, detail: 540, narrow: false };
+}
+
+function safeLoadDetailPane(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return window.localStorage.getItem(DETAIL_PANE_STORAGE_KEY) !== "hidden";
+  } catch {
+    return true;
+  }
+}
+
+function safeSaveDetailPane(visible: boolean): void {
+  try {
+    if (visible) window.localStorage.removeItem(DETAIL_PANE_STORAGE_KEY);
+    else window.localStorage.setItem(DETAIL_PANE_STORAGE_KEY, "hidden");
+  } catch {
+    // Best effort only.
+  }
+}
+
+function rowHeight(row: LinearListRow | undefined): number {
+  if (!row) return ISSUE_ROW_HEIGHT;
+  if (row.kind === "group") return row.depth === 0 ? GROUP_HEADER_HEIGHT : SUBGROUP_HEADER_HEIGHT;
+  if (row.kind === "context") return CONTEXT_ROW_HEIGHT;
+  return ISSUE_ROW_HEIGHT;
+}
+
+function viewTypeFor(filters: LinearIssueBrowserFilters): LinearIssueViewType {
+  if (filters.projectId) return "project";
+  if (filters.scope === SCOPE_MINE) return "myIssues";
+  if (filters.scope === SCOPE_CYCLE || filters.scope.startsWith(CYCLE_SCOPE_PREFIX)) return "cycle";
+  if (filters.statePreset === "active") return "activeIssues";
+  if (filters.statePreset === "backlog") return "backlog";
+  return "allIssues";
+}
+
 export function LinearIssueBrowser({
   projectRoot,
   featuredIssue,
@@ -598,12 +627,25 @@ export function LinearIssueBrowser({
   const [catalog, setCatalog] = useState<CtoGetLinearIssuePickerDataResult>(() => getBrowserCacheEntry(cacheKey).catalog ?? emptyCatalog());
   const [customViews, setCustomViews] = useState<CtoLinearCustomView[]>(() => getBrowserCacheEntry(cacheKey).views.result ?? []);
   const [filters, setFilters] = useState<LinearIssueBrowserFilters>(() => safeLoadFilters(projectRoot));
+
+  // Display settings are Linear's own, per tab / custom view, read from the reader machine.
+  const viewType = viewTypeFor(filters);
+  const customViewId = !filters.projectId && filters.scope.startsWith(VIEW_SCOPE_PREFIX)
+    ? filters.scope.slice(VIEW_SCOPE_PREFIX.length)
+    : null;
+  const display = useLinearDisplayPreferences({ pin: linearPin, viewType, customViewId });
+  const prefs = display.prefs;
+  const serverOrder = useMemo<ServerOrder>(
+    () => ({ ordering: prefs.ordering, direction: prefs.orderingDirection }),
+    [prefs.ordering, prefs.orderingDirection],
+  );
+
   const [issues, setIssues] = useState<NormalizedLinearIssue[]>(() => readCachedSearch(cacheKey, safeLoadFilters(projectRoot))?.issues ?? []);
   const [pageInfo, setPageInfo] = useState<{ hasNextPage: boolean; endCursor: string | null }>(() => readCachedSearch(cacheKey, safeLoadFilters(projectRoot))?.pageInfo ?? emptyPageInfo());
   const [searchTotalCount, setSearchTotalCount] = useState<number | null>(() => readCachedSearch(cacheKey, safeLoadFilters(projectRoot))?.totalCount ?? null);
   const pageInfoRef = useRef(pageInfo);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const issuesScrollRef = useRef<HTMLDivElement | null>(null);
   const [loadingQuickView, setLoadingQuickView] = useState(false);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -613,11 +655,14 @@ export function LinearIssueBrowser({
   const [appendingMore, setAppendingMore] = useState(false);
   const [localActionIssueId, setLocalActionIssueId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(featuredIssue?.id ?? null);
+  // The row the keyboard sits on. An issue can show twice (label grouping), so
+  // the cursor is a row key, not just the issue id.
+  const [cursorRowKey, setCursorRowKey] = useState<string | null>(null);
   const [selectedIssueIds, setSelectedIssueIds] = useState<Set<string>>(() => safeLoadSelection(projectRoot));
   const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
   const multiSelectEnabled = !singleSelect;
   const anyChecked = multiSelectEnabled && selectedIssueIds.size > 0;
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   // An issue opened from a relation that is not in the current list.
   const [externalIssue, setExternalIssue] = useState<NormalizedLinearIssue | null>(null);
@@ -625,6 +670,11 @@ export function LinearIssueBrowser({
   const [loadingRelationId, setLoadingRelationId] = useState<string | null>(null);
   const [pendingEditIds, setPendingEditIds] = useState<Set<string>>(() => new Set());
   const [countsNonce, setCountsNonce] = useState(0);
+  const [detailPaneVisible, setDetailPaneVisible] = useState<boolean>(() => safeLoadDetailPane());
+  const [narrowDetailOpen, setNarrowDetailOpen] = useState(false);
+  const [narrowRailOpen, setNarrowRailOpen] = useState(false);
+  const [openDocumentId, setOpenDocumentId] = useState<string | null>(null);
+  const [rootWidth, setRootWidth] = useState(0);
   const quickViewRequestIdRef = useRef(0);
   const catalogRequestIdRef = useRef(0);
   const searchRequestIdRef = useRef(0);
@@ -633,6 +683,19 @@ export function LinearIssueBrowser({
   // longer on the current page. seenVersion forces a re-render when it grows.
   const seenIssuesRef = useRef<Map<string, BrowserIssue>>(new Map());
   const [seenVersion, setSeenVersion] = useState(0);
+  const adeStatusFor = useLinearIssueAdeStatusIndex();
+
+  // One observer for the whole window; rows read the width tier, never measure.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const width = Math.round(entries[0]?.contentRect.width ?? 0);
+      setRootWidth((current) => (Math.abs(current - width) >= 8 ? width : current));
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     onQuickViewChange?.(quickView);
@@ -663,6 +726,7 @@ export function LinearIssueBrowser({
     setSelectedIssueIds(safeLoadSelection(projectRoot));
     setExternalIssue(null);
     setDetailIssues(new Map());
+    setOpenDocumentId(null);
   }, [cacheKey, projectRoot]);
 
   useEffect(() => {
@@ -790,7 +854,7 @@ export function LinearIssueBrowser({
     const requestId = searchRequestIdRef.current + 1;
     searchRequestIdRef.current = requestId;
     const entry = getBrowserCacheEntry(cacheKey);
-    const args = buildIssueSearchArgs(filters, append ? pageInfoRef.current.endCursor : null);
+    const args = buildIssueSearchArgs(filters, append ? pageInfoRef.current.endCursor : null, serverOrder);
     const key = searchCacheKey(args);
     const cached = entry.searches.get(key);
     const cachedResult = cached?.result ?? null;
@@ -816,6 +880,7 @@ export function LinearIssueBrowser({
     void promise
       .then((result) => {
         rememberSearchResult(entry, key, result);
+        // A newer request (another filter, another machine) owns the list now.
         if (searchRequestIdRef.current !== requestId) return;
         applyResult(result);
       })
@@ -832,7 +897,7 @@ export function LinearIssueBrowser({
           if (append) setAppendingMore(false);
         }
       });
-  }, [cacheKey, filters]);
+  }, [cacheKey, filters, serverOrder]);
 
   useEffect(() => {
     const force = refreshKey > 0;
@@ -854,7 +919,9 @@ export function LinearIssueBrowser({
     setDetailIssues(new Map());
     setCountsNonce((value) => value + 1);
     searchIssues(false, true);
-  }, [cacheKey, refreshKey, searchIssues]);
+    // Only a refresh press reloads; filter changes go through the debounce above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey, refreshKey]);
 
   const updateFilters = useCallback((patch: Partial<LinearIssueBrowserFilters>) => {
     const next = { ...filters, ...patch };
@@ -870,7 +937,6 @@ export function LinearIssueBrowser({
     setSearchTotalCount(null);
   }, [projectRoot]);
 
-  const sorted = useMemo(() => sortedIssues(issues, filters.sort), [filters.sort, issues]);
   const readyScope = !filters.projectId && filters.scope === SCOPE_READY;
   const inboxScope = !filters.projectId && filters.scope === SCOPE_INBOX;
   const [inboxUnread, setInboxUnread] = useState<number | null>(null);
@@ -887,40 +953,63 @@ export function LinearIssueBrowser({
   }, [inboxAvailable, linearPin?.key]);
   const displayIssues = useMemo<BrowserIssue[]>(() => {
     const visible = readyScope
-      ? sorted.filter((issue) => !("hasOpenBlockers" in issue && issue.hasOpenBlockers))
-      : sorted;
+      ? issues.filter((issue) => !issue.hasOpenBlockers)
+      : issues;
     if (!featuredIssue) return visible;
     return [
       featuredIssue,
       ...visible.filter((issue) => issue.id !== featuredIssue.id),
     ];
-  }, [featuredIssue, readyScope, sorted]);
+  }, [featuredIssue, issues, readyScope]);
   const canAutoLoadIssues = typeof IntersectionObserver !== "undefined";
 
-  const issueGroups = useMemo(() => groupIssuesByState(displayIssues), [displayIssues]);
-  const listRows = useMemo<ListRow[]>(() => {
-    const rows: ListRow[] = [];
-    for (const group of issueGroups) {
-      const collapsed = collapsedGroups[group.key] === true;
-      rows.push({ kind: "header", group, collapsed });
-      if (!collapsed) for (const issue of group.issues) rows.push({ kind: "issue", issue });
+  const listCatalog = useMemo<LinearListCatalog>(() => ({
+    states: catalog.states,
+    users: catalog.users,
+    projects: catalog.projects,
+    labels: catalog.labels ?? [],
+    teams: (quickView?.teams ?? []).map((team) => ({ id: team.id, key: team.key, name: team.displayName || team.name, color: team.color })),
+    viewerId: quickView?.viewer?.id ?? quickView?.connection.viewerId ?? null,
+  }), [catalog, quickView?.connection.viewerId, quickView?.teams, quickView?.viewer?.id]);
+
+  const scopeTeamKeys = useMemo<string[] | null>(() => {
+    if (filters.projectId) {
+      const project = catalog.projects.find((entry) => entry.id === filters.projectId);
+      return project?.teamKey ? [project.teamKey] : null;
     }
-    return rows;
-  }, [collapsedGroups, issueGroups]);
-  const headerIndices = useMemo(
-    () => listRows.flatMap((row, index) => (row.kind === "header" ? [index] : [])),
-    [listRows],
+    return null;
+  }, [catalog.projects, filters.projectId]);
+  const allowedStateTypes = useMemo(
+    () => (readyScope ? READY_STATE_TYPES : stateTypesForPreset(filters.statePreset)),
+    [filters.statePreset, readyScope],
   );
-  // Keyboard order: what is on screen, top to bottom, skipping collapsed groups.
+
+  // One pass: group, sub-group, order, nest. Cheap enough to run on every change.
+  const listModel = useMemo(() => buildLinearListModel({
+    issues: displayIssues,
+    prefs,
+    catalog: listCatalog,
+    collapsed,
+    allowedStateTypes,
+    teamKeys: scopeTeamKeys,
+  }), [allowedStateTypes, collapsed, displayIssues, listCatalog, prefs, scopeTeamKeys]);
+  const listRows = listModel.rows;
+  const headerIndices = listModel.headerIndices;
+  const cursorKeyShown = useMemo(
+    () => cursorRowKey != null && listRows.some((row) => row.key === cursorRowKey),
+    [cursorRowKey, listRows],
+  );
+  // Keyboard order: what is on screen, top to bottom, skipping collapsed groups and context rows.
   const navigableIssues = useMemo(
-    () => listRows.flatMap((row) => (row.kind === "issue" ? [row.issue] : [])),
-    [listRows],
+    () => listModel.navigable.map((index) => (listRows[index] as Extract<LinearListRow, { kind: "issue" }>).issue),
+    [listModel.navigable, listRows],
   );
 
   const virtualizer = useVirtualizer({
     count: listRows.length,
     getScrollElement: () => issuesScrollRef.current,
-    estimateSize: (index) => (listRows[index]?.kind === "header" ? GROUP_HEADER_HEIGHT : ISSUE_ROW_HEIGHT),
+    estimateSize: (index) => rowHeight(listRows[index]),
+    getItemKey: (index) => listRows[index]?.key ?? index,
     // A starting viewport so the first paint (and jsdom) renders rows before
     // the scroll element is measured.
     initialRect: { width: 0, height: 720 },
@@ -942,6 +1031,10 @@ export function LinearIssueBrowser({
       [headerIndices],
     ),
   });
+  // Row kinds have different heights; re-measure when the rows change shape.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [listRows, virtualizer]);
   const virtualItems = virtualizer.getVirtualItems();
   const activeHeaderIndex = useMemo(() => {
     const start = virtualizer.range?.startIndex ?? 0;
@@ -965,11 +1058,12 @@ export function LinearIssueBrowser({
   useEffect(() => {
     if (selectedIssueId && displayIssues.some((issue) => issue.id === selectedIssueId)) return;
     if (selectedIssueId && externalIssue?.id === selectedIssueId) return;
-    setSelectedIssueId(displayIssues[0]?.id ?? null);
-  }, [displayIssues, externalIssue, selectedIssueId]);
+    setSelectedIssueId(navigableIssues[0]?.id ?? displayIssues[0]?.id ?? null);
+  }, [displayIssues, externalIssue, navigableIssues, selectedIssueId]);
 
   const listSelectedIssue = displayIssues.find((issue) => issue.id === selectedIssueId)
     ?? (externalIssue && externalIssue.id === selectedIssueId ? externalIssue : null)
+    ?? navigableIssues[0]
     ?? displayIssues[0]
     ?? null;
 
@@ -1027,18 +1121,21 @@ export function LinearIssueBrowser({
     rememberDetail(event.issue);
     setExternalIssue(event.issue);
     setSelectedIssueId(event.issue.id);
+    setOpenDocumentId(null);
   }), [rememberDetail]);
 
-  const handleOpenRelatedIssue = useCallback(async (ref: LinearIssueRef) => {
-    if (displayIssues.some((issue) => issue.id === ref.id)) {
-      setSelectedIssueId(ref.id);
+  const openIssueById = useCallback(async (idOrIdentifier: string, label: string) => {
+    const listed = displayIssues.find((issue) => issue.id === idOrIdentifier || issue.identifier === idOrIdentifier);
+    setOpenDocumentId(null);
+    if (listed) {
+      setSelectedIssueId(listed.id);
       return;
     }
-    setLoadingRelationId(ref.id);
+    setLoadingRelationId(idOrIdentifier);
     try {
-      const issue = await fetchIssueDetail(ref.id);
+      const issue = await fetchIssueDetail(idOrIdentifier);
       if (!issue) {
-        showToast({ tone: "warning", title: `Couldn't open ${ref.identifier}`, message: "Linear did not return that issue." });
+        showToast({ tone: "warning", title: `Couldn't open ${label}`, message: "Linear did not return that issue." });
         return;
       }
       setExternalIssue(issue);
@@ -1046,7 +1143,7 @@ export function LinearIssueBrowser({
     } catch (err) {
       showToast({
         tone: "error",
-        title: `Couldn't open ${ref.identifier}`,
+        title: `Couldn't open ${label}`,
         message: err instanceof Error ? err.message : "Linear request failed.",
       });
     } finally {
@@ -1054,8 +1151,14 @@ export function LinearIssueBrowser({
     }
   }, [displayIssues, fetchIssueDetail]);
 
+  const handleOpenRelatedIssue = useCallback(
+    (ref: Pick<LinearIssueRef, "id" | "identifier">) => openIssueById(ref.id, ref.identifier),
+    [openIssueById],
+  );
+
   // Optimistic edit: patch every local copy, send one issueUpdate, then take
   // Linear's copy on success or restore the snapshot and toast on failure.
+  // The list model regroups at once, so a status edit moves the row.
   const canEditIssues = typeof window !== "undefined" && typeof window.ade?.cto?.updateLinearIssue === "function";
   const editSequenceRef = useRef(new Map<string, number>());
   const handleEditIssue = useCallback(async (issue: BrowserIssue, edit: LinearIssueEdit) => {
@@ -1200,6 +1303,14 @@ export function LinearIssueBrowser({
     }));
   }, [catalog.projects, quickView?.projects]);
 
+  const projectLooks = useMemo(() => {
+    const looks = new Map<string, { icon: string | null; color: string | null }>();
+    for (const entry of projectFilters) {
+      looks.set(entry.id, { icon: entry.icon ?? entry.quick?.icon ?? null, color: entry.color ?? entry.quick?.color ?? null });
+    }
+    return looks;
+  }, [projectFilters]);
+
   const cyclesAvailable = (quickView?.teams ?? []).some((team) => team.cyclesEnabled === true);
   const connected = quickView?.connection.connected === true;
 
@@ -1230,17 +1341,25 @@ export function LinearIssueBrowser({
   const projectCounts = useLinearIssueCounts(cacheKey, linearPin, projectCountQueries, RAIL_COUNT_CAP, countsNonce);
 
   // List counts: only needed while more pages exist; once everything is loaded
-  // the loaded rows are the exact counts.
+  // the loaded rows are the exact counts. Linear counts by status; other
+  // groupings show the loaded rows with a "+".
   const listIsComplete = !pageInfo.hasNextPage;
+  const statusGroupIds = useMemo(
+    () => (prefs.grouping === "workflowState"
+      ? listModel.groups.map(({ group }) => [group.key, group.ids] as const).filter(([, ids]) => ids.length > 0)
+      : []),
+    [listModel.groups, prefs.grouping],
+  );
+  const statusGroupSignature = statusGroupIds.map(([key, ids]) => `${key}=${ids.join(",")}`).join("|");
   const listCountQueries = useMemo<Record<string, CtoSearchLinearIssuesArgs> | null>(() => {
     if (listIsComplete || !connected) return null;
-    const { first: _first, after: _after, ...base } = buildIssueSearchArgs(filters, null);
+    const { first: _first, after: _after, ordering: _ordering, orderingDirection: _direction, ...base } = buildIssueSearchArgs(filters, null);
     const queries: Record<string, CtoSearchLinearIssuesArgs> = { total: base };
-    for (const group of issueGroups) {
-      if (group.stateId) queries[`state:${group.stateId}`] = { ...base, stateIds: [group.stateId] };
-    }
+    for (const [key, ids] of statusGroupIds) queries[`group:${key}`] = { ...base, stateIds: [...ids] };
     return queries;
-  }, [connected, filters, issueGroups, listIsComplete]);
+    // The signature stands for the group ids, so a regroup with the same ids does not re-ask.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, filters, listIsComplete, statusGroupSignature]);
   const listCounts = useLinearIssueCounts(cacheKey, linearPin, listCountQueries, LIST_COUNT_CAP, countsNonce);
 
   const featuredExtra = featuredIssue && !issues.some((issue) => issue.id === featuredIssue.id) ? 1 : 0;
@@ -1249,14 +1368,17 @@ export function LinearIssueBrowser({
   // "+" instead of a spinner that never ends.
   const loadedAtLeast = (loaded: number): string => `${loaded.toLocaleString()}+`;
   const totalLabel = listIsComplete
-    ? String(displayIssues.length)
+    ? String(listModel.issueCount)
     : formatLinearCount(listCounts?.total)
       ?? (searchTotalCount != null ? searchTotalCount.toLocaleString() : null)
       ?? (listCounts ? loadedAtLeast(displayIssues.length) : null);
-  const groupCountLabel = (group: IssueGroup): string | null => {
-    if (listIsComplete) return String(group.issues.length);
-    const counted = group.stateId ? formatLinearCount(listCounts?.[`state:${group.stateId}`]) : null;
-    return counted ?? (listCounts || !group.stateId ? loadedAtLeast(group.issues.length) : null);
+  const groupCountLabel = (row: LinearListGroupRow): string | null => {
+    if (listIsComplete) return row.count.toLocaleString();
+    if (row.depth === 0 && row.group.grouping === "workflowState" && row.group.ids.length > 0) {
+      const counted = formatLinearCount(listCounts?.[`group:${row.group.key}`]);
+      return counted ?? (listCounts ? loadedAtLeast(row.count) : null);
+    }
+    return loadedAtLeast(row.count);
   };
   const railScopeCount = (scope: string): string | null => formatLinearCount(scopeCounts?.[`scope:${scope}`]);
 
@@ -1316,24 +1438,81 @@ export function LinearIssueBrowser({
     }
   }, [actionBusyIssueId, actionDisabled, localActionIssueId, onIssueAction]);
 
-  const scrollIssueIntoView = useCallback((issueId: string) => {
-    const index = listRows.findIndex((row) => row.kind === "issue" && row.issue.id === issueId);
+  const scrollRowIntoView = useCallback((index: number) => {
     if (index >= 0) virtualizer.scrollToIndex(index, { align: "auto" });
-  }, [listRows, virtualizer]);
+  }, [virtualizer]);
 
-  // Keyboard: j/k or arrows move, x checks, Enter runs the primary action,
-  // "/" focuses search, Escape clears the checked set. Keys typed into a field
-  // are left alone, and a dialog opened on top of the pane keeps its keys.
+  const toggleCollapsed = useCallback((key: string, force?: boolean) => {
+    setCollapsed((current) => {
+      const has = current.has(key);
+      const want = force ?? !has;
+      if (want === has) return current;
+      const next = new Set(current);
+      if (want) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+  const toggleChildren = useCallback((issueId: string) => toggleCollapsed(`p:${issueId}`), [toggleCollapsed]);
+  const handleRowCheck = useCallback((issueId: string, event: React.MouseEvent) => toggleChecked(issueId, event.shiftKey), [toggleChecked]);
+  const handleRowSelect = useCallback((issueId: string, rowKey: string) => {
+    setSelectedIssueId(issueId);
+    setCursorRowKey(rowKey);
+    setOpenDocumentId(null);
+  }, []);
+  const handleContextOpen = useCallback((ref: LinearListContextRow["ref"]) => {
+    void handleOpenRelatedIssue(ref);
+  }, [handleOpenRelatedIssue]);
+
+  // A group's "+" opens ADE's create form with the group's fields filled in.
+  const handleGroupCreate = useCallback((index: number) => {
+    const row = listRows[index];
+    if (!row || row.kind !== "group") return;
+    let parent: LinearListGroupRow | null = null;
+    if (row.depth === 1) {
+      for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+        const candidate = listRows[cursor];
+        if (candidate?.kind === "group" && candidate.depth === 0) { parent = candidate; break; }
+      }
+    }
+    // The scope fills what the group leaves open (a project, a cycle, a label, "mine").
+    const scope = filters.projectId ? "" : filters.scope;
+    const scopePrefill: LinearGroupPrefill = {
+      ...(filters.projectId ? { projectId: filters.projectId } : {}),
+      ...(scope.startsWith(CYCLE_SCOPE_PREFIX) ? { cycleId: scope.slice(CYCLE_SCOPE_PREFIX.length) } : {}),
+      ...(scope.startsWith(LABEL_SCOPE_PREFIX) ? { labelIds: [scope.slice(LABEL_SCOPE_PREFIX.length)] } : {}),
+      ...(scope === SCOPE_MINE && listCatalog.viewerId ? { assigneeId: listCatalog.viewerId } : {}),
+    };
+    const prefill: LinearGroupPrefill = { ...scopePrefill, ...groupPrefill(row.group, parent?.group ?? null) };
+    if (!prefill.teamKey) {
+      // A team the group's issues share, else the scope's only team.
+      for (let cursor = index + 1; cursor < listRows.length; cursor += 1) {
+        const candidate = listRows[cursor];
+        if (!candidate || (candidate.kind === "group" && candidate.depth <= row.depth)) break;
+        if (candidate.kind === "issue") { prefill.teamKey = candidate.issue.teamKey; break; }
+      }
+      if (!prefill.teamKey && scopeTeamKeys?.length === 1) prefill.teamKey = scopeTeamKeys[0];
+      if (!prefill.teamKey && listCatalog.teams.length === 1) prefill.teamKey = listCatalog.teams[0]!.key;
+    }
+    requestIssueCreate({ provider: "linear", origin: "pane", prefill: { linear: prefill } });
+  }, [filters.projectId, filters.scope, listCatalog.teams, listCatalog.viewerId, listRows, scopeTeamKeys]);
+
+  // Keyboard: j/k or arrows move, left/right fold a parent or a group, x
+  // checks, Enter runs the primary action, "/" focuses search, Escape clears
+  // the checked set. Keys typed into a field are left alone, and a dialog or
+  // popover opened on top of the pane keeps its keys.
   const keyStateRef = useRef({
-    navigableIssues,
+    listRows,
+    navigable: listModel.navigable,
+    cursorRowKey,
     selectedIssue,
     selectedIssueIds,
     multiSelectEnabled,
     resolvedSelectedIssues,
   });
-  keyStateRef.current = { navigableIssues, selectedIssue, selectedIssueIds, multiSelectEnabled, resolvedSelectedIssues };
-  const keyActionsRef = useRef({ toggleChecked, handleBatchLaunch, handleIssueAction, scrollIssueIntoView, onBatchLaunch });
-  keyActionsRef.current = { toggleChecked, handleBatchLaunch, handleIssueAction, scrollIssueIntoView, onBatchLaunch };
+  keyStateRef.current = { listRows, navigable: listModel.navigable, cursorRowKey, selectedIssue, selectedIssueIds, multiSelectEnabled, resolvedSelectedIssues };
+  const keyActionsRef = useRef({ toggleChecked, handleBatchLaunch, handleIssueAction, scrollRowIntoView, onBatchLaunch, toggleCollapsed });
+  keyActionsRef.current = { toggleChecked, handleBatchLaunch, handleIssueAction, scrollRowIntoView, onBatchLaunch, toggleCollapsed };
 
   useEffect(() => {
     const ownsKeyboard = (event: KeyboardEvent): boolean => {
@@ -1341,27 +1520,57 @@ export function LinearIssueBrowser({
       if (!root || !root.isConnected) return false;
       if (event.metaKey || event.ctrlKey || event.altKey) return false;
       if (isTypingTarget(event.target)) return false;
+      if (event.target instanceof Element && event.target.closest("[data-linear-popover]")) return false;
       const active = document.activeElement;
+      if (active instanceof Element && active.closest("[data-linear-popover]")) return false;
       if (!active || active === document.body || root.contains(active)) return true;
       const hostDialog = root.closest('[role="dialog"]');
       return Boolean(hostDialog && hostDialog.contains(active));
+    };
+    const currentRowIndex = (): number => {
+      const state = keyStateRef.current;
+      const rows = state.listRows;
+      if (state.cursorRowKey) {
+        const byKey = state.navigable.find((index) => rows[index]?.key === state.cursorRowKey);
+        if (byKey != null && (rows[byKey] as Extract<LinearListRow, { kind: "issue" }>).issue.id === state.selectedIssue?.id) return byKey;
+      }
+      const selectedId = state.selectedIssue?.id;
+      if (!selectedId) return -1;
+      return state.navigable.find((index) => {
+        const row = rows[index];
+        return row?.kind === "issue" && row.issue.id === selectedId;
+      }) ?? -1;
+    };
+    const focusRow = (rowKey: string) => {
+      const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(rowKey) : rowKey.replace(/["\\]/g, "\\$&");
+      const element = rootRef.current?.querySelector<HTMLElement>(`[data-linear-row-key="${escaped}"]`);
+      if (element && rootRef.current?.contains(document.activeElement)) element.focus({ preventScroll: true });
+    };
+    const goToRow = (index: number) => {
+      const row = keyStateRef.current.listRows[index];
+      if (!row || row.kind !== "issue") return;
+      setSelectedIssueId(row.issue.id);
+      setCursorRowKey(row.key);
+      setOpenDocumentId(null);
+      keyActionsRef.current.scrollRowIntoView(index);
+      // The row may mount a frame later when it scrolls into the window.
+      window.requestAnimationFrame(() => focusRow(row.key));
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || !ownsKeyboard(event)) return;
       const state = keyStateRef.current;
       const actions = keyActionsRef.current;
       const move = (delta: number) => {
-        const list = state.navigableIssues;
+        const list = state.navigable;
         if (list.length === 0) return;
-        const currentIndex = state.selectedIssue ? list.findIndex((issue) => issue.id === state.selectedIssue!.id) : -1;
-        const nextIndex = currentIndex < 0 ? 0 : Math.min(list.length - 1, Math.max(0, currentIndex + delta));
-        const next = list[nextIndex]!;
-        setSelectedIssueId(next.id);
-        actions.scrollIssueIntoView(next.id);
-        const escapedId = typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(next.id) : next.id.replace(/["\\]/g, "\\$&");
-        const row = rootRef.current?.querySelector<HTMLElement>(`[data-linear-issue-row="${escapedId}"]`);
-        if (row && rootRef.current?.contains(document.activeElement)) row.focus({ preventScroll: true });
+        const current = currentRowIndex();
+        const position = current < 0 ? -1 : list.indexOf(current);
+        const nextPosition = position < 0 ? 0 : Math.min(list.length - 1, Math.max(0, position + delta));
+        goToRow(list[nextPosition]!);
       };
+      const headerPath = event.target instanceof Element
+        ? event.target.closest<HTMLElement>("[data-linear-group-header]")?.dataset.linearGroupHeader ?? null
+        : null;
       switch (event.key) {
         case "j":
         case "ArrowDown":
@@ -1373,6 +1582,33 @@ export function LinearIssueBrowser({
           event.preventDefault();
           move(-1);
           return;
+        case "ArrowLeft":
+        case "ArrowRight": {
+          const collapse = event.key === "ArrowLeft";
+          if (headerPath) {
+            event.preventDefault();
+            actions.toggleCollapsed(`g:${headerPath}`, collapse);
+            return;
+          }
+          const index = currentRowIndex();
+          const row = index >= 0 ? state.listRows[index] : null;
+          if (!row || row.kind !== "issue") return;
+          event.preventDefault();
+          if (collapse && row.childCount > 0 && !row.childrenCollapsed) {
+            actions.toggleCollapsed(`p:${row.issue.id}`, true);
+          } else if (collapse && row.depth > 0) {
+            // Already folded (or a leaf): step up to the parent row.
+            for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+              const candidate = state.listRows[cursor];
+              if (!candidate || candidate.kind === "group") break;
+              if (candidate.kind === "issue" && candidate.depth < row.depth) { goToRow(cursor); break; }
+              if (candidate.kind === "context") break;
+            }
+          } else if (!collapse && row.childCount > 0 && row.childrenCollapsed) {
+            actions.toggleCollapsed(`p:${row.issue.id}`, false);
+          }
+          return;
+        }
         case "x":
           if (!state.multiSelectEnabled || !state.selectedIssue) return;
           event.preventDefault();
@@ -1421,10 +1657,233 @@ export function LinearIssueBrowser({
   const busyIssueId = actionBusyIssueId ?? localActionIssueId;
   const filtersActive = hasActiveFilters(filters);
   const scopeActive = (scope: string) => !filters.projectId && filters.scope === scope;
-  const selectScope = (scope: string) => updateFilters({ scope, projectId: "" });
+  const selectScope = (scope: string) => {
+    setOpenDocumentId(null);
+    setNarrowRailOpen(false);
+    updateFilters({ scope, projectId: "" });
+  };
+  // Rail sections (cycles, initiatives, favorites, documents) speak in scope strings.
+  const handleRailScope = useCallback((scope: string) => {
+    setNarrowRailOpen(false);
+    if (scope.startsWith(DOCUMENT_SCOPE_PREFIX)) {
+      setOpenDocumentId(scope.slice(DOCUMENT_SCOPE_PREFIX.length));
+      setNarrowDetailOpen(true);
+      return;
+    }
+    setOpenDocumentId(null);
+    if (scope.startsWith(PROJECT_SCOPE_PREFIX)) {
+      updateFilters({ projectId: scope.slice(PROJECT_SCOPE_PREFIX.length), scope: SCOPE_ALL });
+      return;
+    }
+    updateFilters({ scope, projectId: "" });
+  }, [updateFilters]);
+  const activeRailScope = openDocumentId
+    ? `${DOCUMENT_SCOPE_PREFIX}${openDocumentId}`
+    : filters.projectId ? `${PROJECT_SCOPE_PREFIX}${filters.projectId}` : filters.scope;
+
+  // Breadcrumb: the team when the workspace has one, else the workspace.
+  const teams = quickView?.teams ?? [];
+  const singleTeam = teams.length === 1 ? teams[0]! : null;
+  const railTeamKey = singleTeam?.key ?? scopeTeamKeys?.[0] ?? null;
+  const crumbRoot = singleTeam
+    ? { label: singleTeam.displayName || singleTeam.name, color: singleTeam.color, initial: singleTeam.key.charAt(0) }
+    : { label: quickView?.organization?.name ?? "Linear", color: null, initial: (quickView?.organization?.name ?? "L").charAt(0) };
+  const currentCrumb = (() => {
+    if (filters.projectId) return catalog.projects.find((entry) => entry.id === filters.projectId)?.name ?? "Project";
+    const scope = filters.scope;
+    if (scope === SCOPE_MINE) return "My issues";
+    if (scope === SCOPE_READY) return "Ready";
+    if (scope === SCOPE_INBOX) return "Inbox";
+    if (scope === SCOPE_CYCLE) return "Current cycle";
+    if (scope.startsWith(VIEW_SCOPE_PREFIX)) return customViews.find((view) => view.id === customViewId)?.name ?? "View";
+    if (scope.startsWith(LABEL_SCOPE_PREFIX)) return catalog.labels?.find((label) => label.id === scope.slice(LABEL_SCOPE_PREFIX.length))?.name ?? "Label";
+    if (scope.startsWith(CYCLE_SCOPE_PREFIX)) {
+      const id = scope.slice(CYCLE_SCOPE_PREFIX.length);
+      return issues.find((issue) => issue.cycleId === id)?.cycleName ?? "Cycle";
+    }
+    if (scope.startsWith(INITIATIVE_SCOPE_PREFIX)) return "Initiative";
+    return "Issues";
+  })();
+
+  const columns = paneColumns(rootWidth);
+  const showRail = !columns.narrow;
+  const detailOpen = columns.narrow ? narrowDetailOpen : detailPaneVisible;
+  // A multi-select always shows its launch panel, even with details hidden.
+  const batchView = multiSelectEnabled && selectedIssueIds.size > 1 && Boolean(onBatchLaunch);
+  const showDetailColumn = !columns.narrow && (detailPaneVisible || batchView || openDocumentId != null);
+  const listWidth = rootWidth > 0
+    ? rootWidth - (showRail ? columns.rail : 0) - (showDetailColumn ? columns.detail : 0)
+    : 0;
+  const rowLayout = useMemo<LinearRowLayout>(() => ({
+    fields: fieldsForWidth(prefs.fields, listWidth),
+    identifierChars: listModel.identifierChars,
+    showCheckbox: multiSelectEnabled,
+    compactLabels: listWidth > 0 && listWidth < 900,
+    projectLook: (projectId: string) => projectLooks.get(projectId) ?? null,
+  }), [listModel.identifierChars, listWidth, multiSelectEnabled, prefs.fields, projectLooks]);
+  const gridTemplateColumns = [
+    showRail ? `${columns.rail}px` : null,
+    "minmax(0,1fr)",
+    showDetailColumn ? `${columns.detail}px` : null,
+  ].filter(Boolean).join(" ");
+  // Overlays on a narrow window close with Escape, not the whole pane.
+  useEscapeLayer(columns.narrow && narrowRailOpen, () => setNarrowRailOpen(false));
+  useEscapeLayer(columns.narrow && narrowDetailOpen && !narrowRailOpen, () => setNarrowDetailOpen(false));
+  const toggleDetailPane = () => {
+    if (columns.narrow) {
+      setNarrowDetailOpen((value) => !value);
+      return;
+    }
+    setDetailPaneVisible((value) => {
+      safeSaveDetailPane(!value);
+      return !value;
+    });
+  };
+
+  const detailContent = (
+    <React.Suspense fallback={null}>
+      {openDocumentId ? (
+        <LinearDocumentReader pin={linearPin} documentId={openDocumentId} onClose={() => setOpenDocumentId(null)} />
+      ) : batchView && onBatchLaunch ? (
+        <LinearBatchActionView
+          selectedIssues={resolvedSelectedIssues}
+          onClearSelection={() => setSelectedIssueIds(new Set())}
+          conflicts={conflicts}
+          onLaunch={handleBatchLaunch}
+        />
+      ) : (
+        <LinearIssueDetails
+          issue={selectedIssue}
+          catalog={catalog}
+          actionLabel={actionLabel}
+          actionBusyLabel={actionBusyLabel}
+          actionIcon={actionIcon}
+          actionBusy={selectedIssue ? busyIssueId === selectedIssue.id : false}
+          actionDisabled={actionDisabled || Boolean(busyIssueId && busyIssueId !== selectedIssue?.id)}
+          showBranchPreview={showBranchPreview}
+          onIssueAction={handleIssueAction}
+          conflict={selectedIssue ? conflicts?.get(selectedIssue.id) ?? null : null}
+          adeStatus={selectedIssue && isNormalizedIssue(selectedIssue) ? adeStatusFor(selectedIssue) : null}
+          onLaunch={onBatchLaunch ? handleBatchLaunch : undefined}
+          onEdit={canEditIssues ? (issue, edit) => void handleEditIssue(issue, edit) : undefined}
+          editPending={selectedIssue ? pendingEditIds.has(selectedIssue.id) : false}
+          onOpenIssue={(ref) => void handleOpenRelatedIssue(ref)}
+          loadingIssueId={loadingRelationId}
+        />
+      )}
+    </React.Suspense>
+  );
+
+  const railContent = (
+      <aside className={cn("flex min-h-0 flex-col overflow-hidden border-r border-fg/[0.07]", columns.narrow ? "h-full bg-[color:var(--ade-shell-surface,#121019)]" : "bg-fg/[0.015]")}>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2" data-linear-pane="projects">
+          <div className="space-y-px" data-linear-rail="views">
+            <ScopeNavButton
+              active={scopeActive(SCOPE_ALL)}
+              icon={<Stack size={14} />}
+              title="All issues"
+              count={railScopeCount(SCOPE_ALL)}
+              onClick={() => selectScope(SCOPE_ALL)}
+            />
+            <ScopeNavButton
+              active={scopeActive(SCOPE_MINE)}
+              icon={<UserCircle size={14} />}
+              title="My issues"
+              count={railScopeCount(SCOPE_MINE)}
+              onClick={() => selectScope(SCOPE_MINE)}
+            />
+            {inboxAvailable ? (
+              <ScopeNavButton
+                active={scopeActive(SCOPE_INBOX)}
+                icon={<Tray size={14} />}
+                title="Inbox"
+                count={formatInboxCount(inboxUnread)}
+                onClick={() => selectScope(SCOPE_INBOX)}
+              />
+            ) : null}
+            <ScopeNavButton
+              active={scopeActive(SCOPE_READY)}
+              icon={<ReadyIcon size={14} />}
+              title="Ready"
+              count={readyScope && listIsComplete ? String(displayIssues.length) : null}
+              onClick={() => selectScope(SCOPE_READY)}
+            />
+            {cyclesAvailable ? (
+              <ScopeNavButton
+                active={scopeActive(SCOPE_CYCLE)}
+                icon={<Timer size={14} />}
+                title="Current cycle"
+                count={railScopeCount(SCOPE_CYCLE)}
+                onClick={() => selectScope(SCOPE_CYCLE)}
+              />
+            ) : null}
+          </div>
+
+          <LinearRailSections
+            pin={linearPin}
+            teamKey={railTeamKey}
+            activeScope={activeRailScope}
+            onSelectScope={handleRailScope}
+            onOpenIssue={(idOrIdentifier) => void openIssueById(idOrIdentifier, idOrIdentifier)}
+          />
+
+          {customViews.length > 0 ? (
+            <>
+              <div className="mb-1 mt-4 px-2 text-[12px] text-muted-fg/70">Views</div>
+              <div className="space-y-px">
+                {customViews.map((view) => (
+                  <ScopeNavButton
+                    key={view.id}
+                    active={scopeActive(`${VIEW_SCOPE_PREFIX}${view.id}`)}
+                    icon={<Funnel size={13} style={view.color ? { color: view.color } : undefined} />}
+                    title={view.name}
+                    count={railScopeCount(`${VIEW_SCOPE_PREFIX}${view.id}`)}
+                    onClick={() => selectScope(`${VIEW_SCOPE_PREFIX}${view.id}`)}
+                  />
+                ))}
+              </div>
+            </>
+          ) : null}
+
+          <div className="mb-1 mt-4 flex items-center justify-between gap-2 px-2">
+            <span className="text-[12px] text-muted-fg/70">Projects</span>
+            {filtersActive ? (
+              <button
+                type="button"
+                className="text-[11.5px] text-muted-fg/70 transition-colors hover:text-fg"
+                onClick={resetFilters}
+              >
+                Reset filters
+              </button>
+            ) : null}
+          </div>
+
+          {loadingCatalog && projectFilters.length === 0 ? (
+            <div className="px-2 py-3 text-[12px] text-muted-fg/60">Loading projects…</div>
+          ) : projectFilters.length > 0 ? (
+            <div className="space-y-px">
+              {projectFilters.map((projectEntry) => (
+                <ProjectFilterButton
+                  key={projectEntry.id}
+                  project={projectEntry}
+                  active={filters.projectId === projectEntry.id}
+                  count={formatLinearCount(projectCounts?.[`project:${projectEntry.id}`])}
+                  onClick={() => {
+                    setOpenDocumentId(null);
+                    updateFilters({ projectId: projectEntry.id, scope: SCOPE_ALL });
+                  }}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="px-2 py-3 text-[12px] text-muted-fg/60">No projects yet.</div>
+          )}
+        </div>
+      </aside>
+  );
 
   return (
-    <div ref={rootRef} className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div ref={rootRef} className="relative flex h-full min-h-0 flex-col overflow-hidden">
       {error ? (
         <Banner
           model={{
@@ -1440,171 +1899,55 @@ export function LinearIssueBrowser({
         />
       ) : null}
 
-      <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[220px_minmax(0,1fr)_420px] lg:grid-cols-[240px_minmax(480px,1fr)_460px] 2xl:grid-cols-[280px_minmax(520px,1fr)_600px]">
-        <aside className="flex min-h-0 flex-col overflow-hidden border-r border-fg/10 bg-black/10">
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2" data-linear-pane="projects">
-            <div className="space-y-px" data-linear-rail="views">
-              <ScopeNavButton
-                active={scopeActive(SCOPE_ALL)}
-                icon={<Stack size={14} />}
-                title="All issues"
-                count={railScopeCount(SCOPE_ALL)}
-                onClick={() => selectScope(SCOPE_ALL)}
-              />
-              <ScopeNavButton
-                active={scopeActive(SCOPE_MINE)}
-                icon={<UserCircle size={14} />}
-                title="My issues"
-                count={railScopeCount(SCOPE_MINE)}
-                onClick={() => selectScope(SCOPE_MINE)}
-              />
-              {inboxAvailable ? (
-                <ScopeNavButton
-                  active={scopeActive(SCOPE_INBOX)}
-                  icon={<Tray size={14} />}
-                  title="Inbox"
-                  count={formatInboxCount(inboxUnread)}
-                  onClick={() => selectScope(SCOPE_INBOX)}
-                />
-              ) : null}
-              <ScopeNavButton
-                active={scopeActive(SCOPE_READY)}
-                icon={<ReadyIcon size={14} />}
-                title="Ready"
-                count={readyScope && listIsComplete ? String(displayIssues.length) : null}
-                onClick={() => selectScope(SCOPE_READY)}
-              />
-              {cyclesAvailable ? (
-                <ScopeNavButton
-                  active={scopeActive(SCOPE_CYCLE)}
-                  icon={<Timer size={14} />}
-                  title="Current cycle"
-                  count={railScopeCount(SCOPE_CYCLE)}
-                  onClick={() => selectScope(SCOPE_CYCLE)}
-                />
-              ) : null}
-            </div>
+      <div className="grid min-h-0 flex-1 overflow-hidden" style={{ gridTemplateColumns }}>
+        {showRail ? railContent : null}
 
-            {customViews.length > 0 ? (
-              <>
-                <div className="mb-1 mt-3 px-2 text-[11px] text-muted-fg/50">Views</div>
-                <div className="space-y-px">
-                  {customViews.map((view) => (
-                    <ScopeNavButton
-                      key={view.id}
-                      active={scopeActive(`${VIEW_SCOPE_PREFIX}${view.id}`)}
-                      icon={<Funnel size={13} style={view.color ? { color: view.color } : undefined} />}
-                      title={view.name}
-                      count={railScopeCount(`${VIEW_SCOPE_PREFIX}${view.id}`)}
-                      onClick={() => selectScope(`${VIEW_SCOPE_PREFIX}${view.id}`)}
-                    />
-                  ))}
-                </div>
-              </>
-            ) : null}
+        <section className={cn("flex min-h-0 flex-col overflow-hidden", showDetailColumn && "border-r border-fg/[0.07]")}>
+          {inboxScope ? (
+            <div className="flex h-11 shrink-0 items-center border-b border-fg/[0.06] px-4 text-[13px] font-medium text-fg">Inbox</div>
+          ) : (
+            <LinearListToolbar
+              root={{
+                label: crumbRoot.label,
+                icon: (
+                  <span
+                    className="grid h-[18px] w-[18px] shrink-0 place-items-center rounded-[5px] text-[10px] font-semibold text-white"
+                    style={{ background: crumbRoot.color ?? "#5E6AD2" }}
+                    aria-hidden="true"
+                  >
+                    {crumbRoot.initial.toUpperCase()}
+                  </span>
+                ),
+              }}
+              current={currentCrumb}
+              onOpenRail={columns.narrow ? () => setNarrowRailOpen(true) : undefined}
+              tabs={STATE_TABS}
+              activeTab={filters.statePreset}
+              onTab={(statePreset) => updateFilters({ statePreset })}
+              loading={loadingIssues && !appendingMore}
+              query={filters.query}
+              onQuery={(query) => updateFilters({ query })}
+              searchInputRef={searchInputRef}
+              filters={{
+                assigneeId: filters.assigneeId,
+                priority: filters.priority,
+                assigneeOptions,
+                priorityOptions: PRIORITY_OPTIONS,
+                onChange: (patch) => updateFilters(patch),
+              }}
+              display={{
+                prefs,
+                onChange: display.update,
+                savedToLinear: display.savedToLinear,
+                reason: display.reason,
+              }}
+              pane={{ visible: columns.narrow ? narrowDetailOpen : detailPaneVisible || batchView, onToggle: toggleDetailPane }}
+              width={listWidth}
+            />
+          )}
 
-            <div className="mb-1 mt-3 flex items-center justify-between gap-2 px-2">
-              <span className="text-[11px] text-muted-fg/50">Projects</span>
-              {filtersActive ? (
-                <button
-                  type="button"
-                  className="text-[11px] text-muted-fg/55 transition-colors hover:text-fg"
-                  onClick={resetFilters}
-                >
-                  Reset filters
-                </button>
-              ) : null}
-            </div>
-
-            {loadingCatalog && projectFilters.length === 0 ? (
-              <div className="rounded-lg border border-fg/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
-                Loading projects...
-              </div>
-            ) : projectFilters.length > 0 ? (
-              <div className="space-y-px">
-                {projectFilters.map((projectEntry) => (
-                  <ProjectFilterButton
-                    key={projectEntry.id}
-                    project={projectEntry}
-                    active={filters.projectId === projectEntry.id}
-                    count={formatLinearCount(projectCounts?.[`project:${projectEntry.id}`])}
-                    onClick={() => updateFilters({ projectId: projectEntry.id, scope: SCOPE_ALL })}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-fg/[0.06] px-3 py-6 text-center text-[12px] text-muted-fg/50">
-                No visible projects.
-              </div>
-            )}
-          </div>
-        </aside>
-
-        <section className="flex min-h-0 flex-col overflow-hidden border-r border-fg/10">
-          <div className={cn("shrink-0 space-y-2 border-b border-fg/[0.06] px-3 py-2.5", inboxScope && "hidden")}>
-            <div className="relative">
-              <MagnifyingGlass size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/45" />
-              <input
-                ref={searchInputRef}
-                value={filters.query}
-                onChange={(event) => updateFilters({ query: event.target.value })}
-                onKeyDown={(event) => {
-                  if (isImeComposing(event)) return;
-                  // Hand the keyboard back to the list (j/k, Enter, x).
-                  if (event.key === "ArrowDown" || event.key === "Enter") {
-                    event.preventDefault();
-                    event.currentTarget.blur();
-                  }
-                }}
-                placeholder="Search issues…  /"
-                aria-label="Search issues"
-                className="h-8 w-full rounded-md border border-fg/[0.07] bg-black/20 pl-8 pr-3 text-[12px] text-fg outline-none transition-colors placeholder:text-muted-fg/40 focus:border-fg/18"
-              />
-            </div>
-
-            <div className="flex items-center gap-1">
-              {STATE_TABS.map((tab) => (
-                <button
-                  key={tab.value}
-                  type="button"
-                  className={cn(
-                    "rounded-md px-2 py-1 text-[11px] transition-colors",
-                    filters.statePreset === tab.value
-                      ? "bg-fg/[0.08] text-fg"
-                      : "text-muted-fg/60 hover:bg-fg/[0.04] hover:text-fg/85",
-                  )}
-                  onClick={() => updateFilters({ statePreset: tab.value })}
-                >
-                  {tab.label}
-                </button>
-              ))}
-              {loadingIssues ? <CircleNotch size={11} className="ml-auto animate-spin text-muted-fg/50" /> : null}
-            </div>
-
-            <div className="grid grid-cols-3 gap-1.5">
-              <FilterSelect
-                label="Assignee"
-                value={filters.assigneeId}
-                options={assigneeOptions}
-                onChange={(value) => updateFilters({ assigneeId: value })}
-              />
-              <FilterSelect
-                label="Priority"
-                value={filters.priority}
-                options={PRIORITY_OPTIONS}
-                onChange={(value) => updateFilters({ priority: value })}
-              />
-              <FilterSelect
-                label="Sort"
-                value={filters.sort}
-                options={SORT_OPTIONS}
-                onChange={(value) => updateFilters({ sort: value as IssueSort })}
-              />
-            </div>
-          </div>
-
-          {multiSelectEnabled && !inboxScope && displayIssues.length > 0 && (
-            <div className="flex shrink-0 items-center gap-2 border-b border-fg/[0.05] px-3 py-1.5">
+          {multiSelectEnabled && !inboxScope && (anyChecked || (readyScope && onBatchLaunch && readyToLaunch.length > 0)) ? (
+            <div className="flex h-9 shrink-0 items-center gap-2.5 border-b border-fg/[0.06] bg-fg/[0.015] pl-[13px] pr-3">
               <span
                 role="checkbox"
                 tabIndex={0}
@@ -1613,52 +1956,53 @@ export function LinearIssueBrowser({
                 onClick={handleSelectAll}
                 onKeyDown={(e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); handleSelectAll(); } }}
                 className={cn(
-                  "flex h-[14px] w-[14px] shrink-0 cursor-pointer items-center justify-center rounded-[3px] border transition-all",
-                  selectedIssueIds.size === displayIssues.length
-                    ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]"
+                  "flex h-[14px] w-[14px] shrink-0 cursor-pointer items-center justify-center rounded-[4px] border transition-colors",
+                  selectedIssueIds.size > 0 && selectedIssueIds.size === displayIssues.length
+                    ? "border-accent bg-accent"
                     : selectedIssueIds.size > 0
-                      ? "border-[color:var(--color-accent,#A78BFA)] bg-[color:var(--color-accent,#A78BFA)]/50"
-                      : "border-fg/[0.15] bg-transparent hover:border-white/30",
+                      ? "border-accent bg-accent/50"
+                      : "border-fg/25 bg-transparent hover:border-fg/45",
                 )}
               >
-                {selectedIssueIds.size === displayIssues.length && displayIssues.length > 0 ? (
+                {selectedIssueIds.size > 0 && selectedIssueIds.size === displayIssues.length ? (
                   <Check size={10} weight="bold" className="text-accent-fg" />
                 ) : selectedIssueIds.size > 0 ? (
                   <Minus size={10} weight="bold" className="text-accent-fg" />
                 ) : null}
               </span>
-              <span className="text-[11px] tabular-nums text-muted-fg/55">
+              <span className="text-[12.5px] tabular-nums text-fg/80">
                 {selectedIssueIds.size > 0
                   ? `${selectedIssueIds.size} selected`
                   : totalLabel
-                    ? `${totalLabel} ${totalLabel === "1" ? "issue" : "issues"}${!listIsComplete ? ` · ${(issues.length + featuredExtra).toLocaleString()} loaded` : ""}`
+                    ? `${totalLabel} ${totalLabel === "1" ? "issue" : "issues"}`
                     : `${(issues.length + featuredExtra).toLocaleString()} loaded`}
               </span>
               {selectedIssueIds.size > 0 ? (
+                <>
+                  <span className="hidden text-[11.5px] text-muted-fg/60 lg:inline" aria-hidden>
+                    Enter launches · Esc clears
+                  </span>
+                  <button
+                    type="button"
+                    className="ml-auto text-[12px] text-muted-fg transition-colors hover:text-fg"
+                    onClick={() => setSelectedIssueIds(new Set())}
+                  >
+                    Clear
+                  </button>
+                </>
+              ) : (
                 <button
                   type="button"
-                  className="ml-auto text-[10px] text-muted-fg/50 transition-colors hover:text-fg/80"
-                  onClick={() => setSelectedIssueIds(new Set())}
-                >
-                  Clear
-                </button>
-              ) : readyScope && onBatchLaunch && readyToLaunch.length > 0 ? (
-                <button
-                  type="button"
-                  className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-[color:var(--color-accent,#A78BFA)]/15 px-2 py-1 text-[11px] font-medium text-[color:var(--color-accent,#A78BFA)] transition-colors hover:bg-[color:var(--color-accent,#A78BFA)]/25"
+                  className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md bg-accent/15 px-2.5 text-[12px] font-medium text-accent-text transition-colors hover:bg-accent/25"
                   title="Launch a lane and an agent for every ready issue that has no lane yet"
                   onClick={() => void handleBatchLaunch(readyToLaunch, {})}
                 >
                   <RocketLaunch size={12} weight="fill" />
-                  Launch all ready · {readyToLaunch.length}
+                  Launch all ready ({readyToLaunch.length})
                 </button>
-              ) : (
-                <span className="ml-auto hidden text-[10px] text-muted-fg/35 lg:inline" aria-hidden>
-                  j/k move · x select · ↵ launch
-                </span>
               )}
             </div>
-          )}
+          ) : null}
 
           {inboxScope ? (
             <LinearInboxList
@@ -1671,21 +2015,24 @@ export function LinearIssueBrowser({
             ref={issuesScrollRef}
             className={cn("min-h-0 flex-1 overflow-y-auto overscroll-contain", inboxScope && "hidden")}
             data-linear-pane="issues"
+            role="tree"
+            aria-label="Issues"
+            aria-multiselectable={multiSelectEnabled || undefined}
           >
             {loadingQuickView && !quickView && displayIssues.length === 0 ? (
               <div className="grid h-44 place-items-center text-[12px] text-muted-fg/55">
                 <CircleNotch size={16} className="animate-spin" />
               </div>
-            ) : displayIssues.length > 0 ? (
+            ) : listRows.length > 0 ? (
               <>
                 <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
                   {virtualItems.map((virtualRow) => {
                     const row = listRows[virtualRow.index];
                     if (!row) return null;
-                    const pinned = row.kind === "header" && virtualRow.index === activeHeaderIndex;
+                    const pinned = row.kind === "group" && virtualRow.index === activeHeaderIndex;
                     return (
                       <div
-                        key={row.kind === "header" ? `header:${row.group.key}` : `issue:${row.issue.id}`}
+                        key={row.key}
                         data-index={virtualRow.index}
                         style={{
                           position: pinned ? "sticky" : "absolute",
@@ -1697,31 +2044,34 @@ export function LinearIssueBrowser({
                           ...(pinned ? {} : { transform: `translateY(${virtualRow.start}px)` }),
                         }}
                       >
-                        {row.kind === "header" ? (
-                          <button
-                            type="button"
-                            className="flex h-full w-full items-center gap-1.5 border-b border-fg/[0.05] bg-[color:var(--ade-shell-surface,#121019)] px-3 text-left text-[12px] text-muted-fg/70 transition-colors hover:text-fg/85"
-                            onClick={() => setCollapsedGroups((current) => ({ ...current, [row.group.key]: !row.collapsed }))}
-                          >
-                            {row.collapsed ? <CaretRight size={11} className="shrink-0" /> : <CaretDown size={11} className="shrink-0" />}
-                            <LinearStateIcon stateType={row.group.stateType} size={12} />
-                            <span className="font-medium text-fg/85">{row.group.stateName}</span>
-                            <span className="text-[11px] tabular-nums text-muted-fg/45">
-                              {groupCountLabel(row.group) ?? "…"}
-                            </span>
-                          </button>
+                        {row.kind === "group" ? (
+                          <LinearGroupHeader
+                            row={row}
+                            countLabel={groupCountLabel(row)}
+                            onToggle={() => toggleCollapsed(`g:${row.path}`)}
+                            onCreate={() => handleGroupCreate(virtualRow.index)}
+                          />
+                        ) : row.kind === "context" ? (
+                          <LinearContextRow
+                            row={row}
+                            layout={rowLayout}
+                            onOpen={handleContextOpen}
+                            onToggleChildren={toggleChildren}
+                          />
                         ) : (
                           <LinearBrowserIssueRow
-                            issue={row.issue}
-                            active={selectedIssue?.id === row.issue.id}
+                            row={row}
+                            layout={rowLayout}
+                            active={selectedIssue?.id === row.issue.id && (!cursorKeyShown || cursorRowKey === row.key)}
                             eyebrow={featuredIssue?.id === row.issue.id ? featuredIssueLabel : undefined}
                             busy={busyIssueId === row.issue.id}
                             checked={selectedIssueIds.has(row.issue.id)}
                             anyChecked={anyChecked}
-                            showCheckbox={multiSelectEnabled}
                             conflict={conflicts?.get(row.issue.id) ?? null}
-                            onToggleCheck={(e) => toggleChecked(row.issue.id, e.shiftKey)}
-                            onClick={() => setSelectedIssueId(row.issue.id)}
+                            adeStatus={isNormalizedIssue(row.issue) ? adeStatusFor(row.issue) : null}
+                            onToggleCheck={handleRowCheck}
+                            onToggleChildren={toggleChildren}
+                            onSelect={handleRowSelect}
                           />
                         )}
                       </div>
@@ -1745,73 +2095,46 @@ export function LinearIssueBrowser({
                 ) : null}
               </>
             ) : (
-              <div className="px-4 py-12 text-center text-[12px] text-muted-fg/55">
-                {loadingIssues ? <CircleNotch size={16} className="mx-auto animate-spin" /> : "No issues match these filters."}
+              <div className="flex flex-col items-center gap-1 px-4 py-16 text-center">
+                {loadingIssues ? (
+                  <CircleNotch size={16} className="animate-spin text-muted-fg/55" />
+                ) : (
+                  <>
+                    <span className="text-[13px] text-fg/80">
+                      {displayIssues.length > 0 ? "Every issue here is hidden by the display settings." : "No issues match."}
+                    </span>
+                    <span className="text-[12px] text-muted-fg/70">
+                      {displayIssues.length > 0
+                        ? "Turn on completed issues or show hidden groups in Display."
+                        : filtersActive ? "Try another tab, or clear the search and filters." : "Issues you create in Linear show up here."}
+                    </span>
+                  </>
+                )}
               </div>
             )}
           </div>
         </section>
 
-        <React.Suspense fallback={null}>
-        {multiSelectEnabled && selectedIssueIds.size > 1 && onBatchLaunch ? (
-          <LinearBatchActionView
-            selectedIssues={resolvedSelectedIssues}
-            onClearSelection={() => setSelectedIssueIds(new Set())}
-            conflicts={conflicts}
-            onLaunch={handleBatchLaunch}
-          />
-        ) : (
-          <LinearIssueDetails
-            issue={selectedIssue}
-            catalog={catalog}
-            actionLabel={actionLabel}
-            actionBusyLabel={actionBusyLabel}
-            actionIcon={actionIcon}
-            actionBusy={selectedIssue ? busyIssueId === selectedIssue.id : false}
-            actionDisabled={actionDisabled || Boolean(busyIssueId && busyIssueId !== selectedIssue?.id)}
-            showBranchPreview={showBranchPreview}
-            onIssueAction={handleIssueAction}
-            conflict={selectedIssue ? conflicts?.get(selectedIssue.id) ?? null : null}
-            onLaunch={onBatchLaunch ? handleBatchLaunch : undefined}
-            onEdit={canEditIssues ? (issue, edit) => void handleEditIssue(issue, edit) : undefined}
-            editPending={selectedIssue ? pendingEditIds.has(selectedIssue.id) : false}
-            onOpenIssue={(ref) => void handleOpenRelatedIssue(ref)}
-            loadingIssueId={loadingRelationId}
-          />
-        )}
-        </React.Suspense>
+        {showDetailColumn ? (
+          <div className="flex min-h-0 flex-col overflow-hidden">{detailContent}</div>
+        ) : null}
       </div>
-    </div>
-  );
-}
 
-function FilterSelect({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: ReadonlyArray<{ value: string; label: string }>;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="relative block">
-      <span className="sr-only">{label}</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-8 w-full appearance-none rounded-lg border border-fg/[0.07] bg-black/20 px-2.5 pr-7 text-[11px] text-fg outline-none transition-colors focus:border-fg/18"
-        aria-label={label}
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <CaretDown size={9} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50" />
-    </label>
+      {columns.narrow && narrowRailOpen ? (
+        <>
+          <div className="absolute inset-0 z-20 bg-black/20" onClick={() => setNarrowRailOpen(false)} aria-hidden="true" />
+          <div className="absolute inset-y-0 left-0 z-30 w-[260px] shadow-[16px_0_40px_-20px_rgba(0,0,0,0.6)]">{railContent}</div>
+        </>
+      ) : null}
+
+      {columns.narrow && detailOpen ? (
+        <div className="absolute inset-0 z-10 bg-black/20" onClick={() => setNarrowDetailOpen(false)} aria-hidden="true" />
+      ) : null}
+      {columns.narrow && detailOpen ? (
+        <div className="absolute inset-y-0 right-0 z-20 flex w-[min(440px,92%)] flex-col overflow-hidden border-l border-fg/[0.08] bg-[color:var(--ade-shell-surface,#121019)] shadow-[-16px_0_40px_-20px_rgba(0,0,0,0.6)]">
+          {detailContent}
+        </div>
+      ) : null}
+    </div>
   );
 }

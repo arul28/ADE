@@ -515,6 +515,12 @@ import type {
   LinearProjectMilestone,
   LinearUploadResult,
   CtoLinearCustomView,
+  CtoGetLinearViewPreferencesArgs,
+  CtoUpdateLinearViewPreferencesArgs,
+  CtoUpdateLinearViewPreferencesResult,
+  LinearDisplayPreferences,
+  CtoLinearRailData,
+  CtoLinearDocument,
   LinearAgentOverview,
   LinearInboxNotification,
   NormalizedLinearIssue as LinearAgentNormalizedIssue,
@@ -15877,6 +15883,59 @@ const adeBridge = {
         "listCustomViews",
         {},
         () => ipcRenderer.invoke(IPC.ctoGetLinearCustomViews),
+      ),
+    // Display settings, rail lists, documents and the branch lookup go to the
+    // Linear reader machine by its pin. A brain without these actions rejects
+    // normally; the renderer then shows Linear's defaults / an empty rail.
+    getLinearViewPreferences: async (
+      args: CtoGetLinearViewPreferencesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<LinearDisplayPreferences> =>
+      callPinnedOrBoundRuntimeActionOr(pin,
+        "linear_issue_tracker",
+        "getViewPreferences",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoGetLinearViewPreferences, args),
+      ),
+    updateLinearViewPreferences: async (
+      args: CtoUpdateLinearViewPreferencesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CtoUpdateLinearViewPreferencesResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin,
+        "linear_issue_tracker",
+        "updateViewPreferences",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoUpdateLinearViewPreferences, args),
+      ),
+    getLinearRailData: async (
+      args: { teamKey?: string | null } | undefined,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CtoLinearRailData> =>
+      callPinnedOrBoundRuntimeActionOr(pin,
+        "linear_issue_tracker",
+        "getRailData",
+        { args: args ?? {} },
+        () => ipcRenderer.invoke(IPC.ctoGetLinearRailData, args ?? {}),
+      ),
+    getLinearDocument: async (
+      args: { documentId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<CtoLinearDocument | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin,
+        "linear_issue_tracker",
+        "getDocument",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoGetLinearDocument, args),
+      ),
+    findLinearIssueByBranch: async (
+      args: { branch: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<NormalizedLinearIssue | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin,
+        "linear_issue_tracker",
+        "findIssueByBranch",
+        { args },
+        () => ipcRenderer.invoke(IPC.ctoFindLinearIssueByBranch, args),
       ),
     // ---- The ADE Linear agent (runtime-only; no project, no agent) ----
     getLinearAgentOverview: async (pin?: OpenProjectBinding | null): Promise<LinearAgentOverview> =>

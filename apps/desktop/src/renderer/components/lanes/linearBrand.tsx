@@ -131,8 +131,8 @@ export function LinearPriorityIcon({
   priority: number;
   size?: number;
 }) {
-  const dim = "rgba(148, 163, 184, 0.40)";
-  const strong = "#C7CDF5";
+  // Bars follow the text color so they read on light and dark pages alike.
+  const dimOpacity = 0.3;
 
   if (priority === 1) {
     return (
@@ -147,7 +147,7 @@ export function LinearPriorityIcon({
   if (priority === 0) {
     return (
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" style={{ display: "block" }}>
-        <rect x={size * 0.18} y={size * 0.46} width={size * 0.64} height={size * 0.10} rx={size * 0.05} fill={dim} />
+        <rect x={size * 0.18} y={size * 0.46} width={size * 0.64} height={size * 0.10} rx={size * 0.05} fill="currentColor" fillOpacity={0.55} />
       </svg>
     );
   }
@@ -172,10 +172,83 @@ export function LinearPriorityIcon({
             width={barWidth}
             height={h}
             rx={size * 0.04}
-            fill={filled ? strong : dim}
+            fill="currentColor"
+            fillOpacity={filled ? 1 : dimOpacity}
           />
         );
       })}
+    </svg>
+  );
+}
+
+/**
+ * Sub-issue progress: a thin ring that fills clockwise with done/total, the
+ * way Linear draws it beside a parent's title. Complete turns Linear's
+ * "done" color; anything less stays neutral.
+ */
+export function LinearProgressRing({
+  done,
+  total,
+  size = 14,
+}: {
+  done: number;
+  total: number;
+  size?: number;
+}) {
+  const ratio = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0;
+  const stroke = Math.max(1.5, size * 0.13);
+  const center = size / 2;
+  const r = size / 2 - stroke / 2;
+  const innerR = r - stroke * 1.15;
+  const complete = ratio >= 1;
+  const color = complete ? STATE_COLORS.completed : "currentColor";
+  const angle = ratio * Math.PI * 2;
+  const endX = center + innerR * Math.sin(angle);
+  const endY = center - innerR * Math.cos(angle);
+  const largeArc = ratio > 0.5 ? 1 : 0;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" style={{ display: "block" }}>
+      <circle cx={center} cy={center} r={r} fill="none" stroke={color} strokeOpacity={complete ? 1 : 0.45} strokeWidth={stroke} />
+      {complete ? (
+        <circle cx={center} cy={center} r={innerR} fill={color} />
+      ) : ratio > 0 ? (
+        <path
+          d={`M ${center} ${center} L ${center} ${center - innerR} A ${innerR} ${innerR} 0 ${largeArc} 1 ${endX} ${endY} Z`}
+          fill={color}
+          fillOpacity={0.85}
+        />
+      ) : null}
+    </svg>
+  );
+}
+
+/** Linear's cycle glyph: a circle with a sweep, drawn in the current color. */
+export function LinearCycleIcon({ size = 14 }: { size?: number }) {
+  const stroke = Math.max(1.3, size * 0.11);
+  const center = size / 2;
+  const r = size / 2 - stroke / 2;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" style={{ display: "block" }}>
+      <circle cx={center} cy={center} r={r} fill="none" stroke="currentColor" strokeWidth={stroke} strokeDasharray={`${r * 4.2} ${r * 2.1}`} strokeLinecap="round" transform={`rotate(-90 ${center} ${center})`} />
+      <circle cx={center} cy={center} r={r * 0.42} fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Linear's milestone glyph: a small diamond. */
+export function LinearMilestoneIcon({ size = 14 }: { size?: number }) {
+  const center = size / 2;
+  const half = size * 0.36;
+  const stroke = Math.max(1.3, size * 0.11);
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" style={{ display: "block" }}>
+      <path
+        d={`M ${center} ${center - half} L ${center + half} ${center} L ${center} ${center + half} L ${center - half} ${center} Z`}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={stroke}
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

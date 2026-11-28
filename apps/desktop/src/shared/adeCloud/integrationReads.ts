@@ -25,6 +25,10 @@ import {
   toNormalizedIssue,
 } from "../linearIssueNormalize";
 import type {
+  CtoLinearRailData,
+  CtoUpdateLinearViewPreferencesArgs,
+  CtoUpdateLinearViewPreferencesResult,
+  LinearDisplayPreferences,
   CtoGetLinearIssuePickerDataResult,
   CtoLinearCustomView,
   CtoLinearIssueComment,
@@ -55,6 +59,11 @@ export const ADE_CLOUD_INTEGRATION_WEB_COMMANDS: Readonly<Record<string, { domai
   "cto.getLinearIssue": { domain: "linear_issue_tracker", action: "fetchIssueById" },
   "cto.getLinearIssueComments": { domain: "linear_issue_tracker", action: "fetchIssueComments" },
   "cto.getLinearCustomViews": { domain: "linear_issue_tracker", action: "listCustomViews" },
+  "cto.getLinearViewPreferences": { domain: "linear_issue_tracker", action: "getViewPreferences" },
+  "cto.updateLinearViewPreferences": { domain: "linear_issue_tracker", action: "updateViewPreferences" },
+  "cto.getLinearRailData": { domain: "linear_issue_tracker", action: "getRailData" },
+  "cto.getLinearDocument": { domain: "linear_issue_tracker", action: "getDocument" },
+  "cto.findLinearIssueByBranch": { domain: "linear_issue_tracker", action: "findIssueByBranch" },
   "jira.getConnectionStatus": { domain: "jira", action: "getConnectionStatus" },
   "jira.listIssues": { domain: "jira", action: "listIssues" },
   "jira.getIssue": { domain: "jira", action: "getIssue" },
@@ -107,6 +116,29 @@ function identifierFilter(term: string): Data | null {
   const parsed = Number.parseInt(numberText, 10);
   if (!Number.isFinite(parsed)) return null;
   return { number: { eq: parsed }, ...(keyed ? { team: { key: { eqIgnoreCase: keyed[1]! } } } : {}) };
+}
+
+/**
+ * Linear's defaults (the account server has no view-preference read). The
+ * desktop's own copy lives in `main/services/cto/linearViewData.ts`; this one
+ * stays here so the web bundle never imports main code.
+ */
+function linearDefaultDisplayPreferences(): LinearDisplayPreferences {
+  return {
+    grouping: "workflowState",
+    subGrouping: "none",
+    ordering: "manual",
+    orderingDirection: "asc",
+    nesting: "showAll",
+    showEmptyGroups: false,
+    showCompletedIssues: true,
+    hiddenGroups: [],
+    fields: {
+      id: true, status: true, priority: true, assignee: true, labels: true, project: true, cycle: false,
+      milestone: false, estimate: false, dueDate: true, pullRequests: true, createdAt: true, updatedAt: false, adeStatus: true,
+    },
+    source: "default",
+  };
 }
 
 function andFilters(...parts: Array<Data | null | undefined>): Data | null {
@@ -442,6 +474,29 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
         return run(() => linearPickerData(origin));
       case "linear_issue_tracker.listCustomViews":
         return run(() => linearCustomViews(origin));
+      // The account server has no reads for these. Answer here (Linear's
+      // defaults, an empty rail, nothing found) so the list never wakes a
+      // cloud computer for an extra; a display change stays in ADE.
+      case "linear_issue_tracker.getViewPreferences":
+        return { handled: true, result: linearDefaultDisplayPreferences() };
+      case "linear_issue_tracker.updateViewPreferences": {
+        const patch = (record(args.patch) as CtoUpdateLinearViewPreferencesArgs["patch"]);
+        const defaults = linearDefaultDisplayPreferences();
+        const { fields, ...rest } = patch;
+        const result: CtoUpdateLinearViewPreferencesResult = {
+          preferences: { ...defaults, ...rest, fields: { ...defaults.fields, ...(fields ?? {}) } },
+          savedToLinear: false,
+          reason: "This project has no computer on, so ADE kept the change here only.",
+        };
+        return { handled: true, result };
+      }
+      case "linear_issue_tracker.getRailData": {
+        const empty: CtoLinearRailData = { cycles: [], initiatives: [], favorites: [], documents: [] };
+        return { handled: true, result: empty };
+      }
+      case "linear_issue_tracker.getDocument":
+      case "linear_issue_tracker.findIssueByBranch":
+        return { handled: true, result: null };
       case "linear_issue_tracker.fetchIssueById": {
         // The desktop sends the id as `arg`; the web sends the IPC args (`{ issueId }`).
         const id = str(request.arg) ?? str(args.issueId);

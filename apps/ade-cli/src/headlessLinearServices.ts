@@ -3531,7 +3531,7 @@ export function createHeadlessLinearServices(
     credentials: linearCredentialService,
     logger: args.logger,
   });
-  const issueTracker = createLinearIssueTrackerImpl({ client: linearClient });
+  const issueTracker = createLinearIssueTrackerImpl({ client: linearClient, displayStore: args.db, logger: args.logger });
   const fileService = createFileServiceImpl({
     laneService: args.laneService,
     onLaneWorktreeMutation: () => {},
