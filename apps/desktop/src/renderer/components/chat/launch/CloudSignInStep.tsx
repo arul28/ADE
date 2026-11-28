@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { cloudSignInStepWords, type CloudSignInStepFacts, type CloudSignInStepWords } from "../../../../shared/cloudSignInStep";
 import { extractError } from "../../../lib/format";
+import { useTicker } from "../../../lib/ticker";
 import { askAdeFreeModelsConsent } from "../../shared/ModelPicker/AdeFreeModelsConsentDialog";
 import { cn } from "../../ui/cn";
 import { Banner } from "../../ui/notice";
@@ -35,8 +36,9 @@ export function CloudSignInStep({
   /** Something changed on the server (a code went, the chat moved): the caller reads the launch again. */
   onChanged?: () => void;
 }) {
-  // Worked out on each render (the card re-renders as the launch is read); no timer of its own.
-  const words = cloudSignInStepWords(signIn, Date.now());
+  // The minutes left count down on the renderer's shared minute timer, only while the step names its end.
+  const now = useTicker(60_000, signIn.expiresAt != null);
+  const words = cloudSignInStepWords(signIn, now);
   const detail = [words.instruction, words.reason].filter(Boolean).join(" ");
   const meta = [words.timeLeft, words.charge].filter(Boolean).join(" ");
   return (

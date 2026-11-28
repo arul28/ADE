@@ -50,7 +50,7 @@ import {
   cloudRemoteSignInOf,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
-import { WAKE_PORT, cloudSizeForTier, type CloudSize } from "./plans";
+import { WAKE_PORT, cloudSizeFor, cloudSizeForTier, type CloudSize } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { requestNetwork } from "./sponsoredConsent";
 import { noteComputerJoin, smallUsesNoHours } from "./sponsoredSmall";
@@ -910,7 +910,8 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
   }
   // Released for the start below; a cancel that landed meanwhile keeps the launch cancelled.
   const released = await env.DB.prepare(`
-    update cloud_launches set state = 'making', instance_id = null, updated_at = ? where launch_id = ? and user_id = ? and state = 'retrying'
+    update cloud_launches set state = 'making', instance_id = null, sign_in_free_at = null, sign_in_used_at = null, updated_at = ?
+    where launch_id = ? and user_id = ? and state = 'retrying'
   `).bind(deps.now, launchId, userId).run();
   logCloud("cloud.launch_retried", { userId, launchId, instanceId: row.instance_id });
   return (released.meta?.changes ?? 0) === 1 ? "restarted" : null;
@@ -938,7 +939,16 @@ export async function startServerLaunch(
 
   const existing = await readLaunch(env, launchId);
   // A Retry of a chat the person moved to a free model: the request the record holds is what runs.
-  if (options.restarted && existing) parsed = keepFreeModelMove(existing, parsed);
+  if (options.restarted && existing) {
+    const kept = keepFreeModelMove(existing, parsed);
+    // The person watches the free model the Retry starts (`freeModels.ts`): its first note may be too old to claim.
+    if (kept !== parsed && options.request && (!parsed.madeBy || parsed.madeBy.kind === "person")) {
+      await noteFreeModelLaunch(env, userId, options.request, launchId, now).catch((error: unknown) => {
+        reportCloudFailure("cloud.free_models.launch_note_failed", { message: error instanceof Error ? error.message : "unknown" });
+      });
+    }
+    parsed = kept;
+  }
   // The id finds a computer in the shared provider list, so it can only ever be one account's.
   if (existing && existing.user_id !== userId) return badRequest("That launch id can't be used.");
   // The same launch again answers what it is now. A start whose create didn't
@@ -1441,7 +1451,8 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       sign_in_json = case when ? is not null then ? else sign_in_json end,
       updated_at = ?
     where launch_id = ? and instance_id = ? and state not in ('cancelled', 'retrying') and (state <> 'done' or ? = 'done')
-      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?, ?, ?) or ? = 'failed')
+      and (state <> 'failed' or (coalesce(error, '') not in (?, ?, ?, ?, ?) and coalesce(error, '') not in (select value from json_each(?))
+        and instr(coalesce(error, ''), ?) <> 1) or ? = 'failed')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
@@ -1449,7 +1460,8 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
     state,
     state, signInJson,
     now, row.launch_id, row.instance_id, state,
-    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LAUNCH_COMPUTER_DELETED, LEGACY_LAUNCH_COMPUTER_DELETED, state,
+    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LAUNCH_COMPUTER_DELETED, LEGACY_LAUNCH_COMPUTER_DELETED,
+    JSON.stringify(STOPPED_ENDINGS), CLOUD_LAUNCH_OUT_OF_CREDITS, state,
   ).run();
   // Only the computer this report was checked against, and never into a Retry
   // that claimed the launch since this request read it.
@@ -1481,8 +1493,12 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   if (state === "waiting_for_sign_in" && signIn?.expiresAt != null && row.sign_in_free_opened_at == null && row.instance_id) {
     await openSignInFreeWait(env, row, await ownedComputer(env, row.user_id, row.instance_id), now, signIn.expiresAt);
   }
-  if (row.state === "waiting_for_sign_in" && (state === "joined" || state === "running" || state === "done")) {
+  // The sign-in finished: the wait is charged. Any later report of a chat on its way tries a charge
+  // that failed again (`sign_in_charged_at` still empty); a charged one is never charged twice.
+  if ((state === "joined" || state === "running" || state === "done") && row.sign_in_free_at != null && row.sign_in_charged_at == null) {
     await chargeSignInWait(env, row, now);
+  }
+  if (row.state === "waiting_for_sign_in" && (state === "joined" || state === "running" || state === "done")) {
     noteSignInStep(env, deps, row, "signed_in", "computer", now);
   }
   return json(recordOf((await readLaunch(env, row.launch_id))!, now));
@@ -1900,7 +1916,11 @@ const isSignInNeverFinished = (error: string | null | undefined): boolean =>
 const signInEndedSql = "(updated_at <= ? or coalesce(json_extract(sign_in_json, '$.expiresAt'), 9007199254740991) <= ?)";
 /** The server's own endings: the computer is deleted with or after them, so no report brings the launch back. */
 const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || isSignInNeverFinished(error)
-  || error === LAUNCH_COMPUTER_DELETED || error === LEGACY_LAUNCH_COMPUTER_DELETED;
+  || error === LAUNCH_COMPUTER_DELETED || error === LEGACY_LAUNCH_COMPUTER_DELETED || stoppedEnded(error);
+/** The endings `failStoppedLaunches` writes: its computer stays stopped, so no late report brings the launch back. */
+const STOPPED_ENDINGS: readonly string[] = [CLOUD_LAUNCH_COMPUTER_STOPPED, ACCOUNT_BLOCKED_MESSAGE, ...Object.values(CLOUD_MAC_START_FAILED_SENTENCES)];
+const stoppedEnded = (error: string | null): boolean =>
+  error != null && (STOPPED_ENDINGS.includes(error) || error.startsWith(CLOUD_LAUNCH_OUT_OF_CREDITS));
 
 /**
  * The launch states before its chat starts, where a stopped computer can't go
@@ -1931,12 +1951,12 @@ const OTHER_STOP_GRACE_MS = 10 * 60_000;
  */
 async function failStoppedLaunches(env: CloudEnv, now: number, onProgress?: (record: CloudLaunchRecord) => Promise<void>): Promise<number> {
   const rows = (await env.DB.prepare(`
-    select l.*, c.status_changed_at as stopped_at, c.provider as computer_provider, c.mac_start_failed,
+    select l.*, c.status_changed_at as stopped_at, c.type as computer_type, c.cpu as computer_cpu, c.memory_gb as computer_memory_gb,
+      c.provider as computer_provider, c.mac_start_failed,
       (select p.reason from cloud_power_log p where p.instance_id = l.instance_id and p.action = 'stop' order by p.created_at desc limit 1) as stop_reason
     from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
     where l.state in (select value from json_each(?)) and c.status = 'stopped' and c.deleted_at is null limit ?
-  `).bind(JSON.stringify(BEFORE_CHAT_STATES), UNJOINED_PER_TICK)
-    .all<LaunchRow & { stop_reason: string | null; stopped_at: number | null; computer_provider: string | null; mac_start_failed: string | null }>()).results ?? [];
+  `).bind(JSON.stringify(BEFORE_CHAT_STATES), UNJOINED_PER_TICK).all<LaunchRow & StoppedComputerFacts>()).results ?? [];
   let ended = 0;
   for (const row of rows) {
     // The agent started: the lane is the person's, and its chat ended or rests like any other.
@@ -1948,19 +1968,21 @@ async function failStoppedLaunches(env: CloudEnv, now: number, onProgress?: (rec
     // waits the grace like any other, so its own sentence wins; after it, the Mac's sentence ends the launch.
     const waits = !SERVER_STOP_REASONS.has(row.stop_reason ?? "") && (!macFailed || row.stop_reason === "boot_failed");
     if (waits && now - (row.stopped_at ?? now) < OTHER_STOP_GRACE_MS) continue;
-    const error = macFailed ?? await stoppedLaunchSentence(env, row.user_id, row.stop_reason, now).catch((cause: unknown) => {
+    const small = cloudSizeFor(row.computer_type, row.computer_cpu, row.computer_memory_gb)?.tier === "small";
+    const error = macFailed ?? await stoppedLaunchSentence(env, row.user_id, row.stop_reason, now, small).catch((cause: unknown) => {
       reportCloudFailure("cloud.launch_stopped_sentence_failed", { launchId: row.launch_id, message: cause instanceof Error ? cause.name : "unknown" });
       return CLOUD_LAUNCH_COMPUTER_STOPPED;
     });
     const failed = await env.DB.prepare(`
       update cloud_launches set state = 'failed', error = ?, approval_url = null, sign_in_json = null, updated_at = ?
-      where launch_id = ? and instance_id = ? and state = ?
-    `).bind(error, now, row.launch_id, row.instance_id, row.state).run();
+      where launch_id = ? and instance_id = ? and state = ? and updated_at = ?
+        and exists (select 1 from cloud_computers where instance_id = ? and status = 'stopped' and deleted_at is null)
+    `).bind(error, now, row.launch_id, row.instance_id, row.state, row.updated_at, row.instance_id).run();
     if ((failed.meta?.changes ?? 0) !== 1) continue;
     ended += 1;
     logCloud("cloud.launch_computer_stopped", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id, reason: macFailed ? `mac_start_failed:${row.mac_start_failed}` : row.stop_reason ?? "unknown" });
     try {
-      if (row.state === "waiting_for_sign_in") await failQueuedMessagesStatement(env, row.launch_id, error, now).run();
+      await failQueuedMessagesStatement(env, row.launch_id, error, now).run();
       const latest = await readLaunch(env, row.launch_id);
       if (latest && onProgress) await onProgress(recordOf(latest, now));
     } catch (cause) {
@@ -1970,8 +1992,18 @@ async function failStoppedLaunches(env: CloudEnv, now: number, onProgress?: (rec
   return ended;
 }
 
-/** Why a launch's computer stopped, and what the person can do, by the stop's reason. */
-async function stoppedLaunchSentence(env: CloudEnv, userId: string, reason: string | null, now: number): Promise<string> {
+type StoppedComputerFacts = {
+  stop_reason: string | null;
+  stopped_at: number | null;
+  computer_type: string | null;
+  computer_cpu: number | null;
+  computer_memory_gb: number | null;
+  computer_provider: string | null;
+  mac_start_failed: string | null;
+};
+
+/** Why a launch's computer stopped, and what the person can do, by the stop's reason and the computer's size. */
+async function stoppedLaunchSentence(env: CloudEnv, userId: string, reason: string | null, now: number, small: boolean): Promise<string> {
   if (reason === "blocked") return ACCOUNT_BLOCKED_MESSAGE;
   if (reason !== "out_of_hours") return CLOUD_LAUNCH_COMPUTER_STOPPED;
   // The way out the out-of-credits refusal names for this account (`outOfHours` in routes.ts).
@@ -1985,6 +2017,8 @@ async function stoppedLaunchSentence(env: CloudEnv, userId: string, reason: stri
   const gravity = env as Parameters<typeof smallUsesNoHours>[0];
   if (await smallUsesNoHours(gravity, account)) return CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.small_free;
   const wayOut = await freeSmallWayOut(gravity, account);
+  // A bigger computer: Retry makes the same size, which 0 credits refuses, so the way out is a new start on Small.
+  if (wayOut && !small) return CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT[`${wayOut}_bigger`];
   return CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT[wayOut ?? "plan"];
 }
 

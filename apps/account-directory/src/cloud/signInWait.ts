@@ -114,6 +114,8 @@ export async function openSignInFreeWait(env: CloudEnv, launch: SignInWaitLaunch
       select count(*) as n from cloud_launches where user_id = ? and sign_in_free_opened_at >= ?
     `).bind(launch.user_id, dayStart).first<{ n: number }>();
     if ((used?.n ?? 0) >= SIGN_IN_FREE_WAITS_PER_DAY) return false;
+    // The claim counts the day's waits again in its own write: two computers that report their first wait
+    // together can't both open one past the allowance.
     const waitEnds = Math.min(expiresAt, now + signInWaitMsOf(launch));
     const until = Math.min(start + SIGN_IN_FREE_MAX_MS, waitEnds + CLOUD_SIGN_IN_END_GRACE_MS);
     if (until <= now) return false;
@@ -122,8 +124,9 @@ export async function openSignInFreeWait(env: CloudEnv, launch: SignInWaitLaunch
       env.DB.prepare(`
         update cloud_launches set sign_in_free_at = ?, sign_in_free_opened_at = ?
         where launch_id = ? and sign_in_free_opened_at is null
+          and (select count(*) from cloud_launches where user_id = ? and sign_in_free_opened_at >= ?) < ?
           and exists (select 1 from cloud_computers where instance_id = ? and awake_since = ? and free_wake_started_at is null and free_wake_until is null and deleted_at is null)
-      `).bind(start, now, launch.launch_id, computer.instance_id, start),
+      `).bind(start, now, launch.launch_id, launch.user_id, dayStart, SIGN_IN_FREE_WAITS_PER_DAY, computer.instance_id, start),
       env.DB.prepare(`
         update cloud_computers set awake_since = ?, free_wake_started_at = ?, free_wake_until = ?
         where instance_id = ? and awake_since = ? and free_wake_started_at is null and free_wake_until is null and deleted_at is null

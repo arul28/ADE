@@ -3400,6 +3400,10 @@ export const CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT = {
   /** Free under Pricing v3: the words of the out-of-credits refusal (`SMALL_WAY_OUT` in routes.ts). */
   ads_on: " Small computers keep working in chats with ads: send a message to start one.",
   ads_off: " With ads on, Small computers keep working.",
+  /** `ads_on` for a computer bigger than Small: Retry makes the same size, which 0 credits refuses. */
+  ads_on_bigger: " Start the chat again on Small, which keeps working with ads, or pick a plan in Settings › DAEX Cloud › Plans.",
+  /** `ads_off` for a computer bigger than Small. */
+  ads_off_bigger: " Turn ads on and start the chat again on Small, or pick a plan in Settings › DAEX Cloud › Plans.",
   /** Free with no free plan, or no other way out. */
   plan: " Pick a plan in Settings › DAEX Cloud › Plans, then Retry.",
   /** A paid plan. */
