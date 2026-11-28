@@ -26,10 +26,22 @@ import {
   type CloudPlanId,
   type CloudTierId,
 } from "../../../account-directory/src/cloud/contract";
-import { CLOUD_PLANS, SMALL_NO_CARDS_RATE_MILLI, cloudSizeForTier } from "../../../account-directory/src/cloud/plans";
+import {
+  CLOUD_PLANS,
+  CREDIT_SCALE,
+  MAC_MILLI_PER_MINUTE,
+  PHONE_MILLI_PER_MINUTE_V3,
+  SHOWN_CREDIT_MILLI,
+  SMALL_NO_CARDS_RATE_MILLI,
+  adRateMilli,
+  cloudSizeForTier,
+  v3FullRateMilli,
+} from "../../../account-directory/src/cloud/plans";
 import { BRAND } from "../../../desktop/src/shared/brand";
 
 export { CLOUD_SMALL_FAIR_USE_SENTENCE, cloudComputersPhrase };
+/** Pricing v3's scale, rates and ad rounding, from the server's `plans.ts` (`pricingView.ts` builds the page's numbers from them). */
+export { CREDIT_SCALE, MAC_MILLI_PER_MINUTE, PHONE_MILLI_PER_MINUTE_V3, SHOWN_CREDIT_MILLI, adRateMilli, v3FullRateMilli };
 
 /** The Free plan's ad line, on the pricing page and the home page. */
 export const ADS_FREE_PLAN_SENTENCE =

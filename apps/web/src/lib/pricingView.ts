@@ -3,7 +3,7 @@
  * shows. The plan facts stay in `cloudPricing.ts` (the server's own files);
  * this adds what Pricing v3 changes on the page:
  *
- * - credits shown at 10 times the stored unit (`V3_CREDIT_SCALE`), so the
+ * - credits shown at 10 times the stored unit (`CREDIT_SCALE`), so the
  *   money and the hours of every plan stay the same;
  * - the cloud iPhone at half its price in money, and the cloud Mac;
  * - the ad price (`discountPct` less, rounded to whole credits) beside the
@@ -15,9 +15,15 @@
  */
 import { useMemo } from "react";
 import {
+  CREDIT_SCALE,
   HOURLY_SIZES,
   INVITE_RULES,
+  MAC_MILLI_PER_MINUTE,
   PHONE_CREDITS_PER_MINUTE,
+  PHONE_MILLI_PER_MINUTE_V3,
+  SHOWN_CREDIT_MILLI,
+  adRateMilli,
+  v3FullRateMilli,
   SMALL_NO_ADS_RATE,
   formatCount,
   type PricingPlan,
@@ -26,21 +32,8 @@ import {
 import { useAdsOn, useSiteOffer, type SiteAds, type SiteOffer } from "./siteOffer";
 import { BRAND } from "../../../desktop/src/shared/brand";
 
-/**
- * Pricing v3's numbers. The server's `plans.ts` exports the same ones on the
- * ad price lane (`CREDIT_SCALE`, `PHONE_MILLI_PER_MINUTE_V3`,
- * `MAC_MILLI_PER_MINUTE`, `adRateMilli`); this branch sits beside that one, so
- * these read from there once the two are stacked.
- */
-/** Shown credits for each stored Medium-hour. */
-export const V3_CREDIT_SCALE = 10;
-/** Stored Medium-hours a minute of the cloud iPhone uses under Pricing v3: 500 milli-credits. */
-const V3_PHONE_HOURS_PER_MINUTE = 0.5;
-/** Stored Medium-hours a minute of the cloud Mac uses: 500 milli-credits. */
-const V3_MAC_HOURS_PER_MINUTE = 0.5;
-
-/** The ad price of a full price in whole shown credits: `pct` less, rounded down, as the server's `adRateMilli` (`plans.ts`) does. */
-export const adPriceOf = (full: number, pct: number): number => Math.floor((full * (100 - pct)) / 100 + 1e-9);
+/** The ad price of a full price in shown credits (Pricing v3): the server's `adRateMilli`, in shown credits. */
+export const adPriceOf = (full: number, pct: number): number => adRateMilli(Math.round(full * SHOWN_CREDIT_MILLI), pct) / SHOWN_CREDIT_MILLI;
 
 /** A price as shown: what it costs now, and the full price struck beside it while ads are on (null with no ads). */
 export type ShownPrice = { now: number; struck: number | null };
@@ -91,7 +84,8 @@ export type PricingView = {
 };
 
 function sizeMachine(size: PricingSize, scale: number, ads: SiteAds | null, withAds: boolean): Machine {
-  const full = Math.round(size.rate * scale);
+  // Today's rate as it is (2.5 on a Large); Pricing v3's from the server's whole-credit rule.
+  const full = scale === 1 ? size.rate : v3FullRateMilli(Math.round(size.rate * 1000)) / SHOWN_CREDIT_MILLI;
   const ad = ads ? adPriceOf(full, ads.discountPct) : full;
   const now = withAds ? ad : full;
   return {
@@ -107,7 +101,7 @@ function sizeMachine(size: PricingSize, scale: number, ads: SiteAds | null, with
 }
 
 function minuteMachine(id: "mac" | "iphone", storedPerMinute: number, scale: number, ads: SiteAds | null, withAds: boolean): Machine {
-  const full = Math.round(storedPerMinute * scale);
+  const full = storedPerMinute * scale;
   const ad = ads ? adPriceOf(full, ads.discountPct) : full;
   const now = withAds ? ad : full;
   return id === "mac"
@@ -120,15 +114,15 @@ export function pricingViewFor(offer: SiteOffer, adsOnChoice: boolean): PricingV
   const v3 = offer.v3;
   const ads = offer.v3 ? offer.ads : null;
   const withAds = ads != null && adsOnChoice;
-  const scale = v3 ? V3_CREDIT_SCALE : 1;
+  const scale = v3 ? CREDIT_SCALE : 1;
   const credits = (stored: number) => Math.round(stored * scale);
   const creditsLabel = (shown: number) => `${formatCount(shown)} ${shown === 1 ? "credit" : "credits"}`;
 
   const machines: Machine[] = HOURLY_SIZES.map((size) => sizeMachine(size, scale, ads, withAds));
-  if (offer.v3 && offer.mac) machines.push(minuteMachine("mac", V3_MAC_HOURS_PER_MINUTE, scale, ads, withAds));
-  machines.push(minuteMachine("iphone", v3 ? V3_PHONE_HOURS_PER_MINUTE : PHONE_CREDITS_PER_MINUTE, scale, ads, withAds));
+  if (offer.v3 && offer.mac) machines.push(minuteMachine("mac", MAC_MILLI_PER_MINUTE / 1000, scale, ads, withAds));
+  machines.push(minuteMachine("iphone", v3 ? PHONE_MILLI_PER_MINUTE_V3 / 1000 : PHONE_CREDITS_PER_MINUTE, scale, ads, withAds));
 
-  const smallFull = Math.round(SMALL_NO_ADS_RATE * scale);
+  const smallFull = SMALL_NO_ADS_RATE * scale;
   // Free's Small: free with ads (in every ad country), the full rate without.
   const freeSmall: ShownPrice = withAds ? { now: 0, struck: smallFull } : { now: smallFull, struck: null };
 

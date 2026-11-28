@@ -13,6 +13,8 @@
  * unknown answer is the switch at `off`.
  */
 import { useSyncExternalStore } from "react";
+import { CLOUD_PUBLIC_PRICING_PATH, type CloudPublicPricing } from "../../../account-directory/src/cloud/contract";
+import { AD_WINDOW_MINUTES_DEFAULT } from "../../../account-directory/src/cloud/plans";
 
 export type SiteAds = {
   /** Ads start on for a new account here (the US outside California, without Global Privacy Control). */
@@ -35,19 +37,17 @@ export type SiteOffer =
 
 const OFF: SiteOffer = { v3: false };
 
-/** The address of the server's answer; `vite.config.ts` builds the same one into `index.html`. */
-export const SITE_OFFER_PATH = "/public/pricing";
 const DEFAULT_ACCOUNT_DIRECTORY = "https://ade-account-directory-production.arulsharma1028.workers.dev";
 const ACCOUNT_DIRECTORY =
   ((import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL as string | undefined)?.trim() || DEFAULT_ACCOUNT_DIRECTORY).replace(/\/+$/, "");
 
-/** The ad window when the server sends none: 60 minutes, the plan's start. */
-const DEFAULT_WINDOW_MINUTES = 60;
-
-/** Reads the server's answer; anything it does not recognise is `off`. A discount of 0 is no ad price at all. */
+/**
+ * Reads the server's answer (`CloudPublicPricing`); anything it does not
+ * recognise is `off`. A discount of 0 is no ad price at all.
+ */
 export function parseSiteOffer(body: unknown): SiteOffer {
   if (!body || typeof body !== "object") return OFF;
-  const raw = body as { pricingV3?: unknown; mac?: unknown; ads?: unknown };
+  const raw = body as { [K in keyof Extract<CloudPublicPricing, { pricingV3: true }>]?: unknown };
   if (raw.pricingV3 !== true) return OFF;
   const ads = raw.ads && typeof raw.ads === "object" ? (raw.ads as { startsOn?: unknown; discountPct?: unknown; adWindowMinutes?: unknown }) : null;
   const pct = ads?.discountPct;
@@ -60,7 +60,7 @@ export function parseSiteOffer(body: unknown): SiteOffer {
       ? {
           startsOn: ads!.startsOn === true,
           discountPct: pct,
-          windowMinutes: typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0 ? minutes : DEFAULT_WINDOW_MINUTES,
+          windowMinutes: typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0 ? minutes : AD_WINDOW_MINUTES_DEFAULT,
         }
       : null,
   };
@@ -110,7 +110,7 @@ function start(): void {
     return;
   }
   const early = (window as Window & { __daexSiteOffer?: Promise<unknown> }).__daexSiteOffer;
-  const answer: Promise<unknown> = early ?? fetch(`${ACCOUNT_DIRECTORY}${SITE_OFFER_PATH}`, { credentials: "omit" }).then((response) => (response.ok ? response.json() : null));
+  const answer: Promise<unknown> = early ?? fetch(`${ACCOUNT_DIRECTORY}${CLOUD_PUBLIC_PRICING_PATH}`, { credentials: "omit" }).then((response) => (response.ok ? response.json() : null));
   const giveUp = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), GIVE_UP_MS));
   window.setTimeout(() => {
     if (!state.settled) update({ settled: true });

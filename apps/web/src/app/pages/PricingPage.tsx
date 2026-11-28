@@ -15,6 +15,7 @@ import { cn } from "../../lib/cn";
 import {
   ADS_FREE_PLAN_SENTENCE,
   CLOUD_SMALL_FAIR_USE_SENTENCE,
+  CREDIT_SCALE,
   FINDER_DAYS_A_MONTH,
   FREE_PLAN,
   FREE_RULES,
@@ -43,7 +44,7 @@ import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES, MARKETING_SCREENS } from "
 import { captureMarketingFeature } from "../../lib/marketingAnalyticsBrowser";
 import { PLAN_CTAS } from "../../lib/planLinks";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
-import { V3_CREDIT_SCALE, adPriceOf, adPriceRuleSentence, creditUnitSentence, usePricingView, type Machine, type PricingView } from "../../lib/pricingView";
+import { adPriceOf, adPriceRuleSentence, creditUnitSentence, usePricingView, type Machine, type PricingView } from "../../lib/pricingView";
 import { useSiteOfferSettled } from "../../lib/siteOffer";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
@@ -587,13 +588,13 @@ const PHONE_MINUTES_STEP = 25;
 const BIGGEST_PLAN_HOURS = Math.max(...PRICING_PLANS.map((plan) => plan.hours));
 /** A minute machine's slider range at its full price, so it stays put when the ads control moves. */
 const minutesMax = (machine: Machine): number => {
-  const fullStored = (machine.price.struck ?? machine.price.now) / V3_CREDIT_SCALE;
+  const fullStored = (machine.price.struck ?? machine.price.now) / CREDIT_SCALE;
   return Math.floor(BIGGEST_PLAN_HOURS / fullStored / PHONE_MINUTES_STEP) * PHONE_MINUTES_STEP;
 };
 
 /** The finder's month at full prices, for the line under it while ads are on (Free's Small aside). */
 function exactFull(view: PricingView, computers: number, hours: number, size: PricingSize, phoneMinutes: number, macMinutes: number): number {
-  const full = (machine: Machine | undefined) => (machine ? (machine.price.struck ?? machine.price.now) / V3_CREDIT_SCALE : 0);
+  const full = (machine: Machine | undefined) => (machine ? (machine.price.struck ?? machine.price.now) / CREDIT_SCALE : 0);
   const machine = (id: string) => view.machines.find((entry) => entry.id === id);
   return computers * hours * (size.rate > 0 ? full(machine(size.id)) : 0) + phoneMinutes * full(machine("iphone")) + macMinutes * full(machine("mac"));
 }
@@ -737,7 +738,7 @@ function ExtraCard() {
         <>
           <p className="flex flex-wrap items-baseline gap-x-2">
             <span className="font-display text-[56px] leading-none" style={{ color: AMBER.color }}>
-              {formatUsd((onePrice * (1000 / V3_CREDIT_SCALE)) / 100)}
+              {formatUsd((onePrice * (1000 / CREDIT_SCALE)) / 100)}
             </span>
             <span className="text-[15px] text-white/55">for each 1,000 {UNIT.many} once your plan's run out</span>
           </p>

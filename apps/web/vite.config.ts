@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { defineConfig, loadEnv, searchForWorkspaceRoot, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { assertPublicPostHogToken } from "../../scripts/posthog/publicPostHogToken";
+import { CLOUD_PUBLIC_PRICING_PATH } from "../account-directory/src/cloud/contract";
 
 /**
  * Inlines small imported SVGs (the provider logos) as data URLs. Vite 4 emits
@@ -29,7 +30,7 @@ function inlineSmallSvgs(limit = 12 * 1024): Plugin {
  * and the request sends no cookie.
  */
 function siteOfferEarlyScript(accountDirectory: string): Plugin {
-  const url = `${accountDirectory.replace(/\/+$/, "")}/public/pricing`;
+  const url = `${accountDirectory.replace(/\/+$/, "")}${CLOUD_PUBLIC_PRICING_PATH}`;
   return {
     name: "ade-site-offer-early",
     transformIndexHtml(html) {
