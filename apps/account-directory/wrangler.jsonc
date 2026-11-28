@@ -173,6 +173,10 @@
     // This development Worker's own URL: a DAEX Cloud Mac it starts signs in
     // here, not to production (the brain's default). Not set in production.
     "MAC_DIRECTORY_URL": "https://ade-account-directory.arulsharma1028.workers.dev",
+    // This Worker's own start of every Mac label at NoMac: production (unset)
+    // uses `adem:`, so the two Workers on one NoMac key never stop each other's
+    // Macs (macProvider.ts, the orphan sweep).
+    "MAC_LABEL_PREFIX": "ademdev:",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
     // events in). SENTRY_RELEASE is set at deploy, not here. No
     // SENTRY_ENVIRONMENT here: this development Worker and `wrangler dev`

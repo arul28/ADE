@@ -445,8 +445,13 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
  * starting), from its computer's row: what the launch card shows on its
  * computer step until the Mac's brain reports its own stages.
  */
-export async function withMacFacts(env: CloudEnv, record: CloudLaunchRecord): Promise<CloudLaunchRecord> {
+export async function withMacFacts(env: CloudEnv, record: CloudLaunchRecord, userId: string): Promise<CloudLaunchRecord> {
   if (record.os !== "mac") return record;
+  // The switch doesn't reach the account (any more): the record names nothing of the Mac.
+  if (!await macReaches(env, userId)) {
+    const { os: _os, mac: _mac, ...plain } = record;
+    return plain;
+  }
   if (!record.instanceId || !(record.state === "making" || record.state === "joining")) return { ...record, mac: null };
   const row = await env.DB.prepare("select * from cloud_computers where instance_id = ? and deleted_at is null").bind(record.instanceId).first<ComputerRow>();
   return { ...record, mac: row && isMacRow(row) && row.mac_state !== "running" ? macStateForClient(row) : null };
@@ -1013,7 +1018,7 @@ export async function startServerLaunch(
   // A cancel landed while the computer was being made: it goes now.
   if (after.state === "cancelled" && after.instance_id) await deleteLaunchComputer(env, deps.provider, after, deps.now);
   logCloud("cloud.launch_started", { userId, launchId, instanceId: after.instance_id, launchKind: parsed.kind, replay: outcome.kind === "replayed" });
-  return json(await withMacFacts(env, recordOf(after, now)), outcome.kind === "made" ? 201 : 200);
+  return json(await withMacFacts(env, recordOf(after, now), userId), outcome.kind === "made" ? 201 : 200);
 }
 
 /* ---- A computer with nothing on it (`kind: "machine"`) ---- */
@@ -1421,7 +1426,7 @@ export async function routeLaunches(request: Request, path: string, env: CloudEn
   const row = await ownLaunch(env, userId, launchId);
   if (!row) return notFound();
   if (action === undefined) {
-    if (request.method === "GET") return json(await withMacFacts(env, recordOf(row, deps.now)));
+    if (request.method === "GET") return json(await withMacFacts(env, recordOf(row, deps.now), userId));
     if (request.method === "DELETE") return await followedBy(await handleCancel(env, row, deps), env, launchId, deps);
     return notFound();
   }

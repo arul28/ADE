@@ -53,7 +53,8 @@ export function userIdOfLabel(label: unknown): string | null {
   return typeof label === "string" && label.startsWith("ade:") && label.length > 4 ? label.slice(4) : null;
 }
 
-export async function nomac(env: Pick<CloudEnv, "NOMAC_API_KEY">, method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<NomacAnswer> {
+/** `timeoutMs`: a call that asks NoMac to hold (`?wait=`) needs longer than the default 20 s; the Mac's boot and exec do. */
+export async function nomac(env: Pick<CloudEnv, "NOMAC_API_KEY">, method: string, path: string, body?: unknown, idempotencyKey?: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<NomacAnswer> {
   const key = env.NOMAC_API_KEY?.trim();
   if (!key) return { status: 503, body: null };
   const response = await fetch(`${NOMAC_ORIGIN}${path}`, {
@@ -65,7 +66,7 @@ export async function nomac(env: Pick<CloudEnv, "NOMAC_API_KEY">, method: string
       ...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
     // Workers have no `redirect: "error"`: a redirect is answered as a failure here.
     redirect: "manual",
   });

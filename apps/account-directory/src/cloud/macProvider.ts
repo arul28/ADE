@@ -35,6 +35,7 @@
 
 import {
   CLOUD_COMPUTER_UNAVAILABLE_SENTENCE,
+  CLOUD_LAUNCH_JOIN_TTL_MS,
   CLOUD_MAC_SHAPE,
   CLOUD_MAC_START_FAILED_SENTENCES,
   CLOUD_MAC_STATE_SENTENCES,
@@ -76,8 +77,10 @@ const MAC_EXTEND_WITHIN_MS = 20 * 60_000;
 export const MAC_DRIVE_UPKEEP_DAYS = 25;
 /** The most kept drives one daily run wakes for upkeep: five days of slack before NoMac's 30 covers 250 drives a run. */
 const MAC_UPKEEP_PER_RUN = 50;
-/** A start waits this long after an upkeep session began (its limit is two minutes). */
-const MAC_UPKEEP_HOLD_MS = 3 * 60_000;
+/** An upkeep session waits in NoMac's line at most this long (NoMac's shortest). */
+const MAC_UPKEEP_QUEUE_SECONDS = 300;
+/** A start waits while an upkeep session began this recently: its line (5 minutes), its run (2) and a minute. */
+const MAC_UPKEEP_HOLD_MS = 8 * 60_000;
 /** The most held starts one tick tries again. */
 const MAC_RETRY_PER_TICK = 10;
 /** NoMac's own idle stop: its longest (an hour). A brain gone silent leaves the Mac to it. */
@@ -88,8 +91,19 @@ const MAC_TOUCH_EVERY_MS = 10 * 60_000;
 const MAC_BOOT_TIMEOUT_S = 600;
 
 const MAC_ID = /^mac[0-9a-f]{32}$/;
-/** A NoMac label ADE made for a Mac's drive. */
-const MAC_LABEL_PREFIX = "adem:";
+/**
+ * The start of every NoMac label this Worker makes for a Mac's drive. Each
+ * environment has its own (`MAC_LABEL_PREFIX`; production's is `adem:`), so a
+ * development and a production Worker on one NoMac key never touch each
+ * other's Macs: the orphan sweep, the webhook and the label reads match only
+ * their own.
+ */
+const MAC_LABEL_PREFIX_DEFAULT = "adem:";
+const MAC_LABEL_PREFIX_SHAPE = /^[a-z]{2,12}:$/;
+function macLabelPrefix(env: Pick<CloudEnv, "MAC_LABEL_PREFIX">): string {
+  const prefix = env.MAC_LABEL_PREFIX?.trim() ?? "";
+  return MAC_LABEL_PREFIX_SHAPE.test(prefix) ? prefix : MAC_LABEL_PREFIX_DEFAULT;
+}
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -99,13 +113,20 @@ export const MAC_SIZE = cloudSizeFor("mac", CLOUD_MAC_SHAPE.cpu, CLOUD_MAC_SHAPE
 /* ---- Ids and rows ---- */
 
 export const looksLikeMacId = (id: string): boolean => MAC_ID.test(id);
-export const macLabelOf = (instanceId: string): string => `${MAC_LABEL_PREFIX}${instanceId}`;
-export const instanceIdOfMacLabel = (label: unknown): string | null =>
-  typeof label === "string" && label.startsWith(MAC_LABEL_PREFIX) && MAC_ID.test(label.slice(MAC_LABEL_PREFIX.length)) ? label.slice(MAC_LABEL_PREFIX.length) : null;
+export const macLabelOf = (env: Pick<CloudEnv, "MAC_LABEL_PREFIX">, instanceId: string): string => `${macLabelPrefix(env)}${instanceId}`;
+/** The Mac a label of this environment names; null for any other label (another environment's included). */
+export function instanceIdOfMacLabel(env: Pick<CloudEnv, "MAC_LABEL_PREFIX">, label: unknown): string | null {
+  const prefix = macLabelPrefix(env);
+  return typeof label === "string" && label.startsWith(prefix) && MAC_ID.test(label.slice(prefix.length)) ? label.slice(prefix.length) : null;
+}
 
-/** A Mac's id, from its create's request id: a retried create names the same Mac, its label and its drive. */
-export async function macInstanceIdFor(requestId: string): Promise<string> {
-  return `mac${(await sha256Hex(`ade-cloud-mac:v1:${requestId}`)).slice(0, 32)}`;
+/**
+ * A Mac's id, from its reservation's own pending id: a retried create of that
+ * reservation names the same Mac, and a new reservation (a failed launch
+ * started again keeps its request id) a new one, never a deleted row's.
+ */
+export async function macInstanceIdFor(pendingId: string): Promise<string> {
+  return `mac${(await sha256Hex(`ade-cloud-mac:v2:${pendingId}`)).slice(0, 32)}`;
 }
 
 export const isMacRow = (row: Pick<ComputerRow, "provider"> | null | undefined): boolean => row?.provider === "nomac";
@@ -177,10 +198,13 @@ export function macStateOfSession(session: MacSession | null): { state: CloudMac
   }
 }
 
-async function call(env: CloudEnv, method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<NomacAnswer> {
+async function call(env: CloudEnv, method: string, path: string, body?: unknown, idempotencyKey?: string, timeoutMs?: number): Promise<NomacAnswer> {
   // A timeout or a dropped connection: unknown, like a 5xx (callers treat 5xx as "may have happened").
-  return nomac(env, method, `/api/v1${path}`, body, idempotencyKey).catch((): NomacAnswer => ({ status: 504, body: null }));
+  return nomac(env, method, `/api/v1${path}`, body, idempotencyKey, timeoutMs).catch((): NomacAnswer => ({ status: 504, body: null }));
 }
+
+/** What a call that asks NoMac to hold (`?wait=N`) may take: the wait and room for the answer. */
+const waitTimeoutMs = (waitSeconds: number): number => (waitSeconds + 10) * 1000;
 
 async function readSession(env: CloudEnv, sessionId: string): Promise<MacSession | null | "unreadable"> {
   const answer = await call(env, "GET", `/mac/sessions/${encodeURIComponent(sessionId)}`);
@@ -317,7 +341,16 @@ export function macObservedStatements(env: CloudEnv, row: ComputerRow, session: 
       statements.push(env.DB.prepare("update cloud_computers set mac_hard_deadline_at = ? where instance_id = ? and mac_session_id = ?").bind(deadline, row.instance_id, row.mac_session_id));
     }
   }
-  statements.push(...statusChangeStatements(env, row, macStatusOf(state), now, reason));
+  // Ready: a Mac launch's longer join window (it covered NoMac's line) shrinks to a Linux computer's from now,
+  // so a Mac that runs and never joins isn't kept awake as "joining" for the hour it no longer needs.
+  if (state === "running" && row.mac_state !== "running") {
+    statements.push(env.DB.prepare("update cloud_launches set join_expires_at = min(join_expires_at, ?) where instance_id = ? and state in ('joining', 'needs_approval') and join_expires_at is not null")
+      .bind(now + CLOUD_LAUNCH_JOIN_TTL_MS, macId));
+  }
+  // A session NoMac ended itself is billed to its own end, not to when DAEX heard of it (a late webhook or tick).
+  const endedAt = ended && session ? isoMs(session.shutdown_at) : null;
+  const at = endedAt != null ? Math.max(Math.min(endedAt, now), row.awake_since ?? endedAt) : now;
+  statements.push(...statusChangeStatements(env, row, macStatusOf(state), at, reason));
   row.mac_state = state;
   if (ended) row.mac_session_id = null;
   return statements;
@@ -356,28 +389,39 @@ async function templateDriveFor(env: CloudEnv, row: Pick<ComputerRow, "channel">
 /**
  * Starts a Mac for the row on its drive (its first: a copy of the channel's
  * template drive). NoMac's line full or at its Mac limit: the start is held
- * by ADE (`mac_state = 'queued'`, no session) and the tick tries again, so
+ * by DAEX (`mac_state = 'queued'`, no session) and the tick tries again, so
  * the person sees the queue, never an error. Answers the computer's status.
+ *
+ * Each start claims the row with a fresh `mac_start_token` and writes only
+ * while it still holds it: a stop meanwhile (`stopMac` clears the token) wins,
+ * and a session NoMac made for the lost start is stopped at once. `retry`
+ * (the tick's held start) claims only a row still queued, so a stop between
+ * the tick's read and its start is never undone. The token is also the
+ * start's idempotency key: a start after a stop is a new start at NoMac, even
+ * while the old session is still shutting down.
  */
-async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = row.instance_id): Promise<string> {
-  if (row.mac_session_id) {
+async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = row.instance_id, { retry = false }: { retry?: boolean } = {}): Promise<string> {
+  if (row.mac_session_id && !retry) {
     const current = await readSession(env, row.mac_session_id);
     if (current !== "unreadable" && current && isLiveSession(current) && current.state !== "stopping") {
       await env.DB.batch(macObservedStatements(env, row, current, now, "start_reused", macId));
       return macStatusOf(macStateOfSession(current).state);
     }
   }
+  const token = crypto.randomUUID();
+  const claimed = await env.DB.prepare(`update cloud_computers set mac_start_token = ? where instance_id = ? and deleted_at is null${retry ? " and mac_state = 'queued' and mac_session_id is null" : ""}`)
+    .bind(token, row.instance_id).run();
+  if ((claimed.meta?.changes ?? 0) !== 1) return retry ? "stopped" : macStatusOf((row.mac_state as CloudMacStateName | null) ?? "stopped");
+  row.mac_start_token = token;
   const minutes = Math.min(MAC_RUN_MINUTES, await macCreditMinutesLeft(env, row.user_id, now));
   if (minutes < 1) throw new CloudProviderError("You're out of DAEX Cloud credits for this period.", "out_of_hours", 402);
-  // A drive upkeep session may hold the label (two minutes at most): \`reuse\` would hand the person that short
-  // session, so the start is held and the tick starts it next minute (\`runMacTick\`).
-  const upkeep = await env.DB.prepare("select 1 as busy from cloud_mac_sessions where instance_id = ? and upkeep = 1 and coalesce(end_reason, '') <> 'drive_save' and created_at > ? limit 1")
+  // A drive upkeep session may hold the label: `reuse` would hand the person that short session, so the start is
+  // held and the tick starts it a minute later (`runMacTick`).
+  const upkeep = await env.DB.prepare("select 1 as busy from cloud_mac_sessions where instance_id = ? and upkeep = 1 and coalesce(end_reason, '') <> 'drive_save' and ended_at is null and created_at > ? limit 1")
     .bind(row.instance_id, now - MAC_UPKEEP_HOLD_MS).first<{ busy: number }>();
   if (upkeep) return holdStart(env, row, now, "upkeep_running");
   const template = await templateDriveFor(env, row);
-  const label = row.mac_label ?? macLabelOf(macId);
-  // One start per stop: a retry of this start reaches the same Mac, the next start (after a stop) is a new one.
-  const attempt = row.mac_last_session_at ?? row.created_at;
+  const label = row.mac_label ?? macLabelOf(env, macId);
   const answer = await call(env, "POST", "/mac/sessions", {
     label,
     reuse: true,
@@ -385,22 +429,25 @@ async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = ro
     queue_seconds: MAC_QUEUE_SECONDS,
     ...(template ? { access: { drive_from: template } } : {}),
     limits: limitsFor(minutes),
-  }, `ade-mac-${macId}-${attempt}`);
+  }, `ade-mac-${macId}-${token}`);
   const session = macSessionOf(answer.body?.session);
   const { code } = errorOf(answer);
   if (answer.status < 300 && session) {
-    const statements = [
-      env.DB.prepare(`update cloud_computers set mac_session_id = ?, mac_label = ?, mac_start_failed = null,
-        mac_hard_deadline_at = ? where instance_id = ?`).bind(session.id, label, now + minutes * 60_000, row.instance_id),
-    ];
+    const taken = await env.DB.prepare(`update cloud_computers set mac_session_id = ?, mac_label = ?, mac_start_failed = null,
+      mac_hard_deadline_at = ? where instance_id = ? and mac_start_token = ?`).bind(session.id, label, now + minutes * 60_000, row.instance_id, token).run();
+    if ((taken.meta?.changes ?? 0) !== 1) {
+      // A stop (or a delete) landed while NoMac answered: the session it made is stopped, never billed.
+      await call(env, "DELETE", `/mac/sessions/${encodeURIComponent(session.id)}?confirm=true`);
+      logCloud("cloud.mac_start_overtaken", { instanceId: macId });
+      return "stopped";
+    }
     row.mac_session_id = session.id;
     row.mac_label = label;
-    statements.push(...macObservedStatements(env, row, session, now, "start", macId));
-    await env.DB.batch(statements);
+    await env.DB.batch(macObservedStatements(env, row, session, now, "start", macId));
     logCloud("cloud.mac_started", { instanceId: macId, state: session.state, reused: answer.body?.reused === true });
     return macStatusOf(macStateOfSession(session).state);
   }
-  // NoMac's line is full, or the account runs its most Macs: ADE holds the start and the person sees the queue.
+  // NoMac's line is full, or the account runs its most Macs: DAEX holds the start and the person sees the queue.
   if (code === "queue_full" || code === "session_limit_reached" || code === "capacity_unavailable" || answer.status === 429) {
     return holdStart(env, row, now, code ?? `http_${answer.status}`);
   }
@@ -416,13 +463,14 @@ async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = ro
   throw providerFailure("start_failed", answer, { instanceId: macId });
 }
 
-/** A start DAEX holds (\`mac_state = 'queued'\`, status \`starting\`, unbilled) and the tick tries again. */
+/** A start DAEX holds (`mac_state = 'queued'`, status `starting`, unbilled) and the tick tries again; only while its start still holds the row. */
 async function holdStart(env: CloudEnv, row: ComputerRow, now: number, why: string): Promise<string> {
-  await env.DB.batch([
+  const [held] = await env.DB.batch([
     env.DB.prepare(`update cloud_computers set mac_state = 'queued', mac_state_at = case when mac_state = 'queued' then mac_state_at else ? end,
-      mac_session_id = null, mac_start_failed = null where instance_id = ?`).bind(now, row.instance_id),
-    ...statusChangeStatements(env, row, "starting", now, "start_held"),
+      mac_session_id = null, mac_start_failed = null where instance_id = ? and mac_start_token is ?`).bind(now, row.instance_id, row.mac_start_token ?? null),
   ]);
+  if ((held?.meta?.changes ?? 0) !== 1) return "stopped";
+  await env.DB.batch(statusChangeStatements(env, row, "starting", now, "start_held"));
   row.mac_state = "queued";
   logCloud("cloud.mac_start_held", { instanceId: row.instance_id, code: why });
   return "starting";
@@ -430,6 +478,9 @@ async function holdStart(env: CloudEnv, row: ComputerRow, now: number, why: stri
 
 /** Stops the Mac it has now (its drive is saved as it goes). A Mac already gone is stopped. */
 async function stopMac(env: CloudEnv, row: ComputerRow, now: number, reason: string): Promise<string> {
+  // First: a start in flight loses its claim and stops the session it gets (`startMac`).
+  await env.DB.prepare("update cloud_computers set mac_start_token = null where instance_id = ?").bind(row.instance_id).run();
+  row.mac_start_token = null;
   if (!row.mac_session_id) {
     // A start ADE was still holding: it is called off.
     if (row.mac_state === "queued") {
@@ -466,7 +517,7 @@ async function stopMac(env: CloudEnv, row: ComputerRow, now: number, reason: str
  */
 async function deleteMac(env: CloudEnv, row: ComputerRow, now: number): Promise<void> {
   if (row.mac_session_id || row.mac_state === "queued") await stopMac(env, row, now, "delete");
-  const label = row.mac_label ?? macLabelOf(row.instance_id);
+  const label = row.mac_label ?? macLabelOf(env, row.instance_id);
   const answer = await call(env, "DELETE", `/labels/${encodeURIComponent(label)}`);
   if (answer.status >= 400 && answer.status !== 404) {
     const { code } = errorOf(answer);
@@ -523,7 +574,7 @@ export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string
     argv: ["/bin/bash", "-lc", MAC_BOOT_COMMAND],
     env: bootEnv,
     timeout_seconds: MAC_BOOT_TIMEOUT_S,
-  }, `ade-mac-boot-${sessionId}`);
+  }, `ade-mac-boot-${sessionId}`, waitTimeoutMs(50));
   const job = (answer.body?.job ?? answer.body) as { exit_code?: unknown; state?: unknown } | null;
   const failed = answer.status >= 400 || (typeof job?.exit_code === "number" && job.exit_code !== 0);
   if (failed) {
@@ -565,12 +616,12 @@ async function execMac(env: CloudEnv, row: ComputerRow, command: string, timeout
   let answer = await call(env, "POST", `/mac/sessions/${encodeURIComponent(sessionId)}/jobs?wait=${Math.min(50, timeoutSeconds)}`, {
     argv: ["/bin/bash", "-lc", `${MAC_EXEC_PRELUDE}${command}`],
     timeout_seconds: timeoutSeconds,
-  }, `ade-mac-exec-${crypto.randomUUID()}`);
+  }, `ade-mac-exec-${crypto.randomUUID()}`, waitTimeoutMs(50));
   const deadline = Date.now() + timeoutMs;
   const jobOf = (value: NomacAnswer) => (value.body?.job ?? value.body) as { id?: unknown; state?: unknown; exit_code?: unknown; stdout?: unknown; stderr?: unknown } | null;
   let job = jobOf(answer);
   while (answer.status < 400 && (job?.state === "running" || job?.state === "queued") && typeof job.id === "string" && Date.now() < deadline) {
-    answer = await call(env, "GET", `/mac/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(job.id)}?wait=${Math.max(1, Math.min(50, Math.ceil((deadline - Date.now()) / 1000)))}`);
+    answer = await call(env, "GET", `/mac/sessions/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(job.id)}?wait=${Math.max(1, Math.min(50, Math.ceil((deadline - Date.now()) / 1000)))}`, undefined, undefined, waitTimeoutMs(50));
     job = jobOf(answer);
   }
   if (answer.status >= 400 || typeof job?.exit_code !== "number") {
@@ -590,16 +641,23 @@ async function execMac(env: CloudEnv, row: ComputerRow, command: string, timeout
 async function createMac(env: CloudEnv, input: CloudCreateInput): Promise<CloudInstance> {
   const requestId = input.metadata?.ade_request_id;
   if (!requestId) throw new CloudProviderError("DAEX Cloud couldn't make that Mac.", "bad_request", 400);
-  const instanceId = await macInstanceIdFor(requestId);
+  // The reservation this create is for: a request id is only ever one account's, and one live row of it
+  // (`reserveComputer` refuses both), so it names this account's own row.
+  const pending = await env.DB.prepare("select * from cloud_computers where request_id = ? and deleted_at is null and instance_id like 'pending:%' limit 1")
+    .bind(requestId).first<ComputerRow>();
+  if (!pending) throw new CloudProviderError("DAEX Cloud couldn't make that Mac.", "bad_request", 409);
+  // A retry of this create keeps the id it was given; a new reservation gets its own.
+  const instanceId = macMetadataOf(pending).ade_mac_instance_id ?? await macInstanceIdFor(pending.instance_id);
+  if (!MAC_ID.test(instanceId)) throw new CloudProviderError("DAEX Cloud couldn't make that Mac.", "bad_request", 409);
   const { ADE_LAUNCH_JOIN: _join, ...keptEnv } = input.env ?? {};
   const metadata = { ...(input.metadata ?? {}), ade_mac_instance_id: instanceId };
   const marked = await env.DB.prepare(`
     update cloud_computers set provider = 'nomac', os = 'mac', mac_label = ?, mac_state = 'queued', mac_state_at = ?,
       mac_metadata_json = ?, mac_boot_env_json = ?
-    where request_id = ? and deleted_at is null and (instance_id like 'pending:%' or instance_id = ?)
-  `).bind(macLabelOf(instanceId), Date.now(), JSON.stringify(metadata), JSON.stringify(keptEnv), requestId, instanceId).run();
+    where instance_id = ? and deleted_at is null
+  `).bind(macLabelOf(env, instanceId), Date.now(), JSON.stringify(metadata), JSON.stringify(keptEnv), pending.instance_id).run();
   if ((marked.meta?.changes ?? 0) === 0) throw new CloudProviderError("DAEX Cloud couldn't make that Mac.", "bad_request", 409);
-  const row = await env.DB.prepare("select * from cloud_computers where request_id = ? and deleted_at is null order by created_at desc limit 1").bind(requestId).first<ComputerRow>();
+  const row = await env.DB.prepare("select * from cloud_computers where instance_id = ?").bind(pending.instance_id).first<ComputerRow>();
   if (!row) throw new CloudProviderError("DAEX Cloud couldn't make that Mac.", "bad_request", 409);
   // The start writes on the pending row, keyed at NoMac by the Mac's own id: a retry reaches the same session.
   const status = await startMac(env, row, Date.now(), instanceId);
@@ -688,7 +746,7 @@ export async function runMacTick(env: CloudEnv, now: number): Promise<void> {
             ...statusChangeStatements(env, row, "stopped", now, "mac_queue_expired"),
           ]);
         } else if (retries++ < MAC_RETRY_PER_TICK) {
-          await startMac(env, row, now);
+          await startMac(env, row, now, row.instance_id, { retry: true });
         }
         continue;
       }
@@ -728,12 +786,14 @@ async function stopOrphanSessions(env: CloudEnv, now: number): Promise<void> {
   const sessions = (Array.isArray(answer.body?.sessions) ? answer.body.sessions as unknown[] : []).map(macSessionOf);
   for (const session of sessions) {
     if (!session || !isLiveSession(session) || session.state === "stopping") continue;
-    const instanceId = instanceIdOfMacLabel(session.label);
+    const instanceId = instanceIdOfMacLabel(env, session.label);
     if (!instanceId) continue;
     const created = isoMs(session.created_at) ?? now;
     // A start in flight writes its session just after NoMac answers it: only older ones are orphans.
     if (now - created < 5 * 60_000) continue;
-    const owner = await env.DB.prepare("select 1 as held from cloud_computers where provider = 'nomac' and deleted_at is null and mac_session_id = ? limit 1").bind(session.id).first<{ held: number }>();
+    // A row's own session, or DAEX's drive upkeep (it ends by its own two-minute limit).
+    const owner = await env.DB.prepare(`select 1 as held from cloud_computers where provider = 'nomac' and deleted_at is null and mac_session_id = ?
+      union all select 1 from cloud_mac_sessions where session_id = ? and upkeep = 1 limit 1`).bind(session.id, session.id).first<{ held: number }>();
     if (owner) continue;
     await call(env, "DELETE", `/mac/sessions/${encodeURIComponent(session.id)}?confirm=true`);
     reportCloudFailure("cloud.mac_orphan_stopped", { instanceId }, "cloud-mac");
@@ -742,41 +802,67 @@ async function stopOrphanSessions(env: CloudEnv, now: number): Promise<void> {
 
 /**
  * The daily upkeep: a Mac lane kept with its drive unused for
- * `MAC_DRIVE_UPKEEP_DAYS` gets a one-minute session so NoMac's 30-day rule
- * never deletes a drive ADE still keeps. ADE pays (`upkeep = 1`), the person
- * is never billed (the meter never opens: the row's session stays its own).
+ * `MAC_DRIVE_UPKEEP_DAYS` gets a short session so NoMac's 30-day rule never
+ * deletes a drive DAEX still keeps. DAEX pays (`upkeep = 1`), the person is
+ * never billed (the row's session stays its own, so the meter never opens).
+ * The drive counts as used only once NoMac says a session reached ready: each
+ * run first reads the upkeep sessions it started before, and a drive whose
+ * upkeep never ran (NoMac's line, a failure) is tried again the next day.
  */
 export async function runMacDriveUpkeep(env: CloudEnv, now: number): Promise<number> {
   if (!env.NOMAC_API_KEY?.trim()) return 0;
+  await settleUpkeepSessions(env, now);
   const due = await env.DB.prepare(`
-    select instance_id, user_id, mac_label from cloud_computers
-    where provider = 'nomac' and deleted_at is null and instance_id not like 'pending:%' and mac_session_id is null and coalesce(mac_state, 'stopped') = 'stopped'
-      and coalesce(mac_last_session_at, created_at) < ?
-    order by coalesce(mac_last_session_at, created_at) limit ?
+    select c.instance_id, c.user_id, c.mac_label from cloud_computers c
+    where c.provider = 'nomac' and c.deleted_at is null and c.instance_id not like 'pending:%' and c.mac_session_id is null
+      and coalesce(c.mac_state, 'stopped') = 'stopped' and coalesce(c.mac_last_session_at, c.created_at) < ?
+      and not exists (select 1 from cloud_mac_sessions u where u.instance_id = c.instance_id and u.upkeep = 1 and u.ended_at is null
+        and coalesce(u.end_reason, '') <> 'drive_save')
+    order by coalesce(c.mac_last_session_at, c.created_at) limit ?
   `).bind(now - MAC_DRIVE_UPKEEP_DAYS * DAY_MS, MAC_UPKEEP_PER_RUN).all<{ instance_id: string; user_id: string; mac_label: string | null }>();
-  let woken = 0;
+  let started = 0;
   for (const row of due.results ?? []) {
-    const label = row.mac_label ?? macLabelOf(row.instance_id);
-    const started = await call(env, "POST", "/mac/sessions", {
-      label, reuse: true, require_drive: true, queue_seconds: MAC_QUEUE_SECONDS,
+    const label = row.mac_label ?? macLabelOf(env, row.instance_id);
+    const answer = await call(env, "POST", "/mac/sessions", {
+      label, reuse: true, require_drive: true, queue_seconds: MAC_UPKEEP_QUEUE_SECONDS,
       limits: { max_duration_seconds: 120, idle_timeout_seconds: 60, spend_cap_microunits: String(3 * MAC_COST_MICROS_PER_MINUTE) },
     }, `ade-mac-upkeep-${row.instance_id}-${new Date(now).toISOString().slice(0, 10)}`);
-    const session = macSessionOf(started.body?.session);
-    if (started.status >= 300 || !session) {
-      reportCloudFailure("cloud.mac_upkeep_failed", { instanceId: row.instance_id, status: started.status, code: errorOf(started).code }, "cloud-mac");
+    const session = macSessionOf(answer.body?.session);
+    if (answer.status >= 300 || !session) {
+      reportCloudFailure("cloud.mac_upkeep_failed", { instanceId: row.instance_id, status: answer.status, code: errorOf(answer).code }, "cloud-mac");
       continue;
     }
-    await env.DB.batch([
-      // Its cost is its two-minute ceiling, for the owner's report: NoMac never reports a session that isn't a row's own.
-      env.DB.prepare(`insert into cloud_mac_sessions (session_id, instance_id, user_id, created_at, cost_micros, upkeep) values (?, ?, ?, ?, ?, 1) on conflict (session_id) do nothing`)
-        .bind(session.id, row.instance_id, row.user_id, now, 2 * MAC_COST_MICROS_PER_MINUTE),
-      // The clock restarts now: the next upkeep is 25 days on, and a session this short is enough for NoMac.
-      env.DB.prepare("update cloud_computers set mac_last_session_at = ? where instance_id = ?").bind(now, row.instance_id),
-    ]);
-    woken += 1;
+    // Its cost is its two-minute ceiling, for the owner's report: NoMac never reports a session that isn't a row's own.
+    // The drive's clock moves only when this session is seen ready (`settleUpkeepSessions`).
+    await env.DB.prepare(`insert into cloud_mac_sessions (session_id, instance_id, user_id, created_at, cost_micros, upkeep) values (?, ?, ?, ?, ?, 1) on conflict (session_id) do nothing`)
+      .bind(session.id, row.instance_id, row.user_id, now, 2 * MAC_COST_MICROS_PER_MINUTE).run();
+    started += 1;
   }
-  if (woken) logCloud("cloud.mac_upkeep", { woken });
-  return woken;
+  if (started) logCloud("cloud.mac_upkeep", { started });
+  return started;
+}
+
+/** The upkeep sessions not yet settled: ready ones move their drive's clock, ended ones close; nothing else counts as use. */
+async function settleUpkeepSessions(env: CloudEnv, now: number): Promise<void> {
+  const open = await env.DB.prepare(`
+    select session_id, instance_id from cloud_mac_sessions
+    where upkeep = 1 and ended_at is null and coalesce(end_reason, '') <> 'drive_save' order by created_at limit ?
+  `).bind(MAC_UPKEEP_PER_RUN * 2).all<{ session_id: string; instance_id: string }>();
+  for (const entry of open.results ?? []) {
+    const session = await readSession(env, entry.session_id);
+    if (session === "unreadable") continue;
+    const readyAt = session ? isoMs(session.ready_at) : null;
+    const ended = !session || !isLiveSession(session);
+    const statements: D1PreparedStatement[] = [];
+    if (readyAt != null) {
+      statements.push(env.DB.prepare("update cloud_computers set mac_last_session_at = max(coalesce(mac_last_session_at, 0), ?) where instance_id = ?").bind(readyAt, entry.instance_id));
+    }
+    if (ended) {
+      statements.push(env.DB.prepare("update cloud_mac_sessions set ended_at = ?, ready_at = coalesce(ready_at, ?), end_reason = coalesce(end_reason, ?) where session_id = ?")
+        .bind(session ? (isoMs(session.shutdown_at) ?? now) : now, readyAt, readyAt != null ? "upkeep" : "upkeep_never_ran", entry.session_id));
+    }
+    if (statements.length) await env.DB.batch(statements);
+  }
 }
 
 /**
@@ -790,7 +876,7 @@ export async function handleMacWebhook(env: CloudEnv, type: string, data: Record
   const session = macSessionOf(data?.session);
   const drive = data?.drive && typeof data.drive === "object" ? data.drive as Record<string, unknown> : null;
   const label = session?.label ?? (typeof data?.label === "string" ? data.label : null) ?? (typeof drive?.label === "string" ? drive.label : null);
-  const instanceId = instanceIdOfMacLabel(label);
+  const instanceId = instanceIdOfMacLabel(env, label);
   if (!instanceId) return;
   const row = await macRowOf(env, instanceId);
   if (!row) return;
@@ -805,9 +891,11 @@ export async function handleMacWebhook(env: CloudEnv, type: string, data: Record
     return;
   }
   if (type === "drive.deleted") {
-    const read = await call(env, "GET", `/labels/${encodeURIComponent(row.mac_label ?? macLabelOf(instanceId))}`);
+    const read = await call(env, "GET", `/labels/${encodeURIComponent(row.mac_label ?? macLabelOf(env, instanceId))}`);
     const macs = read.body?.macs && typeof read.body.macs === "object" ? read.body.macs as Record<string, unknown> : null;
-    const gone = read.status === 404 || (read.status === 200 && (macs?.drive == null));
+    // Only plain evidence: the label is unknown (404), or its answer names a drive field that is empty. Any other
+    // shape keeps the drive (a wrong "lost" would refuse every start of a healthy one); the next start shows the truth.
+    const gone = read.status === 404 || (read.status === 200 && macs != null && Object.hasOwn(macs, "drive") && macs.drive == null);
     if (!gone) return;
     await env.DB.prepare("update cloud_computers set mac_start_failed = 'drive_lost', mac_state = 'stopped', mac_state_at = ? where instance_id = ? and mac_session_id is null").bind(now, instanceId).run();
     reportCloudFailure("cloud.mac_drive_lost", { instanceId }, "cloud-mac");
@@ -987,5 +1075,15 @@ export async function stopAccountMacs(env: CloudEnv, userId: string, now: number
 /** Every Mac drive of a deleted account goes (`accountDeletion.ts`). Throws while NoMac still saves one, so the deletion is retried. */
 export async function forgetAccountMacs(env: CloudEnv, userId: string, now: number): Promise<void> {
   const rows = (await env.DB.prepare("select * from cloud_computers where user_id = ? and provider = 'nomac'").bind(userId).all<ComputerRow>()).results ?? [];
-  for (const row of rows) await deleteMac(env, row, now);
+  for (const row of rows) {
+    if (row.deleted_at == null) {
+      await deleteMac(env, row, now);
+      continue;
+    }
+    // A closed row keeps its status (\`deleted\`) and power log: only its label (the drive) goes at NoMac.
+    const answer = await call(env, "DELETE", `/labels/${encodeURIComponent(row.mac_label ?? macLabelOf(env, row.instance_id))}`);
+    if (answer.status >= 400 && answer.status !== 404) {
+      throw new CloudProviderError("The Mac is still saving its drive. Try again in a minute.", TRY_AGAIN_CODE, 503);
+    }
+  }
 }

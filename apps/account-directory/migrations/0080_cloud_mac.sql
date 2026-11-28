@@ -32,6 +32,9 @@ alter table cloud_computers add column mac_boot_env_json text;
 -- When the account server last ran a command on the running Mac for its busy
 -- brain (\`/use\`): NoMac's own idle stop counts commands, not a background service.
 alter table cloud_computers add column mac_touched_at integer;
+-- The start that holds the row now (\`startMac\`); a stop clears it, so a start
+-- whose answer comes after the stop writes nothing and stops what it got.
+alter table cloud_computers add column mac_start_token text;
 create index if not exists idx_cloud_computers_provider_live on cloud_computers (provider) where deleted_at is null and provider is not null;
 
 -- Each Mac session, for the owner's cost report and the daily check against

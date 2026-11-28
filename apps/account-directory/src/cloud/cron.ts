@@ -106,10 +106,19 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   await stopPhonesDue(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.phone_stops_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
-  // The DAEX Cloud Mac (`macProvider.ts`): held starts, extends, the switch going back, orphans. Its own NoMac reads.
-  await runMacTick(env, now).catch((error: unknown) => {
+  // The DAEX Cloud Mac (`macProvider.ts`): held starts, extends, the switch going back, orphans. Its own NoMac
+  // reads, beside the Linux tick (never ahead of it: a slow NoMac must not make the zero stop late), awaited at the end.
+  const macTick = runMacTick(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.mac_tick_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
+  try {
+    await runComputerTick(env, now, options, waitUntil);
+  } finally {
+    await macTick;
+  }
+}
+
+async function runComputerTick(env: CloudEnv, now: number, options: { provider?: CloudProvider }, waitUntil: CloudWaitUntil | undefined): Promise<void> {
   const key = env.AGENT37_API_KEY?.trim();
   if (!key && !env.NOMAC_API_KEY?.trim()) return;
   const rows = await env.DB.prepare(`
