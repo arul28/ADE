@@ -90,8 +90,8 @@ export function TermsPage() {
                 <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
                   <p>
                     A chat uses DAEX Cloud when it runs on a DAEX Cloud computer (Linux or Mac), uses a DAEX Cloud iPhone, or uses a DAEX Free Model. Chats that use DAEX Cloud can show ads for accounts that have ads on: an ad from Gravity (IRIS
-                    Inc.), DAEX’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored tool. A DAEX Free
-                    Model chat shows ads while you have DAEX Free Models turned on, because the ads pay for the model. In the
+                    Inc.), DAEX’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored tool. A chat that used a DAEX
+                    Free Model in the last 24 hours shows ads while you have DAEX Free Models turned on, because the ads pay for the model. In the
                     United States, except California, ads start on and DAEX tells you so; in California and the other
                     countries where DAEX offers ads, they show only after you agree. You can turn them off at any time in
                     Settings › DAEX Cloud. With ads on, DAEX Cloud costs less. Where DAEX Cloud shows an ad price, a computer uses it while you use a chat on it with ads on and no full-price work runs on it: a CLI session, an automation, or work that an outside agent started through DAEX MCP. At its ad price a Small computer on Free is free; at its full price it uses credits. With ads off, Small computers on Free
