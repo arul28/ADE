@@ -2,21 +2,8 @@ import { useState, type CSSProperties } from "react";
 import { Check, Copy } from "@phosphor-icons/react";
 import type { AdeAccountStatus } from "../../../shared/types";
 import { accountInitials } from "../../lib/account";
-import { isWebClientMode } from "../../lib/webClientMode";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
-import { RouteIcon } from "./MachineRoutes";
-import { machineReachHeadline, type MachineRouteItem } from "./machineRouteModel";
 import { rgbCss, useProfilePalette } from "./useProfilePalette";
-
-/** What the banner says about the computer this window runs on. */
-export type AccountThisComputer = {
-  name: string;
-  /** "ADE 1.4.2", or both versions when the app and the brain differ. */
-  version: string | null;
-  /** False when the account directory has no row for this computer; null until it answers. */
-  listed: boolean | null;
-  routes: MachineRouteItem[];
-};
 
 /** The avatar as a floating coin: face, a stacked edge in the picture's own dark tone, a gloss and a floor shadow. */
 function FloatingAvatar({
@@ -59,50 +46,10 @@ function FloatingAvatar({
   );
 }
 
-function ThisComputerCard({ computer }: { computer: AccountThisComputer | null }) {
-  // The hosted web client is a browser, not a computer on the account.
-  if (isWebClientMode()) return null;
-  if (!computer) {
-    return (
-      <div className="ade-ah-panel" aria-busy>
-        <div className="ade-ah-panel-eyebrow">This computer</div>
-        <div className="ade-ah-panel-empty">Checking this computer…</div>
-      </div>
-    );
-  }
-  return (
-    <div className="ade-ah-panel">
-      <div className="ade-ah-panel-head">
-        <div className="ade-ah-panel-id">
-          <div className="ade-ah-panel-eyebrow">This computer</div>
-          <div className="ade-ah-panel-name" title={computer.name}>{computer.name}</div>
-        </div>
-        <span className="ade-ah-status" data-tone={computer.listed === true ? "on" : computer.listed === false ? "warn" : "idle"}>
-          <i />
-          {computer.listed === true ? "Online" : computer.listed === false ? "Not on your account" : "Checking…"}
-        </span>
-      </div>
-      <div className="ade-ah-panel-meta">
-        {[computer.version, machineReachHeadline(computer.routes)].filter(Boolean).join(" · ")}
-      </div>
-      <ul className="ade-ah-routes" aria-label="How other devices reach this computer">
-        {computer.routes.map((route) => (
-          <li key={route.kind} className="ade-ah-route" data-tone={route.tone} title={route.detail ?? undefined}>
-            <span className="ade-ah-route-icon"><RouteIcon kind={route.kind} size={13} /></span>
-            <span className="ade-ah-route-name">{route.label}</span>
-            {route.detail ? <span className="ade-ah-route-detail">{route.detail}</span> : <span className="ade-ah-route-gap" />}
-            <span className="ade-ah-route-word"><i />{route.word}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 /**
  * The top of the Account page: who is signed in, on a mesh painted from their
- * own profile picture, and the computer this window runs on with each way
- * other devices reach it.
+ * own profile picture. This computer's facts live on its row in Your
+ * computers (tagged "This computer").
  */
 export function AccountHero({
   status,
@@ -111,7 +58,6 @@ export function AccountHero({
   onAvatarError,
   tint,
   providerCaption,
-  thisComputer,
 }: {
   status: AdeAccountStatus;
   avatarImage: string | null;
@@ -119,7 +65,6 @@ export function AccountHero({
   onAvatarError: () => void;
   tint: string;
   providerCaption: string | null;
-  thisComputer: AccountThisComputer | null;
 }) {
   const palette = useProfilePalette(avatarBroken ? null : avatarImage, tint);
   const [base, deep, mid, bright, light] = palette.ramp;
@@ -154,7 +99,6 @@ export function AccountHero({
             </div>
           ) : null}
         </div>
-        <ThisComputerCard computer={thisComputer} />
       </div>
     </section>
   );

@@ -95,7 +95,7 @@ export function InviteCodeBox({
 
 /**
  * The dashboard's invite card: the person's own link to share, how many
- * friends joined and the credits earned, and (while they may) a box to enter
+ * friends joined and the credits from invites, and (while they may) a box to enter
  * someone else's invite.
  */
 export function CloudInviteCard({ account, onChanged }: { account: CloudAccountState; onChanged: () => void }) {
@@ -134,8 +134,8 @@ export function CloudInviteCard({ account, onChanged }: { account: CloudAccountS
         </div>
         <dl className="adecd-invite-stats">
           <div className="kit-panel"><dt>Friends joined</dt><dd className="kit-num" data-face="ui">{referral.friendsJoined}</dd></div>
-          <div className="kit-panel"><dt>{Noun} earned</dt><dd className="kit-num" data-face="ui">{formatCloudHours(referral.hoursEarnedMilli, scale)}</dd></div>
-          <div className="kit-panel"><dt>Rewards left</dt><dd className="kit-num" data-face="ui">{referral.rewardsLeft} of {referral.rewardLimit}</dd></div>
+          <div className="kit-panel"><dt>{Noun} from invites</dt><dd className="kit-num" data-face="ui">{formatCloudHours(referral.hoursEarnedMilli, scale)}</dd></div>
+          <div className="kit-panel"><dt>Invites left</dt><dd className="kit-num" data-face="ui">{referral.rewardsLeft} of {referral.rewardLimit}</dd></div>
         </dl>
         {referral.canEnterCode && !referral.hasReferrer ? (
           <div className="adecd-invite-friend">

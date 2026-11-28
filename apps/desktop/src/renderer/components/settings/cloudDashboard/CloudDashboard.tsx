@@ -26,6 +26,8 @@ import {
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { cloudAdsViewOf, cloudPricingOf } from "../../../../shared/cloudAdPriceWords";
+import { cloudTiers } from "../../../../shared/cloudTiers";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
 import { formatAgo, ipcErrorMessage } from "../../../lib/format";
@@ -349,11 +351,14 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
       <CloudSavedLaneWorkCard shownLaneIds={shownLaneIds} />
       {ownComputer ? (
         <div className="adecd-pair">
-          <CloudSignIns />
+          {/* Two columns of about the same height: the invite card sits under the sign-ins. */}
+          <div className="adecd-stack">
+            <CloudSignIns />
+            <CloudInviteCard account={account} onChanged={refresh} />
+          </div>
           <div className="adecd-stack">
             <CloudAgentLimitsCard />
             <CloudFreeModelsCard account={account} />
-            <CloudInviteCard account={account} onChanged={refresh} />
           </div>
         </div>
       ) : (
@@ -408,6 +413,10 @@ function CloudHero({
   const level = usageLeftLevel(hoursPct);
   // Small is free unless the account's catalog rates it (Free, sponsored cards off): then its time left shows too.
   const smallRateMilli = cloudSmallRateMilli(catalog);
+  // Under Pricing v3, Free's Small with ads on is free: a message still starts it at 0 credits.
+  const adsView = cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+  const smallAdMilli = cloudTiers(catalog).find((tier) => tier.id === "small")?.adMultiplierMilli ?? null;
+  const smallFreeNow = smallRateMilli <= 0 || (adsView?.available === true && adsView.on && smallAdMilli === 0);
   const forecast = hoursForecast(account, now, words);
   const worth = heroCreditsWorth(account, words);
   const parts = heroBalanceParts(account);
@@ -439,9 +448,9 @@ function CloudHero({
   // Free credits held (GitHub rules, or another account used them here) don't come back at the reset, and nothing runs.
   const pauseLine = held
     ? earned > 0
-      ? "Your earned credits run your computers. Once they're used, cloud computers wait until the free plan's check clears, or you pick a paid plan."
+      ? "Your credits from invites run your computers. Once they're used, cloud computers wait until the free plan's check clears, or you pick a paid plan."
       : "Cloud computers wait until the free plan's check clears, or you pick a paid plan."
-    : smallRateMilli > 0
+    : !smallFreeNow
     ? `When credits run out, cloud computers pause until the plan renews on ${formatCloudDate(account.billing.periodEnd)}.`
     : `When credits run out, bigger computers pause until the plan renews on ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
   return (
@@ -479,9 +488,7 @@ function CloudHero({
             {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
             {githubLine ? <li data-tone="warn">{githubLine} <button type="button" className="adecd-linkish" onClick={toPlans}>See how</button></li> : null}
             {worth || forecast ? <li>{[worth, forecast].filter(Boolean).join(" ")}</li> : null}
-            {earned > 0 ? <li data-tone="lamp">{words.scale === 1
-              ? `${words.milli(earned)} earned from invites, used after your plan's. They never expire.`
-              : `${words.milli(earned)} from invites, used after your plan's. They never expire.`}</li> : null}
+            {earned > 0 ? <li data-tone="lamp">{`${words.milli(earned)} from invites, used after your plan's. They never expire.`}</li> : null}
             {/* What happens at zero: one line, with the same link the old card had. */}
             <li className="adecd-hero-when" data-on={keepsGoing || undefined}>
               {keepsGoing

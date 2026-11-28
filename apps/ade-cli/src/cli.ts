@@ -22382,7 +22382,7 @@ function formatCloudInvite(value: unknown): string {
   const lines = [
     `Your invite link: ${referral.link}`,
     `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud credits, and so do you once their first chat runs on ${BRAND.CLOUD_NAME}.`,
-    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} credits earned.`,
+    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} invites used, ${formatCloudHours(referral.hoursEarnedMilli)} credits from invites.`,
   ];
   if (referral.canEnterCode && referral.enterCodeUntil != null) {
     lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);

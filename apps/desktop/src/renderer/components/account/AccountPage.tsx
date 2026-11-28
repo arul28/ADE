@@ -42,7 +42,7 @@ import { ConfirmSheet, YourMacsCard } from "./YourMacsCard";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { ModernPage, ModernSection } from "../settings/primitives";
-import { AccountHero, type AccountThisComputer } from "./AccountHero";
+import { AccountHero } from "./AccountHero";
 import { OtherMachinesUpdateSection } from "../settings/OtherMachinesUpdateSection";
 import "./accountPage.css";
 import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
@@ -506,7 +506,6 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
-  const [thisComputer, setThisComputer] = useState<AccountThisComputer | null>(null);
   const [repoBridgeDismissed, setRepoBridgeDismissed] = useState(() => readDismissed(REPO_BRIDGE_DISMISS_KEY));
   const backRef = useRef<HTMLButtonElement>(null);
 
@@ -621,9 +620,8 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
         onAvatarError={() => setAvatarBroken(true)}
         tint={ringTint}
         providerCaption={providerCaption}
-        thisComputer={thisComputer}
       />
-      <YourMacsCard onThisComputer={setThisComputer} between={<OtherMachinesUpdateSection group="Account" compact />} />
+      <YourMacsCard between={<OtherMachinesUpdateSection group="Account" compact />} />
       <AccountDetailsSection
         showRepoBridge={showRepoBridge}
         onDismissRepoBridge={dismissRepoBridge}
