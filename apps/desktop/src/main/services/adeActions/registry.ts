@@ -4679,11 +4679,11 @@ function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService 
 const CLOUD_PHONE_EXPECTED_CODES: ReadonlySet<string> = new Set([
   "phone_credits_out", "phone_not_on_account", "phone_paused",
   "phone_not_running", "phone_running", "no_account", "declined", "bad_request", "out_path_outside_root",
-  "device_build", CLOUD_ACCESS_REFUSED,
+  "device_build", "build_not_found", CLOUD_ACCESS_REFUSED,
 ]);
-/** Waiting on NoMac (its phone limit, a slow call): a warning, not an error. */
+/** Waiting on a provider (its phone limit, the account's one build at a time, a slow call): a warning, not an error. */
 const CLOUD_PHONE_WARNING_CODES: ReadonlySet<string> = new Set([
-  "phone_busy", "phone_unavailable", "phone_queue_timeout", "fetch_timeout", "tool_timeout", "fetch_failed",
+  "phone_busy", "build_running", "phone_unavailable", "phone_queue_timeout", "fetch_timeout", "tool_timeout", "fetch_failed",
 ]);
 
 /**
@@ -4742,6 +4742,7 @@ function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
   const broker = runtime.computerUseArtifactBrokerService;
   const proof = broker ? { ingest: (request: Parameters<typeof broker.ingest>[0]) => broker.ingest(request), projectRoot: runtime.projectRoot ?? null } : null;
   const guard = cloudPhoneAgentGuard(runtime);
+  const planGuard = cloudPhonePlanGuard(runtime);
   const guarded = <A, R>(run: (args: A) => Promise<R>) => async (args: A): Promise<R> => {
     await guard(args);
     rememberCloudPhoneChat(args, runtime);
@@ -4760,6 +4761,28 @@ function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
     perf: guarded(service.perf),
     screenshot: guarded((args) => service.screenshot(args, proof)),
     record: guarded((args) => service.record(args, proof)),
+    // No credits (`CLOUD_PHONE_BUILD_ACTIONS`): a build with no phone, held back only in plan mode, and its log.
+    build: async (args) => {
+      planGuard(args);
+      return await service.build(args);
+    },
+    buildLog: (args) => service.buildLog(args, proof),
+  };
+}
+
+/** What a chat in plan mode is told when it asks the cloud iPhone to run or build anything. */
+const planModeRefusal = (): CloudPhoneError => new CloudPhoneError(`This chat is in plan mode, so it doesn't use the ${BRAND.CLOUD_NAME} iPhone.`, "declined");
+
+/**
+ * A build with no phone (`build`) spends no credits, so it skips the
+ * spending guard; a chat in plan mode still doesn't upload its project to
+ * build. The chat is the one the RPC server stamped, never the caller's word.
+ */
+function cloudPhonePlanGuard(runtime: AccountDomainRuntime): (args: unknown) => void {
+  const chats = runtime.agentChatService ?? null;
+  return (args) => {
+    const chatSessionId = cloudPhoneCallerChat(args);
+    if (chatSessionId && chats?.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) === "plan") throw planModeRefusal();
   };
 }
 
@@ -4787,7 +4810,7 @@ function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) =>
     if (!stamp || stamp.by === "person") return;
     const chatSessionId = typeof stamp.chatSessionId === "string" && stamp.chatSessionId.trim() ? stamp.chatSessionId.trim() : null;
     const level = chatSessionId ? chats?.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null : null;
-    if (level === "plan") throw new CloudPhoneError(`This chat is in plan mode, so it doesn't use the ${BRAND.CLOUD_NAME} iPhone.`, "declined");
+    if (level === "plan") throw planModeRefusal();
     const automation = stamp.automation === true
       || (chatSessionId && chats ? Boolean((await chats.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId) : false);
     // A chat watched by a person goes ahead. An agent with no chat (a script, a

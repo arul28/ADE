@@ -156,8 +156,9 @@ endpoint that cannot read them rejects every request.
 ## Permissions and questions
 
 - Rules are ordered, last match wins, after OpenCode's base policy.
-  `ade-full-auto` = `* allow`; `ade-plan` denies edits, web search and skills
-  and asks for shell; `ade-edit` asks for edits and shell; `ade-helper` denies
+  `ade-full-auto` = `* allow`; `ade-plan` denies edits and asks for shell, and the
+  chat service answers a shell ask `once` when every parsed command only reads
+  (`shellCommandIsReadOnlyOnPlatform`); `ade-edit` asks for edits and shell; `ade-helper` denies
   all side effects.
 - Agent rules do not reach children (a child runs under its own agent), so the
   mode's rules are also set on the session (`openCodeSessionRulesFor`) and

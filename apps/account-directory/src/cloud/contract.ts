@@ -3379,7 +3379,7 @@ export const isCloudPhoneAbility = (value: unknown): value is CloudPhoneAbility 
 /** Each provider's abilities. The one place that says what runs where. */
 export const CLOUD_PHONE_PROVIDER_ABILITIES: Readonly<Record<CloudPhoneProvider, readonly CloudPhoneAbility[]>> = {
   nomac: ["tests", "uninstall", "storekit", "locale", "timezone", "statusBar", "launchEnv"],
-  revyl: ["perf", "shake", "orientation"],
+  revyl: ["perf", "shake", "orientation", "launchEnv"],
 };
 
 /** What of `needs` the provider's phone can't do. */
@@ -3395,7 +3395,7 @@ export const CLOUD_PHONE_ABILITY_WORDS: Readonly<Record<CloudPhoneAbility, strin
   locale: "change the locale",
   timezone: "change the time zone",
   statusBar: "set the status bar",
-  launchEnv: "pass env values to an app it launches",
+  launchEnv: "pass launch arguments and env values to an app it launches",
   shake: "shake",
   orientation: "rotate",
 };
@@ -3498,6 +3498,28 @@ export type CloudPhoneState = {
    * the next start's first provider can do. Absent from an older server.
    */
   abilities?: CloudPhoneAbility[];
+  /**
+   * What builds use: the live phone's, or each stop of the route a new phone
+   * would take, first one first (a project with Metal shaders moves past one
+   * that `lacks` it, on a paid plan). Absent from an older server.
+   */
+  toolchains?: CloudPhoneToolchain[];
+};
+
+/** One cloud iPhone's builds, without who runs them. */
+export type CloudPhoneToolchain = {
+  /** The Xcode version (`27.2`). */
+  xcode: string;
+  /** The iOS SDK it builds against (`iOS 27.2`). */
+  sdk: string;
+  /**
+   * True: a build runs on build runners before any phone starts, so a failed
+   * build costs no phone minutes and `ade apple build` checks a compile with
+   * no phone. False: the build runs on the phone itself, with the phone up.
+   */
+  buildsBeforePhone: boolean;
+  /** Build tools its hosts were found without in the last day (`metal`). */
+  lacks: CloudPhoneBuildNeed[];
 };
 
 /** How many of the period's phones `CloudPhoneState.recent` lists. */
@@ -3505,6 +3527,8 @@ export const CLOUD_PHONE_RECENT_SHOWN = 10;
 
 /** One phone of this period, as its credits count it. */
 export type CloudPhoneUse = {
+  /** The phone's id (`CloudPhoneSummary.id`). Absent from an older server. */
+  id?: string;
   /** When it was asked for (ms). */
   startedAt: number;
   /** When it ended (ms), or null while it runs. */
@@ -3547,8 +3571,16 @@ export type CloudPhoneCallRequest = {
   action: string;
   body?: Record<string, unknown>;
   query?: Record<string, string>;
-  /** The phone the brain holds: a 409 `phone_not_running` once another replaced it (older brains send none). */
+  /** The phone the brain holds: a 409 `phone_not_running` once another replaced it (older brains send none). A build's calls send none. */
   phoneId?: string;
+  /**
+   * For a build's calls (`build.upload_url`, `build.start`) with no phone of
+   * the provider's up: the build tools the project needs and the providers
+   * this brain drives, so the server builds only where a new phone would
+   * build before it starts (else 409 `phone_builds_on_phone`).
+   */
+  builds?: CloudPhoneBuildNeed[];
+  providers?: readonly CloudPhoneProvider[];
 };
 
 /**

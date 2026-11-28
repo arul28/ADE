@@ -150,12 +150,14 @@ function buildOpenCodeModeRules(mode: PermissionMode | "helper"): OpenCodePermis
   if (mode === "plan") {
     return [
       rule("edit", "deny"),
+      // A shell command that only reads is answered without a card (the chat
+      // service's `permission.asked` handler); any other still asks.
       rule("shell", "ask"),
       rule("doom_loop", "ask"),
       // Subagents stay allowed: these rules also go on the session, and a child
       // inherits session rules, so a plan-mode child cannot edit either.
-      rule("websearch", "deny"),
-      rule("skill", "deny"),
+      // Web search, web fetch and skills only read, so a plan can look things
+      // up and load a skill's instructions (`ade-linear`), as in Claude's plan.
     ];
   }
   if (mode === "helper") {

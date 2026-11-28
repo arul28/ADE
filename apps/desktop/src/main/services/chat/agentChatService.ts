@@ -1524,6 +1524,7 @@ import {
 } from "./laneAndroidDeviceDirective";
 import type { OpenCodeEvent } from "@opencode/client";
 import {
+  adeOpenCodeMode,
   buildOpenCodeConfig,
   openCodeAgentFor,
   openCodeSessionRulesFor,
@@ -1949,11 +1950,11 @@ import {
   policyRefusesMcpServer,
   policyToClaudeToolLists,
 } from "../../../shared/permissionPolicy";
+import { shellCommandIsReadOnlyOnPlatform, shellInvocationIsReadOnly } from "./readOnlyShellCommand";
 import {
   claudeBuiltInIsReadOnly,
-  claudeToolAllowedInPlanMode,
-  claudeSideChatBashIsReadOnly,
-  claudeToolAllowedInSideChat,
+  claudeToolCallAllowedInPlanMode,
+  claudeToolCallAllowedInSideChat,
   claudeToolInputPaths,
   claudeToolNeedsApproval,
   normalizeToolNameForApproval,
@@ -8591,6 +8592,16 @@ function isPlanningApprovalGuarded(
     if (guarded !== undefined) return guarded;
   }
   return managed.session.permissionMode === "plan";
+}
+
+/** The programs a Codex plan may leave its sandbox for: they need ADE's pipe or the network. */
+const CODEX_PLAN_ESCALATION_PROGRAMS: ReadonlySet<string> = new Set(["ade", "gh", "cd"]);
+
+/** An ACP `execute` call's command, when it is one string that only reads. */
+function acpToolCallCommandIsReadOnly(rawInput: unknown): boolean {
+  const input = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? rawInput as Record<string, unknown> : null;
+  const command = input?.command ?? input?.cmd;
+  return typeof command === "string" && shellInvocationIsReadOnly(command);
 }
 
 function buildPlanningApprovalViolation(toolName: string): string {
@@ -15731,7 +15742,7 @@ export function createAgentChatService(args: {
     // A side chat is read-only. A call reaches this callback only when Claude
     // would ask, which a read-only command never does, so anything here that
     // is not on the side-chat list would change something.
-    if (managed.session.sideChatParentSessionId && !claudeToolAllowedInSideChat(toolName)) {
+    if (managed.session.sideChatParentSessionId && !claudeToolCallAllowedInSideChat(toolName, input)) {
       return { behavior: "deny", message: SIDE_CHAT_READ_ONLY_MESSAGE };
     }
 
@@ -15743,12 +15754,13 @@ export function createAgentChatService(args: {
     // would silently lift the fence the session just raised — the same failure
     // the ExitPlanMode gate exists to prevent.
     //
-    // The test is an allowlist (`claudeToolAllowedInPlanMode`), not the
+    // The test is an allowlist (`claudeToolCallAllowedInPlanMode`), not the
     // mutating heuristic: that heuristic is deliberately coarse and would admit
     // a mutating MCP tool or a Windows shell under a name it does not
     // recognize. Anything not on the plan allowlist is refused; read-only
-    // built-ins, subagent exploration, and the plan-flow tools stay usable.
-    if (isSessionInPlanMode(managed.session) && !claudeToolAllowedInPlanMode(toolName)) {
+    // built-ins, subagent exploration, the plan-flow tools, and shell commands
+    // that only read (`git log`, `ade linear issue ADE-296`) stay usable.
+    if (isSessionInPlanMode(managed.session) && !claudeToolCallAllowedInPlanMode(toolName, input)) {
       logger.warn("agent_chat.plan_mode_tool_denied", {
         sessionId: managed.session.id,
         turnId: runtime.activeTurnId ?? undefined,
@@ -38972,6 +38984,23 @@ export function createAgentChatService(args: {
       return;
     }
 
+    // ── Read-only commands in plan or a side chat ──
+    // Both postures still read. A command the agent asks about that only reads
+    // (`git log`, `ade linear issue ADE-296`) runs once without a card; any
+    // other still reaches the user.
+    if (
+      (runtime.permissionMode === "plan" || managed.session.sideChatParentSessionId)
+      && pending.toolCall.kind === "execute"
+      && acpToolCallCommandIsReadOnly(pending.toolCall.rawInput)
+      && !permissionPolicyDeniesByFallback(managed.session)
+    ) {
+      const allowOnce = pending.options.find((option) => option.kind === "allow_once");
+      if (allowOnce) {
+        pending.select(allowOnce.optionId);
+        return;
+      }
+    }
+
     if (acpAutoApprovesPermissions(runtime.dialect, runtime.permissionMode)) {
       // Full auto on a dialect ADE could not configure server-side. Answer the
       // agent immediately, but still write the card and its resolution into the
@@ -41911,6 +41940,32 @@ export function createAgentChatService(args: {
         detail: ask.metadata ?? {},
       });
     };
+    // Plan mode asks before every shell command. One that only reads (each of
+    // OpenCode's parsed commands passes `shellCommandIsReadOnlyOnPlatform`:
+    // `git log`, `ade linear issue ADE-296`) is answered once without a card;
+    // anything else still asks. A host policy that denies by fallback is never
+    // answered for it.
+    const resources = ask.resources ?? [];
+    if (
+      category === "bash"
+      && adeOpenCodeMode(runtime.permissionMode) === "plan"
+      && resources.length > 0
+      && resources.every((resource) => shellCommandIsReadOnlyOnPlatform(resource))
+      && !permissionPolicyDeniesByFallback(managed.session)
+    ) {
+      void replyToOpenCodePendingApproval(
+        runtime.handle,
+        { category, requestId: ask.id, sessionId: ask.sessionID, request },
+        "once",
+      ).catch((error) => {
+        logger.warn("agent_chat.opencode_read_only_shell_reply_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (managed.runtime === runtime) raiseCard();
+      });
+      return;
+    }
     // OpenCode keeps "always" to the session that asked; the person allowed
     // it for the whole chat, so the parent and every child are answered alike.
     // As for Codex, a policy that denies by fallback outranks a remembered grant.
@@ -42913,6 +42968,25 @@ export function createAgentChatService(args: {
       } | null) ?? {};
       const requestTurnId = normalizeCodexTurnId(params.turnId, runtime.activeTurnId ?? runtime.startedTurnId ?? null);
       if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
+        // A plan still reads. Codex asks to leave its sandbox for a command
+        // the sandbox blocks — on Windows that is every `ade` command, since
+        // the sandbox user cannot open the brain's pipe — so an `ade` or `gh`
+        // read (`ade linear issue ADE-296`) runs once, no card. Other reads
+        // already run inside the sandbox; one that asks to leave it was
+        // refused by the sandbox itself (a managed `deny_read`, say), so it is
+        // not answered here. Anything else is refused, unless a host policy
+        // says no, and the read keeps to the containment root.
+        const planReadCwd = typeof params.cwd === "string" && params.cwd.trim().length
+          ? params.cwd
+          : managed.laneWorktreePath;
+        if (
+          shellInvocationIsReadOnly(params.command, process.platform, { programs: CODEX_PLAN_ESCALATION_PROGRAMS })
+          && !permissionPolicyDeniesByFallback(managed.session)
+          && codexCommandApprovalStaysWithinRoot(codexContainmentRoot(managed), planReadCwd, params.additionalPermissions)
+        ) {
+          runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
+          return;
+        }
         emitChatEvent(managed, {
           type: "error",
           message: buildPlanningApprovalViolation(params.command?.trim() || "command"),
@@ -49360,17 +49434,14 @@ export function createAgentChatService(args: {
     // A side chat refuses edits, subagents and MCP tools even when the user's
     // allow rules would run them without asking (`canUseTool` never sees
     // those). A shell command runs only when it plainly just reads
-    // (`claudeSideChatBashIsReadOnly`); any other is refused, including one
+    // (`claudeToolCallAllowedInSideChat`); any other is refused, including one
     // the user's own allow rules would run without asking.
     ...(managed.session.sideChatParentSessionId
       ? {
           // `block`: a guard that crashes must refuse the call, not wave it through.
           PreToolUse: [{ onFailure: "block" as const, hooks: [async (input: HookInput) => {
-            const refused = input.hook_event_name === "PreToolUse" && (
-              input.tool_name === "Bash"
-                ? !claudeSideChatBashIsReadOnly((input.tool_input as { command?: unknown } | undefined)?.command)
-                : !claudeToolAllowedInSideChat(input.tool_name)
-            );
+            const refused = input.hook_event_name === "PreToolUse"
+              && !claudeToolCallAllowedInSideChat(input.tool_name, input.tool_input as Record<string, unknown> | undefined);
             if (refused) {
               return {
                 hookSpecificOutput: {
@@ -66550,6 +66621,18 @@ export function createAgentChatService(args: {
           : null;
         const managedApprovalRequired = request.managedApprovalRequired === true || prompt?.managedApprovalRequired === true;
         if (!managedApprovalRequired && mode === "full-auto") {
+          return { kind: "approve-once", approvedInteractively: false };
+        }
+        // Plan asks before every shell command. One that only reads (`git log`,
+        // `ade linear issue ADE-296`) runs without a card; any other still asks.
+        if (
+          !managedApprovalRequired
+          && mode === "plan"
+          && kind === "shell"
+          && request.hasWriteFileRedirection !== true
+          && shellCommandIsReadOnlyOnPlatform(request.fullCommandText)
+          && !permissionPolicyDeniesByFallback(target.session)
+        ) {
           return { kind: "approve-once", approvedInteractively: false };
         }
         // Assisted: Copilot's safety judge attaches a recommendation and leaves

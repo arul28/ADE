@@ -348,7 +348,8 @@ export function captureCloudSafety(env: AnalyticsEnv, waitUntil: CloudWaitUntil,
  *   do what the start asked; `failover`: the first refused). Internal only.
  */
 export type CloudPhoneEvent = {
-  step: "started" | "ended" | "refused";
+  /** `built`: a build on a provider's runners ended (`reason`: how; `billedMinutes`: runner minutes; `route`: with a phone up or before one). */
+  step: "started" | "ended" | "refused" | "built";
   plan: CloudPlanId;
   device?: string;
   reason?: string;

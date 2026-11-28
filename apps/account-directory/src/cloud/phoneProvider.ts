@@ -88,4 +88,10 @@ export type PhoneProviderServer = {
   view(env: CloudEnv, input: { userId: string; phone: { id: string; ref: string | null }; label: string; control: boolean; origin: string; now: number }): Promise<CloudPhoneView | Response>;
   /** `POST /cloud/phone/call` for a provider with no per-phone token (Revyl); absent: the phone takes its calls directly. */
   call?: (env: CloudEnv, userId: string, phone: { id: string; ref: string | null }, body: Record<string, unknown>, now: number) => Promise<Response>;
+  /**
+   * What its builds use: the Xcode and iOS SDK, and whether a build runs
+   * before any phone starts (on build runners of its own, so a failed build
+   * costs no phone minutes) or on the phone itself.
+   */
+  toolchain(env: CloudEnv): { xcode: string; sdk: string; buildsBeforePhone: boolean };
 };

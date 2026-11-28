@@ -43,8 +43,16 @@ export const CLOUD_PHONE_SPEND_ACTIONS = [
   "perf",
 ] as const;
 
+/**
+ * Builds with no phone (`build`, a compile check) and their logs
+ * (`buildLog`): no credits are spent (the runner's time is ADE's), so agents
+ * use them without the spending guard; `build` refuses where builds need
+ * the phone.
+ */
+export const CLOUD_PHONE_BUILD_ACTIONS = ["build", "buildLog"] as const;
+
 /** What an agent may call on a cloud iPhone; `getStatus().capabilities` reports it. */
-export const CLOUD_PHONE_AGENT_ACTIONS = ["getStatus", "stop", ...CLOUD_PHONE_SPEND_ACTIONS] as const;
+export const CLOUD_PHONE_AGENT_ACTIONS = ["getStatus", "stop", ...CLOUD_PHONE_SPEND_ACTIONS, ...CLOUD_PHONE_BUILD_ACTIONS] as const;
 
 /**
  * A view link drives the phone from a window, and `keepAlive` is the pane's
@@ -129,4 +137,12 @@ export type CloudPhoneStatusView = Omit<CloudPhoneState, "phone"> & {
    * price there.
    */
   chatSessionId?: string | null;
+  /**
+   * For a chat's call: the minutes this period of the phones that chat's
+   * calls drove on this brain, in the server's own count (one phone two chats
+   * drove counts for each), among the period's newest phones the server lists
+   * (`CLOUD_PHONE_RECENT_SHOWN`): `partial` when some of its phones are older
+   * than those, so the minutes are a floor. Absent when the chat drove none here.
+   */
+  chatUse?: { minutes: number; phones: number; partial?: boolean };
 };
