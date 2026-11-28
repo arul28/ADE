@@ -526,6 +526,12 @@ export type CloudMacOffer = {
   summary: string;
   /** One line that says what a stop keeps and loses, for the computer panel. */
   keeps: string;
+  /**
+   * The agent providers that don't work on a Mac, in a chat, a CLI session or
+   * both, each with the sentence to show before the person starts. Only the
+   * exceptions: absent or empty, every provider works in both.
+   */
+  providers?: Array<{ provider: string; chat: boolean; cli: boolean; sentence: string | null }>;
 };
 
 /**
@@ -549,6 +555,13 @@ export type CloudMacState = {
   message: string | null;
   /** True when the last start ended without a Mac (none came free in time, or the provider refused): `message` says why. */
   startFailed?: boolean;
+  /**
+   * Why, for the action a client offers: `queue_expired` and `unavailable`
+   * (send again or Start), `drive_lost` (the drive is gone: the lane's saved
+   * work is in Lanes without a computer, and the computer can only be
+   * deleted). Set exactly when `startFailed` is.
+   */
+  failure?: CloudMacStartFailure;
   drive: {
     sizeGb: number;
     /** As the last stop saved it; null before its first save. */
@@ -566,12 +579,15 @@ export const CLOUD_MAC_STATE_SENTENCES: Readonly<Record<CloudMacStateName, strin
   stopped: "The Mac is stopped and its drive is kept. The next message starts it again in about 30 seconds.",
 };
 
+/** Why a start ended with no Mac (`CloudMacState.failure`). */
+export type CloudMacStartFailure = "queue_expired" | "unavailable" | "drive_lost";
+
 /** Why a start ended with no Mac, as the server words it (`CloudMacState.message` with `startFailed`). */
-export const CLOUD_MAC_START_FAILED_SENTENCES = {
+export const CLOUD_MAC_START_FAILED_SENTENCES: Readonly<Record<CloudMacStartFailure, string>> = {
   queue_expired: "No Mac came free within an hour. Send the message again to wait again.",
   unavailable: "DAEX Cloud can't start a Mac right now. DAEX has been told. Try again later.",
   drive_lost: "This Mac's drive is gone, so its lane can't start again. Its saved work is in Lanes without a computer.",
-} as const;
+};
 
 /**
  * A lane computer's own read of its work at its idle step: whether anything
