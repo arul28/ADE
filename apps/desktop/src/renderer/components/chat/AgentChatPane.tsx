@@ -19274,6 +19274,8 @@ export function AgentChatPane({
   const adeCloud = useAdeCloudDraft({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
+    // A CLI session pays the full price whatever the ads; a chat gets the price with ads.
+    fullPrice: isWorkCliLaunchDraft,
   });
   const chooseAdeCloudTier = adeCloud.chooseTier;
   // Every reader (the Run on value, the lane list, the create-lane dialog,
@@ -23779,6 +23781,7 @@ export function AgentChatPane({
                                   hoursLeftMilli={adeCloud.hoursLeftMilli}
                                   words={adeCloud.words}
                                   priced={adeCloud.priced}
+                                  fullPrice={isWorkCliLaunchDraft}
                                   macOffer={adeCloud.macOffer}
                                   os={adeCloud.os}
                                   onChooseOs={adeCloud.chooseOs}
