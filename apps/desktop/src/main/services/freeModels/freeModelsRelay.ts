@@ -44,13 +44,16 @@ const HOP_BY_HOP = new Set([
   "set-cookie",
 ]);
 /**
- * The statuses OpenCode retries on its own (the AI SDK's 408, 409, 429 and
- * 5xx; measured against the pinned 2.0.29: ten more attempts). It retries
- * other 4xx too when the body's `error.type` is `rate_limit_error`, but never
- * a 403.
+ * The statuses OpenCode retries on its own that must stay final (the AI SDK's
+ * 408, 409 and 5xx; measured against the pinned 2.0.29: ten more attempts).
+ * It retries other 4xx too when the body's `error.type` is
+ * `rate_limit_error`, but never a 403. A 429 passes through: the account
+ * server sends one only when waiting is right (Gravity's provider busy, or
+ * the no-cards slow-down with `retry-after`), and refuses everything else
+ * with a 403.
  */
 const OPENCODE_RETRIED_STATUS = (status: number): boolean =>
-  status === 408 || status === 409 || status === 429 || status >= 500;
+  status === 408 || status === 409 || status >= 500;
 /** The status OpenCode never retries, whatever the body says (measured on 2.0.29). */
 const NO_RETRY_STATUS = 403;
 const ROUTES: Record<string, { method: string; path: string }> = {

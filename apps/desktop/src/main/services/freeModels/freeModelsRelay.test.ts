@@ -121,10 +121,10 @@ describe("freeModelsRelay", () => {
     expect(upstream.seen[0]!.body).toBe(upstream.seen[1]!.body);
   });
 
-  // OpenCode retries 408, 409, 429 and 5xx by itself; Gravity asks for no retries.
+  // OpenCode retries 408, 409 and 5xx by itself; Gravity asks for no retries. A 429 (wait and retry) passes through.
   it.each([
     [403, 403],
-    [429, 403],
+    [429, 429],
     [503, 403],
   ])("sends a %i refusal once and answers OpenCode %i with the same body", async (upstreamStatus, relayed) => {
     const body = { error: { message: "Open the chat in ADE.", code: "free_models_not_watched" } };
