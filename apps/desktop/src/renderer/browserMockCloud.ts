@@ -504,8 +504,10 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       percentUsed: percent,
       state: left <= 0 && !fix.extraHours && (fix.earnedMilli ?? 0) <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
-    extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    phone: fix.planId === "free" ? undefined : { access: "on" },
+    // As the server counts it: extra credits are only what was used past the plan's credits.
+    extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.extraHours ? Math.max(0, fix.usedMilli - includedMilli) : 0 },
+    // The server gives the iPhone by its list or switch, never by plan: Free has it too.
+    phone: { access: "on" },
     // No account disk; the plan limits computers, asleep or not, and the server names the next plan up.
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
