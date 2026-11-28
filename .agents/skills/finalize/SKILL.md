@@ -42,15 +42,13 @@ This command runs end-to-end without user interaction. Do NOT:
 - Pause between phases to request direction.
 - Stop on non-fatal warnings — log them and continue.
 - Request clarification on ambiguous simplifications — skip the risky ones and note in the final report.
-- Ask before reverting your own work (e.g., Phase 3i drift check reverts simplifier edits silently).
+- Ask before reverting your own work (e.g., the Phase 3h drift check reverts simplifier edits silently).
 
 Outputs are exactly two things: the Phase 4 summary, and fatal-error messages (typecheck, lint, build, or self-caused test failures). Every other decision is made by the agent based on the rules in this file.
 
 ## Guardrails (read once, apply everywhere)
 
-- Do NOT touch the public Mintlify site: `docs.json` and any root-level `*.mdx`, plus the root-level dirs `chat/`, `tools/`, `changelog/`, `configuration/`, `computer-use/`, `context-packs/`, `getting-started/`, `guides/`, `automations/`, `lanes/`, `cto/`. Exception: the SDK tab (`sdk/*.mdx` and the SDK entries in `docs.json`) is in scope when the branch changed `packages/sdk`, `packages/chat-ui`, MCP honesty, or the `apps/ade-cli` embedded profile / `parentDeathWatchdog` — keep those pages aligned, do not rewrite other Mintlify product pages. Internal docs under `docs/` are in scope.
-- Do NOT modify `docs/OPTIMIZATION_OPPORTUNITIES.md` — append-only, human-curated.
-- Do NOT run `apps/mcp-server` checks; the MCP server was removed. The agent surface is `apps/ade-cli`.
+- Do NOT touch the public Mintlify site: `docs.json` and any root-level `*.mdx`, plus the root-level folders that `docs.json` lists (`chat/`, `tools/`, `changelog/`, `configuration/`, `computer-use/`, `getting-started/`, `guides/`, `lanes/`, `cto/`, `cloud/`, `integrations/`, `ai-tools/`, `concepts/`, `reference/`). Exception: the SDK tab (`sdk/*.mdx` and the SDK entries in `docs.json`) is in scope when the branch changed `packages/sdk`, `packages/chat-ui`, MCP honesty, or the `apps/ade-cli` embedded profile / `parentDeathWatchdog` — keep those pages aligned, do not rewrite other Mintlify product pages. Internal docs under `docs/` are in scope.
 - Do NOT skip the sharded test run or substitute project-subset runs for it. `/finalize` is the gate that runs the full suite.
 - Do NOT use bare `pkill -f vitest` / `pkill -f node`. Always scope to `apps/desktop`, `apps/ade-cli`, or `apps/web`.
 - Do NOT declare remote PR review clean from `/finalize` alone — see Phase 3j handoff.
@@ -194,7 +192,7 @@ cd apps/desktop && npx vitest run --shard=8/8
 cd apps/ade-cli  && npm test
 ```
 
-The desktop workspace has 3 projects (`unit-main`, `unit-renderer`, `unit-shared`); sharding distributes across all three automatically.
+The desktop workspace has 4 projects (`unit-main`, `unit-renderer`, `unit-shared`, `integration-main`); sharding distributes across all of them automatically.
 
 If a shard fails, **re-run ONLY the failing test file(s)** — not the whole shard, and never the full sharded run. Sharding is a wall-clock optimization for the *initial* gate; once you've isolated which file failed, the cheapest signal is `npx vitest run <path/to/file.test.tsx>`. A 90-second shard rerun to verify a 5-second one-file fix is wasted time and burns the prompt cache.
 
@@ -208,9 +206,10 @@ Only run the full sharded suite once at the start of Phase 3e. After that, narro
 Workspace-project subsets exist for debugging only; they are NOT a substitute for the sharded run:
 
 ```bash
-cd apps/desktop && npx vitest run --project unit-main       # ~150+ main-process tests
-cd apps/desktop && npx vitest run --project unit-renderer   # ~85+ renderer tests
-cd apps/desktop && npx vitest run --project unit-shared     # ~7 shared/preload tests
+cd apps/desktop && npx vitest run --project unit-main
+cd apps/desktop && npx vitest run --project unit-renderer
+cd apps/desktop && npx vitest run --project unit-shared
+cd apps/desktop && npx vitest run --project integration-main
 ```
 
 ### 3f. Build all apps
@@ -227,7 +226,7 @@ cd apps/web && npm run build
 node scripts/validate-docs.mjs
 ```
 
-This only validates the public Mintlify site (`docs.json` + `.mdx`). Also run these automated checks for the internal `docs/` tree:
+This validates the public Mintlify site (`docs.json` + `.mdx`) and the links in `docs/**/*.md`. Also run these checks for the internal `docs/` tree:
 
 ```bash
 # Every features/<name>/README.md has a "Source file map" section.
@@ -262,7 +261,7 @@ Revert the simplifier's edits to the offending files and re-run **only the faili
 
 The parallel shards, typecheck, lint, and build commands in Phase 3 sometimes leave worker processes hanging after the phase exits — most commonly vitest worker pools from the 8-shard run, and tsup/esbuild workers from `npm run build`. They don't fail the CI check, but they sit in memory, can hold file locks, and pile up across repeated `/finalize` runs.
 
-After Phase 3 passes, kill orphaned workers. Always scope to ADE app paths (see Guardrails):
+After Phase 3 passes, kill orphaned workers. Always scope to DAEX app paths (see Guardrails):
 
 ```bash
 PATTERN='(vitest|tsup|tsc --noEmit|eslint).*apps/(desktop|ade-cli|web)'
