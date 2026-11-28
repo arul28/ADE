@@ -908,7 +908,10 @@ async function applyStagedBrainUpdate(
     }
     // `daex` beside the standalone `ade`, for installs made before the
     // rename (install.sh and install.ps1 write it now). Best effort, never throws.
-    ensureDaexCommandBesideBinary(manifest.binaryPath);
+    const daexAlias = ensureDaexCommandBesideBinary(manifest.binaryPath);
+    if (daexAlias.error) {
+      process.stderr.write(`DAEX: cli.daex_alias_failed ${JSON.stringify({ binaryPath: manifest.binaryPath, error: daexAlias.error })}\n`);
+    }
 
     if (macAppOutcome != null) {
       const successMessage = `${macAppOutcome} The standalone runtime at ${manifest.binaryPath} is on ${manifest.version} too.`;

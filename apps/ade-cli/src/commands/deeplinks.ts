@@ -28,7 +28,7 @@ import {
 import { WEB_CLIENT_BASE_URL, buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
 import { BRAND } from "../../../desktop/src/shared/brand";
-import { isAdeCliCommandWord } from "../../../desktop/src/shared/cliCommandNames";
+import { ADE_CLI_COMMAND_NAMES } from "../../../desktop/src/shared/cliCommandNames";
 
 export class CliDeeplinkUsageError extends Error {}
 
@@ -570,8 +570,13 @@ function resolveAdeBinaryPath(): string {
   // run via node, argv[0] is node — fall back to a bare name and hope it's on
   // PATH (the Linear coding-tool spawner inherits the user's PATH).
   const argv0 = process.argv[0] ?? "";
-  // The binary itself: `daex`, `ade` or a channel's `ade-beta`, with an optional Windows suffix.
-  if (isAdeCliCommandWord(path.basename(argv0).replace(/-(?:beta|alpha)(?=\.[a-z0-9]+$|$)/i, ""))) return argv0;
+  // The binary itself: `daex`, `ade` or a channel's `ade-beta`, with an optional
+  // Windows suffix. Never under Electron: the packaged wrappers run the CLI through
+  // the app's own executable (`ADE`, `ADE.exe`) with ELECTRON_RUN_AS_NODE, and that
+  // path would open the desktop app when Linear starts it. Case-sensitive for the
+  // same reason.
+  const name = path.basename(argv0).replace(/\.(?:exe|cmd)$/i, "").replace(/-(?:beta|alpha)$/, "");
+  if (!process.versions.electron && (ADE_CLI_COMMAND_NAMES as readonly string[]).includes(name)) return argv0;
   // On Windows `ade` is a .cmd shim, and Linear's spawner passes the value
   // straight to CreateProcess — a bare `ade` would not resolve.
   return process.platform === "win32" ? "ade.cmd" : "ade";

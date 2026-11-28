@@ -19,7 +19,8 @@ export const ADE_CLI_NAME_SOURCE = `(?:${ADE_CLI_COMMAND_NAMES.join("|")})`;
 
 const CLI_NAME_PREFIX = new RegExp(`^${ADE_CLI_NAME_SOURCE}\\s+`, "i");
 // Whitespace or the end must follow the colon: `daex://…` is a link, not an error line.
-const CLI_ERROR_PREFIX = new RegExp(`^${ADE_CLI_NAME_SOURCE}:(?:\\s+|$)`, "i");
+// Case-sensitive: the CLI writes errors as `daex:`; its capitalized `DAEX: …` notes are not errors.
+const CLI_ERROR_PREFIX = new RegExp(`^${ADE_CLI_NAME_SOURCE}:(?:\\s+|$)`);
 
 /**
  * `text` without a leading CLI name: `daex 1.2.3` (or an older CLI's
@@ -33,7 +34,7 @@ export function stripCliNamePrefix(text: string): string {
 /**
  * The message on one of the CLI's error lines, `daex: <message>` (older CLIs
  * write `ade: <message>`), or null when the line has no such prefix.
- * Case-insensitive.
+ * Case-sensitive, like the iOS mirror.
  */
 export function cliErrorLineText(line: string): string | null {
   const match = CLI_ERROR_PREFIX.exec(line);
