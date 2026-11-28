@@ -224,6 +224,14 @@ final class CloudPaneStore: ObservableObject {
 
   init(syncService: SyncService) {
     self.syncService = syncService
+    // The last known state at once (the app's own account read and computer
+    // list, both from the account server); `load` reads the page again.
+    account = AccountCloudStore.shared.account
+    let known = syncService.cloudServerInstances.filter { !$0.isGone }.compactMap(cloudPhoneMachine(from:))
+    if !known.isEmpty {
+      machines = Self.ordered(known, now: now)
+      selectedId = machines.first?.instanceId
+    }
     // A sign-in saved or applied on the machine shows at once (its push), not on the next open.
     signInsWatch = syncService.$providerLoginsRevision
       .dropFirst()
@@ -335,7 +343,7 @@ final class CloudPaneStore: ObservableObject {
       phase = .failed("Sign in to \(Brand.name) to see \(Brand.cloudName).")
       return
     }
-    async let accountRead = Self.readDirect("account") { try await client.account() }
+    async let accountRead = AccountCloudStore.shared.readAccountForPage(client)
     // The computers' read keeps its failure: the lanes card shows the
     // server's sentence then, never "No cloud lanes yet".
     async let instancesRead: Result<[CloudServerInstance], Error> = {
@@ -388,16 +396,6 @@ final class CloudPaneStore: ObservableObject {
     } catch {
       limitsError = cloudPhoneWords(error.localizedDescription) ?? "\(Brand.name) couldn't read the agent limits."
       cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-    }
-  }
-
-  /// One direct read of the page; a failure is logged and reads as nil.
-  private static func readDirect<T>(_ name: String, _ read: () async throws -> T) async -> T? {
-    do {
-      return try await read()
-    } catch {
-      cloudPaneLog.notice("cloud_pane read=\(name, privacy: .public) failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-      return nil
     }
   }
 

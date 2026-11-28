@@ -1155,6 +1155,9 @@ struct WorkChatSessionView: View {
   /// Model the person agreed to (on any machine). Nil otherwise, and wherever
   /// the host doesn't set it. Read through `sponsoredChatFreeModels`.
   var sponsoredFreeModels: CloudFreeModelsState? = nil
+  /// Pricing v3: this chat holds the live cloud iPhone (`cloudHeldPhoneId`), so
+  /// it shows ads on any machine. False wherever the host doesn't set it.
+  var sponsoredHoldsPhone = false
   /// Where the place under the last reply sits on screen. `@State`, not
   /// observed: only the slot redraws when it moves.
   @State var sponsoredSlot = WorkSponsoredSlotModel()
@@ -2292,7 +2295,13 @@ struct WorkChatSessionView: View {
 
   /// A chat that may show sponsored cards: an ADE Cloud Free chat, or one
   /// running an ADE Free Model.
-  var sponsoredChatShowsCards: Bool { sponsoredChatFreeModels != nil || sponsoredChatInstanceId != nil }
+  var sponsoredChatShowsCards: Bool { sponsoredChatFreeModels != nil || sponsoredChatInstanceId != nil || sponsoredChatHoldsPhone }
+
+  /// A chat on any machine holding the cloud iPhone shows ads (Pricing v3): never a subagent's view.
+  var sponsoredChatHoldsPhone: Bool {
+    sponsoredHoldsPhone && chatSummaryContext.isAvailable && chatSummaryContext.spawnKind != .subagent
+      && chatSummaryContext.orchestrationParentSessionId == nil && cloudPricing() != nil && cloudChatAdsMayShow()
+  }
 
   /// The prompt box is on screen (no sign-in card stands in for it), so a
   /// sponsored card can dock above it.

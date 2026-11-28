@@ -798,6 +798,9 @@ struct CloudServerClient {
       request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
       request.setValue("application/json", forHTTPHeaderField: "Accept")
       request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
+      // Every call says this build knows Pricing v3: without it the server
+      // answers as it does an older build (no `pricing`, Free's old ad rules).
+      request.setValue(cloudPricingVersion, forHTTPHeaderField: cloudPricingHeader)
       if let body {
         request.httpBody = body
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")

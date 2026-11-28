@@ -31,6 +31,7 @@ enum CloudPreviews {
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
+    if name.hasPrefix("duo-cloud-v3-") { return pricingV3View(name) }
     guard names.contains(name) else { return nil }
     let sync = SyncService.shared ?? SyncService()
     switch name {
@@ -171,6 +172,89 @@ enum CloudPreviews {
       })
     default:
       return AnyView(CloudPaneSheet(store: store))
+    }
+  }
+
+  // MARK: Pricing v3 (the ad price)
+
+  /// `-adePreviewScreen duo-cloud-v3-<plan>-<state>[-<surface>]`: the DAEX Cloud
+  /// page, the plans and sizes, one computer, or a chat's ads notice, with an
+  /// account state that has `pricing` (the server's catalog at scale 10).
+  /// - plan: `free`, `plus`, `pro`, `max`
+  /// - state: `on` (US, ads on), `off` (asked region, answered no), `noads`
+  ///   (a country with no ads), `zero` (discount 0), `new` (US, notice not seen),
+  ///   `asked` (asked region, notice not seen), and a reason for the awake
+  ///   Medium while ads are on: `cli`, `automation`, `outside`, `idle`, `unverified`
+  /// - surface: none (the page), `plans`, `machine`, `notice`
+  /// `duo-cloud-v3-loading`: the page before anything is known.
+  @MainActor private static func pricingV3View(_ name: String) -> AnyView? {
+    // The page before anything is known (`CloudPageSkeleton`).
+    if name == "duo-cloud-v3-loading" {
+      return AnyView(NavigationStack {
+        ScrollView { CloudPageSkeleton().padding(.horizontal, 16).padding(.top, 8) }
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationTitle(Brand.cloudName)
+          .navigationBarTitleDisplayMode(.inline)
+      })
+    }
+    let parts = name.dropFirst("duo-cloud-v3-".count).split(separator: "-").map(String.init)
+    guard parts.count >= 2 else { return nil }
+    let plan = parts[0], state = parts[1], surface = parts.count > 2 ? parts[2] : "page"
+    let free = plan == "free"
+    var json = listJSON()
+      .replacingOccurrences(of: #""phoneMilliPerMinute":1000"#, with: #""phoneMilliPerMinute":500"#)
+      .replacingOccurrences(of: #""max":{"includedMilli":1500000"#, with: #""max":{"includedMilli":2000000"#)
+      .replacingOccurrences(of: #""multiplierMilli":0,"tier":"small""#, with: free ? #""multiplierMilli":500,"adMultiplierMilli":0,"tier":"small""# : #""multiplierMilli":0,"adMultiplierMilli":0,"tier":"small""#)
+      .replacingOccurrences(of: #""multiplierMilli":1000,"tier":"medium""#, with: #""multiplierMilli":1000,"adMultiplierMilli":\#(state == "zero" ? 1000 : 800),"tier":"medium""#)
+      .replacingOccurrences(of: #""multiplierMilli":2500,"tier":"large""#, with: #""multiplierMilli":2500,"adMultiplierMilli":\#(state == "zero" ? 2500 : 2000),"tier":"large""#)
+      .replacingOccurrences(of: #""multiplierMilli":4000,"tier":"xlarge""#, with: #""multiplierMilli":4000,"adMultiplierMilli":\#(state == "zero" ? 4000 : 3200),"tier":"xlarge""#)
+      .replacingOccurrences(of: #""diskStepGb":10,"#, with: #""creditScale":10,"phone":{"milliPerMinute":500,"adMilliPerMinute":\#(state == "zero" ? 500 : 400)},"diskStepGb":10,"#)
+      // The awake computer is a Medium, so its price shows.
+      .replacingOccurrences(of: #""resources":{"cpu":2,"memoryGb":4,"diskGb":6.2},"shapeId":"2x4""#, with: #""resources":{"cpu":4,"memoryGb":8,"diskGb":6.2},"shapeId":"4x8""#)
+    let included = ["free": 50_000, "plus": 100_000, "pro": 600_000, "max": 2_000_000][plan] ?? 600_000
+    json = json
+      .replacingOccurrences(of: #""plan":"paid","planId":"pro","rules":"paid""#, with: free ? #""plan":"free","planId":"free","rules":"free""# : #""plan":"paid","planId":"\#(plan)","rules":"paid""#)
+      .replacingOccurrences(of: #""hours":{"includedMilli":600000,"usedMilli":117500,"leftMilli":482500"#, with: #""hours":{"includedMilli":\#(included),"usedMilli":\#(included / 6),"leftMilli":\#(included - included / 6)"#)
+    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)), var account = list.account else { return nil }
+    let available = state != "noads"
+    let noticeSeen = !(state == "new" || state == "asked")
+    let on = available && noticeSeen && state != "off"
+    let pct = state == "zero" ? 0 : 20
+    let reasons = ["cli": "cli_session", "automation": "automation", "outside": "outside_agent", "idle": "not_in_use", "unverified": "unverified"]
+    let reason: String? = !available ? "no_ads_here" : !on ? "ads_off" : reasons[state]
+    let ad = reason == nil
+    let medium = CloudPricingState.Price(now: ad ? "ad" : "full", reason: reason, rateMilli: ad ? (pct == 0 ? 1000 : 800) : 1000, otherRateMilli: !available ? 1000 : (pct == 0 ? 1000 : (ad ? 1000 : 800)), instanceId: "zodqsue74s")
+    account.pricing = CloudPricingState(
+      creditScale: 10,
+      ads: .init(available: available, on: on, startsOn: state != "asked" && state != "off", noticeSeen: noticeSeen, discountPct: pct, windowMinutes: 60),
+      computers: [medium],
+      phone: nil
+    )
+    if !available { account.sponsored = nil }
+    AccountCloudStore.shared.seedPreview(access: nil, account: account)
+    let sync = SyncService.shared ?? SyncService()
+    let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
+    let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
+    switch surface {
+    case "plans":
+      return AnyView(NavigationStack {
+        ScrollView {
+          VStack(spacing: 16) {
+            CloudPlansCard(account: account, tiers: store.tiers)
+            CloudSizesCard(account: account, tiers: store.tiers)
+          }
+          .padding(16)
+        }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .navigationTitle(Brand.cloudName)
+        .navigationBarTitleDisplayMode(.inline)
+      })
+    case "machine":
+      return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: "zodqsue74s") })
+    case "notice":
+      return AnyView(CloudSponsoredChatFixture(kind: "duo-cloud-sponsored-consent"))
+    default:
+      return AnyView(NavigationStack { CloudDashboardScreen(store: store, onClose: nil, pushes: true) })
     }
   }
 

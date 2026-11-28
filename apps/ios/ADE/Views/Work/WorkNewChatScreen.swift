@@ -719,6 +719,9 @@ struct WorkNewChatScreen: View {
   /// to the machine's default sign-in.
   @State private var restoredPresetId: String?
   @State private var sessionMode: WorkNewSessionMode = .chat
+  /// Pricing v3's CLI start notice while it is up, and the launch waiting on its answer.
+  @State private var cliPriceNotice: String?
+  @State private var cliPriceChoice: CheckedContinuation<WorkNewSessionMode?, Never>?
   @State private var shellLaunchBusy: Bool = false
   @State private var queuedShellLaneIds = Set<String>()
   @State private var usageRefreshRevision = 0
@@ -962,6 +965,47 @@ struct WorkNewChatScreen: View {
   }
 
   var body: some View {
+    screenBody
+      // Pricing v3: starting an agent CLI on a DAEX Cloud computer while ads are on.
+      .confirmationDialog(
+        cliPriceNotice ?? "",
+        isPresented: Binding(get: { cliPriceNotice != nil }, set: { if !$0 { resolveCliPriceNotice(nil) } }),
+        titleVisibility: .visible
+      ) {
+        Button(CloudAdPriceWords.openAsChat) { resolveCliPriceNotice(.chat) }
+        Button(CloudAdPriceWords.startCli) { resolveCliPriceNotice(.cli) }
+      }
+      // A screen closed while the notice is up starts nothing, and the waiting submit returns.
+      .onDisappear { resolveCliPriceNotice(nil) }
+  }
+
+  /// Answers the CLI start notice: chat, CLI, or nil (dismissed: nothing starts).
+  private func resolveCliPriceNotice(_ mode: WorkNewSessionMode?) {
+    let choice = cliPriceChoice
+    cliPriceChoice = nil
+    cliPriceNotice = nil
+    choice?.resume(returning: mode)
+  }
+
+  /// The CLI start notice is due: a person starts an agent CLI on a DAEX Cloud
+  /// computer while ads are on. The CLI uses the full price. Never
+  /// for an agent's or an automation's CLI: only this composer asks.
+  private var cliPriceNoticeText: String? {
+    guard sessionMode == .cli, isCloudSelected || syncService.isCloudFleetKey(selectedMachineKey ?? syncService.focusedMachineKey) else { return nil }
+    return CloudAdPriceWords(AccountCloudStore.shared.account)?.cliStartNotice
+  }
+
+  /// Pricing v3: the opening message a person sent here is that new chat's
+  /// proof, like a message from its composer (`noteAdProofSent`), when the
+  /// chat runs on a DAEX Cloud computer. Only where this screen sends the
+  /// opener itself: an opener left for the chat screen counts there.
+  private func noteOpeningMessageSent(chatId: String) {
+    let machineKey = selectedMachineKey ?? syncService.focusedMachineKey
+    guard syncService.isCloudFleetKey(machineKey), let instanceId = syncService.cloudServerInstance(fleetKey: machineKey)?.id else { return }
+    cloudNoteMessageSent(instanceId: instanceId, sessionId: chatId, messageId: "\(chatId):opening")
+  }
+
+  private var screenBody: some View {
     // The header scrolls edge to edge; the lane bubble and the composer float
     // over it in a bottom safe-area inset that draws no background of its own,
     // so nothing paints an opaque band behind the floating controls.
@@ -2139,6 +2183,22 @@ struct WorkNewChatScreen: View {
         : "This model is available for CLI only. Choose a chat-capable model."
       return false
     }
+    // Pricing v3: every time a person starts an agent CLI on a cloud computer while ads are on.
+    if let notice = cliPriceNoticeText {
+      let choice = await withCheckedContinuation { (continuation: CheckedContinuation<WorkNewSessionMode?, Never>) in
+        cliPriceChoice?.resume(returning: nil)
+        cliPriceChoice = continuation
+        cliPriceNotice = notice
+      }
+      guard let choice else { return false }
+      if choice == .chat {
+        guard workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: .chat) else {
+          errorMessage = "This model is available for CLI only. Choose a chat-capable model."
+          return false
+        }
+        sessionMode = .chat
+      }
+    }
     if isCloudSelected {
       return await submitOnCloud(opener: chatOpener, rawText: rawText, attachments: readyAttachments)
     }
@@ -2225,6 +2285,7 @@ struct WorkNewChatScreen: View {
       }
       ADEHaptics.success()
       busy = false
+      if launchSessionMode == .chat { noteOpeningMessageSent(chatId: snapshot.launchId) }
       await onLaunchStarted(snapshot)
       return true
     }
@@ -2436,6 +2497,7 @@ struct WorkNewChatScreen: View {
           // switch exhaustive.
           deliveryState = nil
         }
+        noteOpeningMessageSent(chatId: summary.sessionId)
         await onStarted(summary, chatOpener, true, deliveryState, attachmentRefs)
       }
       if let createdLaneId, let autoCreatedFallbackName {

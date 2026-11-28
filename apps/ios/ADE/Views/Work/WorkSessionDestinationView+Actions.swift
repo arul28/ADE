@@ -278,6 +278,7 @@ extension WorkSessionDestinationView {
               // leaves a stale error banner over a send that worked.
               openingDeliveryWarning = nil
               errorMessage = nil
+              noteAdProofSent(echoId)
               return true
             }
           } catch {
@@ -294,6 +295,7 @@ extension WorkSessionDestinationView {
             )
             schedulePostSendReconciliation(reconcileLocalEchoes: false)
             errorMessage = "Couldn’t send immediately. The message is still queued."
+            noteAdProofSent(echoId)
             return true
           }
           updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
@@ -329,6 +331,7 @@ extension WorkSessionDestinationView {
       }
       openingDeliveryWarning = nil
       errorMessage = nil
+      noteAdProofSent(echoId)
       return true
     } catch {
       ADEHaptics.error()
@@ -338,6 +341,15 @@ extension WorkSessionDestinationView {
       errorMessage = error.localizedDescription
       return false
     }
+  }
+
+  /// Pricing v3: a person sent this message from the chat's composer, so the
+  /// chat's DAEX Cloud computer (or the cloud iPhone it holds) is in use. The
+  /// computer is this chat's own machine, never the tab's (`sessionCloudMachineKey`).
+  /// Only the composer calls it: never a CLI session, an automation or an outside agent.
+  func noteAdProofSent(_ messageId: String) {
+    let instanceId = personalChat ? nil : syncService.cloudServerInstance(fleetKey: sessionCloudMachineKey)?.id
+    cloudNoteMessageSent(instanceId: instanceId, sessionId: sessionId, messageId: messageId)
   }
 
   /// Runs the post-send refresh cascade (transcript → artifacts → summary →
