@@ -1,13 +1,13 @@
 # Mac Desktop
 
-Each lane can own a private macOS screen. ADE creates a virtual display named
+Each lane can own a private macOS screen. DAEX creates a virtual display named
 after the lane, parks the lane's windows on it, and drives those windows through
 the Accessibility API. Without an active input lease, the user's pointer stays
 on a real display, except where a lane display is the only route to one (see
 **A real display must never sit behind a lane display** below).
 
-The Work tools pane shows that screen live, the `ade mac-desktop` command family
-drives it (aliases `ade mac-desk` and `ade desk`; `ade desktop` stays the app
+The Work tools pane shows that screen live, the `daex mac-desktop` command family
+drives it (aliases `daex mac-desk` and `daex desk`; `daex desktop` stays the app
 launcher), and screenshots and recordings reach the proof drawer through the
 existing computer-use artifact broker.
 
@@ -17,11 +17,190 @@ whose runtime host is a Mac, because the display lives on that Mac.
 
 A Windows runtime host has its own seat, sharing this service, lease, ownership,
 proof and streaming: see [Windows Desktop](../windows-desktop/README.md). The
-`ade screen` command family is the neutral spelling both hosts answer.
+`daex screen` command family is the neutral spelling both hosts answer.
+
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/desktop/native/ADEDesktopDriver/` | The native helper. `ADEDesktopDriverCore` holds the wire types and the pure logic; `ade-desktop-driver` is the executable that talks NDJSON over stdin/stdout. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/DriverProtocol.swift` | Request/response/event wire types and the permissive decoder. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/HandleRegistry.swift` | Observation handles (`obs-<id>:e:<n>`) and their bounded retention. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/OwnershipRegistry.swift` | Which window belongs to which display, and the single-instance rule. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/VirtualDisplayHost.swift` | The private CoreGraphics virtual-display classes, reached only through the Objective-C runtime, with a fail-closed fallback. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/WindowControl.swift` | Window enumeration, parking, and the CGWindowID→AXUIElement bridge. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/WindowWatcher.swift` | The per-pid watcher: the AX observer, the 1s poll, and the sweep that parks new windows and drags escaped ones back. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/AppLauncher.swift` | `app.launch`: starting an app for a lane and parking whatever it opens. | 
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/LaneApps.swift` | Blank launches, which windows of a watched app still need parking, which instances `stop` quits, and a release that hands the whole launched instance to the user. | 
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/LaneLifecycle.swift` | `LaneStopGate`, `ParkRecheck`, and `CaptureStartReservations`: a stop or a replaced display that lands during a wait cannot be undone, and one capture start per lane. | 
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/WindowListScope.swift` | Which window-server entries a listing keeps, decided before any Accessibility read. Only the claim picker is unscoped. | 
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/AXWalkBudget.swift` | The time budgets on every accessibility walk: per-call timeout, stall cooldown, and a deadline for the whole walk. | 
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/IdleGapCompressor.swift` | Cuts idle stretches out of a recording. A port of the simulator helper's rules; the two packages do not share code. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/AccessibilityDriver.swift` | The accessibility tree, element actions, value setting, and process-targeted keys. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/CaptureEngine.swift` | ScreenCaptureKit screenshots, the element map, the live stream, and recording. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/StreamByteServer.swift` | The loopback TCP fan-out the live stream is served on. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/H264Encoder.swift` | VideoToolbox H.264, emitting Annex-B access units with the parameter sets in front of every keyframe. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RunLoopPump.swift` | Spending a wait by pumping the main run loop, so one lane's wait never starves another lane's request or the health `ping`. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RealInput.swift` | `CGEvent` pointer and keyboard posts. Refuses every call without a lease. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PointerFence.swift` | Listen-only pointer fence for unleased physical movement onto DAEX displays, except lane displays on the route to a cut-off real display. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/BackgroundInput.swift` | Background input: clicks, scrolls and drags posted to one window's process with the routing fields, SkyLight posting, the target-only focus records and the frontmost guard. Needs no lease. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/BackgroundEventRecord.swift` | The two window-server records (focus, make-key) a background click sends to its target first. Pure bytes. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/ScrollDelta.swift` | A scroll direction and line count as wheel deltas, for the real and background paths. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/DisplayRelocation.swift` | Following lane displays macOS re-arranged: the reconfiguration callback, moving a lane's windows with its display, and the `display-moved` event. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/main.swift` | The NDJSON loop, the op dispatcher, the periodic permission probe, and the signal-handled shutdown. stdout is protocol. Every log line goes to stderr, and the Node client copies each line into the brain log. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/InputCommands.swift` | The `input` op: accessibility commands, real-event commands, the wait, and the element resolver they share. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/ObjCDynamic.swift` | The Objective-C runtime calls the private display classes need: `objc_msgSend` by `dlsym`, and KVC that probes the setter first. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/Permissions.swift` | Screen Recording and Accessibility, probed without prompting; the one prompt it can fire is `request-permission`, which the service allows only for a local user's explicit click. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PhysicalInput.swift` | Seconds since the last physical input, for the idle rate and the takeover check. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/InputLease.swift` | The lease the driver keeps for itself, and the refusal `RealInput` raises. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/GestureGate.swift` | While a real drag holds the mouse button, the ops that could corrupt it — any `input` except `wait`, and this lane's `display.destroy`/`present`/`window.unpark` — are parked in order and replayed when the button comes up. A `wait` is not parked: it would poll nested inside the drag's own run-loop pump and hold the button down, so it is refused with `gesture_in_flight` and the client retries against its own deadline. `ping`, `observe`, `window.list` and capture keep answering. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/WindowReadiness.swift`, `WaitCondition.swift`, `TypeCommand.swift`, `WindowHitTest.swift`, `LaneShortcut.swift`, `PendingRequestTracker.swift` | Pure pieces: the AX-readiness backoff, what satisfies a `wait`, which part of `type` is words vs target, which process a real event lands in, ⌘W/⌘Q for background lane apps (close button / quit), and the one-reply-per-request watchdog. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion, the offscreen-fallback arithmetic, and display arrangement: the corner chain, finding a real display cut off behind a lane display, and moving it back. |
+| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/DisplayLayout.swift` | The active displays as the placement pass and the pointer fence both read them: real displays (one per mirror set), the main display by id, and every DAEX lane display. |
+| `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`. |
+| `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface every seat backend implements (Mac here, Windows in `windowsDesktop/`). Re-exports the seat wording from `shared/desktopSeat.ts`. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, idle release, the lease, events, and teardown. The window lifecycle, handoff, observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopHandoff.ts` | Claims and restores apps handed off when a brain restarts, and retries transient failures before the handoff expires. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopDriverLifecycle.ts` | The driver process, permission probes, and health reconciliation. `createMacDesktopDriverLifecycle` is the only owner of the helper client. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the macOS `DesktopSeatProvider`. One method per driver op; the only file that knows the op names. The Windows sibling is `windowsDesktop/windowsDesktopSeatProvider.ts` (see [Windows Desktop](../windows-desktop/README.md#source-file-map)). |
+| `apps/desktop/src/main/services/macDesktop/macDesktopInput.ts` | The observation and input half: the one capture path, target→driver payload, who a call claims to be for the lease check, and the eight acting commands built on it. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopNextStep.ts` | The `next` step on an `unconfirmed` effect: one input method to try next (`observe`, `background_input`, `real_input`, `lease` or `browser`) and why, from the element, its app, the mode and the lease. Pure. The CLI prints it as the `next:` line. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopWindows.ts` | The window and app lifecycle: launching an app onto a lane's display, parking and unparking a window, presenting the set elsewhere, and the one window read every `windows-changed` event is built from. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream — chats and sync subscriptions tracked separately. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopSyncStream.ts` | The fan-out that turns a lane's loopback stream into `macDesktop.streamRecord` / `macDesktop.streamEnded` sync pushes, with per-subscription keyframe-gated backpressure. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The captioned recording a user or an agent starts, serialized against the helper's one recorder per lane, and `startHelperRecording`, the shared start (late-install stop, App Control orphan retry). |
+| `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | The pending-input card that asks for real input, and the lease push that makes the helper's own refusal correct. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopActionDomain.ts` | The `mac_desktop` action domain: its argument readers and its platform gate. `adeActions/registry.ts` keeps one wiring line. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopEscapeHotkey.ts` | A global Escape that ends a takeover even when the lane app, not DAEX, has the keyboard. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopLogger.ts` | The service logger: project log plus the machine log. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopDriverClient.ts` | The NDJSON client for the helper, with restart backoff and health. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopStreamServer.ts` | The token-guarded loopback HTTP endpoint that serves H.264 access units. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopObservations.ts` | Observation storage, the numbered element map image, and the sidecar that binds a frame to a lane. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopLease.ts` | The input-lease state machine: agent grant per chat, user takeover, heartbeat renewal, TTL expiry, and the three refusal codes. Pure, injectable clock. |
+| `apps/desktop/src/main/services/macDesktop/macDesktopOwnership.ts` | Lane→display, window→lane, window origin, the single-instance rule, and `ade_launched` pid bookkeeping. Pure. |
+| `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | Where the native helpers are. `resolveMacDesktopDriverBinary` lives here because every helper comes from the same `resources/native` directory, and it also answers in the daemon, which has no Electron `app`. `ADE_MAC_DESKTOP_DRIVER_PATH` overrides it, but only when it names a file that can actually be executed. |
+| `apps/ade-cli/src/bootstrap.ts` | Creates the service next to `iosSimulatorService` and `appControlService`. |
+| `apps/ade-cli/src/cli.ts` | The `daex screen` / `daex mac-desktop` dispatch case and the output switch. |
+| `apps/ade-cli/src/cliMacDesktop.ts` | The `daex screen` / `daex mac-desktop` plan builder. |
+| `apps/ade-cli/src/cliMacDesktopFormat.ts` | The text formatters (status, observation, action, recording), the host-aware title, and the error-hint table. |
+| `apps/desktop/src/renderer/components/chat/ChatMacDesktopPanel.tsx` | The Work tools pane tool. A thin wrapper: the controller hook renders `MacDesktopPaneView`. |
+| `apps/desktop/src/renderer/components/chat/useMacDesktopPanelController.ts` | The pane's state and actions: live view, lease, input, recording, and full screen. |
+| `apps/desktop/src/renderer/components/chat/MacDesktopPaneView.tsx` | The pane's picture, chrome, Apps section, and empty-state cards. |
+| `apps/desktop/src/renderer/components/chat/MacDesktopFullscreenView.tsx` | The full-screen portal of the same pane. |
+| `apps/desktop/src/renderer/components/chat/MacDesktopPermissionCard.tsx` | One row per Screen Recording or Accessibility grant, with Open Settings and Check again. |
+| `apps/desktop/src/renderer/components/chat/MacDesktopStateCard.tsx` | The card when there is no picture: Off, Checking, Starting, Stopping, and failures. |
+| `apps/desktop/src/renderer/components/chat/MacDesktopStopConfirm.tsx` | "Stop Mac Desktop?" when the tab closes: Stop, Keep running, or Cancel. |
+| `apps/desktop/src/renderer/components/chat/macDesktopStatusStore.ts` | The one status the pane and the tool card read. A failed read is unconfirmed; a stop in flight holds the pane on "Stopping…". |
+| `apps/desktop/src/renderer/components/chat/MacDesktopStatusStrip.tsx` | The pane's one status strip: a sentence, its buttons, and Details, in the shared inline `Banner`. |
+| `apps/desktop/src/renderer/components/shared/RecordingReceipt.tsx` | The recording pill and the "Saved to proof" receipt, shared with the Apple device pane. |
+| `apps/desktop/src/renderer/components/chat/useMacDesktopLiveView.ts` | The live view, its low-power idle rate, and its reconnect budget. |
+| `apps/desktop/src/renderer/components/chat/macDesktopLiveViewLease.ts` | The renderer-side ref-counted lease: one stream per lane, one decoder, pane outranking the corner card. |
+| `apps/desktop/src/renderer/components/device/h264FrameGate.ts` | The pure sequence-gap/keyframe gate both pushed-source decoders hold P-frames with after a skipped record or a decoder error. |
+| `apps/desktop/src/renderer/components/work/MacDesktopMiniPlayer.tsx` | The lane's desktop floating over the chat. |
+| `apps/desktop/src/renderer/components/shared/FloatingPlayer.tsx` | The shared floating-player shell: drag, resize from any edge, an 8 px status dot at rest, and a hover bar (Open in pane, picture in picture, Close). The floating Apple device and the floating Mac Desktop both use it. |
+| `apps/ios/ADE/Views/Work/MacDesktopCard.swift` | The phone's tools-sheet card, including the Off row and its Start button. |
+| `apps/ios/ADE/Views/Work/MacDesktopLiveMount.swift` | The one live-subscription mount the card and the full-screen viewer share, plus the shared Start helper. |
+| `apps/ios/ADE/Views/Work/MacDesktopLiveView.swift`, `MacDesktopViewer.swift`, `MacDesktopViewerSupport.swift` | The phone's live view and full-screen viewer. |
+| `apps/ios/ADE/Views/Work/MacDesktopStreamMath.swift` | Annex-B to AVCC, letterbox hit testing, and watch-mode zoom (1×–4×, double-tap 2.5×). |
+| `apps/desktop/resources/agent-skills/daex-computer-use/SKILL.md` | The bundled agent skill: the one computer-use entry point, which picks the surface and then covers lane screens (old name `ade-computer-use` still resolves). |
+
+## Gotchas / fragile areas
+
+- **Stop quits every app the lane launched, then force-quits.** `WindowControl.quitGrace` is 3 s. Each instance the lane launched is asked to quit; whatever is still running is force-quit. `appsLeftOpen` lists only an app that survived that. Windows the user claimed from their own apps are moved back and never quit. An instance the user took with Release has already left the launched set, so stop does not quit it. Unsaved work in a lane's copy is lost: the copy is blank and holds only what was done on the lane.
+- **Release hands the whole app to the user.** Releasing one window of an app the lane launched moves every window of that instance to the main screen and drops the pid from the launched set and the watch. The lane never parks, moves, or quits that instance again. A claimed window of an app the user started goes back alone.
+- **Every app the lane opens is a blank copy.** `BlankLaunch` in `LaneApps.swift` passes AppKit defaults so a new instance skips restored windows (`ApplePersistenceIgnoreState`), keeps none for a later launch (`NSQuitAlwaysKeepsWindows`), and opens an untitled document instead of the iCloud Open panel (`NSShowAppCentricOpenPanelInsteadOfUntitledFile`). Chromium, Electron, and Gecko apps parse their own command line, so they get none of those arguments. `createsNewApplicationInstance` asks for a second process; a single-instance app ignores it and the second lane is refused by name.
+- **A stop during a wait cannot be undone.** `LaneStopGate` counts a lane as stopping while its display is torn down (counted, so an inner stop cannot clear an outer one). `launch`, `park`, `stream.start`, and `record.start` for that lane are refused. A park that already waited re-checks with `ParkRecheck` before it moves the window. If the lane started stopping, the window was released, the display disappeared, or the display was replaced — a new generation, even at the same place, size, and id — the window stays where it is. A hold a later take now has is not this park's to drop.
+- **One stream start per lane, and a stop outranks it.** On the driver, `CaptureStartReservations` refuses a second stream or recording start for a lane that is already starting: the second would run nested inside the first's run-loop pump. A stop during that wait cancels the reservation, and the start tears down what it built instead of installing it. On the service, every asker joins that one in-flight start. `streamGenerations` is the lane's stop count. A stop or `forgetLane` bumps it, and a start that resumes under a newer generation is torn down and rejected. A stale restart is one registered unit; if a stop overtakes it, the restart leaves any newer run alone.
+- **Accessibility walks are on a clock.** `AXWalkBudget` sets a 1 s messaging timeout on every element a walk reads, a 2 s process-wide timeout for calls outside a walk (shorter than the service's 5 s health timeout), a 5 s deadline for one `observe` walk, and a 2 s deadline for one `wait` poll. The first call into an app that times out ends that app's walk, and later walks skip it for 5 s. The walk then returns what it already has.
+- **So is one `observe`'s capture.** `CaptureEngine.screenshotBudget` (5 s) bounds one screenshot's retries and its content lookups together, which is what keeps both halves of an observation inside the driver's 15 s watchdog: the walk's 5 s and the capture's 5 s, plus the window list, leave room under it. Without that bound a stalled ScreenCaptureKit call — a 10 s wait per attempt, five attempts, each re-resolving `SCShareableContent` — ran for the better part of a minute, and the watchdog answered `observe` with `internal_error` "did not complete within 15s" while the handler was alive and pumping the run loop. A frame that never arrives is not a failed observation: `observe` logs the capture failure, returns the element tree an agent acts on, and the next observation takes a fresh frame.
+- **Every driver runs from its own copy of the binary.** ScreenCaptureKit's daemon `replayd` keys clients by executable path (`uniqueClientIdentifierWithPID: using identifier from executablePath`). A brain runs one driver per open project plus App Control's recorder, all from the one bundled binary, and two live processes on one path make `replayd` cancel each other's connection forever: ReplayKit logs NSXPC error 4097 and the ScreenCaptureKit completion is never called, so every screenshot, observe frame and stream start waits out its timeout. `macDesktopDriverClient` therefore spawns `<tmp>/ade-desktop-driver-bin/<node pid>-<client>/ade-desktop-driver`, an APFS clone refreshed when the bundle's binary changes, removed on dispose and swept when its Node process is gone. A hard link or symlink resolves to the same path and does not help. If you see `RPDaemonProxy: connection INTERRUPTED` in a driver's unified log, look for a second process on the same path first.
+- **A screenshot does not stack on a stalled one.** A request that arrives while a screenshot waits runs inside that wait, and the outer one cannot return until the inner one has. Once a screenshot has waited more than `CaptureEngine.nestedScreenshotPatience` (1 s), a nested `capture.screenshot` is refused at once and a nested `observe` returns its element tree without a frame, so `observe` and `ping` keep answering while ScreenCaptureKit is slow.
+- **The driver's logs land in `brain.jsonl`.** stdout is the NDJSON protocol. Every helper log line goes to stderr, and `macDesktopDriverClient` copies each line into the brain logger at info as `mac_desktop.driver_stderr`. When the service runs in the brain, that file is `~/.ade/runtime/brain.jsonl`. Service events use the same logger (`mac_desktop.display_created`, `mac_desktop.stream_started`, `mac_desktop.driver_lost`, and the rest).
+- **The virtual display API is private.** `CGVirtualDisplay`,
+  `CGVirtualDisplayDescriptor`, `CGVirtualDisplaySettings`, and
+  `CGVirtualDisplayMode` are reached through `NSClassFromString` and the
+  Objective-C runtime. The driver never links them. A macOS release that removes
+  them makes `virtualDisplay.available` false with a reason, and the service
+  falls back to parking windows in an off-screen region of the main display.
+  That fallback is reported in `status`, never hidden.
+- **Off-screen parking is a real fallback, not a lie.** In fallback mode the
+  windows are on the user's display, just outside its visible frame. `status`
+  says `mode: "offscreen-region"` so the UI can say so.
+- **Another virtual-display tool may be installed.** BetterDisplay and similar
+  tools create their own virtual displays. DAEX only ever destroys a display it
+  created, tracked by the exact display id it received at creation.
+- **Never post a `CGEvent` without the lease.** `RealInput.swift` refuses the
+  call itself rather than trusting its caller. The lease check is in the driver,
+  not only in the service.
+- **Human takeover keeps the system cursor on DAEX.** Posting `mouseDown` at a
+  virtual-display coordinate teleports the one system pointer onto that
+  display. The helper posts through a `CGEventSource` with suppression
+  interval 0 (otherwise the warp eats the next ~250ms of Electron events),
+  then warps the cursor back, and repeats the warp on the next turns of the
+  main queue so the clicked window becoming key cannot keep it. Hover
+  `mouseMoved` events are not posted during takeover: a 60Hz warp+post flood
+  stalls ScreenCaptureKit and is what made the yellow glyph vanish. The live
+  view draws a local pointer instead. Agent real-input does not restore: the
+  pointer stays where the action put it. The flag is `restoreCursor` on the
+  nested input payload, and the service only sets it when the call is a
+  silent takeover (`silent` plus a `controllerId`). A remote controller —
+  web, phone, or another computer's DAEX window — does not send `home` on
+  Escape. That point is the viewer's own screen, and applying it on the host
+  would throw the host's cursor at an arbitrary coordinate. The sync host
+  drops `homeX`/`homeY` for the same reason; the desktop pane only attaches
+  them when the lane's Mac is the one the person is sitting at.
+- **Window ids are not stable across relaunch.** A claimed window id dies with
+  its process. `windows` re-enumerates; do not cache an id across a restart.
+- **Two chats in one lane can race to start.** `start` is idempotent and
+  serialized per lane; the second caller receives the first caller's display.
+- **A stream outlives all but its last asker.** Two chats watching one lane are
+  both recorded as owners; the first to end drops out of the set and only an
+  empty set stops the encoder.
+- **The pane and the corner card share one decoder per lane.** The renderer's
+  ref-counted live-view lease elects the pane (highest priority) and promotes
+  the card when the pane unmounts; a surface in the tree for another reason
+  still holds the count, so a pane that switches tools is not an unsubscribe.
+  Two decoders for one lane is a defect, not a fallback.
+- **The corner card's session is the display, not the lane.** The × marker is
+  keyed `display:<displayId>:<createdAt>` (creation time carries the
+  off-screen-region fallback), so a destroyed-and-recreated display may show
+  the card again while the same display stays closed.
+- **A recording failure is not a display failure.** The pane's display-state
+  slot titles the empty state; a refused `stopRecording` (a stale "running"
+  flag after the display died) goes in the status strip, and
+  `display-destroyed` clears the recording with the display. Error text never
+  carries a raw lane id: `macDesktopErrorText` replaces it with the lane's name
+  when known and drops it otherwise.
+- **The strip is a state dot and icon controls, nothing else.** `DAEX · <lane>`
+  is the display's Mission Control name but is not printed in the pane; the
+  live/idle status is a small coloured dot whose tooltip carries the words. The window list lives in the Apps section under the picture, so a
+  window's state is never inferred from a strip count.
+- **`getStreamStatus` must stay redacted.** It is on the action allowlist, so an
+  unredacted token would be printed into a durable agent transcript.
+- **The agent-facing prompt cost is one line.** The system prompt gains a single
+  line, and only when the lane has a display. A lane with the tool off pays
+  nothing.
+- **A chat-bound `--lane` is refused, not swapped.** The daemon pins every
+  `mac_desktop` action to the calling chat's lane. A bound caller that names a
+  different lane gets `This chat is bound to lane <a>; --lane <b> was ignored.`
+  rather than silently targeting lane `<a>` and failing with a message about it.
+  User clients (desktop, web, phone) keep the lane their UI is showing.
+- **Full-auto answers `external_directory` asks for the project's own `.ade`.**
+  The mac-desktop artifacts and observations live under `<project>/.ade`, which
+  is outside the lane worktree, so OpenCode's default ask fired and full-auto
+  never answered — the test drive blocked for eleven minutes on its own
+  workspace. Full-auto now replies `always` before any card exists when every
+  pattern is a literal path inside `<project>/.ade` (a mid-path glob keeps the
+  card). No card means the card and `chat status` cannot disagree about it.
+- **Recording stop cannot wedge the driver.** `markAsFinished` raises an ObjC
+  exception on a writer that never started, which is exactly the state a still
+  display leaves; the finalize only touches a `.writing` writer. The wait is
+  bounded at 2 s, and a late writer is retained until its completion runs so a
+  slow mux still lands in the reported file.
 
 ## Why a virtual display
 
-ADE lanes isolate code with git worktrees. They do not isolate a screen. Host
+DAEX lanes isolate code with git worktrees. They do not isolate a screen. Host
 computer use on macOS drives the signed-in desktop: one pointer, one key window.
 Two lanes then fight each other and fight the user.
 
@@ -34,14 +213,14 @@ is simply not where the user is looking.
 
 macOS keeps displays that touch at one corner, but snaps a requested gap back to
 an adjacent arrangement. A shared edge also lets an ordinary straight pointer
-move cross between screens. ADE places lane displays in a diagonal chain from a
+move cross between screens. DAEX places lane displays in a diagonal chain from a
 safe corner of the real-display layout, using a session-only arrangement so it
 does not change the saved display preferences. A debounced display-change
 callback reapplies the chain after a monitor, mode, or lane display changes; it
 stops after three refused placements for the same display layout.
 
 A listen-only mouse event tap watches for an unleased physical pointer entering
-an ADE display and returns it to the nearest point inside the real display it
+a DAEX display and returns it to the nearest point inside the real display it
 came from. It leaves driver-posted input and active leases alone. A physical
 drag is fenced too, so a window the person drags cannot be lost on a lane
 display; a lane's own lease or gesture is never interrupted. On a single
@@ -85,7 +264,7 @@ there reaches a lane window: reaching their own screen comes first.
 
 Four rules make the isolation hold:
 
-- **Capture is window-scoped or display-scoped, never screen-scoped.** ADE
+- **Capture is window-scoped or display-scoped, never screen-scoped.** DAEX
   captures the virtual display, or one window on it.
 - **Input is Accessibility-scoped by default.** `AXUIElementPerformAction` and
   `AXUIElementSetAttributeValue` act on a specific element in a specific
@@ -104,7 +283,7 @@ Four rules make the isolation hold:
 ### The known limit
 
 A single-instance application — Xcode, Finder, Simulator.app — has one process
-and one window server connection. Two lanes cannot both own it. ADE's driver is
+and one window server connection. Two lanes cannot both own it. DAEX's driver is
 window-scoped, so a lane binds a **window set**, not an app; but when two lanes
 ask for the same single-instance app, the second one is refused by name. The
 error carries the holding lane, the same way
@@ -114,95 +293,13 @@ error carries the holding lane, the same way
 
 The signed OpenAI Codex Computer Use helper stays exactly as it is. It is
 app-scoped and window-level, so it keeps working on a parked window with no
-change. ADE cannot embed it — it is a signed OpenAI binary — so ADE ships its
-own driver. Ghost OS remains an optional user-installed backend and is not
-required.
-
-## Source file map
-
-| Path | Role |
-|---|---|
-| `apps/desktop/native/ADEDesktopDriver/` | The native helper. `ADEDesktopDriverCore` holds the wire types and the pure logic; `ade-desktop-driver` is the executable that talks NDJSON over stdin/stdout. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/DriverProtocol.swift` | Request/response/event wire types and the permissive decoder. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/HandleRegistry.swift` | Observation handles (`obs-<id>:e:<n>`) and their bounded retention. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/OwnershipRegistry.swift` | Which window belongs to which display, and the single-instance rule. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/VirtualDisplayHost.swift` | The private CoreGraphics virtual-display classes, reached only through the Objective-C runtime, with a fail-closed fallback. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/WindowControl.swift` | Window enumeration, parking, and the CGWindowID→AXUIElement bridge. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/WindowWatcher.swift` | The per-pid watcher: the AX observer, the 1s poll, and the sweep that parks new windows and drags escaped ones back. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/AppLauncher.swift` | `app.launch`: starting an app for a lane and parking whatever it opens. | 
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/LaneApps.swift` | Blank launches, which windows of a watched app still need parking, which instances `stop` quits, and a release that hands the whole launched instance to the user. | 
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/LaneLifecycle.swift` | `LaneStopGate`, `ParkRecheck`, and `CaptureStartReservations`: a stop or a replaced display that lands during a wait cannot be undone, and one capture start per lane. | 
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/WindowListScope.swift` | Which window-server entries a listing keeps, decided before any Accessibility read. Only the claim picker is unscoped. | 
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/AXWalkBudget.swift` | The time budgets on every accessibility walk: per-call timeout, stall cooldown, and a deadline for the whole walk. | 
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/IdleGapCompressor.swift` | Cuts idle stretches out of a recording. A port of the simulator helper's rules; the two packages do not share code. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/AccessibilityDriver.swift` | The accessibility tree, element actions, value setting, and process-targeted keys. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/CaptureEngine.swift` | ScreenCaptureKit screenshots, the element map, the live stream, and recording. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/StreamByteServer.swift` | The loopback TCP fan-out the live stream is served on. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/H264Encoder.swift` | VideoToolbox H.264, emitting Annex-B access units with the parameter sets in front of every keyframe. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RunLoopPump.swift` | Spending a wait by pumping the main run loop, so one lane's wait never starves another lane's request or the health `ping`. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/RealInput.swift` | `CGEvent` pointer and keyboard posts. Refuses every call without a lease. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PointerFence.swift` | Listen-only pointer fence for unleased physical movement onto ADE displays, except lane displays on the route to a cut-off real display. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/BackgroundInput.swift` | Background input: clicks, scrolls and drags posted to one window's process with the routing fields, SkyLight posting, the target-only focus records and the frontmost guard. Needs no lease. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/BackgroundEventRecord.swift` | The two window-server records (focus, make-key) a background click sends to its target first. Pure bytes. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/ScrollDelta.swift` | A scroll direction and line count as wheel deltas, for the real and background paths. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/DisplayRelocation.swift` | Following lane displays macOS re-arranged: the reconfiguration callback, moving a lane's windows with its display, and the `display-moved` event. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/main.swift` | The NDJSON loop, the op dispatcher, the periodic permission probe, and the signal-handled shutdown. stdout is protocol. Every log line goes to stderr, and the Node client copies each line into the brain log. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/InputCommands.swift` | The `input` op: accessibility commands, real-event commands, the wait, and the element resolver they share. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/ObjCDynamic.swift` | The Objective-C runtime calls the private display classes need: `objc_msgSend` by `dlsym`, and KVC that probes the setter first. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/Permissions.swift` | Screen Recording and Accessibility, probed without prompting; the one prompt it can fire is `request-permission`, which the service allows only for a local user's explicit click. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/PhysicalInput.swift` | Seconds since the last physical input, for the idle rate and the takeover check. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/InputLease.swift` | The lease the driver keeps for itself, and the refusal `RealInput` raises. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/GestureGate.swift` | While a real drag holds the mouse button, the ops that could corrupt it — any `input` except `wait`, and this lane's `display.destroy`/`present`/`window.unpark` — are parked in order and replayed when the button comes up. A `wait` is not parked: it would poll nested inside the drag's own run-loop pump and hold the button down, so it is refused with `gesture_in_flight` and the client retries against its own deadline. `ping`, `observe`, `window.list` and capture keep answering. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriverCore/Geometry.swift` | The global/display-local conversion, the offscreen-fallback arithmetic, and display arrangement: the corner chain, finding a real display cut off behind a lane display, and moving it back. |
-| `apps/desktop/native/ADEDesktopDriver/Sources/ADEDesktopDriver/DisplayLayout.swift` | The active displays as the placement pass and the pointer fence both read them: real displays (one per mirror set), the main display by id, and every ADE lane display. |
-| `apps/desktop/scripts/build-mac-desktop-driver.mjs` | Builds the universal `ade-desktop-driver` into `resources/native`. |
-| `apps/desktop/src/shared/types/macDesktop.ts` | The cross-process contract, including the `DesktopSeatProvider` interface every seat backend implements (Mac here, Windows in `windowsDesktop/`). Re-exports the seat wording from `shared/desktopSeat.ts`. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopService.ts` | The runtime service: lane to display, idle release, the lease, events, and teardown. The window lifecycle, handoff, observation/input, streaming and recording halves are their own modules and are handed the service's registries and gates. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopHandoff.ts` | Claims and restores apps handed off when a brain restarts, and retries transient failures before the handoff expires. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopDriverLifecycle.ts` | The driver process, permission probes, and health reconciliation. `createMacDesktopDriverLifecycle` is the only owner of the helper client. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopSeatProvider.ts` | `createMacVirtualDisplayProvider` — the macOS `DesktopSeatProvider`. One method per driver op; the only file that knows the op names. The Windows sibling is `windowsDesktop/windowsDesktopSeatProvider.ts` (see [Windows Desktop](../windows-desktop/README.md#source-file-map)). |
-| `apps/desktop/src/main/services/macDesktop/macDesktopInput.ts` | The observation and input half: the one capture path, target→driver payload, who a call claims to be for the lease check, and the eight acting commands built on it. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopNextStep.ts` | The `next` step on an `unconfirmed` effect: one input method to try next (`observe`, `background_input`, `real_input`, `lease` or `browser`) and why, from the element, its app, the mode and the lease. Pure. The CLI prints it as the `next:` line. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopWindows.ts` | The window and app lifecycle: launching an app onto a lane's display, parking and unparking a window, presenting the set elsewhere, and the one window read every `windows-changed` event is built from. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopStreaming.ts` | The live view: the loopback server, the per-lane transport and its token, and who asked for the stream — chats and sync subscriptions tracked separately. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopSyncStream.ts` | The fan-out that turns a lane's loopback stream into `macDesktop.streamRecord` / `macDesktop.streamEnded` sync pushes, with per-subscription keyframe-gated backpressure. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopRecording.ts` | The captioned recording a user or an agent starts, serialized against the helper's one recorder per lane, and `startHelperRecording`, the shared start (late-install stop, App Control orphan retry). |
-| `apps/desktop/src/main/services/macDesktop/macDesktopLeaseFlow.ts` | The pending-input card that asks for real input, and the lease push that makes the helper's own refusal correct. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopActionDomain.ts` | The `mac_desktop` action domain: its argument readers and its platform gate. `adeActions/registry.ts` keeps one wiring line. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopDriverClient.ts` | The NDJSON client for the helper, with restart backoff and health. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopStreamServer.ts` | The token-guarded loopback HTTP endpoint that serves H.264 access units. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopObservations.ts` | Observation storage, the numbered element map image, and the sidecar that binds a frame to a lane. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopLease.ts` | The input-lease state machine: agent grant per chat, user takeover, heartbeat renewal, TTL expiry, and the three refusal codes. Pure, injectable clock. |
-| `apps/desktop/src/main/services/macDesktop/macDesktopOwnership.ts` | Lane→display, window→lane, window origin, the single-instance rule, and `ade_launched` pid bookkeeping. Pure. |
-| `apps/desktop/src/main/services/native/nativeHelperPaths.ts` | Where the native helpers are. `resolveMacDesktopDriverBinary` lives here because every helper comes from the same `resources/native` directory, and it also answers in the daemon, which has no Electron `app`. `ADE_MAC_DESKTOP_DRIVER_PATH` overrides it, but only when it names a file that can actually be executed. |
-| `apps/ade-cli/src/bootstrap.ts` | Creates the service next to `iosSimulatorService` and `appControlService`. |
-| `apps/ade-cli/src/cli.ts` | The `ade screen` / `ade mac-desktop` dispatch case and the output switch. |
-| `apps/ade-cli/src/cliMacDesktop.ts` | The `ade screen` / `ade mac-desktop` plan builder. |
-| `apps/ade-cli/src/cliMacDesktopFormat.ts` | The text formatters (status, observation, action, recording), the host-aware title, and the error-hint table. |
-| `apps/desktop/src/renderer/components/chat/ChatMacDesktopPanel.tsx` | The Work tools pane tool. A thin wrapper: the controller hook renders `MacDesktopPaneView`. |
-| `apps/desktop/src/renderer/components/chat/useMacDesktopPanelController.ts` | The pane's state and actions: live view, lease, input, recording, and full screen. |
-| `apps/desktop/src/renderer/components/chat/MacDesktopPaneView.tsx` | The pane's picture, chrome, Apps section, and empty-state cards. |
-| `apps/desktop/src/renderer/components/chat/MacDesktopFullscreenView.tsx` | The full-screen portal of the same pane. |
-| `apps/desktop/src/renderer/components/chat/MacDesktopPermissionCard.tsx` | One row per Screen Recording or Accessibility grant, with Open Settings and Check again. |
-| `apps/desktop/src/renderer/components/chat/MacDesktopStateCard.tsx` | The card when there is no picture: Off, Checking, Starting, Stopping, and failures. |
-| `apps/desktop/src/renderer/components/chat/MacDesktopStopConfirm.tsx` | "Stop Mac Desktop?" when the tab closes: Stop, Keep running, or Cancel. |
-| `apps/desktop/src/renderer/components/chat/macDesktopStatusStore.ts` | The one status the pane and the tool card read. A failed read is unconfirmed; a stop in flight holds the pane on "Stopping…". |
-| `apps/desktop/src/renderer/components/chat/MacDesktopStatusStrip.tsx` | The pane's one status strip: a sentence, its buttons, and Details, in the shared inline `Banner`. |
-| `apps/desktop/src/renderer/components/shared/RecordingReceipt.tsx` | The recording pill and the "Saved to proof" receipt, shared with the Apple device pane. |
-| `apps/desktop/src/renderer/components/chat/useMacDesktopLiveView.ts` | The live view, its low-power idle rate, and its reconnect budget. |
-| `apps/desktop/src/renderer/components/chat/macDesktopLiveViewLease.ts` | The renderer-side ref-counted lease: one stream per lane, one decoder, pane outranking the corner card. |
-| `apps/desktop/src/renderer/components/device/h264FrameGate.ts` | The pure sequence-gap/keyframe gate both pushed-source decoders hold P-frames with after a skipped record or a decoder error. |
-| `apps/desktop/src/renderer/components/work/MacDesktopMiniPlayer.tsx` | The lane's desktop floating over the chat. |
-| `apps/desktop/src/renderer/components/shared/FloatingPlayer.tsx` | The shared floating-player shell: drag, resize from any edge, an 8 px status dot at rest, and a hover bar (Open in pane, picture in picture, Close). The floating Apple device and the floating Mac Desktop both use it. |
-| `apps/ios/ADE/Views/Work/MacDesktopCard.swift` | The phone's tools-sheet card, including the Off row and its Start button. |
-| `apps/ios/ADE/Views/Work/MacDesktopLiveMount.swift` | The one live-subscription mount the card and the full-screen viewer share, plus the shared Start helper. |
-| `apps/ios/ADE/Views/Work/MacDesktopStreamMath.swift` | Annex-B to AVCC, letterbox hit testing, and watch-mode zoom (1×–4×, double-tap 2.5×). |
-| `apps/desktop/resources/agent-skills/ade-computer-use/SKILL.md` | The bundled agent skill: the one computer-use entry point, which picks the surface and then covers Mac Desktop. `ade-desktop/SKILL.md` is a deprecated alias that points to it. |
+change. DAEX cannot embed it — it is a signed OpenAI binary — so DAEX ships its
+own driver.
 
 ## Where this runs
 
 The display, the driver, and the capture all run on the machine that runs the
-ADE runtime for the project. Nothing about the display exists on a viewing
+DAEX runtime for the project. Nothing about the display exists on a viewing
 client.
 
 - **Local Mac runtime.** The desktop app talks to the service over local IPC,
@@ -218,7 +315,7 @@ client.
   The stream is read through a local port forward: an SSH target gets the same
   SSH forward the `idb-h264` simulator backend uses, and a paired target gets a
   forward opened on the authenticated sync channel (`syncPortForwardClient.ts`)
-  whichever route carried it — direct LAN, tailnet, or the ADE account relay.
+  whichever route carried it — direct LAN, tailnet, or the DAEX account relay.
   The loopback URL and its token never leave the two machines. "Bring to my
   screen" is hidden, because the user's screen is not on that Mac. Over an SSH
   target, the remote setup installs this desktop's driver beside the remote
@@ -226,8 +323,8 @@ client.
   its hash changed: the remote Mac's Screen Recording and Accessibility grants
   belong to that exact binary, so a needless re-upload would take them away. When the
   remote brain predates this feature and has no `mac_desktop` domain at all, the
-  pane says so in the machine's own terms — "<Machine name> runs ADE
-  <version>, which has no Mac Desktop. Update ADE there." — instead of printing
+  pane says so in the machine's own terms — "<Machine name> runs DAEX
+  <version>, which has no Mac Desktop. Update DAEX there." — instead of printing
   the action-domain refusal.
 - **Windows and Linux runtimes.** The same service with another seat
   backend: [Windows Desktop](../windows-desktop/README.md) and
@@ -283,7 +380,7 @@ client.
   hosted web client does the same with WebCodecs, unsubscribing on unmount, tab
   hidden, or socket close and re-subscribing after a reconnect.
 
-  A second ADE desktop, pointed at a remote lane, uses the same panel as the
+  A second DAEX desktop, pointed at a remote lane, uses the same panel as the
   host Mac. Its stream is the port-forwarded loopback the live view already
   opened, and pointer events — including hover, which the host Mac deliberately
   does not post — go to that stream's input endpoint. Escape there omits
@@ -318,14 +415,14 @@ display.
 
 A window joins the lane's display in one of two ways.
 
-1. **ADE launched it.** `ade mac-desktop open <app|path|url>` starts the app, and
+1. **DAEX launched it.** `daex mac-desktop open <app|path|url>` starts the app, and
    the driver watches that pid for new windows and parks each one. An app that
    quits as it opens is an error, not a launch. Apps inherit the driver's
    environment, which is a user process's (`userProcessEnv`), not the brain's:
    with the brain's `ELECTRON_RUN_AS_NODE=1` an Electron app ran as Node and
    quit at once.
-2. **Somebody claimed it.** `ade mac-desktop claim --window <id>` moves an existing
-   window onto the lane's display. `ade mac-desktop release --window <id>` puts it
+2. **Somebody claimed it.** `daex mac-desktop claim --window <id>` moves an existing
+   window onto the lane's display. `daex mac-desktop release --window <id>` puts it
    back where it came from.
 
 App Control and iOS Simulator windows do not move to the lane's display on
@@ -439,8 +536,8 @@ the lane opened and which user apps it holds windows of
    sweep. The next open recreates it. The display size comes from the
    `macDesktop.resolution` KV setting, defaulting to
    `MAC_DESKTOP_DEFAULT_RESOLUTION`.
-4. **Stop.** Stop (the pane, the tab's Stop confirm, `ade mac-desktop stop`),
-   lane removal, quitting ADE, idle release and a lost display all apply one
+4. **Stop.** Stop (the pane, the tab's Stop confirm, `daex mac-desktop stop`),
+   lane removal, quitting DAEX, idle release and a lost display all apply one
    rule: every app instance the lane launched quits. The driver asks each one
    to quit, waits `WindowControl.quitGrace` (3 s), then force-quits the rest, so
    a save or confirm dialog cannot keep one alive. Unsaved work in a lane's copy
@@ -470,20 +567,20 @@ the lane opened and which user apps it holds windows of
    SIGTERM, and the first log line of the shutdown used to kill the driver
    before it handed anything off. A removed lane or an app that quit meanwhile
    is left alone. Unsaved work survives. The in-app runtime
-   (`main.ts`) does not set it: quitting ADE there still quits the lanes' apps.
+   (`main.ts`) does not set it: quitting DAEX there still quits the lanes' apps.
 5. **Teardown.** Lane delete and lane archive destroy the display through the
    lane teardown step, next to the file watchers — a `destroy_mac_desktop` step
    that runs on every platform and reports "no display" off macOS. A chat that
    ends releases its lease through `releaseIfOwnedBy`, bound in `bootstrap.ts`
    through the same chat-session-ended listener the simulator uses.
-6. **Reconciliation.** On service start, every ADE-created virtual display that
+6. **Reconciliation.** On service start, every DAEX-created virtual display that
    no live lane claims is destroyed. A crashed run never leaks a display.
 
 ## The input lease
 
 Accessibility actions need no lease. Real pointer and keyboard events do.
 
-- A chat asks once, through the same pending-input card path `ade chat ask` and
+- A chat asks once, through the same pending-input card path `daex chat ask` and
   Codex MCP elicitation use. After one approval, that chat keeps using real
   input for the rest of its life.
 - Only one controller holds the lease at a time.
@@ -523,7 +620,7 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
   answer, because `getStatus` is the domain's capability probe.
 - **The caller waits longer than the card.** The card is withdrawn after
   `MAC_DESKTOP_INPUT_LEASE_WAIT_MS` (170 s) and the brain's budget for
-  `requestInputLease` is 180 s, so `ade mac-desktop lease` sets a client floor of
+  `requestInputLease` is 180 s, so `daex mac-desktop lease` sets a client floor of
   195 s (`macDesktopInteractiveClientFloorMs`). `screen start --shared` does the
   same. The result carries `outcome`: `granted`, `not_required`, `declined`,
   `unanswered` (withdrawn), `unasked` (the card could not be shown), `no_chat`,
@@ -535,7 +632,7 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
   strips `chatSessionId`, `controllerId` and `holderId` from its calls, so its
   accessibility input works and its real input is refused, and it refuses
   `requestInputLease` because there is no chat to ask in. When the call's
-  `callerRoot` (sent by `ade mac-desktop` on every call) is inside a lane
+  `callerRoot` (sent by `daex mac-desktop` on every call) is inside a lane
   worktree, the call is bound to that lane and a different `--lane` is refused;
   from the project root or outside every worktree it may name any lane.
 
@@ -886,7 +983,7 @@ Desktop, so the pane is never doubled.
   `enterCanvasPictureInPicture` from `workLiveIosPictureInPicture.ts` on the
   player's decoder canvas. It is enabled only while this player holds the
   lane's decoder and a frame has been drawn. While the picture is in PiP, the
-  box inside ADE stays composited at an opacity no eye can see (a hidden canvas
+  box inside DAEX stays composited at an opacity no eye can see (a hidden canvas
   can hand PiP a black surface) and takes no pointer input. PiP ends when the
   player loses the decoder: the pane took it back, the player was closed, or
   the display went away.
@@ -909,8 +1006,8 @@ Desktop, so the pane is never doubled.
 ## Proof
 
 Proof stays intentional, and a caption is what makes a capture proof. A bare
-`ade mac-desktop screenshot` writes a scratch file and returns its path.
-`ade mac-desktop proof --caption "<text>"` files a record and re-observes after
+`daex mac-desktop screenshot` writes a scratch file and returns its path.
+`daex mac-desktop proof --caption "<text>"` files a record and re-observes after
 the capture so the returned state is the state that was filed. `record start`
 files the finished movie only when it was given `--caption`. Agents keep writing
 their own captions; the CLI never invents one.
@@ -918,7 +1015,7 @@ their own captions; the CLI never invents one.
 A recording cuts still stretches unless it is plain. `record start --plain`
 sends `plain`, which the action domain and the sync command forward (they used
 to forward only the old `keepIdle`, so `--plain` was dropped).
-`ade proof record --plain` sends `plain` to `record_environment`, so a filed
+`daex proof record --plain` sends `plain` to `record_environment`, so a filed
 proof recording can keep real time too. A `--real-screen` recording is always
 real time.
 
@@ -933,8 +1030,8 @@ receipt shows. A filing that fails leaves `proofArtifactId` null, and the pane
 says the capture was saved but not filed.
 
 Records carry `backendName: "ade-mac-desktop"` and `backendStyle: "manual"`,
-through the same `ingest_computer_use_artifacts` path `ade ios-sim proof` and
-`ade browser proof` use. Owners are resolved the same way too: the lane, the
+through the same `ingest_computer_use_artifacts` path `daex ios-sim proof` and
+`daex browser proof` use. Owners are resolved the same way too: the lane, the
 calling chat, and — when the chat's lane has a primary pull request — that PR,
 as a `github_pr` owner with the existing `published_to` relation. There is no
 second ingestion path.
@@ -957,7 +1054,7 @@ checks on both the directories on the way and the leaf itself.
 **Starting a recording.** Every start goes through `startHelperRecording` in
 `macDesktopRecording.ts` (App Control window capture, the user recording, turn
 clips). A helper `record.start` that the driver watchdog answered with "did not
-complete within Ns" may still install its recording late, so ADE follows such a
+complete within Ns" may still install its recording late, so DAEX follows such a
 start with a stop, but only while that start still owns the slot. "Already
 recording" is treated as an orphan (stop it, retry once) only by App Control,
 whose per-lane key is exclusive and starts one at a time. Mac Desktop never
@@ -979,102 +1076,6 @@ intended `filePath`, and emits `recording-changed`, so `status` and a second
 `stop` agree. A recording that captured no frames is refused and its empty file
 removed — it never reaches the proof drawer.
 
-## Gotchas and fragile areas
-
-- **Stop quits every app the lane launched, then force-quits.** `WindowControl.quitGrace` is 3 s. Each instance the lane launched is asked to quit; whatever is still running is force-quit. `appsLeftOpen` lists only an app that survived that. Windows the user claimed from their own apps are moved back and never quit. An instance the user took with Release has already left the launched set, so stop does not quit it. Unsaved work in a lane's copy is lost: the copy is blank and holds only what was done on the lane.
-- **Release hands the whole app to the user.** Releasing one window of an app the lane launched moves every window of that instance to the main screen and drops the pid from the launched set and the watch. The lane never parks, moves, or quits that instance again. A claimed window of an app the user started goes back alone.
-- **Every app the lane opens is a blank copy.** `BlankLaunch` in `LaneApps.swift` passes AppKit defaults so a new instance skips restored windows (`ApplePersistenceIgnoreState`), keeps none for a later launch (`NSQuitAlwaysKeepsWindows`), and opens an untitled document instead of the iCloud Open panel (`NSShowAppCentricOpenPanelInsteadOfUntitledFile`). Chromium, Electron, and Gecko apps parse their own command line, so they get none of those arguments. `createsNewApplicationInstance` asks for a second process; a single-instance app ignores it and the second lane is refused by name.
-- **A stop during a wait cannot be undone.** `LaneStopGate` counts a lane as stopping while its display is torn down (counted, so an inner stop cannot clear an outer one). `launch`, `park`, `stream.start`, and `record.start` for that lane are refused. A park that already waited re-checks with `ParkRecheck` before it moves the window. If the lane started stopping, the window was released, the display disappeared, or the display was replaced — a new generation, even at the same place, size, and id — the window stays where it is. A hold a later take now has is not this park's to drop.
-- **One stream start per lane, and a stop outranks it.** On the driver, `CaptureStartReservations` refuses a second stream or recording start for a lane that is already starting: the second would run nested inside the first's run-loop pump. A stop during that wait cancels the reservation, and the start tears down what it built instead of installing it. On the service, every asker joins that one in-flight start. `streamGenerations` is the lane's stop count. A stop or `forgetLane` bumps it, and a start that resumes under a newer generation is torn down and rejected. A stale restart is one registered unit; if a stop overtakes it, the restart leaves any newer run alone.
-- **Accessibility walks are on a clock.** `AXWalkBudget` sets a 1 s messaging timeout on every element a walk reads, a 2 s process-wide timeout for calls outside a walk (shorter than the service's 5 s health timeout), a 5 s deadline for one `observe` walk, and a 2 s deadline for one `wait` poll. The first call into an app that times out ends that app's walk, and later walks skip it for 5 s. The walk then returns what it already has.
-- **So is one `observe`'s capture.** `CaptureEngine.screenshotBudget` (5 s) bounds one screenshot's retries and its content lookups together, which is what keeps both halves of an observation inside the driver's 15 s watchdog: the walk's 5 s and the capture's 5 s, plus the window list, leave room under it. Without that bound a stalled ScreenCaptureKit call — a 10 s wait per attempt, five attempts, each re-resolving `SCShareableContent` — ran for the better part of a minute, and the watchdog answered `observe` with `internal_error` "did not complete within 15s" while the handler was alive and pumping the run loop. A frame that never arrives is not a failed observation: `observe` logs the capture failure, returns the element tree an agent acts on, and the next observation takes a fresh frame.
-- **Every driver runs from its own copy of the binary.** ScreenCaptureKit's daemon `replayd` keys clients by executable path (`uniqueClientIdentifierWithPID: using identifier from executablePath`). A brain runs one driver per open project plus App Control's recorder, all from the one bundled binary, and two live processes on one path make `replayd` cancel each other's connection forever: ReplayKit logs NSXPC error 4097 and the ScreenCaptureKit completion is never called, so every screenshot, observe frame and stream start waits out its timeout. `macDesktopDriverClient` therefore spawns `<tmp>/ade-desktop-driver-bin/<node pid>-<client>/ade-desktop-driver`, an APFS clone refreshed when the bundle's binary changes, removed on dispose and swept when its Node process is gone. A hard link or symlink resolves to the same path and does not help. If you see `RPDaemonProxy: connection INTERRUPTED` in a driver's unified log, look for a second process on the same path first.
-- **A screenshot does not stack on a stalled one.** A request that arrives while a screenshot waits runs inside that wait, and the outer one cannot return until the inner one has. Once a screenshot has waited more than `CaptureEngine.nestedScreenshotPatience` (1 s), a nested `capture.screenshot` is refused at once and a nested `observe` returns its element tree without a frame, so `observe` and `ping` keep answering while ScreenCaptureKit is slow.
-- **The driver's logs land in `brain.jsonl`.** stdout is the NDJSON protocol. Every helper log line goes to stderr, and `macDesktopDriverClient` copies each line into the brain logger at info as `mac_desktop.driver_stderr`. When the service runs in the brain, that file is `~/.ade/runtime/brain.jsonl`. Service events use the same logger (`mac_desktop.display_created`, `mac_desktop.stream_started`, `mac_desktop.driver_lost`, and the rest).
-- **The virtual display API is private.** `CGVirtualDisplay`,
-  `CGVirtualDisplayDescriptor`, `CGVirtualDisplaySettings`, and
-  `CGVirtualDisplayMode` are reached through `NSClassFromString` and the
-  Objective-C runtime. The driver never links them. A macOS release that removes
-  them makes `virtualDisplay.available` false with a reason, and the service
-  falls back to parking windows in an off-screen region of the main display.
-  That fallback is reported in `status`, never hidden.
-- **Off-screen parking is a real fallback, not a lie.** In fallback mode the
-  windows are on the user's display, just outside its visible frame. `status`
-  says `mode: "offscreen-region"` so the UI can say so.
-- **Another virtual-display tool may be installed.** BetterDisplay and similar
-  tools create their own virtual displays. ADE only ever destroys a display it
-  created, tracked by the exact display id it received at creation.
-- **Never post a `CGEvent` without the lease.** `RealInput.swift` refuses the
-  call itself rather than trusting its caller. The lease check is in the driver,
-  not only in the service.
-- **Human takeover keeps the system cursor on ADE.** Posting `mouseDown` at a
-  virtual-display coordinate teleports the one system pointer onto that
-  display. The helper posts through a `CGEventSource` with suppression
-  interval 0 (otherwise the warp eats the next ~250ms of Electron events),
-  then warps the cursor back, and repeats the warp on the next turns of the
-  main queue so the clicked window becoming key cannot keep it. Hover
-  `mouseMoved` events are not posted during takeover: a 60Hz warp+post flood
-  stalls ScreenCaptureKit and is what made the yellow glyph vanish. The live
-  view draws a local pointer instead. Agent real-input does not restore: the
-  pointer stays where the action put it. The flag is `restoreCursor` on the
-  nested input payload, and the service only sets it when the call is a
-  silent takeover (`silent` plus a `controllerId`). A remote controller —
-  web, phone, or another computer's ADE window — does not send `home` on
-  Escape. That point is the viewer's own screen, and applying it on the host
-  would throw the host's cursor at an arbitrary coordinate. The sync host
-  drops `homeX`/`homeY` for the same reason; the desktop pane only attaches
-  them when the lane's Mac is the one the person is sitting at.
-- **Window ids are not stable across relaunch.** A claimed window id dies with
-  its process. `windows` re-enumerates; do not cache an id across a restart.
-- **Two chats in one lane can race to start.** `start` is idempotent and
-  serialized per lane; the second caller receives the first caller's display.
-- **A stream outlives all but its last asker.** Two chats watching one lane are
-  both recorded as owners; the first to end drops out of the set and only an
-  empty set stops the encoder.
-- **The pane and the corner card share one decoder per lane.** The renderer's
-  ref-counted live-view lease elects the pane (highest priority) and promotes
-  the card when the pane unmounts; a surface in the tree for another reason
-  still holds the count, so a pane that switches tools is not an unsubscribe.
-  Two decoders for one lane is a defect, not a fallback.
-- **The corner card's session is the display, not the lane.** The × marker is
-  keyed `display:<displayId>:<createdAt>` (creation time carries the
-  off-screen-region fallback), so a destroyed-and-recreated display may show
-  the card again while the same display stays closed.
-- **A recording failure is not a display failure.** The pane's display-state
-  slot titles the empty state; a refused `stopRecording` (a stale "running"
-  flag after the display died) goes in the status strip, and
-  `display-destroyed` clears the recording with the display. Error text never
-  carries a raw lane id: `macDesktopErrorText` replaces it with the lane's name
-  when known and drops it otherwise.
-- **The strip is a state dot and icon controls, nothing else.** The lane name,
-  the status sentence and the Windows dropdown were removed: `ADE · <lane>`
-  stays as the display's Mission Control name but is no longer printed in the
-  pane, and the live/idle status is a small coloured dot whose tooltip carries
-  the words. The window list lives in the Apps section under the picture, so a
-  window's state is never inferred from a strip count.
-- **`getStreamStatus` must stay redacted.** It is on the action allowlist, so an
-  unredacted token would be printed into a durable agent transcript.
-- **The agent-facing prompt cost is one line.** The system prompt gains a single
-  line, and only when the lane has a display. A lane with the tool off pays
-  nothing.
-- **A chat-bound `--lane` is refused, not swapped.** The daemon pins every
-  `mac_desktop` action to the calling chat's lane. A bound caller that names a
-  different lane gets `This chat is bound to lane <a>; --lane <b> was ignored.`
-  rather than silently targeting lane `<a>` and failing with a message about it.
-  User clients (desktop, web, phone) keep the lane their UI is showing.
-- **Full-auto answers `external_directory` asks for the project's own `.ade`.**
-  The mac-desktop artifacts and observations live under `<project>/.ade`, which
-  is outside the lane worktree, so OpenCode's default ask fired and full-auto
-  never answered — the test drive blocked for eleven minutes on its own
-  workspace. Full-auto now replies `always` before any card exists when every
-  pattern is a literal path inside `<project>/.ade` (a mid-path glob keeps the
-  card). No card means the card and `chat status` cannot disagree about it.
-- **Recording stop cannot wedge the driver.** `markAsFinished` raises an ObjC
-  exception on a writer that never started, which is exactly the state a still
-  display leaves; the finalize only touches a `.writing` writer. The wait is
-  bounded at 2 s, and a late writer is retained until its completion runs so a
-  slow mux still lands in the reported file.
-
 ## The native helper, as built
 
 The helper is `apps/desktop/native/ADEDesktopDriver`, a SwiftPM package with a pure `ADEDesktopDriverCore` library holding the wire
@@ -1086,10 +1087,9 @@ types and the rules that must be testable without a window server, and an
 One JSON object per line over stdin/stdout. `DriverProtocol.swift` carries the
 full op table in its doc comment — read that file and you know the wire.
 
-The raw value of each op *is* the wire name, and the wire name is the grouped
-spelling this document uses (`display.create`, `stream.setRate`, `lease.set`).
-There was once a second camelCase spelling; nothing sends it, and the helper
-accepts only the grouped name. Liveness is `ping`.
+The raw value of each op *is* the wire name, the grouped spelling this
+document uses (`display.create`, `stream.setRate`, `lease.set`). Liveness is
+`ping`.
 
 A request carrying an `id` is always answered. An unknown op is
 `ok:false, code:"unknown_op"` — never silence, never a crash — because a newer
