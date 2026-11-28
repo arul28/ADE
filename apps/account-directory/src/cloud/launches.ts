@@ -23,6 +23,7 @@ import {
   CLOUD_LAUNCH_METADATA,
   CLOUD_LAUNCH_RECORD_TTL_MS,
   CLOUD_LAUNCH_SIGN_IN_TIMED_OUT,
+  LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT,
   CLOUD_SIGN_IN_END_GRACE_MS,
   CLOUD_PATHS,
   type CloudAutoSizeRefusal,
@@ -1353,7 +1354,9 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   // A launch the server ended (no join, no sign-in) is having its computer deleted: a late report doesn't revive it.
   if (row.state === "failed" && serverEnded(row.error) && state !== "failed") return fail("launch_closed", "This launch isn't running.", 409);
   const sessionId = body.sessionId === undefined ? undefined : shortString(body.sessionId, 120);
-  const error = body.error === undefined ? undefined : clippedText(body.error, 400);
+  const reported = body.error === undefined ? undefined : clippedText(body.error, 400);
+  // A released computer reports the sign-in timeout in its earlier words: stored in the current ones.
+  const error = isSignInNeverFinished(reported) ? SIGN_IN_NEVER_FINISHED : reported;
   const written = await env.DB.prepare(`
     update cloud_launches set
       state = coalesce(?, state),
@@ -1364,7 +1367,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       sign_in_json = case when ? is not null then ? else sign_in_json end,
       updated_at = ?
     where launch_id = ? and instance_id = ? and state not in ('cancelled', 'retrying') and (state <> 'done' or ? = 'done')
-      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?, ?) or ? = 'failed')
+      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?, ?, ?) or ? = 'failed')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
@@ -1372,7 +1375,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
     state,
     state, signInJson,
     now, row.launch_id, row.instance_id, state,
-    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LAUNCH_COMPUTER_DELETED, LEGACY_LAUNCH_COMPUTER_DELETED, state,
+    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LAUNCH_COMPUTER_DELETED, LEGACY_LAUNCH_COMPUTER_DELETED, state,
   ).run();
   // Only the computer this report was checked against, and never into a Retry
   // that claimed the launch since this request read it.
@@ -1788,10 +1791,13 @@ const MADE_NOTHING_AFTER_MS = PENDING_TIMEOUT_MS + 5 * 60_000;
 const SIGN_IN_WAIT_MS = 45 * 60_000;
 /** The computer's own timeout reports the same error, so both end the same way. */
 const SIGN_IN_NEVER_FINISHED = CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
+/** The sign-in timeout in its current or earlier words (a released computer's report, an older row). */
+const isSignInNeverFinished = (error: string | null | undefined): boolean =>
+  error === SIGN_IN_NEVER_FINISHED || error === LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
 /** A waiting launch past its end: silent for `SIGN_IN_WAIT_MS`, or past the `expiresAt` its computer named plus the grace. Binds: the two cut-offs. */
 const signInEndedSql = "(updated_at <= ? or coalesce(json_extract(sign_in_json, '$.expiresAt'), 9007199254740991) <= ?)";
 /** The server's own endings: the computer is deleted with or after them, so no report brings the launch back. */
-const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED
+const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || isSignInNeverFinished(error)
   || error === LAUNCH_COMPUTER_DELETED || error === LEGACY_LAUNCH_COMPUTER_DELETED;
 
 /**
@@ -1865,10 +1871,10 @@ export async function failUnjoinedLaunches(
   // computer that reported its own sign-in timeout): delete it.
   const left = (await env.DB.prepare(`
     select l.* from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
-    where l.state = 'failed' and l.error in (?, ?) and c.deleted_at is null limit ?
-  `).bind(JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+    where l.state = 'failed' and l.error in (?, ?, ?) and c.deleted_at is null limit ?
+  `).bind(JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
   for (const row of left) {
-    const why = row.error === SIGN_IN_NEVER_FINISHED
+    const why = isSignInNeverFinished(row.error)
       ? { who: "launch_sign_in", reason: "launch_sign_in_never_finished" }
       : { who: "launch_join", reason: "launch_never_joined" };
     await deleteLaunchComputer(env, provider, row, now, why).catch((error: unknown) => {

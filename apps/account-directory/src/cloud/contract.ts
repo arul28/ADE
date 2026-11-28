@@ -3005,7 +3005,13 @@ export type CloudRemoteSignInRow = {
  * error, whether the computer or the server gave up first, so the server's
  * cleanup knows it and deletes the unused computer.
  */
-export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
+export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The sign-in wasn't done in time, so the chat didn't start. Start it again to get a new sign-in page.";
+/**
+ * The same ending in its earlier words: a computer on a released DAEX still
+ * reports it, and launches that failed before keep it. The server reads both
+ * as the sign-in timeout and stores the current words from a report.
+ */
+export const LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
 
 /** What the phone and the web show for a provider whose sign-in can't move. */
 export const CLOUD_REMOTE_SIGN_IN_ELSEWHERE = "Sign in from DAEX desktop; it reaches DAEX Cloud.";

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, CLOUD_SIGN_IN_CODE_REFUSED, CLOUD_SIGN_IN_MAX_CODES, CLOUD_SIGN_IN_TOO_MANY_CODES, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, CLOUD_SIGN_IN_CODE_REFUSED, CLOUD_SIGN_IN_MAX_CODES, CLOUD_SIGN_IN_TOO_MANY_CODES, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
@@ -3051,6 +3051,11 @@ describe("ADE Cloud server launcher", () => {
       ["the computer's own timeout, then its delete, is free", () => {}, async () => {
         at(33);
         expect((await stages({ state: "failed", error: CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
+        await endFailed();
+      }, 0],
+      ["a released computer's timeout in the earlier words, then its delete, is free", () => {}, async () => {
+        at(33);
+        expect((await stages({ state: "failed", error: LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
         await endFailed();
       }, 0],
       ["a cancel is free", () => {}, async () => { at(10); await cancel(); }, 0],
