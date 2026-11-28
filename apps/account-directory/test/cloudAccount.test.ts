@@ -7328,14 +7328,19 @@ describe("Pricing v3's ad price", () => {
   });
 
   it("a cloud iPhone's minute is taken off at most once, however often its price moves inside it", async () => {
-    // A live v3 phone (500 a minute, 400 with ads: 100 off a minute) with a proof in its window.
-    const readyAt = clock;
+    // A live v3 phone (500 a minute, 400 with ads: 100 off a minute) with a proof in its window, still starting.
     harness.insert("cloud_phones", {
-      phone_id: "ses_ad", user_id: OWNER, device: "iphone", state: "live", created_at: readyAt, ready_at: readyAt, billed_seconds: 0,
-      cost_micros: 0, free: 0, updated_at: readyAt, credits: 1, credited_milli: 0, rate_milli: 500,
+      phone_id: "ses_ad", user_id: OWNER, device: "iphone", state: "live", created_at: clock, ready_at: null, billed_seconds: 0,
+      cost_micros: 0, free: 0, updated_at: clock, credits: 1, credited_milli: 0, rate_milli: 500,
     });
     harness.insert("cloud_ad_targets", { target: "phone:ses_ad", user_id: OWNER, proof_at: clock, updated_at: clock });
     const saved = () => Number(harness.row("select ad_saved_milli from cloud_phones where phone_id = 'ses_ad'").ad_saved_milli);
+    // It bills from when it is ready: until then no minute comes off.
+    await harness.tick();
+    clock += 2 * 60_000;
+    await harness.tick();
+    expect(saved()).toBe(0);
+    harness.exec("update cloud_phones set ready_at = ? where phone_id = 'ses_ad'", clock);
     await harness.tick();
     expect(saved()).toBe(100);
     // Ads off and on again, many times inside its first minute.
