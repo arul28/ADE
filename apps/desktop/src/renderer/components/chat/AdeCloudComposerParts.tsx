@@ -203,7 +203,7 @@ export function CloudSizeButton({
                   title={`${tier.label}: ${about}`}
                   aria-label={tier.id === defaultTier ? `${tier.label}, default` : tier.label}
                   aria-describedby={aboutId}
-                  className={cn(MENU_ITEM_CLASS, "min-h-[30px] items-center gap-2 text-[11px]", price && "flex-wrap gap-y-0.5 py-1.5", tier.id === tierId ? "text-fg/90" : "text-fg/70")}
+                  className={cn(MENU_ITEM_CLASS, "min-h-[30px] items-center gap-2 text-[11px]", (price || facts.full) && "flex-wrap gap-y-0.5 py-1.5", tier.id === tierId ? "text-fg/90" : "text-fg/70")}
                 >
                   <span id={aboutId} className="sr-only">{about}</span>
                   <span className="inline-flex h-[16px] w-[16px] shrink-0 items-center justify-center"><CloudSizeIcon tier={tier.id} size={15} /></span>
@@ -218,6 +218,13 @@ export function CloudSizeButton({
                       <Check size={11} weight="bold" className="adec-check" aria-hidden />
                     </DropdownMenu.ItemIndicator>
                   </span>
+                  {facts.full ? (
+                    // What a full computer adds over a size of the same shape (the Settings table's tag, the size finder's words).
+                    <span aria-hidden className="flex basis-full items-center gap-1.5 pl-6 text-[10.5px] leading-snug text-muted-fg/75">
+                      <span className="kit-tag shrink-0">Full computer</span>
+                      <span className="min-w-0 truncate">{facts.runs}</span>
+                    </span>
+                  ) : null}
                   {price ? (
                     // Pricing v3: both prices, on their own line under the size (the row's first line stays as it was).
                     <span aria-hidden className="basis-full pl-6 text-[10.5px] leading-snug tabular-nums text-muted-fg/75">{price}</span>
