@@ -347,7 +347,8 @@ export function registerCloudIpc(args: {
         messageId: arg.messageId,
       });
     } catch (error) {
-      logger.info("cloud.sponsored_sent_failed", { error: getErrorMessage(error) });
+      // A lost proof prices the computer without ads: a warn, so Sentry sees it (rate-limited by the log bridge).
+      logger.warn("cloud.sponsored_sent_failed", { error: getErrorMessage(error) });
       return { counted: false };
     }
   });

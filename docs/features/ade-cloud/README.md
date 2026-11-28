@@ -427,7 +427,11 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   gone (the queue's launch, under the chat's id; not a resting CLI's, which is
   full-price work), or the app's `POST /cloud/instances` with `adProof`.
   One message id counts once on any chat id, so the app's later `/sent` of it
-  is a repeat. An automation's or agent's launch has no such proof. Known
+  is a repeat. On desktop, a wake for a message sent from the app's own window
+  (a send, or a new chat's first message) carries that message as its proof
+  (`personMessageOf`, `remoteConnectionService.ts`), and the app's early
+  refusal (`cloudLaneStartBlock`) lets a person's chat launch on a size free
+  with ads through at 0 credits, never a CLI's. An automation's or agent's launch has no such proof. Known
   limit: a new lane in a DAEX Free Models chat with ads off gets none (its
   proof is the first reply's ad request), so at 0 credits such a new lane is
   refused. A
