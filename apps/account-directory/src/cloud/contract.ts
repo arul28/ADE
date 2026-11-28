@@ -447,7 +447,131 @@ export type CloudInstance = {
    * moves a lane from the saved copy only when this is true.
    */
   deleteOnlyIfSaved?: boolean;
+  /*
+   * The DAEX Cloud Mac (`CloudMacState`). Servers before it leave these out:
+   * read a missing `os` as `linux` and a missing `unsupported` as empty.
+   */
+  /** What runs it: `linux` (every computer before the Mac) or `mac`. */
+  os?: CloudComputerOs;
+  /** A Mac's own state: the queue, the start, and its drive. Null or absent on Linux. */
+  mac?: CloudMacState | null;
+  /**
+   * What the server refuses on this computer (`mac_unsupported`), so a
+   * client hides those controls instead of deciding itself. Absent: nothing.
+   */
+  unsupported?: CloudComputerAction[];
 };
+
+/* ---- The DAEX Cloud Mac ---- */
+
+/** What a cloud computer runs. Every computer before the Mac is `linux`. */
+export type CloudComputerOs = "linux" | "mac";
+
+/**
+ * An action a computer may not take, named in `CloudInstance.unsupported`
+ * and in a `mac_unsupported` refusal's `error.action`.
+ */
+export type CloudComputerAction =
+  | "resize"
+  | "disk_grow"
+  | "copy"
+  | "move"
+  | "update"
+  | "backup"
+  | "public_ports"
+  | "signed_url"
+  | "auto_sleep"
+  | "machine_launch";
+
+/** Every action a DAEX Cloud Mac refuses, in the order a client lists them. */
+export const CLOUD_MAC_UNSUPPORTED: readonly CloudComputerAction[] = [
+  "resize", "disk_grow", "copy", "move", "update", "backup", "public_ports", "signed_url", "auto_sleep", "machine_launch",
+];
+
+/** The one sentence the server answers with for each refused action (`mac_unsupported`). */
+export const CLOUD_MAC_UNSUPPORTED_SENTENCES: Readonly<Record<CloudComputerAction, string>> = {
+  resize: "A DAEX Cloud Mac has one size (6 CPU, 8 GB), so it can't change size.",
+  disk_grow: "A DAEX Cloud Mac's drive is 20 GB and can't grow. Free up space on it instead.",
+  copy: "A DAEX Cloud Mac can't be copied. Start a new Mac lane from the same branch instead.",
+  move: "A lane on a DAEX Cloud Mac can't move to another computer. Push its branch and start a new lane there.",
+  update: "A DAEX Cloud Mac updates DAEX each time it starts, so there is nothing to update now.",
+  backup: "A DAEX Cloud Mac keeps its drive between starts and has no snapshots. Your lane's work is saved as for any cloud lane.",
+  public_ports: "A DAEX Cloud Mac can't open public ports.",
+  signed_url: "A DAEX Cloud Mac can't share a link to a port.",
+  auto_sleep: "A DAEX Cloud Mac always stops a few minutes after its work stops.",
+  machine_launch: "A DAEX Cloud Mac is made for a lane. Start a new lane on a Mac instead.",
+};
+
+/** The Mac's one shape: CPU, memory and its drive (the only part that is kept between starts). */
+export const CLOUD_MAC_SHAPE = { cpu: 6, memoryGb: 8, driveGb: 20 } as const;
+
+/**
+ * `CloudCatalog.mac`: what a DAEX Cloud Mac is and costs, for the Linux or
+ * Mac pick, the composer and `ade cloud status`. Credits are in the
+ * server's units (thousandths, as `multiplierMilli`); the catalog's credit
+ * scale says how a client shows them.
+ */
+export type CloudMacOffer = {
+  label: string;
+  cpu: number;
+  memoryGb: number;
+  driveGb: number;
+  /** What a running Mac uses each minute, at the full price (no ads). Billed by the whole minute. */
+  creditMilliPerMinute: number;
+  /** A Mac stops this many minutes after its work stops (Linux sleeps after 3). */
+  stopAfterIdleMinutes: number;
+  /** How long a start usually takes once a Mac is free, in seconds. */
+  startSeconds: { min: number; max: number };
+  /** One line that says what a Mac is, for the pick. */
+  summary: string;
+  /** One line that says what a stop keeps and loses, for the computer panel. */
+  keeps: string;
+};
+
+/**
+ * A Mac's state, beside the computer's `status`:
+ * - `queued`: waiting for a free Mac (it can take minutes at busy hours; nothing is charged).
+ * - `starting`: a Mac was found and is starting with the lane's drive (about 30 s), then DAEX starts on it.
+ * - `running`: on, and charged by the minute.
+ * - `stopping`: work stopped; the Mac saves its drive and goes.
+ * - `stopped`: only the drive is kept. The next message or a start makes a new Mac with it.
+ * `status` reads `starting` while queued or starting, `running`, and
+ * `stopped` while stopping or stopped, so an older app sees a computer that
+ * stops and starts.
+ */
+export type CloudMacStateName = "queued" | "starting" | "running" | "stopping" | "stopped";
+
+export type CloudMacState = {
+  state: CloudMacStateName;
+  /** When it entered `state` (ms). */
+  since: number;
+  /** The sentence to show for `state` (`CLOUD_MAC_STATE_SENTENCES`), or why the last start failed. */
+  message: string | null;
+  /** True when the last start ended without a Mac (none came free in time, or the provider refused): `message` says why. */
+  startFailed?: boolean;
+  drive: {
+    sizeGb: number;
+    /** As the last stop saved it; null before its first save. */
+    usedGb: number | null;
+    savedAt: number | null;
+  };
+};
+
+/** The words for each state. The server sends them in `CloudMacState.message`; clients show the server's. */
+export const CLOUD_MAC_STATE_SENTENCES: Readonly<Record<CloudMacStateName, string>> = {
+  queued: "Waiting for a free Mac. It starts as soon as one is free, and nothing is charged while it waits.",
+  starting: "Starting the Mac with this lane's drive. This takes about 30 seconds.",
+  running: "The Mac is on.",
+  stopping: "Work stopped, so the Mac is saving its drive and stopping.",
+  stopped: "The Mac is stopped and its drive is kept. The next message starts it again in about 30 seconds.",
+};
+
+/** Why a start ended with no Mac, as the server words it (`CloudMacState.message` with `startFailed`). */
+export const CLOUD_MAC_START_FAILED_SENTENCES = {
+  queue_expired: "No Mac came free within an hour. Send the message again to wait again.",
+  unavailable: "DAEX Cloud can't start a Mac right now. DAEX has been told. Try again later.",
+  drive_lost: "This Mac's drive is gone, so its lane can't start again. Its saved work is in Lanes without a computer.",
+} as const;
 
 /**
  * A lane computer's own read of its work at its idle step: whether anything
@@ -584,7 +708,16 @@ export type CloudUpdateCheck = {
 };
 
 /** `POST /cloud/instances/:id/booted`: it woke only for an update, so it may sleep at its first idle check. */
-export type CloudBootReportResult = { ok: true; sleepWhenIdle: boolean };
+export type CloudBootReportResult = {
+  ok: true;
+  sleepWhenIdle: boolean;
+  /**
+   * How many minutes with no work before the computer asks to rest: 5 on a
+   * Mac (`mac_idle_stop_minutes`), where resting is a stop. Absent (Linux, or
+   * an older server): the brain's own 3.
+   */
+  idleMinutes?: number;
+};
 
 /** What `POST /cloud/billing/checkout` answers. */
 export type CloudPaidPlanId = Exclude<CloudPlanId, "free">;
@@ -701,6 +834,12 @@ export type CloudCatalog = {
   hourUnit?: "medium";
   /** Older servers only: what 10 GB of extra disk cost for a month. Pricing v2 servers leave it out (no extra disk). */
   extraDiskCentsPer10GbMonth?: number;
+  /**
+   * The DAEX Cloud Mac, sent only while the server's `mac_computers` switch
+   * reaches this account. Absent: show nothing about a Mac anywhere, and
+   * never send `os: "mac"` (an older server would make a Linux computer).
+   */
+  mac?: CloudMacOffer;
 };
 
 /**
@@ -1542,6 +1681,10 @@ export const CLOUD_REFUSAL_CODES = {
   /** The ADE Cloud iPhone: this client can't drive the account's provider, or none has what the start needs. */
   phone_needs_update: 409,
   phone_cant: 409,
+  /** A Linux-only action on a DAEX Cloud Mac (resize, disk, copy, move, ports…); `error.action` names it (`CloudComputerAction`). */
+  mac_unsupported: 409,
+  /** No DAEX Cloud Mac can start right now (the provider's line is full, or it refused). Try again later. */
+  mac_busy: 503,
 } as const;
 export type CloudRefusalCode = keyof typeof CLOUD_REFUSAL_CODES;
 export const isCloudRefusalCode = (code: unknown): code is CloudRefusalCode =>
@@ -2305,6 +2448,13 @@ export type CloudServerLaunchRequest = {
   launchId: string;
   /** A computer with nothing on it is its own request (`CloudMachineLaunchRequest`). */
   kind: Exclude<CloudLaunchKind, "machine">;
+  /**
+   * Linux (left out) or a DAEX Cloud Mac. Send `mac` only when the catalog
+   * has `mac`. A Mac has one size: `sizeId` is still sent (any tier) and
+   * ignored, and `sizeChoice` is `picked`. A server whose switch doesn't
+   * reach the account refuses `mac` like an unknown size.
+   */
+  os?: CloudComputerOs;
   sizeId: CloudTierId;
   /** How `sizeId` was chosen (`CloudLaunchSizeChoice`); left out is `picked`. */
   sizeChoice?: CloudLaunchSizeChoice;
@@ -2476,6 +2626,14 @@ export type CloudLaunchRecord = {
   signIn?: CloudLaunchSignIn | null;
   /** A `machine` launch's computer; null for any other kind. Absent from an older server. */
   machine?: CloudMachineLaunchFacts | null;
+  /** What its computer runs. Absent from an older server: `linux`. */
+  os?: CloudComputerOs;
+  /**
+   * While `making` on a Mac: the computer waits for a free Mac or starts.
+   * Null once the computer runs (its own stages take over), on Linux, and
+   * from an older server.
+   */
+  mac?: CloudMacState | null;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
