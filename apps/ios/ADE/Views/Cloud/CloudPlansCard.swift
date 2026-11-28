@@ -479,20 +479,6 @@ struct CloudAdsCard: View {
   @State private var confirmGeneration = 0
 
   var body: some View {
-    Group { card }
-      // The second confirm hangs on the card's lasting frame, never on the
-      // content that rebuilds with every account read. A confirmation dialog,
-      // like every confirm of the Settings pages: an alert from this card never
-      // showed inside the Settings sheet, so a yes after a US "no" did nothing.
-      .confirmationDialog(CloudAdPriceWords.confirmTitle, isPresented: $confirming, titleVisibility: .visible) {
-        Button(CloudAdPriceWords.turnOnAds) { save(CloudSponsoredState.granted, confirmed: true, since: confirmGeneration) }
-        Button(CloudAdPriceWords.keepAdsOff, role: .cancel) {}
-      } message: {
-        Text(CloudAdPriceWords.dataLine)
-      }
-  }
-
-  @ViewBuilder private var card: some View {
     if let words = CloudAdPriceWords(accountStore.account), words.pricing.ads.available {
       let on = pendingOn ?? words.pricing.ads.on
       VStack(alignment: .leading, spacing: 0) {
@@ -540,6 +526,12 @@ struct CloudAdsCard: View {
         .padding(.bottom, 12)
       }
       .adeKitCard(padding: nil)
+      .alert(CloudAdPriceWords.confirmTitle, isPresented: $confirming) {
+        Button(CloudAdPriceWords.turnOnAds) { save(CloudSponsoredState.granted, confirmed: true, since: confirmGeneration) }
+        Button(CloudAdPriceWords.keepAdsOff, role: .cancel) {}
+      } message: {
+        Text(CloudAdPriceWords.dataLine)
+      }
     }
   }
 
