@@ -363,9 +363,11 @@ extension WorkChatSessionView {
   }
 
   /// "A newer version is out", while the chat is still on the older one.
-  /// The sign-in card takes the composer's place, and this with it.
+  /// The sign-in card takes the composer's place, and this with it. Hidden
+  /// while a turn runs, as on desktop: a model change then restarts the
+  /// chat's runtime and would stop the answer being written.
   var shownModelUpgradeOffer: WorkModelUpgrade? {
-    guard inputLockMessage == nil, canSwitchChatModel, let modelUpgradeOffer,
+    guard inputLockMessage == nil, !isStreamingTurn, canSwitchChatModel, let modelUpgradeOffer,
           modelUpgradeOffer.fromModelId == chatSummaryContext.currentModelId else { return nil }
     return modelUpgradeOffer
   }
@@ -402,7 +404,7 @@ extension WorkChatSessionView {
 
   /// "Switch": the same model change the picker makes, on the chat's machine.
   func switchToNewerModelVersion() {
-    guard let offer = modelUpgradeOffer, !modelUpdateInFlight else { return }
+    guard let offer = modelUpgradeOffer, !modelUpdateInFlight, !isStreamingTurn else { return }
     ADEHaptics.light()
     Task { @MainActor in
       modelUpdateInFlight = true
