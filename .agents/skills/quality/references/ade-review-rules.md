@@ -1,7 +1,7 @@
-# ADE Review Rules
+# DAEX Review Rules
 
-ADE-specific correctness rules for the `/quality` Track A review. These encode
-bug classes ADE has actually shipped and had to fix. Each rule is a **check**:
+DAEX-specific correctness rules for the `/quality` Track A review. These encode
+bug classes DAEX has actually shipped and had to fix. Each rule is a **check**:
 confirm the pattern against the real diff before raising a finding, and verify
 any named service/flag still exists (this repo moves fast) rather than asserting
 it from this list. Companions: the general `correctness-security-review.md`, and
@@ -31,7 +31,7 @@ the daemon action domain, so it crashes in every real build (the daemon never
 routes it). Orchestrator mode hit exactly this.
 
 **Check:** When a lane adds a new action/domain or a new IPC surface, verify it is
-reachable through the daemon action domain / `ade actions` registry, not just the
+reachable through the daemon action domain / `daex actions` registry, not just the
 in-process wiring. Cross-check `apps/ade-cli` (`adeRpcServer.ts`, the actions
 allowlist) — if the desktop UI can call it but the CLI/headless path can't, the
 daemon wiring is missing.
@@ -108,10 +108,10 @@ remote commands, or host update flows, verify:
 - `hello_ok` remains additive. Missing new feature flags must degrade to limited
   capability mode, not reject the WebSocket connection.
 - `apps/desktop/src/shared/syncMobileCompatibility.ts` includes every host
-  command ADE Mobile requires, and the brain advertises missing required actions
+  command the DAEX iPhone app requires, and the brain advertises missing required actions
   through `features.mobileCompatibility`.
 - A raise of `MIN_SUPPORTED_MOBILE_APP_VERSION` / `_BUILD` goes no higher than
-  the normal ADE app's newest TestFlight build. Betas ship the raise to
+  the normal DAEX app's newest TestFlight build. Betas ship the raise to
   machines first, and the normal app only updates at a stable release, so a
   higher minimum locks it out of every Beta machine. Raising it is a
   merge-blocking product decision when no such build exists yet.
@@ -159,7 +159,7 @@ these foundation-specific checks apply on top of the default review:
   per-user pipe with the recorded PID; a live supervisor alone is not health.
   Verify bounded restart backoff, stale/reused PID diagnostics, and Stable/Beta
   identity after packaged channel defaults are applied.
-- Named pipes must be scoped by canonical ADE home, channel/service, and current
+- Named pipes must be scoped by canonical DAEX home, channel/service, and current
   user identity and retain intended-user listen restrictions. `.exe` resolution
   and structured argv must not be replaced with shell-string parsing.
 - Native Windows CI must load the actual CR-SQLite DLL and exercise a CRR
@@ -177,13 +177,13 @@ these foundation-specific checks apply on top of the default review:
 **Class:** A change that works on the one path the author tested and is missing
 everywhere else — the single most common defect shape in multi-client, 
 multi-provider repos. This is the review-side enforcement of the AGENTS.md
-"Hit every ADE surface" checklist.
+"Hit every DAEX surface" checklist.
 
 **Check:** For each behavior the diff adds or changes, walk the checklist and
 demand an answer per entry — present, deliberately excluded (where is that
 recorded?), or missed:
 
-- **Entry points:** desktop UI, `ade` CLI, deeplinks, command
+- **Entry points:** desktop UI, `daex` CLI, deeplinks, command
   palette, keybindings. A behavior wired into one entry point but reachable
   from others is a finding.
 - **Clients:** desktop, hosted web, iOS. Logic duplicated into one client
@@ -199,12 +199,12 @@ recorded?), or missed:
 Raise one finding per missed surface, severity by reachability: a reachable
 crash or dead control is High; a missing deliberate-exclusion record is Low.
 
-## 12. ADE MCP command classification
+## 12. DAEX MCP command classification
 
-**Class:** A new `ade` command (or alias) that nobody classified for ADE MCP.
+**Class:** A new `daex` command (or alias) that nobody classified for DAEX MCP.
 Connected AI apps run the real CLI, and both access levels fail closed, so an
 unclassified command is refused remotely. That is safe, but it means the
-command silently never reaches ADE MCP.
+command silently never reaches DAEX MCP.
 
 **Check:** When the diff adds a top-level command or alias in
 `apps/ade-cli/src/cli.ts`, or a subcommand that only reads under a command in
@@ -215,7 +215,7 @@ command silently never reaches ADE MCP.
 - **Read only too** — also add it (or the subcommand) to `READ_ONLY_COMMANDS`;
 - **Never remote** — add it to `BLOCKED_COMMANDS` with the reason. Use this for
   anything that outlives revoking the connection (credentials, sign-in, account
-  machines, ADE MCP itself), needs a terminal, or would stop the brain.
+  machines, DAEX MCP itself), needs a terminal, or would stop the brain.
 
 A new subcommand of an existing full-access command that mints credentials,
 signs in or out, or acts on another machine needs an explicit refusal in
@@ -224,11 +224,11 @@ classification is Low; a credential- or machine-reaching subcommand left
 runnable is High. `remoteMcpCommandPolicy.test.ts` fails for any command in
 `HELP_BY_COMMAND` that is in neither list.
 
-## 13. ADE MCP surface drift
+## 13. DAEX MCP surface drift
 
-**Class:** A change that moves what an outside agent sees through ADE MCP
+**Class:** A change that moves what an outside agent sees through DAEX MCP
 (claude.ai, ChatGPT, Grok, Cursor and other connected apps) without moving
-ADE MCP with it. Classification (rule 12) only decides whether a command runs;
+DAEX MCP with it. Classification (rule 12) only decides whether a command runs;
 this rule checks that what runs still makes sense from outside.
 
 **Check:** when the diff touches a command a typed tool wraps
@@ -252,14 +252,14 @@ By default a typed tool that now fails or misdescribes its command is
 Medium, and a stale `next` hint or view field is Low; raise either by impact
 (a mutating tool listed to read-only apps is High, and so is a view that
 silently shows "nothing" where there is data, like an empty computer list). Whether a NEW capability deserves its own
-typed tool or view is `/test`'s ADE MCP parity pass, not a finding here.
+typed tool or view is `/test`'s DAEX MCP parity pass, not a finding here.
 
 ---
 
 ## 14. Idle and poll-path bloat
 
-**Class:** Small repeated work that raises idle CPU, memory and wakeups. ADE
-paid for it before: see **Patterns that bloat ADE** in
+**Class:** Small repeated work that raises idle CPU, memory and wakeups. DAEX
+paid for it before: see **Patterns that bloat DAEX** in
 `docs/perf/macos-baseline.md`.
 
 **Check:** For each new or changed poll, timer, interval, animation, spawn,

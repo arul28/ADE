@@ -31,7 +31,7 @@ responsibilities. When a file crosses this threshold:
 - The original file becomes a thin re-export or coordinator
 
 Do not split mechanically (e.g., "lines 1-500" and "lines 501-1000"). Split by
-responsibility. (ADE has genuine large coordinators — `apps/ade-cli/src/cli.ts`,
+responsibility. (DAEX has genuine large coordinators — `apps/ade-cli/src/cli.ts`,
 `adeRpcServer.ts`, `appStore.ts`. Flag growth, but only split along a real
 responsibility seam, never mechanically.)
 
@@ -87,7 +87,7 @@ Challenge unnecessary optionality and type casts:
 - Union types with members that never occur
 
 Every `as`, `!`, and `any` is a question. Most have answers that make the code
-stronger. In ADE this matters most at IPC/preload boundaries, where a sloppy
+stronger. In DAEX this matters most at IPC/preload boundaries, where a sloppy
 cast hides a contract that will break in runtime-backed mode.
 
 ---
@@ -103,7 +103,7 @@ Flag feature logic that has leaked into shared paths:
 - Feature flags checked in shared utilities
 
 Each layer has a job. Feature logic in a shared path means every feature pays
-the complexity cost. In ADE, prefer fixing the underlying service or shared type
+the complexity cost. In DAEX, prefer fixing the underlying service or shared type
 over layering a renderer-only workaround on top.
 
 ---

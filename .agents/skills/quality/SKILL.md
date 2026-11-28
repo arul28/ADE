@@ -11,7 +11,7 @@ description: >-
   default requirement for all new code. Only findings needing a product
   decision, a behavior change this branch was not asked to make, or a
   capability whose Windows parity is not achievable, reach the merge-blocking
-  gate. Grounded in ADE's
+  gate. Grounded in DAEX's
   own bug classes (runtime-backed null services, daemon action-domain wiring,
   cr-sqlite CRR, IPC contract drift, fast-tier loading).
 ---
@@ -137,7 +137,7 @@ Blocker to hide.
 ### Windows parity rules
 
 **Windows parity is a default requirement, not a conditional check.** Every
-change reviewed here must work on the Windows build of ADE. Windows is part of
+change reviewed here must work on the Windows build of DAEX. Windows is part of
 "done"; it is never a follow-up. Review every changed file for Windows behavior
 even when the diff looks unrelated to paths or processes — the regressions that
 ship are the ones nobody thought to look for. `references/windows-quirks.md`
@@ -231,25 +231,25 @@ Apply all three reference files:
 
 1. **`references/correctness-security-review.md`** — diff-scoped audit for bugs,
    changes that break existing features (trace cross-app/IPC side effects),
-   devex breakage, and the ADE security surface (computer-use policy &
+   devex breakage, and the DAEX security surface (computer-use policy &
    artifact ownership, plaintext secrets, runtime action allowlists, sync/CRR
    data integrity). Calibrate severity honestly; never present a finding with
    unfinished research.
-2. **`references/ade-review-rules.md`** — ADE-specific correctness: runtime-backed
+2. **`references/ade-review-rules.md`** — DAEX-specific correctness: runtime-backed
    null services on bypassed IPC routes, daemon action-domain wiring, cr-sqlite
    CRR constraints, mobile-host compatibility, IPC/preload/shared/renderer
    contract drift, fast-tier loading, Node/test-env gotchas, worktree path
    discipline, and the surface coverage sweep (entry points, clients,
    providers, reverse states, connection modes — rule 11), and idle/poll-path
    bloat (rule 14).
-3. **`references/windows-quirks.md`** — the Windows failure classes ADE has
+3. **`references/windows-quirks.md`** — the Windows failure classes DAEX has
    actually hit and the named helper that resolves each one. Windows parity is
    a default requirement (see **Windows parity rules** above), so this file
    applies to every diff, not only obviously path-or-process work.
 
 Also flag, as a correctness finding, any new failure that disappears: a
 `catch` that recovers silently or returns a fallback without `captureError` /
-`captureProblem` or a `logger.warn`/`logger.error` line. ADE only learns about
+`captureProblem` or a `logger.warn`/`logger.error` line. DAEX only learns about
 those through Sentry (`docs/logging.md`, "Error tracking (Sentry)"); `/test`
 runs the full Sentry gate.
 
@@ -406,7 +406,7 @@ in `AGENTS.md`). The stored name "Primary" and the name match in
 
 Output a summary. The **Gate** section is what `/test` and `/ship` consume, and a
 non-empty gate blocks the merge. List only findings you could not fix for one of
-the two permitted reasons — not findings you chose to defer.
+the three permitted reasons — not findings you chose to defer.
 
 ```markdown
 ## Quality Summary
