@@ -50,7 +50,8 @@ func workCloudLaunchProviderLabel(_ entry: AccountCloudLaunchStore.Entry, catalo
 
 /// The launch's setup steps; a start that failed failed at the computer.
 func workCloudLaunchSteps(_ entry: AccountCloudLaunchStore.Entry) -> CloudSetupStepStates {
-  var states = cloudSetupStepStates(entry.record)
+  // Following a lost answer (a Retry too): a fresh start, not the old record's steps.
+  var states = cloudSetupStepStates(entry.answerLost == nil ? entry.record : nil)
   if entry.startError != nil { states.computer = .failed }
   return states
 }
