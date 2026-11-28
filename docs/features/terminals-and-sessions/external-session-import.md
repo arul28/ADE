@@ -1,10 +1,10 @@
 # External Session Import
 
-AI coding CLIs run outside ADE keep their own sessions on disk or list them
+AI coding CLIs run outside DAEX keep their own sessions on disk or list them
 natively. External-session import lets the user browse those sessions from the
-Work surface and continue one inside ADE.
+Work surface and continue one inside DAEX.
 
-ADE imports sessions from 12 providers:
+DAEX imports sessions from 12 providers:
 
 - Claude Code, Codex, Cursor `cursor-agent`, Factory Droid, OpenCode, Pi, and
   Muse Code.
@@ -15,17 +15,17 @@ ADE imports sessions from 12 providers:
 
 Every import has two choices:
 
-- **The surface**: an ADE chat, or a tracked CLI terminal.
+- **The surface**: a DAEX chat, or a tracked CLI terminal.
 - **The mode**: "Continue" uses the original provider session (do not keep it
   open in another terminal too). "Copy" starts a new session from the history
   and leaves the original as it is.
 
 One policy table decides which of the four actions a session gets and in which
-lanes ([Import policy](#import-policy)). Every provider can open as an ADE chat
+lanes ([Import policy](#import-policy)). Every provider can open as a DAEX chat
 copy.
 
-Sessions that ADE creates or imports stay resumable from the provider CLI,
-because ADE records (and for fresh launches chooses) the provider ids:
+Sessions that DAEX creates or imports stay resumable from the provider CLI,
+because DAEX records (and for fresh launches chooses) the provider ids:
 
 - Tracked CLI sessions keep `TerminalResumeMetadata`.
 - Claude chat imports seed `sdkSessionId` and mirror a Claude session pointer;
@@ -33,45 +33,45 @@ because ADE records (and for fresh launches chooses) the provider ids:
   continues seed the provider pointer the chat restores from.
 - Fresh tracked launches of Claude, Qwen, Grok and Copilot get a pre-assigned
   session id ([Session tracking](#session-tracking)); the other CLIs record the
-  target when ADE first learns it.
+  target when DAEX first learns it.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/externalSessions/externalSessionsService.ts` | Service entry point (`list`, `importExternalSession`, `getDetail`). Runs provider discovery, stamps each row's capabilities, `home` lane, and `sizeBytes`, filters project/all scope, detects already-imported sessions, validates import ids, enforces optional lane cwd scope, refuses any import the policy does not offer (`importRejectionReason`), builds CLI resume/fork commands, delegates chat import, and creates tracked PTYs. `getDetail` wraps `loadExternalSessionDetail` with the service's own `homeDir`/`env`, so every detail caller (IPC, the watch, the ADE action, the sync command) reads the same provider stores as `list`. |
+| `apps/desktop/src/main/services/externalSessions/externalSessionsService.ts` | Service entry point (`list`, `importExternalSession`, `getDetail`). Runs provider discovery, stamps each row's capabilities, `home` lane, and `sizeBytes`, filters project/all scope, detects already-imported sessions, validates import ids, enforces optional lane cwd scope, refuses any import the policy does not offer (`importRejectionReason`), builds CLI resume/fork commands, delegates chat import, and creates tracked PTYs. `getDetail` wraps `loadExternalSessionDetail` with the service's own `homeDir`/`env`, so every detail caller (IPC, the watch, the DAEX action, the sync command) reads the same provider stores as `list`. |
 | `apps/desktop/src/main/services/externalSessions/discoverers.ts` | `EXTERNAL_SESSION_DISCOVERERS`: the one provider → discoverer table. Listing, import, and the exact-id detail lookup all use it. |
 | `apps/desktop/src/main/services/externalSessions/sessionIds.ts` | Session id checks. `isWellFormedExternalSessionId` (strict UUID for Claude/Codex, `^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$` for the rest) and `validateExternalSessionId` (the same check plus the Cursor `agent-` refusal, throwing). Discoverers join the id into a store path, so an id with a separator must never reach them. |
 | `apps/desktop/src/shared/externalSessionPolicy.ts` | The one import policy. `PROVIDER_IMPORT_RULES` (the per-provider table), `effectiveImportRules` (the table narrowed by host capabilities), `planImport` (what the action bar shows), `importRejectionReason` (the host guard), and `importProviderLabel` (the provider label every desktop surface uses). The renderer and the host import all use it. iOS mirrors it in Swift. |
 | `apps/desktop/src/main/services/externalSessions/sessionHome.ts` | `createSessionHomeResolver`: maps a provider cwd to the lane that owns it (`ExternalSessionHome`). The deepest lane root wins. A folder under `.ade/worktrees/` that no live lane owns is a removed lane, not the primary lane. |
 | `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, one record classifier shared by prompt extraction and the recent-`messages` sampler, provider-wrapper cleanup, the preview-only markup-density gate, word-boundary clipping, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
-| `apps/desktop/src/main/services/externalSessions/adeConfigHomes.ts` | The config homes ADE owns under `<ADE_HOME>/provider-homes/` that can hold a CLI's sessions: `providerConfigHomeDirs` (Claude/Codex accounts, presets, keys and routes) and `adeHarnessConfigHomes` (Droid/Grok/Kimi/Pi presets and routes, and Droid keys), each tagged with the launch identity that writes there. Also `ADE_HARNESS_HOME_ENV_KEY` (the variable that points each CLI at its home) and `uniqueByPath`. See [Where the other CLIs' sessions live](#where-the-other-clis-sessions-live). |
-| `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under **every** Claude config home: `CLAUDE_CONFIG_DIR` or `~/.claude`, each account home under `<ADE_HOME>/provider-homes/claude/<instance>`, and the per-preset / per-credential homes ADE launches with. Reads `ai-title`/custom titles, excludes SDK-origin transcripts, collapses continuation chains to their leaf, and keeps the config home on the record so an import can resume under the account that owns the transcript. |
-| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from **every** Codex config home — `CODEX_HOME` / `~/.codex`, each `<ADE_HOME>/provider-homes/codex/<instance>`, and the preset / API-key homes ADE launches with — reading each home's `state_5.sqlite`: top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when a thread store is unusable, and keeps the config home on the record for import. |
+| `apps/desktop/src/main/services/externalSessions/adeConfigHomes.ts` | The config homes DAEX owns under `<ADE_HOME>/provider-homes/` that can hold a CLI's sessions: `providerConfigHomeDirs` (Claude/Codex accounts, presets, keys and routes) and `adeHarnessConfigHomes` (Droid/Grok/Kimi/Pi presets and routes, and Droid keys), each tagged with the launch identity that writes there. Also `ADE_HARNESS_HOME_ENV_KEY` (the variable that points each CLI at its home) and `uniqueByPath`. See [Where the other CLIs' sessions live](#where-the-other-clis-sessions-live). |
+| `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under **every** Claude config home: `CLAUDE_CONFIG_DIR` or `~/.claude`, each account home under `<ADE_HOME>/provider-homes/claude/<instance>`, and the per-preset / per-credential homes DAEX launches with. Reads `ai-title`/custom titles, excludes SDK-origin transcripts, collapses continuation chains to their leaf, and keeps the config home on the record so an import can resume under the account that owns the transcript. |
+| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from **every** Codex config home — `CODEX_HOME` / `~/.codex`, each `<ADE_HOME>/provider-homes/codex/<instance>`, and the preset / API-key homes DAEX launches with — reading each home's `state_5.sqlite`: top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when a thread store is unusable, and keeps the config home on the record for import. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. Also owns `openCursorStoreConversation`, the reader for the conversation inside a `store.db` (see [Cursor](#cursor)). |
-| `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`) and under `<home>/.factory/sessions/` of each preset, route and API-key home ADE runs Droid on, one record per session id, using the `session_start` row for id/cwd/title. A record from an ADE home keeps that home (`configHome`). |
-| `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts`, `openCodeStore.ts` | Discovers OpenCode sessions by reading the user's own OpenCode SQLite store and, for the import list, ADE's managed store directly, read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`), and drops ADE's own background-task titles. The managed store is what every ADE-launched OpenCode terminal and chat uses. Never shells out to the CLI and never starts a 2.0 server on either store. |
-| `apps/desktop/src/main/services/externalSessions/discoverPi.ts` | Discovers Pi's native JSONL sessions in the default Pi session store and in the session store of each preset and route home ADE runs Pi on (`PI_CODING_AGENT_DIR`). Drops ADE's own Pi chats: a session whose `.ade-owner` marker names owner `sdk` (an ADE chat; the marker outlives the chat), or one that opens with ADE's `## ADE` guidance. A CLI session from an ADE terminal (owner `cli`) still lists. `defaultHomeOnly` limits it to the default store, for the tracked-terminal id lookup in `ptyService`. |
-| `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts`, `discoverAntigravity.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops ADE-launched and subagent sessions, and drops sessions with no prompt. Kimi and Grok also read the store in each preset and route home ADE runs them on (`KIMI_CODE_HOME`, `GROK_HOME`). See [CLI stores](#cli-stores-qwen-kimi-grok-copilot-antigravity). |
+| `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`) and under `<home>/.factory/sessions/` of each preset, route and API-key home DAEX runs Droid on, one record per session id, using the `session_start` row for id/cwd/title. A record from a DAEX home keeps that home (`configHome`). |
+| `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts`, `openCodeStore.ts` | Discovers OpenCode sessions by reading the user's own OpenCode SQLite store and, for the import list, DAEX's managed store directly, read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`), and drops DAEX's own background-task titles. The managed store is what every DAEX-launched OpenCode terminal and chat uses. Never shells out to the CLI and never starts a 2.0 server on either store. |
+| `apps/desktop/src/main/services/externalSessions/discoverPi.ts` | Discovers Pi's native JSONL sessions in the default Pi session store and in the session store of each preset and route home DAEX runs Pi on (`PI_CODING_AGENT_DIR`). Drops DAEX's own Pi chats: a session whose `.ade-owner` marker names owner `sdk` (a DAEX chat; the marker outlives the chat), or one that opens with DAEX's `## ADE` guidance. A CLI session from a DAEX terminal (owner `cli`) still lists. `defaultHomeOnly` limits it to the default store, for the tracked-terminal id lookup in `ptyService`. |
+| `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts`, `discoverAntigravity.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops DAEX-launched and subagent sessions, and drops sessions with no prompt. Kimi and Grok also read the store in each preset and route home DAEX runs them on (`KIMI_CODE_HOME`, `GROK_HOME`). See [CLI stores](#cli-stores-qwen-kimi-grok-copilot-antigravity). |
 | `apps/desktop/src/main/services/externalSessions/discoverAcpShared.ts` | Shared plumbing for the ACP discoverers. Each discoverer maps its records to one neutral `{ type, timestamp, message: { role, content } }` form, and the shared helpers compute the preview, the sampled `messages`, and the prompt count from that form. Also: bounded head + tail reads, the `## ADE` guidance test, `~` expansion for env overrides, and a newest-first read loop that stops when enough sessions survive. |
-| `apps/desktop/src/main/services/externalSessions/events/` | The per-provider converters from a provider store to ADE chat events (`AgentChatEventEnvelope[]`), plus byte-window paging. `loadExternalSessionEvents` (`index.ts`) serves both the preview (`purpose: "preview"`) and the chat import (`purpose: "import"`). `jsonlSourceFor` names the conversation file a converter reads; `records.ts` is the exact-id record lookup (it returns null for an ill-formed id). A store-only Cursor chat pages through `loadCursorStorePage` (`cursor.ts`). See [Conversation events](#conversation-events). |
+| `apps/desktop/src/main/services/externalSessions/events/` | The per-provider converters from a provider store to DAEX chat events (`AgentChatEventEnvelope[]`), plus byte-window paging. `loadExternalSessionEvents` (`index.ts`) serves both the preview (`purpose: "preview"`) and the chat import (`purpose: "import"`). `jsonlSourceFor` names the conversation file a converter reads; `records.ts` is the exact-id record lookup (it returns null for an ill-formed id). A store-only Cursor chat pages through `loadCursorStorePage` (`cursor.ts`). See [Conversation events](#conversation-events). |
 | `apps/desktop/src/main/services/externalSessions/externalSessionDetail.ts` | `loadExternalSessionDetail`: one session's detail for a preview. Returns the text tail in `messages` and a page of `events` with `hasOlder`/`olderCursor`. Also owns the local file watch (`startExternalSessionDetailWatch`), which pushes a fresh newest page when the source file changes and loads through the `loadDetail` callback it is given (the service's `getDetail`). Callers go through `externalSessionsService.getDetail`, not this function directly. |
-| `apps/desktop/src/main/services/externalSessions/providerSessionHandles.ts` | Maps a provider session id back to the files that hold it, and finds which live process holds each file. Claude and Codex roots come from `providerConfigHomeDirs` (every config home ADE runs them under, classified by the CLI's own files so a Claude preset home is never scanned as Codex); Droid still uses `shared/providerConfigHomes.ts` so `FACTORY_HOME_OVERRIDE` is honoured with its own shape, and Droid, Pi, Grok and Kimi add the roots of their ADE preset and route homes (`adeHarnessConfigHomes`). The ACP roots come from the same module (`QWEN_HOME`, `GROK_HOME`, `COPILOT_HOME`, `KIMI_CODE_HOME`). The live-process scan (`isProviderCliCommandLine`) matches native CLIs by name, including ADE's absolute pinned paths, and ADE's Node-run pins (Qwen `lib/cli-entry.js`, Pi `dist/cli.js`, Cursor `index.js`) by their tools-cache package directory plus script path, so a terminal still on the previous pin matches too. See [Session tracking](#session-tracking). |
-| `apps/desktop/src/main/services/externalSessions/liveChatProviderRefs.ts` | `providerPointersFromChatRecord`: every provider pointer that one ADE chat holds (`importedFrom` for a continue, the provider session ids including Copilot's `copilotSdkSessionId`, and `acpSessionId` for the ACP providers and older Copilot chats). `chatImportedRefsProvider(chatService)` builds the chat refs source from it over the non-archived chats. Both runtime hosts wire in that one function, so a session that ADE itself runs never lists as importable on either. |
-| `apps/desktop/src/main/services/externalSessions/importedSessionStore.ts` | Machine-local durable log of every import (`<ADE_HOME>/external-sessions/imported.json`), the only imported-marking source that survives deleting the ADE session and the only one that knows a fork's new provider id. |
-| `apps/desktop/src/main/services/externalSessions/claudeLiveSessions.ts` | Reads Claude's own live-session registry (`<config-home>/sessions/<pid>.json`) from every Claude config home ADE runs the CLI under and returns the session ids whose pid is still alive, for `possiblyActive`. |
+| `apps/desktop/src/main/services/externalSessions/providerSessionHandles.ts` | Maps a provider session id back to the files that hold it, and finds which live process holds each file. Claude and Codex roots come from `providerConfigHomeDirs` (every config home DAEX runs them under, classified by the CLI's own files so a Claude preset home is never scanned as Codex); Droid still uses `shared/providerConfigHomes.ts` so `FACTORY_HOME_OVERRIDE` is honoured with its own shape, and Droid, Pi, Grok and Kimi add the roots of their DAEX preset and route homes (`adeHarnessConfigHomes`). The ACP roots come from the same module (`QWEN_HOME`, `GROK_HOME`, `COPILOT_HOME`, `KIMI_CODE_HOME`). The live-process scan (`isProviderCliCommandLine`) matches native CLIs by name, including DAEX's absolute pinned paths, and DAEX's Node-run pins (Qwen `lib/cli-entry.js`, Pi `dist/cli.js`, Cursor `index.js`) by their tools-cache package directory plus script path, so a terminal still on the previous pin matches too. See [Session tracking](#session-tracking). |
+| `apps/desktop/src/main/services/externalSessions/liveChatProviderRefs.ts` | `providerPointersFromChatRecord`: every provider pointer that one DAEX chat holds (`importedFrom` for a continue, the provider session ids including Copilot's `copilotSdkSessionId`, and `acpSessionId` for the ACP providers and older Copilot chats). `chatImportedRefsProvider(chatService)` builds the chat refs source from it over the non-archived chats. Both runtime hosts wire in that one function, so a session that DAEX itself runs never lists as importable on either. |
+| `apps/desktop/src/main/services/externalSessions/importedSessionStore.ts` | Machine-local durable log of every import (`<ADE_HOME>/external-sessions/imported.json`), the only imported-marking source that survives deleting the DAEX session and the only one that knows a fork's new provider id. |
+| `apps/desktop/src/main/services/externalSessions/claudeLiveSessions.ts` | Reads Claude's own live-session registry (`<config-home>/sessions/<pid>.json`) from every Claude config home DAEX runs the CLI under and returns the session ids whose pid is still alive, for `possiblyActive`. |
 | `apps/desktop/src/main/services/externalSessions/claudeSessionTransplant.ts` | Non-destructive Claude transcript transplant. For forks it copies JSONL rows, rekeys `sessionId`, hard-links without clobbering, and leaves the source untouched; for moves it can link/unlink when requested by other callers. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Canonical CLI launch/resume/fork command builders. External import uses `buildTrackedCliResumeCommand`, `withCodexNoAltScreen`, provider permission/model mappings, and shell quoting from here. Also holds the pre-assigned session id helpers (`preassignedSessionIdArgs`, `withPreassignedSessionIdInCommandLine`) and `buildClaudeForkLaunchCommand`. |
 | `apps/desktop/src/shared/importedTurnBoundaries.ts` | `withImportedTurnBoundaries`: adds a `done` event after each imported turn that did tool work. The preview and `appendImportedChatEvents` both apply it. See [Conversation events](#conversation-events). |
-| `apps/desktop/src/shared/types/externalSessions.ts` | Canonical DTOs shared by desktop IPC, ADE actions, sync remote commands, and iOS. Also `EXTERNAL_SESSION_PROVIDERS` (display order), `EXTERNAL_SESSION_PROVIDER_LABELS` (the one provider list and label map), and `EXTERNAL_SESSION_PROVIDER_CAPABILITIES` (the per-provider base capabilities, which the host narrows per session and the browser mock shows as they are). |
+| `apps/desktop/src/shared/types/externalSessions.ts` | Canonical DTOs shared by desktop IPC, DAEX actions, sync remote commands, and iOS. Also `EXTERNAL_SESSION_PROVIDERS` (display order), `EXTERNAL_SESSION_PROVIDER_LABELS` (the one provider list and label map), and `EXTERNAL_SESSION_PROVIDER_CAPABILITIES` (the per-provider base capabilities, which the host narrows per session and the browser mock shows as they are). |
 | `apps/desktop/src/shared/types/externalSessionDetail.ts` | `ExternalSessionDetail` and its args. `events`, `hasOlder`, `olderCursor`, and the `before` arg are optional, so older hosts stay compatible. |
-| `apps/desktop/src/main/services/chat/externalChatHistoryImport.ts` | Converts external Claude JSONL and Codex app-server thread history into ADE chat event envelopes with byte/event caps and provenance/truncation notices. Exports the building blocks the `events/` converters share (`externalImportEnvelope`, `finalizeExternalImportEvents`, `claudeRecordsToContentEvents`, `codexTurnsToContentEvents`). |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Owns `importExternalChatSession`. Creates the ADE chat session, imports history, seeds Claude `sdkSessionId`, Codex `threadId`, or the Droid/OpenCode/Pi/Copilot provider pointer, persists provenance (`importedFrom.mode`), and cleans up failed forks. Statically imports the Claude transplant module for the packaged brain bundle. |
+| `apps/desktop/src/main/services/chat/externalChatHistoryImport.ts` | Converts external Claude JSONL and Codex app-server thread history into DAEX chat event envelopes with byte/event caps and provenance/truncation notices. Exports the building blocks the `events/` converters share (`externalImportEnvelope`, `finalizeExternalImportEvents`, `claudeRecordsToContentEvents`, `codexTurnsToContentEvents`). |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Owns `importExternalChatSession`. Creates the DAEX chat session, imports history, seeds Claude `sdkSessionId`, Codex `threadId`, or the Droid/OpenCode/Pi/Copilot provider pointer, persists provenance (`importedFrom.mode`), and cleans up failed forks. Statically imports the Claude transplant module for the packaged brain bundle. |
 | `apps/desktop/src/shared/ipc.ts`, `apps/desktop/src/main/services/ipc/registerIpc.ts` | Defines and registers `ade.externalSessions.list`, `.import`, `.getDetail`, `.watchDetail`, `.unwatchDetail`, and the `.detailUpdated` push channel. `list`, `import`, and `getDetail` are the legacy in-process fallback; the watch channels are always local. |
-| `apps/desktop/src/preload/preload.ts`, `apps/desktop/src/preload/global.d.ts` | Exposes `window.ade.externalSessions.list/import/getDetail/watchDetail/unwatchDetail/onDetailUpdated`. `list`, `import`, and `getDetail` first call the bound project runtime's `external-sessions` ADE action domain and fall back to desktop IPC only when no runtime is bound. The watch calls always use local IPC. |
-| `apps/desktop/src/main/services/adeActions/registry.ts` | Registers the `external-sessions` ADE action domain (`list`, `import`, `getDetail`) against the runtime's `externalSessionsService`. `watchDetail` is deliberately absent: it pushes on a per-sender Electron IPC channel that the action domain cannot reach. |
-| `apps/desktop/src/main/main.ts` | Constructs `externalSessionsService` for desktop-owned project runtimes and injects it into IPC, ADE actions, sync, and runtime context. |
-| `apps/ade-cli/src/bootstrap.ts` | Constructs the same service for the headless ADE brain/runtime so remote-bound desktop windows and the mobile sync host expose the feature. |
+| `apps/desktop/src/preload/preload.ts`, `apps/desktop/src/preload/global.d.ts` | Exposes `window.ade.externalSessions.list/import/getDetail/watchDetail/unwatchDetail/onDetailUpdated`. `list`, `import`, and `getDetail` first call the bound project runtime's `external-sessions` DAEX action domain and fall back to desktop IPC only when no runtime is bound. The watch calls always use local IPC. |
+| `apps/desktop/src/main/services/adeActions/registry.ts` | Registers the `external-sessions` DAEX action domain (`list`, `import`, `getDetail`) against the runtime's `externalSessionsService`. `watchDetail` is deliberately absent: it pushes on a per-sender Electron IPC channel that the action domain cannot reach. |
+| `apps/desktop/src/main/main.ts` | Constructs `externalSessionsService` for desktop-owned project runtimes and injects it into IPC, DAEX actions, sync, and runtime context. |
+| `apps/ade-cli/src/bootstrap.ts` | Constructs the same service for the headless DAEX brain/runtime so remote-bound desktop windows and the mobile sync host expose the feature. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Authorizes `run_ade_action` calls. Non-CTO callers are lane-scoped for `external-sessions`; CTO callers can use the domain unscoped. |
 | `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`, `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` | Registers `work.listExternalSessions`, `work.getExternalSessionDetail` (the phone preview: the service's `getDetail` with 120-event pages, mobile-wire compacted), and `work.importExternalSession` for paired controllers. The desktop file is a re-export of the ade-cli implementation. |
 | `apps/desktop/src/shared/types/sync.ts` | Sync command DTO aliases for external-session list/detail/import payloads and results. |
@@ -83,7 +83,7 @@ because ADE records (and for fresh launches chooses) the provider ids:
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionParts.tsx` | Small shared parts, for example the lane dot + lane name label (a folder mark for a session outside every lane). |
 | `apps/desktop/src/renderer/components/terminals/importSessions/importBrowserModel.ts` | Pure dialog rules with no React: `sessionPlace` (the lane a row names), lane-filter keys and counts, search, `defaultForkModel`, the per-provider surface memory in `localStorage` (`ade.importSession.surface.<provider>`), and `spliceNewestPage` for live preview updates. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/useExternalSessionDetail.ts` | Loads the preview transcript: the newest page after a short settle delay, older pages on scroll-back, and live updates through `watchDetail` for sessions on this computer. A live update replaces the newest page and keeps the pages the user already loaded. |
-| `apps/desktop/src/renderer/components/terminals/importSessions/ImportFloatingBadge.tsx` | The "Import your chats from outside ADE" hint on the Work draft surface, plus its machine-local per-project dismissal (`readImportBadgeDismissed`). It is the last row of the draft column, below the activity module, and is `shrink-0` because the wordmark above it is the only row meant to absorb overflow when the column is height-capped. Provider marks stay horizontal and lose trailing logos as the chat column narrows while the full label remains visible. It returns `null` — not an empty wrapper — once dismissed or when there is no project root, so a retired hint spends none of the column's row gap. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/ImportFloatingBadge.tsx` | The "Import your chats from outside DAEX" hint on the Work draft surface, plus its machine-local per-project dismissal (`readImportBadgeDismissed`). It is the last row of the draft column, below the activity module, and is `shrink-0` because the wordmark above it is the only row meant to absorb overflow when the column is height-capped. Provider marks stay horizontal and lose trailing logos as the chat column narrows while the full label remains visible. It returns `null` — not an empty wrapper — once dismissed or when there is no project root, so a retired hint spends none of the column's row gap. |
 | `apps/desktop/src/shared/externalSessionAffordances.ts`, `apps/desktop/src/renderer/components/terminals/importSessions/affordances.ts` | Row display helpers used by the desktop dialog: `shortenExternalSessionCwd` (and its renderer binding `shortenCwd`) and `formatExternalSessionSize` ("40 MB", "2.4 MB"; empty for a missing or zero size). The import actions live in `externalSessionPolicy.ts`. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/sessionPresentation.ts` | Pure desktop heading/time/anchor helpers. Provider titles win, then the opening prompt (`preview`), then cwd + relative time. `sessionAnchors` returns the row's "started"/"latest" pair and drops whichever one the heading is already showing, so a row never prints the same sentence twice. Also the date groups, compact row times ("13m"), and prompt counts. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/contract.ts` | Renderer bridge and types for external sessions (`readImportedFrom`, `PROVIDER_TOOL_TYPE`). The provider list and labels are not here: surfaces use `EXTERNAL_SESSION_PROVIDERS` and `importProviderLabel` directly. |
@@ -95,8 +95,8 @@ because ADE records (and for fresh launches chooses) the provider ids:
 | `apps/ios/ADE/Views/Work/WorkNewChatScreen.swift` | Adds the Import session affordance when a concrete lane is selected. |
 | `apps/ios/ADE/Views/Work/WorkExternalSessionAffordances.swift` | The Swift port of `externalSessionPolicy.ts`: `WorkImportLaneRule`, the provider table, `workEffectiveImportRules`, and `workPlanImport`. Keep the table, labels, notes, and lock reason in lockstep with the TypeScript file; `ADETests` mirrors its tests. `workExternalSessionProviderName` is the one iOS provider-label map. |
 | `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` | iOS list/detail flow: provider chips, a lane filter menu with counts and "Other folders", project/all scope, date-grouped rows, the scan and import runs, and the live-continue confirm state. |
-| `apps/ios/ADE/Views/Work/WorkImportSessionRows.swift` | The compact list row, the detail header, the status badges ("In ADE", "Copied before", "May be open elsewhere"), and `WorkImportLaneLabel` (lane dot + name, "Removed lane", or the folder's last segment). |
-| `apps/ios/ADE/Views/Work/WorkImportSessionPreview.swift` | The detail's conversation preview. On a host with `work.getExternalSessionDetail` it renders the ADE chat events through the Work chat builders and row views, in a bounded scroller with "Load earlier". Otherwise it shows the list's sampled messages. |
+| `apps/ios/ADE/Views/Work/WorkImportSessionRows.swift` | The compact list row, the detail header, the status badges ("In DAEX", "Copied before", "May be open elsewhere"), and `WorkImportLaneLabel` (lane dot + name, "Removed lane", or the folder's last segment). |
+| `apps/ios/ADE/Views/Work/WorkImportSessionPreview.swift` | The detail's conversation preview. On a host with `work.getExternalSessionDetail` it renders the DAEX chat events through the Work chat builders and row views, in a bounded scroller with "Load earlier". Otherwise it shows the list's sampled messages. |
 | `apps/ios/ADE/Views/Work/WorkImportActionBar.swift` | The action bar that renders `workPlanImport`: mode switch, lane control (`WorkLanePickerDropdown`, or a locked lane), note, primary button, and optional Copy. `workImportConfirmKey` keys the "Continue anyway" second tap to one session, action, and lane. |
 | `apps/ios/ADE/Views/Work/WorkImportSessionPresentation.swift` | Pure row presentation on `ExternalSessionSummary`: headings, anchors, lane names, lane-filter buckets, the default target lane (`defaultImportTargetLaneId`), and `workExternalSessionSizeText`, which mirrors desktop `formatExternalSessionSize`. |
 | `apps/ios/ADE/Views/Work/WorkRootComponents.swift`, `apps/ios/ADE/Views/Work/WorkStatusAndFormattingHelpers.swift`, `apps/ios/ADE/Views/Components/ADEDesignSystem.swift` | Shared iOS provider logos, fallback symbols, and provider accent colors consumed by the import screen. |
@@ -125,7 +125,7 @@ first.
 
 ### Codex thread store
 
-ADE lists Codex threads from `CODEX_HOME/state_5.sqlite`, not the
+DAEX lists Codex threads from `CODEX_HOME/state_5.sqlite`, not the
 `sessions/YYYY/MM/DD` rollout tree. The database knows spawn edges; many
 subagent rollouts carry no parent id in their own `session_meta`, so the files
 alone list subagent runs as conversations.
@@ -136,7 +136,7 @@ alone list subagent runs as conversations.
   `.jsonl.zst` and a plain rollout cannot make two rows. A dangling
   `rollout_path` (upstream `openai/codex#21196`) still lists.
 - Line 1 of the rollout (only for threads that pass the cheap filters) gives
-  the `originator` (ADE's own Codex sessions are excluded) and
+  the `originator` (DAEX's own Codex sessions are excluded) and
   `forked_from_id`. Only line 1, because a fork replays its parent's
   `session_meta` further down.
 - A parent with no activity after a fork point is hidden behind its fork. A
@@ -158,7 +158,7 @@ Titles and previews stay separate:
 
 - `title` is a provider-persisted title, or `null`. Never the first user
   message.
-- `preview` is the **opening prompt**: the first real human message after ADE
+- `preview` is the **opening prompt**: the first real human message after DAEX
   guidance and transport wrappers are removed. Claude
   `<local-command-caveat>`, `<command-name>`, `<local-command-stdout>` and
   Codex environment/AGENTS payloads are never previews. There is no separate
@@ -204,15 +204,15 @@ The service also stamps:
 - `cwdMatchesRequestedLane`, when the lane cwd is known.
 - `home` and `sizeBytes` ([Lane attribution](#lane-attribution)).
 
-A session a live tracked ADE PTY owns is not listed
+A session a live tracked DAEX PTY owns is not listed
 ([Session tracking](#session-tracking)).
 
 ### Where Claude sessions live
 
 Claude Code writes a transcript under the config home its process ran with.
-ADE does not run CLIs on the provider default: an account gets
+DAEX does not run CLIs on the provider default: an account gets
 `CLAUDE_CONFIG_DIR=<ADE_HOME>/provider-homes/claude/<instance>`, and a harness
-preset or a stored API key gets its own home. So a session from an ADE
+preset or a stored API key gets its own home. So a session from a DAEX
 terminal is not in `~/.claude`.
 
 - Discovery scans every home (`claudeConfigHomeDirs` / `codexConfigHomeDirs`),
@@ -226,16 +226,16 @@ terminal is not in `~/.claude`.
   home first (`moveProviderThread`, source kept) and runs the CLI there; a
   chat import creates the chat on that account and the importer moves the
   transcript. A removed account id is refused, never defaulted.
-- Route homes count: `ade new chat --mode cli --via <source>` runs Claude or
+- Route homes count: `daex new chat --mode cli --via <source>` runs Claude or
   Codex on `<ADE_HOME>/provider-homes/route/r<hash>`, listed when the CLI's
   own files are there.
 
 ### Where the other CLIs' sessions live
 
-A harness preset or an ad-hoc route can move four more CLIs into an ADE home,
+A harness preset or an ad-hoc route can move four more CLIs into a DAEX home,
 so discovery also reads these (`adeHarnessConfigHomes` in `adeConfigHomes.ts`):
 
-| Provider | Variable ADE sets | What the variable names | Sessions inside |
+| Provider | Variable DAEX sets | What the variable names | Sessions inside |
 |---|---|---|---|
 | Droid | `FACTORY_HOME_OVERRIDE` | a HOME-like root; Droid adds `.factory` | `<home>/.factory/sessions/<escaped cwd>/` |
 | Grok | `GROK_HOME` | the config folder | `<home>/sessions/<percent-encoded cwd>/<id>/` |
@@ -252,7 +252,7 @@ The homes, under `<ADE_HOME>/provider-homes/`:
 - `credential/droid/<id>`: a stored Droid API key. Grok, Kimi and Pi take a
   key in env only, so their sessions stay in the default store.
 
-ADE never scans `<provider>/default` (the embedded-runtime chat sign-in) and
+DAEX never scans `<provider>/default` (the embedded-runtime chat sign-in) and
 never walks `provider-homes` as a whole.
 
 The other providers need no extra home: Copilot and Qwen presets set env only;
@@ -263,7 +263,7 @@ an OpenCode preset moves only `OPENCODE_CONFIG`; Cursor drops presets
 `presetId`, `credentialId` or `routeHomeId`). Import puts the home's variable
 and the preset's env (stored key, proxy endpoint) in the terminal env.
 
-- A route home names only a hash, so import finds the route id from an ADE
+- A route home names only a hash, so import finds the route id from a DAEX
   terminal (archived too) whose resume metadata names a route with that hash.
 - A gone preset, key or route logs `external_sessions.import_preset_unresolved`
   or `external_sessions.import_route_unresolved` and still resumes in the
@@ -274,7 +274,7 @@ and the preset's env (stored key, proxy endpoint) in the terminal env.
 - A route launch marks its home in use (`touchRouteConfigHome`) before the
   30-day prune of idle route homes.
 - Import and terminal resumes call `prepareHarnessLaunch` first, so a route
-  through ADE's proxy resolves after a brain restart.
+  through DAEX's proxy resolves after a brain restart.
 
 These homes have no account picker (`accountId` is Claude and Codex only). A
 session in one offers CLI continue and chat copy, not chat continue
@@ -304,40 +304,40 @@ session cwd against the live lanes (`sessionHome.ts`), read again on every
 
 Four sources feed one `provider:id` → ref map. Chat refs outrank CLI refs,
 which outrank a bare "imported, nothing to open", so the UI offers one
-"Open in ADE" action.
+"Open in DAEX" action.
 
 - **The durable import log**, `<ADE_HOME>/external-sessions/imported.json`
   (`importedSessionStore.ts`). Each import appends one record: provider,
-  external id, the provider id ADE runs, chat/cli, continue/fork, ADE session
+  external id, the provider id DAEX runs, chat/cli, continue/fork, DAEX session
   id and time. It is a machine-local JSON file (atomic write, `.lkg`
   fallback), not a CRR table: provider stores are machine-local too.
-  - The desktop app and the headless brain can share one ADE home. So each
+  - The desktop app and the headless brain can share one DAEX home. So each
     append takes a lock file for one read-modify-write and re-reads inside it.
   - `record` is synchronous, so the wait blocks the main process:
-    `LOCK_WAIT_MS` is 200 ms. If ADE cannot get the lock, it writes anyway; a
+    `LOCK_WAIT_MS` is 200 ms. If DAEX cannot get the lock, it writes anyway; a
     lost race drops at most one record, never a finished import. A lock older
     than 5 s counts as abandoned.
-- ADE `terminal_sessions` resume metadata (`provider`/`targetId` and
+- DAEX `terminal_sessions` resume metadata (`provider`/`targetId` and
   `importedFrom`).
 - Claude session pointers from `sessionService.listClaudeSessionPointers`
   (ceiling `CLAUDE_SESSION_POINTER_MAX_LIMIT`, 5000; default page 200).
 - The chat refs provider. Both runtime hosts (`main.ts` and the headless
   `bootstrap.ts`) build it with `providerPointersFromChatRecord` over the
   non-archived chats, so it holds every provider pointer a live chat has. A
-  session that ADE runs as a chat never lists as importable on either host.
+  session that DAEX runs as a chat never lists as importable on either host.
 
-The last three come from live rows: they lose the badge when the ADE session is
+The last three come from live rows: they lose the badge when the DAEX session is
 deleted, and they never know the new provider id of a fork (a Codex
 `thread/fork` thread or a transplanted Claude transcript). The durable log
 records both ids.
 
 | State | Fields | Dialog |
 |---|---|---|
-| In ADE now | `alreadyImported: true`, `importedSessionRef` set | "Open in ADE" replaces the plan. |
+| In DAEX now | `alreadyImported: true`, `importedSessionRef` set | "Open in DAEX" replaces the plan. |
 | Imported before | `alreadyImported: false`, `importedBefore: true` | Listed as importable, with a hint. |
 | Never imported | both false | Listed as importable. |
 
-"Imported before" covers a gone ADE session and a **copy**. A copy leaves the
+"Imported before" covers a gone DAEX session and a **copy**. A copy leaves the
 original untouched, so the original stays importable:
 
 - The durable log records a copy's original with no ref (`mode: "fork"`). A
@@ -353,7 +353,7 @@ listed id. Collapsing providers set `lineageIds` (the ids the record
 supersedes), and marking matches `id ∪ lineageIds`. The field is
 discovery-internal, not part of `ExternalSessionSummary`.
 
-**ADE-created artifacts are not new sessions.** A cross-cwd Claude fork writes
+**DAEX-created artifacts are not new sessions.** A cross-cwd Claude fork writes
 a transplanted copy under a fresh uuid, and a Codex chat fork mints a new
 thread. Rows whose ids are **all** recorded fork targets are dropped. "All",
 not "any": when discovery collapses the original into the copy, that row is
@@ -371,7 +371,7 @@ it; iOS has a Swift port (`WorkExternalSessionAffordances.swift`, tests in
 |---|---|
 | `any` | Any lane. |
 | `home` | Only the session's home lane. A session with no live home lane (`outside` or `removed-lane`) can go to any lane, and it runs in its original folder. |
-| `root` | Only the home lane, and only when the session folder is that lane's worktree root (`home.atLaneRoot`). ADE chats always run at the lane root. |
+| `root` | Only the home lane, and only when the session folder is that lane's worktree root (`home.atLaneRoot`). DAEX chats always run at the lane root. |
 | `none` | Not offered. |
 
 `PROVIDER_IMPORT_RULES`:
@@ -420,7 +420,7 @@ The host sends `ExternalSessionCapabilities` on every row. Base values are
 | `resumeInDifferentCwd` | The provider can continue the original session in the target lane folder. | CLI continue can be `any`. |
 | `fork` | The provider can make a copy without changing the original. | CLI copy is at most `home`. |
 | `forkIntoDifferentCwd` | The provider can make that copy in the target lane folder. | CLI copy can be `any`. |
-| `importToChat` | The host can continue the session as an ADE chat. | Chat continue becomes `none` when false. |
+| `importToChat` | The host can continue the session as a DAEX chat. | Chat continue becomes `none` when false. |
 
 Chat copy is never narrowed (a replay needs only history); the chat importer
 refuses a session with nothing to replay. The host narrows per session:
@@ -449,7 +449,7 @@ is the scanned lane; only an older host needs it.
 | `note` | One short line, or null. |
 
 Labels: "Continue" (secondary "Copy" when allowed). With only a copy: "Open as
-ADE chat" on chat; on CLI "Copy here" out of the home lane, else "Copy".
+DAEX chat" on chat; on CLI "Copy here" out of the home lane, else "Copy".
 
 Notes (at most one):
 
@@ -481,12 +481,12 @@ Resume commands come from `buildTrackedCliResumeCommand` (`cliLaunch.ts`).
 Codex resumes in the lane folder; every other provider in the session's own
 folder, because its session is keyed to that folder. ACP selectors:
 `qwen --resume <id>`, `kimi -S <id>`, `grok -r <id>`, `copilot --resume=<id>`,
-`agy --conversation <id>`. A session from an ADE account, preset, route or key
+`agy --conversation <id>`. A session from a DAEX account, preset, route or key
 home resumes with that home and the preset's env.
 
 With no explicit model or permission override, the resume keeps provider
-state: ADE does not inject Claude plan mode, Cursor `--model auto`, Droid
-spec/off settings, or an OpenCode ADE agent.
+state: DAEX does not inject Claude plan mode, Cursor `--model auto`, Droid
+spec/off settings, or an OpenCode DAEX agent.
 
 Fork commands:
 
@@ -507,7 +507,7 @@ session to its folder); the guard already refused any other lane.
 The spawn is `ptyService.create` with `tracked: true`, the provider
 `toolType`, `startupCommand`, direct launch fields, `resumeMetadata`, and
 `allowExternalCwd` when the run cwd is not the lane cwd. ptyService allocates
-the ADE session id. **If** a future change pre-assigns an import session id,
+the DAEX session id. **If** a future change pre-assigns an import session id,
 it must set `allowNewSessionId: true`, or `create` treats it as a
 missing-session resume.
 
@@ -534,16 +534,16 @@ appends history, and binds future turns where the provider allows it.
 | Replay copy | Every other case | Loads the history, writes it into a new chat, and stages it as a replay for the chosen model's first turn. |
 
 Replay model: the user's choice, else the recorded model when it is of the
-same family, else that provider's default, else ADE's default. A replay with
+same family, else that provider's default, else DAEX's default. A replay with
 nothing to replay fails ("has no messages to replay") and creates nothing.
 
 **Native continue.** The chat continues the provider session in place, as a
-restart reopens an ADE chat:
+restart reopens a DAEX chat:
 
 - Droid: `droidSdkSessionId`, opened by the Droid SDK `resumeSession` from
   `~/.factory/sessions`.
-- OpenCode: `providerSessionId`, opened by `session.get` on ADE's shared
-  server. Continue is offered only for a session in ADE's managed store; a
+- OpenCode: `providerSessionId`, opened by `session.get` on DAEX's shared
+  server. Continue is offered only for a session in DAEX's managed store; a
   personal-store session is offered as a copy (a forced continue throws
   `OpenCodeSessionInPersonalStoreError`).
 - Pi: `piSessionId`, opened by `SessionManager.list(cwd)` over the store chat
@@ -585,8 +585,8 @@ and never crosses the wire; a replay copy has none.
 
 **Codex.** Open imports call `thread/read` with `includeTurns: true`. Fork
 imports call `thread/fork` with `excludeTurns: true`, then read the fork. If
-the import fails after a fork, ADE archives the forked thread (best effort)
-before it deletes the ADE session. Success sets `managed.session.threadId` and
+the import fails after a fork, DAEX archives the forked thread (best effort)
+before it deletes the DAEX session. Success sets `managed.session.threadId` and
 a `chat:codex:<threadId>` resume command.
 
 **Keep the Claude transplant import in `agentChatService.ts` static.** A
@@ -596,7 +596,7 @@ brain `cli.cjs`, and the packaged brain then fails with a missing
 
 ### Conversation events
 
-`events/index.ts` turns a provider store into ADE chat events
+`events/index.ts` turns a provider store into DAEX chat events
 (`AgentChatEventEnvelope[]`, oldest first). The preview and the replay import
 use the same events, so the preview shows what an import writes.
 
@@ -624,7 +624,7 @@ appends never shift an older page.
 | Claude, Droid | The session JSONL (same message shape) | Text, tool calls, tool results (failed status kept). Thinking blocks are dropped, as on import. Shares `claudeRecordsToContentEvents` with the import. |
 | Codex | The rollout JSONL | Three layouts: current (`event_msg` `item_completed` items, plus `function_call`s no item covers, such as `spawn_agent`), legacy (`user_message` / `agent_message` plus `response_item` tool calls), and bare (`response_item` only). Commands, file changes, reasoning, and MCP tool calls map through `codexTurnsToContentEvents`. The code-mode `exec` wrapper and its `wait` polls are dropped because the commands and patches they ran are already items. |
 | Cursor | `agent-transcripts/<id>/<id>.jsonl`, else `store.db` | From the transcript: text and tool calls, each with an empty completed result (the transcript has no times, tool ids or results). A `store.db`-only chat goes through `loadCursorStorePage`: user and assistant text, readable reasoning, tool calls and results (failed status kept), and a `context_compact` marker where a summary replaced turns. The cursor's `end` is a message index. A message blob over 8 MB (`CURSOR_STORE_MAX_MESSAGE_BYTES`) is left out with an info notice. The `<user_info>` environment message is dropped. |
-| OpenCode | The SQLite store that owns the session (the user's or ADE's managed one), read-only (`loadOpenCodeStoreEvents`) | Every message/part row, up to a 96 MB cap that drops the oldest first. Reads the 1.x `session`/`message`/`part` and 2.0 `session_v2`/`session_message` shapes. Falls back to the sampled messages when the store cannot be read. |
+| OpenCode | The SQLite store that owns the session (the user's or DAEX's managed one), read-only (`loadOpenCodeStoreEvents`) | Every message/part row, up to a 96 MB cap that drops the oldest first. Reads the 1.x `session`/`message`/`part` and 2.0 `session_v2`/`session_message` shapes. Falls back to the sampled messages when the store cannot be read. |
 | Pi | The session JSONL | Text, thinking, tool calls, and tool results. |
 | Qwen | `chats/<id>.jsonl` | Text, `thought` parts as reasoning, `functionCall` / `functionResponse`. User rows that Qwen injected (a `provenance` other than `real_user`, `isQwenPromptRecord`) are dropped. Verified only for text turns; tool shapes follow the Gemini CLI format. |
 | Grok | `chat_history.jsonl` | Text, `tool_calls`, tool results, and reasoning summaries. Injected (`synthetic_reason`) user rows are dropped. Rows have no timestamps. |
@@ -632,7 +632,7 @@ appends never shift an older page.
 | Antigravity | `conversations/<id>.db` (SQLite), read-only (`loadAntigravityStorePage` in `antigravitySessionLog.ts`) | User messages, reply text, thinking, tool calls and results (agy's "Created At / Completed At" header dropped), each at its step's time (a user message takes the next reply's time). The cursor's `end` is a step index; a page reads back 200 steps at a time. A subagent's report shows as text. |
 | Kimi | `agents/main/wire.jsonl` (legacy `context.jsonl`) | Unverified. Accepts `context.append_message` and `turn_begin` rows, the streamed wire protocol (`TurnBegin`, `ContentPart`, `ToolCall`, `ToolResult`), and OpenAI-style role rows. With `context.append_message` user rows, `turn_begin` input is not shown again; user rows not from the person (`isKimiUserOrigin`) are dropped. |
 
-**Turn boundaries.** ADE lists finished tool calls in the turn's `done`
+**Turn boundaries.** DAEX lists finished tool calls in the turn's `done`
 summary, not as rows, and a provider transcript has no such boundary.
 `withImportedTurnBoundaries` (`shared/importedTurnBoundaries.ts`) closes each
 imported turn that did tool work with a `done` event. A text-only turn gets
@@ -687,7 +687,7 @@ load. Against an older host it renders the sampled `messages`.
 
 Action bar (`ImportActionBar.tsx`) renders the plan and nothing else:
 
-- **Surface switch** "ADE chat | CLI", only for offered surfaces; the last
+- **Surface switch** "DAEX chat | CLI", only for offered surfaces; the last
   choice per provider is in `localStorage`
   (`ade.importSession.surface.<provider>`).
 - **Lane pill.** A `LaneCombobox` pill, or a locked pill (lock icon, no
@@ -700,7 +700,7 @@ Action bar (`ImportActionBar.tsx`) renders the plan and nothing else:
   turns the button into amber "Continue anyway" for 4 s. One armed state,
   keyed to row, surface and lane, covers both second presses; only the live
   confirm times out.
-- **Already in ADE.** "Open in ADE" replaces the plan.
+- **Already in DAEX.** "Open in DAEX" replaces the plan.
 
 The target lane is the home lane when this computer has it, else the dialog's
 lane, captured once at open. A Work lane change while the dialog is open
@@ -743,11 +743,11 @@ files or launches CLIs itself.
 
 `WorkImportSessionScreen` follows the desktop model: provider chips, a lane
 filter with counts and "Other folders", project/all scope, rows that name the
-home lane, imported and possibly-active badges, and "Open in ADE". A row opens
+home lane, imported and possibly-active badges, and "Open in DAEX". A row opens
 its detail: the preview and an action bar that renders `workPlanImport` (mode,
 lane control, note, primary action, optional Copy). The target starts on the
 home lane, a continue on a possibly-live session needs a second tap
-("Continue anyway"), and an imported row offers "Open in ADE" plus a copy.
+("Continue anyway"), and an imported row offers "Open in DAEX" plus a copy.
 
 Rows show the "started" and "latest" anchors, or the one preview snippet from
 a host without `messages`. The phone sends no model or permission override:
@@ -770,7 +770,7 @@ provider state.
   sidecars under `<sessionId>/subagents/**` (workflow runs too); discovery
   never descends into a project subfolder and ignores non-uuid names such as
   `agent-*.jsonl`.
-- SDK-origin transcripts (ADE's own Claude chats) are excluded, because the
+- SDK-origin transcripts (DAEX's own Claude chats) are excluded, because the
   CLI cannot reliably resume them. The test is the entrypoint the session
   *starts* with, over its head rows, never any single `sdk` row.
 
@@ -782,7 +782,7 @@ continuation chains across all project folders:
 - The chain key is the uuid of the **first record that carries one**. The
   camelCase `sessionId` is rewritten to the filename and proves nothing;
   snake-case `session_id` is a real ancestor pointer and a second edge (absent
-  on SDK sessions). First-message **text** must never key a chain: ADE
+  on SDK sessions). First-message **text** must never key a chain: DAEX
   injects the same preamble into many chats. The walk to the first uuid is
   bounded but goes past 64 KiB, because a pasted prompt can push it there.
 - Only pure continuations collapse (one file's records are a prefix of, or
@@ -802,7 +802,7 @@ continuation chains across all project folders:
   Chat import uses the app-server `thread/read`, `thread/fork`,
   `thread/archive`, resume and fork.
 - Only interactive CLI rollouts import ([Codex thread store](#codex-thread-store)
-  has the classification). For preview and count ADE prefers the
+  has the classification). For preview and count DAEX prefers the
   `event_msg.payload.type = user_message` row, so duplicate `response_item`
   rows and environment instructions do not show.
 - File-change items use tagged shapes (`{ type: "add" }`, `"delete"`,
@@ -830,9 +830,9 @@ Discovery groups by id and keeps the fullest artifact, so a duplicate never
 lists twice.
 
 - `meta.json` beside `store.db` gives `cwd` for newer sessions, before the
-  md5 or slug reverse-maps (which work only for a cwd ADE can name).
+  md5 or slug reverse-maps (which work only for a cwd DAEX can name).
   `.workspace-trusted` and de-slugging are the fallback.
-- ADE reads the store's hex meta record for name and creation time, includes
+- DAEX reads the store's hex meta record for name and creation time, includes
   store-only sessions, and uses the WAL mtime as activity. A header can carry
   a `blobEncryptionKey`; an unreadable body is still resumable, and
   `meta.json` gives the title.
@@ -869,7 +869,7 @@ this order. `<system_reminder>` and `<user_info>` messages are never prompts.
 - The first row must be `session_start` (id, cwd, title). A row can omit the
   start time, so creation time falls back to the first timestamped message.
   "New Session" becomes null.
-- ADE reads neither the `<id>.settings.json` sidecar nor `sessions-index.json`
+- DAEX reads neither the `<id>.settings.json` sidecar nor `sessions-index.json`
   (rewritten whole on every change; a hint at best).
 - One id can appear under several escaped cwds; discovery reads the fullest
   copy. Out-of-project folders are ruled out by name before the cut; a folder
@@ -890,45 +890,45 @@ in place when it opens one).
 - Two schemas: 1.x `session`/`message`/`part` and 2.0
   `session_v2`/`session_message`. A migrated store keeps both, and only
   `session_v2` lists every session.
-- `ADE_BACKGROUND_TASK_TITLES` drops ADE's own background prompts (terminal
+- `ADE_BACKGROUND_TASK_TITLES` drops DAEX's own background prompts (terminal
   summaries, commit messages, chat titles).
-- The import list reads the user's store and ADE's managed store (every
-  OpenCode terminal and chat ADE launches uses ADE's shared server). A managed
+- The import list reads the user's store and DAEX's managed store (every
+  OpenCode terminal and chat DAEX launches uses DAEX's shared server). A managed
   row can continue in place; a user-store row is offered only as a chat copy.
-  A row ADE already tracks shows "Already in ADE".
+  A row DAEX already tracks shows "Already in DAEX".
 - No store or an unknown schema is an empty list, never an error.
 - Resume and fork use `--session`, `--continue` and `--fork` on a tracked
-  launch, which `attachOpenCodeTerminal` points at ADE's shared server
-  ([OpenCode CLI: attach to ADE's server](README.md#opencode-cli-attach-to-ades-server)).
-  Sessions are per-project by cwd, so ADE resumes or forks in the source cwd.
+  launch, which `attachOpenCodeTerminal` points at DAEX's shared server
+  ([OpenCode CLI: attach to DAEX's server](README.md#opencode-cli-attach-to-ades-server)).
+  Sessions are per-project by cwd, so DAEX resumes or forks in the source cwd.
 
 ### Pi
 
-- Pi sessions live in the native store that ADE chat and Pi terminals share,
+- Pi sessions live in the native store that DAEX chat and Pi terminals share,
   and in each preset and route home (`PI_CODING_AGENT_DIR`). CLI continue and
   copy (`pi --fork <id>`) run in the session's folder; a chat continue seeds
   `piSessionId`.
-- Discovery drops a session that opens with the `## ADE` guidance block (ADE's
+- Discovery drops a session that opens with the `## ADE` guidance block (DAEX's
   chats, archived or from a removed lane too). A Work-tab CLI launch opens
-  with "ADE session guidance." instead, so the user's CLI sessions stay.
+  with "DAEX session guidance." instead, so the user's CLI sessions stay.
 - The tracked-terminal lookup (`resolvePiSessionIdFromStorage`) passes
   `defaultHomeOnly`, so a Pi terminal never adopts another preset's session.
 
 ### CLI stores (Qwen, Kimi, Grok, Copilot, Antigravity)
 
-Each discoverer reads its CLI's store directly and leaves out ADE-launched
+Each discoverer reads its CLI's store directly and leaves out DAEX-launched
 sessions, subagent sessions and sessions with no prompt. Copilot discovery
 does not use the SDK's `listSessions()`/`getSessionMetadata()`: they need a
 running runtime and their rows have no `client_name`, first prompt or model.
 `workspace.yaml` plus the head of `events.jsonl` is fast.
 
-| Provider | Store (env override) | ADE-launched and other exclusions |
+| Provider | Store (env override) | DAEX-launched and other exclusions |
 |---|---|---|
-| Qwen (verified 0.22.3) | `<runtime>/projects/<sanitized cwd>/chats/<id>.jsonl`, where `<runtime>` is `QWEN_RUNTIME_DIR`, else `QWEN_HOME`, else `~/.qwen` (a leading `~` expands). The folder slug is not reversible, so the cwd comes from the records. | ADE's ACP chats never write an `attribution_snapshot` system row, and their first prompt opens with the `## ADE` guidance block. A session with both signs is left out. |
-| Kimi (verified Kimi Code 2.3.1) | `KIMI_CODE_HOME` (default `~/.kimi-code`, and each ADE preset and route home): `sessions/wd_<slug>_<hash12>/<id>/` with `state.json` and `agents/main/wire.jsonl` (legacy `context.jsonl`), plus `workspaces.json` and `session_index.jsonl`. | Archived sessions, deleted sessions (index tombstones), and child sessions (`custom.child_session_kind: "child"` or `parent_session_id`). No file marker tells ADE's chats apart, so a first prompt that opens with `## ADE` is the test. |
-| Grok (verified 1.0.46) | `$GROK_HOME/sessions/<percent-encoded cwd>/<id>/` (default `~/.grok`, and each ADE preset and route home) with `summary.json` and `chat_history.jsonl`. The folder name is the cwd, so it is reversible. | `session_kind: "subagent"`; `session_kind: "headless"` (a `grok --single` run, which is how ADE runs its naming and metadata tasks); and a first prompt that opens with `## ADE` (ADE's chats). `updates.jsonl` is not a sign: Grok's own terminal UI writes it too. The opening `<user_info>` workspace-context row is not a prompt, in the list and in the preview transcript. |
-| Copilot (verified CLI 1.0.88, SDK runtime 1.0.98) | `$COPILOT_HOME/session-state/<uuid>/` (default `~/.copilot`, `%USERPROFILE%\.copilot` on Windows) with `workspace.yaml` and `events.jsonl`. | `client_name` that starts with `ade` (`ade`, `ade-probe`, `ade-telemetry-probe`, …). ADE's SDK chats create their session with `clientName: "ade"`; a resume keeps the name the session was created with, so a CLI session continued in ADE keeps its own. Older SDK chats recorded `client_name: sdk`; those are left out when their first `system.message` carries ADE's coding-agent prompt ("You are ADE's software engineering agent working in"). Sub-agents run inside the parent session, so there are no child folders. Autopilot turns (`source: "autopilot"`) are not prompts. |
-| Antigravity (verified agy 1.5.6, Windows) | `~/.gemini/antigravity-cli/conversations/<id>.db`, one SQLite file per conversation from the TUI or ACP, with a WAL beside it while agy runs it (its time and size count). The cwd is the workspace in `trajectory_metadata_blob`; a conversation with none lists only in an unscoped import. | Subagent conversations (the first step is a message from the parent), and conversations whose ACP system prompt (`acp_system_prompt` in the metadata) opens with `## ADE`, which is every ADE chat. See [Antigravity provider](../chat/antigravity-provider.md#session-log). |
+| Qwen (verified 0.22.3) | `<runtime>/projects/<sanitized cwd>/chats/<id>.jsonl`, where `<runtime>` is `QWEN_RUNTIME_DIR`, else `QWEN_HOME`, else `~/.qwen` (a leading `~` expands). The folder slug is not reversible, so the cwd comes from the records. | DAEX's ACP chats never write an `attribution_snapshot` system row, and their first prompt opens with the `## ADE` guidance block. A session with both signs is left out. |
+| Kimi (verified Kimi Code 2.3.1) | `KIMI_CODE_HOME` (default `~/.kimi-code`, and each DAEX preset and route home): `sessions/wd_<slug>_<hash12>/<id>/` with `state.json` and `agents/main/wire.jsonl` (legacy `context.jsonl`), plus `workspaces.json` and `session_index.jsonl`. | Archived sessions, deleted sessions (index tombstones), and child sessions (`custom.child_session_kind: "child"` or `parent_session_id`). No file marker tells DAEX's chats apart, so a first prompt that opens with `## ADE` is the test. |
+| Grok (verified 1.0.46) | `$GROK_HOME/sessions/<percent-encoded cwd>/<id>/` (default `~/.grok`, and each DAEX preset and route home) with `summary.json` and `chat_history.jsonl`. The folder name is the cwd, so it is reversible. | `session_kind: "subagent"`; `session_kind: "headless"` (a `grok --single` run, which is how DAEX runs its naming and metadata tasks); and a first prompt that opens with `## ADE` (DAEX's chats). `updates.jsonl` is not a sign: Grok's own terminal UI writes it too. The opening `<user_info>` workspace-context row is not a prompt, in the list and in the preview transcript. |
+| Copilot (verified CLI 1.0.88, SDK runtime 1.0.98) | `$COPILOT_HOME/session-state/<uuid>/` (default `~/.copilot`, `%USERPROFILE%\.copilot` on Windows) with `workspace.yaml` and `events.jsonl`. | `client_name` that starts with `ade` (`ade`, `ade-probe`, `ade-telemetry-probe`, …). DAEX's SDK chats create their session with `clientName: "ade"`; a resume keeps the name the session was created with, so a CLI session continued in DAEX keeps its own. Older SDK chats recorded `client_name: sdk`; those are left out when their first `system.message` carries DAEX's coding-agent prompt ("You are DAEX's software engineering agent working in"). Sub-agents run inside the parent session, so there are no child folders. Autopilot turns (`source: "autopilot"`) are not prompts. |
+| Antigravity (verified agy 1.5.6, Windows) | `~/.gemini/antigravity-cli/conversations/<id>.db`, one SQLite file per conversation from the TUI or ACP, with a WAL beside it while agy runs it (its time and size count). The cwd is the workspace in `trajectory_metadata_blob`; a conversation with none lists only in an unscoped import. | Subagent conversations (the first step is a message from the parent), and conversations whose ACP system prompt (`acp_system_prompt` in the metadata) opens with `## ADE`, which is every DAEX chat. See [Antigravity provider](../chat/antigravity-provider.md#session-log). |
 
 Every read is defensive: an unexpected shape gives a thinner row or no row,
 never a throw. These stores hold mostly rejects, so `collectNewestSessions`
@@ -980,7 +980,7 @@ each session file open. The holder is usually a descendant of the tracked PTY
 (shell → node → CLI), so `collectDescendantPidRoots` walks the PTY roots first
 and stamps each handle with `trackedRootPid`, and `handleIsOwnedByTrackedPty`
 decides from that field. Never compare `handle.pid` with the PTY pids. The
-importer hides sessions that a live ADE terminal runs.
+importer hides sessions that a live DAEX terminal runs.
 
 **Provider roots.** `providerSessionRoots` includes the ACP stores (Qwen
 `projects`, Grok `sessions`, Copilot `session-state`, Kimi `sessions`), and
@@ -1004,7 +1004,7 @@ session. A wrong id here hides the wrong session.
   `work.importExternalSession`. Without `work.getExternalSessionDetail`,
   import works and the preview uses the sampled messages.
 
-## Known follow-ups / open items
+## Known limits
 
 - No feature flag gates import: a constructed service and the UI make it live.
 - Keep the shared DTOs, `externalSessionPolicy.ts`, its Swift port, the iOS
@@ -1012,14 +1012,14 @@ session. A wrong id here hides the wrong session.
   mobile decoding or hides buttons; a UI-only change shows actions the host
   guard refuses.
 - The Kimi PTY watcher is not checked against a real Kimi session. Discovery,
-  the preview and CLI continue are (Kimi Code 2.3.1, in an ADE route home).
+  the preview and CLI continue are (Kimi Code 2.3.1, in a DAEX route home).
 - A Droid route (`--via`) cannot run: Droid 1.0 sends the route's
   `FACTORY_API_KEY` to Factory, which rejects it (401). So a route-home Droid
   session lists and the import launches `droid --resume` in that home, but
   Droid stops with "Session not found". This is a route problem, not an
   import problem.
 - `external-sessions.list` blocks the brain's event loop for 2–5 s on a large
-  machine (Claude 2–5 s, Pi 1–1.6 s of discovery). The ADE homes add about
+  machine (Claude 2–5 s, Pi 1–1.6 s of discovery). The DAEX homes add about
   0.1 ms per provider.
 - The iOS preview has not run against a live sync host (the test brain runs
   with `--no-sync`).

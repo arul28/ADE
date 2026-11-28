@@ -5,7 +5,7 @@ Lifecycle and wiring for the two services behind terminals and sessions:
 - `apps/desktop/src/main/services/pty/ptyService.ts`
 - `apps/desktop/src/main/services/sessions/sessionService.ts`
 
-Both run inside the **active ADE runtime**: the local runtime for a
+Both run inside the **active DAEX runtime**: the local runtime for a
 local-bound window, the remote runtime for a remote-bound one (there
 `node-pty` runs on the remote host and the bytes stream back). The desktop
 main process also loads them for tests, diagnostics and flows with no runtime
@@ -28,7 +28,7 @@ Both services are cross-wired through the runtime's project boot and
 
 The computer-use control plane (`apps/desktop/src/main/services/computerUse/`,
 `computerUseArtifactBrokerService.ts`) is local-only: it runs only in the local
-ADE runtime.
+DAEX runtime.
 
 ---
 
@@ -81,7 +81,7 @@ Only tracked agent CLI rows get those lineage fields on the summary.
   `summary`, `head_sha_end`; rebinds `pty_id` and `started_at`. Keeps
   identity, lane, transcript, head SHA start, tool type and resume metadata.
 - `setHeadShaStart` / `setHeadShaEnd`: anchors for the delta.
-- `setLastOutputPreview(sessionId, preview)` and `touchLastOutput`: stamp
+- `setLastOutputPreview(sessionId, preview)` and `touchSessionActivity`: stamp
   `last_output_at` and call `repairStaleDetachOnActivity`, which reopens the
   row **only** from `detached`. They are the only activity writers and fire
   only while this process's live runtime prints, so a dead session never comes
@@ -96,7 +96,7 @@ Only tracked agent CLI rows get those lineage fields on the summary.
   liveOwnerPids?, liveOwnerIdentities?, knownOwnerPids?,
   knownOwnerIdentities? })`: startup cleanup.
   - Callers pass live and known identities from the local `runtime_processes`
-    table, so ADE detaches sessions of a crashed local process and never
+    table, so DAEX detaches sessions of a crashed local process and never
     rewrites a running session synced from another machine.
   - `freshActivityGraceMs` defaults to
     `STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS` (2 min); only tests
@@ -152,7 +152,7 @@ Each live PTY has an entry in the `ptys` map, keyed by `ptyId`:
 - AI title: `aiTitleTimer`, `cliUserTitleLineBuffer`, `cliUserTitleCommitted`
 - `terminalSnapshot` (tracked PTYs only): an `@xterm/headless` Terminal plus
   `SerializeAddon` that mirrors output, so surfaces with no renderer (the
-  mobile Work tab, `ade terminal preview`) get a real buffer. It writes
+  mobile Work tab, `daex terminal preview`) get a real buffer. It writes
   `.ade/cache/terminal-snapshots/<sessionId>.json` (a version 1
   `TerminalSerializedSnapshot`) with a `TERMINAL_SNAPSHOT_DEBOUNCE_MS` (5 s)
   debounce, and flushes on exit, dispose, resize and every
@@ -176,17 +176,17 @@ Each live PTY has an entry in the `ptys` map, keyed by `ptyId`:
    else a new UUID).
 4. Take the transcript path from the row on resume, else
    `safeTranscriptPathFor(sessionId)`.
-5. Claude and Codex launch with ADE identity env and use the bundled `ade`
+5. Claude and Codex launch with DAEX identity env and use the bundled `ade`
    CLI. A temporary startup context path goes into `cleanupPaths`.
 6. Build `resumeMetadata` with `buildInitialResumeMetadata` (it reads a
    pre-assigned `--session-id <uuid>`). When the launch has a model and
-   `resumeMetadata.launch.model` is empty, ADE writes the model there for
+   `resumeMetadata.launch.model` is empty, DAEX writes the model there for
    later title and summary passes.
 7. Insert the row (or keep the existing one) and set `running`.
 8. Capture `headShaStart` (`computeHeadShaBestEffort`) for
    `sessionDeltaService`.
-9. **Swap in ADE's pinned CLI** (`pty/pinnedProviderCli.ts`). Every provider
-   terminal (work, resume, login) runs ADE's pinned copy by absolute path,
+9. **Swap in DAEX's pinned CLI** (`pty/pinnedProviderCli.ts`). Every provider
+   terminal (work, resume, login) runs DAEX's pinned copy by absolute path,
    never the CLI on the PATH.
    - It is one late swap, after resume backfill, Pi lease work, Claude
      `--plugin-dir` and pre-assigned ids, so every parser sees bare-word
@@ -203,12 +203,12 @@ Each live PTY has an entry in the `ptys` map, keyed by `ptyId`:
      env gets each tool's self-update switches (plus
      `CURSOR_INVOKED_AS=cursor-agent`). Windows runs the pin's `.exe` or
      `node.exe`, never a cmd shim.
-   - While the pin downloads, the PTY opens a clean shell, prints "ADE is
+   - While the pin downloads, the PTY opens a clean shell, prints "DAEX is
      downloading <Tool> for this machine. It starts here when the download
      finishes.", holds initial input, and types the launch when the copy is
      ready. A failure prints the sentence and closes with exit 1 (a state
      known up front makes `create()` throw). `create()` awaits OpenCode's
-     download first, because its TUI attaches to ADE's server.
+     download first, because its TUI attaches to DAEX's server.
    - A plain shell with no command is untouched, so a user can run their own
      CLI.
 10. Pick a launch strategy:
@@ -242,7 +242,7 @@ Each live PTY has an entry in the `ptys` map, keyed by `ptyId`:
       stability. The deadline is 60 s for Codex and 20 s for other agent
       CLIs. A stable Codex composer passes even while title or redraw output
       continues after an MCP startup failure.
-    - At the deadline of a fire-and-forget Codex launch, ADE keeps the
+    - At the deadline of a fire-and-forget Codex launch, DAEX keeps the
       prompt and waits again; the PTY stays open. A user write during the
       delay or a retry cancels the kept prompt.
     - With `awaitInitialInput`, a readiness or write failure kills the
@@ -326,25 +326,25 @@ detaches. `readScreenSnapshot(sessionId)` returns the live current screen
 1.2 s after the last signal, or as a 10 s heartbeat. States: `running`,
 `waiting-input`, `idle`, `exited`, `killed`. `idle` comes from output silence.
 OSC 133 `B`/`C` can confirm running, but prompt markers and painted TUI text
-never infer `waiting-input` or Planning. For tracked CLIs, an explicit ADE
-request (`ade chat ask`) sets waiting-input.
+never infer `waiting-input` or Planning. For tracked CLIs, an explicit DAEX
+request (`daex chat ask`) sets waiting-input.
 
 #### Exact turn status for agent CLIs
 
-ADE does not guess the turn of a tracked agent CLI that reports it. Each
+DAEX does not guess the turn of a tracked agent CLI that reports it. Each
 entry holds a turn tracker (`PtyEntry.cliTurn`, `pty/cliTurnSignals.ts`) with
 phase `working`, `idle` or `needs-input`. The runtime state, the Work row,
-`ade chat status` (`getCliTurnStatus`), settle and the roster read it.
+`daex chat status` (`getCliTurnStatus`), settle and the roster read it.
 
 | CLI | working | done | needs you |
 | --- | --- | --- | --- |
 | Claude Code | `UserPromptSubmit` hook | `Stop` / `StopFailure` hook (background work while `SubagentStart` agents have no `SubagentStop`) | `PermissionRequest` hook (tool permission, `AskUserQuestion`, `ExitPlanMode`), `Notification` `permission_prompt` / `elicitation_dialog`, `Elicitation` |
 | Codex 0.167+ | OSC `7501;state=working`, or a launch that carries the prompt (`promptSubmittedAtLaunch`) | `state=done`, or `idle` after working (an interrupt); every report in an output chunk is applied in order | `state=blocked` (`kind=permission`) |
-| Others | output (heuristic) | 12.5 s of quiet (heuristic) | the Jev screen check, `ade chat ask` |
+| Others | output (heuristic) | 12.5 s of quiet (heuristic) | the Jev screen check, `daex chat ask` |
 
 **Claude hooks.**
 
-- A tracked Claude launch gets `--settings` with ADE's hooks. Inline
+- A tracked Claude launch gets `--settings` with DAEX's hooks. Inline
   `--settings` JSON (fast mode, ultracode) gets the hooks merged in, because
   Claude reads only the last `--settings`. A `--settings` file is left alone,
   and that launch keeps the heuristics.
@@ -412,7 +412,7 @@ quit) records a tracked CLI as mid-turn when it is owed a continue:
 **Needs you.** Entering `needs-input` raises the row's hand with the CLI's
 words (`cli_prompt` source, "Claude wants permission to use Bash") through
 `onSessionAttentionRequested`, the same path, push alert and badge as
-`ade chat ask`. Leaving it lowers the hand. An agent's own ask is never
+`daex chat ask`. Leaving it lowers the hand. An agent's own ask is never
 overwritten or lowered.
 
 **Turn end and listeners.**
@@ -434,10 +434,10 @@ per subagent and one at session end. No per-tool hook is installed.
 `implementing`, `testing`, `debugging`, `reviewing`, `shipping`,
 `monitoring`) with a source.
 
-- ADE chats: the host detects it from the turn's tool calls
+- DAEX chats: the host detects it from the turn's tool calls
   (`source: "detected"`, `chat/sessionActivityDetector.ts`). An agent can also
-  report one with `ade chat activity` (`source: "agent"`) when the guidance
-  confirms it can call the runtime's ADE CLI on this runtime's exact socket.
+  report one with `daex chat activity` (`source: "agent"`) when the guidance
+  confirms it can call the runtime's DAEX CLI on this runtime's exact socket.
 - Tracked CLI terminals have no tool stream, so only agent reports set it.
   PTY output is never scanned for these labels.
 - It refines a running card's label, never changes the lifecycle phase, and
@@ -461,12 +461,12 @@ blank Cursor launches, other Pi modes, and Qwen, Kimi, Grok and Copilot
   process group, so the service signals that group first. Every `kill(-pid)`
   goes through `signalProcessGroup` (`services/shared/utils.ts`), which
   refuses a pid below 2 with `ESRCH`: `kill(-1, …)` signals every user process
-  and `-0` is ADE's own group.
+  and `-0` is DAEX's own group.
 - In parallel, a bounded `ps` scan (pid, parent, group, foreground group)
   finds descendants and groups created after launch. The first signal never
   waits for it: a 100 ms fallback sends it, and the scan is capped at 250 ms.
 - For a non-`SIGKILL` signal, a 1.5 s follow-up rescans and sends `SIGKILL`
-  to anything reachable. If that scan fails, ADE force-kills the known groups
+  to anything reachable. If that scan fails, DAEX force-kills the known groups
   and first members; a failed scan is not proof the tree exited.
 - **Windows.** A bounded `taskkill /PID <root> /T` while the leader exists,
   then node-pty's kill. After the grace it always runs
@@ -555,7 +555,7 @@ for the TopBar indicator. Each root is `{ pid, kind }` from `toolTypeHint`
   per process, made lazily in `registerIpc.ts` and disposed on `will-quit`.
 - **`classifyProcessRoles`** gives each pid at most one
   `AppResourceProcessRole`. Electron pids (plus `process.pid`) go first and
-  are never walked. ADE runtime roots, PTY-host owners and PTY roots (with
+  are never walked. DAEX runtime roots, PTY-host owners and PTY roots (with
   their explicit kind) are claimed before any descendant walk. Only a
   `provider-agent` root's descendants inherit `provider-agent`; shells,
   runtimes and PTY hosts give `unknown` to children. It also returns the
@@ -574,7 +574,7 @@ trees were far below every pressure line, 10 s while only their CPU was (a
 shown chip checks every 2 s, and agents can hold memory on a small Mac at
 rest), and never while their CPU was not. Electron's own numbers and system
 memory are read fresh on every call; Settings > Health asks with
-`fresh: true` and always gets a new `ps`. The renderer's `resourcePressure.ts` groups roles into "ADE app"
+`fresh: true` and always gets a new `ps`. The renderer's `resourcePressure.ts` groups roles into "DAEX app"
 (Electron, `ade-runtime`, `ade-pty-host`), "agents" (`provider-agent`) and
 "other terminal processes" (`shell`, `unknown`), and adds a staleness note when
 the sample is `unavailable`.
@@ -600,7 +600,7 @@ starts the provider continuation when needed:
 5. `create({ sessionId, ... })` spawns in the same row. When this call
    created the flight and the builder can carry the prompt
    (`promptAtLaunch`), `text` rides on the resume command and no PTY write
-   follows. Otherwise (Cursor, Windows, a reused flight) ADE writes `text`
+   follows. Otherwise (Cursor, Windows, a reused flight) DAEX writes `text`
    after the CLI is input-ready. Returns `{ ptyId, sessionId, pid, session,
    resumed: true, reusedExistingRuntime: false }`.
 
@@ -612,7 +612,7 @@ The Work continuation composer, the iOS `work.sendToSession` command and the
 `send_to_session` JSON-RPC tool all use `sendToSession`.
 
 Scheduled work uses the same boundary. `chat.createScheduledWork` can target
-only an ADE-tracked agent chat or provider CLI the caller owns. A live CLI is
+only an DAEX-tracked agent chat or provider CLI the caller owns. A live CLI is
 eligible only when the provider's visible composer shows after a short quiet
 window (12.5 s of no output is not enough: the model can be thinking). An
 ended CLI resumes through `sendToSession`. A proven failure before delivery
@@ -629,7 +629,7 @@ CLI row and a concrete resume target (Codex update-only transcripts give the
 `reusedExistingRuntime: true`; otherwise it relaunches with the overrides and
 returns `resumed: true`.
 
-Three siblings serve `ade chat` on a tracked agent CLI
+Three siblings serve `daex chat` on a tracked agent CLI
 (`chat/agentCliSessionActions.ts`; see
 [Talking to an agent CLI session](../chat/README.md#talking-to-an-agent-cli-session)):
 
@@ -678,8 +678,8 @@ wait and no `@` expansion, because it stands in for the person's own keys:
   gets `AGENT_CLI_PASTE_SUBMIT_DELAY_MS = 100 ms` before Enter; Codex keeps
   its own 180 ms); a single line is typed as text.
 - Lines to one session run in order: the work joins the same
-  `submitInputFlights` chain `sendToSession` uses, so such a line and an
-  `ade chat` send to one CLI cannot interleave.
+  `submitInputFlights` chain `sendToSession` uses, so such a line and a
+  `daex chat` send to one CLI cannot interleave.
 - A blank line and a session with no live PTY answer `false`/`ended`, which
   the sender treats as not typed. A repeated `clientMessageId` is answered
   once by `typeIntoAgentCliWhenFree`'s ledger (session + id, ten minutes),
@@ -690,7 +690,7 @@ wait and no `@` expansion, because it stands in for the person's own keys:
 
 ### AI-driven titles
 
-CLI sessions are always ADE-named, on one model: the cheap helper for a
+CLI sessions are always DAEX-named, on one model: the cheap helper for a
 Claude, Codex or Cursor CLI (Haiku 5.5 / GPT-6 Luna / Composer 2.5), else
 `resumeMetadata.launch.model`. If that fails, the deterministic title on the
 row stays. Claude JSONL `ai-title` and Codex thread names never win
@@ -706,7 +706,7 @@ row stays. Claude JSONL `ai-title` and Codex thread names never win
   writes and commits the first submitted line (3 to 180 chars), because agent
   TUIs hide their output on the alt screen. Skipped when `manuallyNamed`.
   - When the title is still a placeholder (`isCliPlaceholderTitle`: `Claude`,
-    `Codex`, `Cursor Agent CLI`, …), `deterministicCliTitleFromSeed` commits a
+    `Codex`, `Cursor Agent CLI`, …), `trackedCliTitleFromPromptSeed` commits a
     title at once (drops lead-ins such as "ok"/"please", clips to 72 chars on
     a clause or word, drops non-command `/` prefixes, sentence case).
   - `runEarlyCliAiTitle` runs after `EARLY_CLI_AI_TITLE_DELAY_MS` (5 s) with
@@ -717,7 +717,7 @@ row stays. Claude JSONL `ai-title` and Codex thread names never win
 
 At close, when an AI provider is available (not guest mode), the transcript
 tail (2000 chars) gets a final title through the same model walk. A failure
-logs a warning; the title never fails the session. ADE makes no end-of-session
+logs a warning; the title never fails the session. DAEX makes no end-of-session
 AI summary; the row keeps its deterministic `summary`.
 
 ### Continuation metadata backfill
@@ -731,7 +731,7 @@ Resolve every provider store through `services/shared/providerConfigHomes.ts`,
 never a hard-coded `~/.codex` or `~/.factory`: `CODEX_HOME` and
 `CLAUDE_CONFIG_DIR` name the config folder, and `FACTORY_HOME_OVERRIDE`
 replaces the HOME that `.factory` is added to. A hard-coded default reads a
-different folder than the CLI ADE started.
+different folder than the CLI DAEX started.
 
 Strategies, in order:
 
@@ -756,7 +756,7 @@ Strategies, in order:
    first line must be a `session_start` with a matching `cwd`; mtime is scored
    against `startedAt` (10-minute window). The id becomes
    `droid --resume <id>` through `sessionService.setResumeCommand`.
-5. OpenCode: ADE's managed store, read-only (`listAdeOpenCodeSessions`, 80
+5. OpenCode: DAEX's managed store, read-only (`listAdeOpenCodeSessions`, 80
    rows), never `opencode session list` (that reaches OpenCode's background
    service and the user's store). A session whose `directory` matches is
    scored by creation (else update) time against `startedAt` (10-minute
@@ -802,7 +802,7 @@ way to learn the UUID. Two strategies run together:
 A candidate matches by **cwd plus a launch window**, with no content gate:
 `CODEX_LIVE_CAPTURE_MAX_START_DELTA_MS` (90 s) on each side of `startedAt`,
 and the `notBeforeMs` floor (`startedAt - 1 s`). There is **no**
-"ADE session guidance" marker gate: most launches never print that string.
+"DAEX session guidance" marker gate: most launches never print that string.
 
 Two Codex runs in the same worktree cannot share a thread: each pass excludes
 ids another row owns (`listOtherAdoptedCodexTargetIds`, from
@@ -812,13 +812,13 @@ throws, the pass captures nothing. Time only breaks ties.
 On a capture, the service writes `resumeMetadata.targetId` and appends
 `{ id, thread_name, updated_at }` with the name `ade-<sessionId>` to
 `<codexConfigHome>/session_index.jsonl` (Codex's on-disk `SetThreadName`
-format). `codex resume ade-<id>` then resolves wherever the rollout is. ADE
+format). `codex resume ade-<id>` then resolves wherever the rollout is. DAEX
 owns the `ade-*` names, and the append is under `PIPE_BUF`, so it is safe
 beside Codex's own writes.
 
 ### Pi session tracking
 
-Pi is the only tracked CLI that shares its store with ADE chat. Both resolve
+Pi is the only tracked CLI that shares its store with DAEX chat. Both resolve
 it with `piSessionStoreForEnvironment` (`services/chat/piSessionStore.ts`);
 [Agent Routing › Session store](../chat/agent-routing.md#session-store) has
 the precedence and the two sidecar files.
@@ -826,10 +826,10 @@ the precedence and the two sidecar files.
 **Never resume Pi by "most recent".** `defaultResumeCommandForTool("pi")` is
 null, `buildTrackedCliResumeLaunchCommand` emits `--session <id>` or starts
 fresh, and `PI_CONTINUATION_FLAG_RE` / `stripPiContinuationArgs` remove
-`--continue`, `-c` and `-r` (Pi's picker) whenever ADE rebuilds a launch. The
+`--continue`, `-c` and `-r` (Pi's picker) whenever DAEX rebuilds a launch. The
 most recent session in a folder can be another terminal's or a chat's. A
 user-typed `--continue`/`-c`/`-r` resolves to a concrete id **before** the
-spawn, so Pi cannot write a JSONL before ADE upgrades its creation lease.
+spawn, so Pi cannot write a JSONL before DAEX upgrades its creation lease.
 
 **Re-check a stored target.** `piSessionCouldBelongToTerminal` rejects a
 session created before the terminal (10-minute grace). The launch then logs
@@ -851,7 +851,7 @@ durable `.ade-owner` claim on resume, and on a fresh launch only on the branch
 that wins the lease upgrade. The sidecar is never deleted, so a claim on the
 losing branch would block every other terminal.
 
-**Launch errors name the cause.** A latest session ADE cannot verify inside
+**Launch errors name the cause.** A latest session DAEX cannot verify inside
 the root reports that the repository's `.pi/settings.json` moves Pi's session
 folder (set `PI_CODING_AGENT_SESSION_DIR` for the profile instead), or that
 the session id could not be verified in the store.
@@ -872,7 +872,7 @@ transcript work, and broadcasts `ptyExit`.
 
 - `scheduleTranscriptDependentWork` flushes the stream, then backfills and
   titles.
-- `cleanupEntryPaths` unlinks `cleanupPaths` (per-session ADE CLI config
+- `cleanupEntryPaths` unlinks `cleanupPaths` (per-session DAEX CLI config
   files).
 
 A `waiting-input` state never closes a PTY. The user, the owning service or
@@ -901,7 +901,7 @@ renderer pty.create  →  ade.pty.create (registerIpc)
                       ptyService.create
                       ├─→ resolveLaneLaunchContext (lane gate)
                       ├─→ sessionService.create (new row)
-                      ├─→ loadPty().spawn (with ADE identity env for
+                      ├─→ loadPty().spawn (with DAEX identity env for
                       │                     Claude/Codex tool types)
                       └─→ transcript stream, preview, title timers
 
