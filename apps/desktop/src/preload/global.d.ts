@@ -3,7 +3,7 @@ import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { ClientUpdateGateState } from "../shared/clientUpdateGate";
 import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
-import type { AccountCloudLaunchesBridge, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
+import type { AccountCloudLaunchesBridge, CloudLaunchFreeModelResult, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
@@ -5258,6 +5258,7 @@ declare global {
          * window's machine. `state: "failed"` with `reason` when refused.
          */
         sendLaunchSignInCode?: (args: { instanceId: string; jobId: string; code: string }) => Promise<CloudRemoteSignInStatus>;
+        launchFreeModel?: (args: { launchId: string }) => Promise<CloudLaunchFreeModelResult>;
         /**
          * A message for an existing ADE Cloud chat whose computer is asleep
          * or gone, through the account's queue. Account-level, by the chat's
@@ -5708,7 +5709,7 @@ declare global {
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {
         getLaneState: (laneId: string, pin: OpenProjectBinding) => Promise<WorkToolsLaneState | null>;
-        noteWatching?: (pin: OpenProjectBinding) => Promise<void>;
+        noteWatching?: (pin: OpenProjectBinding, tool?: string) => Promise<void>;
         /**
          * `openTools` is the pane's whole tab strip in order; `tool` is the one
          * on screen. Defaulted so an older caller still publishes coherently.

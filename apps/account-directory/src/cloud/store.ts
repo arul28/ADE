@@ -763,7 +763,7 @@ export function restartStretchAtStatements(env: CloudEnv, computer: ComputerRow,
 }
 
 /** The free time of a closing stretch (an automatic update's window), so the daily reconcile doesn't charge it. */
-export function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
+export function freeWakeStatements(env: CloudDb, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
   if (computer.free_wake_started_at == null || computer.free_wake_until == null) return [];
   const freeEnd = Math.min(closedAt, computer.free_wake_until);
   return splitByUtcDay(computer.free_wake_started_at, freeEnd).map(({ day, ms }) =>
@@ -916,14 +916,19 @@ export const LEGACY_LAUNCH_COMPUTER_DELETED = "This launch's ADE Cloud computer 
 
 /** Settles an open stretch and marks the computer deleted, for after the provider's delete. */
 export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
-  // Guarded: two deletes of one computer charge its last stretch once.
-  const statements = settleStatements(env, computer, now, statusGuard(computer));
+  // Guarded: two deletes of one computer charge its last stretch once. A free
+  // window it held (an update's, a launch's sign-in wait) goes into `free_ms`,
+  // so the daily reconcile doesn't charge it back.
+  const guard = statusGuard(computer);
+  const statements = [...settleStatements(env, computer, now, guard), ...freeWakeStatements(env, computer, now, guard)];
   computer.awake_since = null;
+  computer.free_wake_started_at = null;
+  computer.free_wake_until = null;
   computer.deleted_at = now;
   // The disk breakdown, the lane's work (branch names, pull request state), the lane's facts, the
   // ignored file names and the backup report (lane names) go with the computer.
   statements.push(env.DB.prepare(`
-    update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ?, disk_usage_json = null, lane_work_json = null,
+    update cloud_computers set deleted_at = ?, awake_since = null, free_wake_started_at = null, free_wake_until = null, status = 'deleted', status_changed_at = ?, disk_usage_json = null, lane_work_json = null,
       lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null,
       idle_held_reason = null, ignored_files_json = null,
       backup_report_id = null, backup_report_state = null, backup_report_at = null, backup_problems_json = null, backup_rest_at = null

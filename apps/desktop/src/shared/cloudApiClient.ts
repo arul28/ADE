@@ -321,6 +321,8 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<CloudLaunchMessage>("POST", `${launchPath(launchId)}/messages`, { body: message }),
     /** Before the agent starts it deletes the computer; after, the server refuses with `launch_started`. */
     cancelLaunch: (launchId: string) => request<CloudLaunchRecord>("DELETE", launchPath(launchId)),
+    /** A chat waiting in its sign-in step starts on DAEX Free Models instead (409 `launch_not_waiting`, `free_models_unavailable`, `free_models_consent`). */
+    launchFreeModel: (launchId: string) => request<CloudLaunchRecord>("POST", `${launchPath(launchId)}/free-model`, { body: {} }),
 
     /* ---- One computer ---- */
     computer: (instanceId: string) => request<CloudInstance>("GET", instancePath(instanceId)),

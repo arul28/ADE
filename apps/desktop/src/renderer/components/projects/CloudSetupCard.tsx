@@ -5,6 +5,8 @@ import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
 import { openExternalUrl } from "../../lib/openExternal";
 import { CloudSignInCodeField } from "../chat/launch/CloudSignInCodeField";
+import { CloudSignInWayOuts } from "../chat/launch/CloudSignInStep";
+import { cloudSignInStepWords } from "../../../shared/cloudSignInStep";
 import {
   accountCloudLaunchHideable,
   cancelAccountCloudLaunch,
@@ -102,17 +104,25 @@ function providerLabel(provider: string | null | undefined): string {
 }
 
 /** What the person does for a provider sign-in the launch waits on. */
-function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; instanceId: string | null }) {
+function SignInDetail({ signIn, instanceId, launchId }: { signIn: CloudLaunchSignIn; instanceId: string | null; launchId: string }) {
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // The step's words (`cloudSignInStepWords`), worked out again on each render; no timer of its own.
+  const words = cloudSignInStepWords(signIn, Date.now());
+  const wayOuts = (
+    <CloudSignInWayOuts signIn={signIn} words={words} launchId={launchId} className="text-[12px]" onChanged={refreshAccountCloudLaunches} />
+  );
 
   if (signIn.kind === "desktop") {
     return (
-      <p className="m-0 mt-1 text-[12px]" style={{ color: "var(--kit-text-2)" }}>
-        {signIn.reason ?? `Sign in from ${BRAND.NAME} desktop; it reaches ${BRAND.CLOUD_NAME}.`} Sign in from {BRAND.NAME} desktop, or pick another model.
-      </p>
+      <div className="mt-1 flex flex-col gap-2">
+        <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>
+          {signIn.reason ?? `Sign in from ${BRAND.NAME} desktop; it reaches ${BRAND.CLOUD_NAME}.`} Sign in from {BRAND.NAME} desktop, or pick another model.
+        </p>
+        {wayOuts}
+      </div>
     );
   }
 
@@ -136,8 +146,11 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
   };
 
   const needsCode = signIn.kind !== "api_key" && (signIn.needsPastedCode || signIn.kind === "url_paste");
+  const said = signIn.kind === "api_key" ? null : [words.instruction, words.reason].filter(Boolean).join(" ");
+  const meta = [words.timeLeft, words.charge].filter(Boolean).join(" ");
   return (
     <div className="mt-1.5 flex flex-col gap-2">
+      {said ? <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>{said}</p> : null}
       {signIn.kind === "device" && signIn.userCode ? (
         <div className="flex items-center gap-2">
           <span className="ade-signin-code" aria-label="Sign-in code">{signIn.userCode}</span>
@@ -163,7 +176,7 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
         </div>
       ) : null}
       {needsCode && signIn.jobId ? (
-        <CloudSignInCodeField jobId={signIn.jobId} instanceId={instanceId} className="text-[12px]" onSent={refreshAccountCloudLaunches} />
+        <CloudSignInCodeField key={`${signIn.jobId}:${signIn.url ?? ""}`} jobId={signIn.jobId} instanceId={instanceId} className="text-[12px]" onSent={refreshAccountCloudLaunches} />
       ) : null}
       {needsCode && !signIn.jobId ? (
         <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>The computer isn't ready for the code yet. It asks for it in a moment.</p>
@@ -198,6 +211,8 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
       {error ? (
         <Banner layout="inline" model={{ id: "cloud-setup-sign-in", tone: "error", title: "The sign-in didn't go through", detail: error }} />
       ) : null}
+      {meta ? <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>{meta}</p> : null}
+      {wayOuts}
     </div>
   );
 }
@@ -456,7 +471,7 @@ export function CloudSetupCard({
       title: `Sign in to ${signIn?.label ?? providerLabel(provider)}`,
       state: steps.signIn,
       detail: signIn && record?.state === "waiting_for_sign_in"
-        ? <SignInDetail key={signIn.jobId ?? signIn.signInId ?? signIn.kind} signIn={signIn} instanceId={record.instanceId} />
+        ? <SignInDetail key={signIn.jobId ?? signIn.signInId ?? signIn.kind} signIn={signIn} instanceId={record.instanceId} launchId={entry.launchId} />
         : undefined,
     },
     { id: "send", title: "Send your message", state: steps.send },
@@ -526,6 +541,10 @@ export function CloudSetupCard({
               report: { surface: "cloud_setup_card", code: "launch_failed", technicalDetail: failureReason },
             }}
           />
+        ) : null}
+        {/* A start that ended in its sign-in step: whether its wait was charged (`endNote`). */}
+        {(failed || phase === "cancelled") && record?.endNote ? (
+          <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>{record.endNote}</p>
         ) : null}
         {ready && record ? (
           <div className="flex items-center gap-2">

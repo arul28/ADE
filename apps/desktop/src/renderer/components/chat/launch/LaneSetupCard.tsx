@@ -86,7 +86,7 @@ import {
 } from "./stepCardParts";
 import { CLOUD_COMPUTER_LIMIT_CODE } from "../../../../shared/adeCloud";
 import { openCloudComputerLimitCard } from "../../cloudLane/CloudComputerLimitCard";
-import { CloudSignInCodeField } from "./CloudSignInCodeField";
+import { CloudSignInStep } from "./CloudSignInStep";
 import { BRAND } from "../../../../shared/brand";
 
 /** A launch's own error text without Electron's wrapper; the raw text when the wrapper was all there was. */
@@ -525,13 +525,6 @@ export function LaneSetupCard({
     : null;
   // The new computer waits for the chat's provider sign-in (the server launcher's `waiting_for_sign_in`).
   const signIn = snapshot.phase === "running" ? snapshot.cloud?.signIn ?? null : null;
-  const signInDetail = signIn
-    ? [
-      signIn.userCode ? `Enter the code ${signIn.userCode}.` : null,
-      signIn.needsPastedCode && signIn.jobId ? "Open the sign-in page, then paste the code it shows below." : null,
-      signIn.reason,
-    ].filter(Boolean).join(" ")
-    : "";
   const textSize = compact ? "text-[11.5px]" : "text-[length:calc(var(--chat-font-size)*12/14)]";
   const metaSize = compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]";
   const showActions = hasDetails || (envStage?.steps?.length ?? 0) > 0 || Boolean(onOpen) || Boolean(approvalUrl)
@@ -594,25 +587,13 @@ export function LaneSetupCard({
       ) : null}
 
       {signIn ? (
-        <Banner
-          layout="inline"
-          style={{ marginTop: 6 }}
-          testId="lane-setup-sign-in"
-          model={{
-            id: "lane-setup-sign-in",
-            tone: "info",
-            title: `Sign in to ${signIn.label} to start the chat`,
-            ...(signInDetail ? { detail: signInDetail } : {}),
-            ...(signIn.url ? { actions: [{ label: "Open sign-in", href: signIn.url }] } : {}),
-          }}
-        />
-      ) : null}
-      {signIn?.needsPastedCode && signIn.jobId ? (
-        <CloudSignInCodeField
-          key={signIn.jobId}
-          jobId={signIn.jobId}
+        <CloudSignInStep
+          signIn={signIn}
           instanceId={snapshot.cloud?.instanceId ?? null}
-          className={cn("mt-1.5", metaSize)}
+          launchId={snapshot.launchId}
+          testId="lane-setup-sign-in"
+          className="mt-1.5"
+          metaClassName={metaSize}
         />
       ) : null}
 

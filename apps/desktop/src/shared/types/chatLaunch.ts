@@ -210,6 +210,16 @@ export type ChatLaunchCloudState = {
     jobId?: string | null;
     /** The provider shows a code after sign-in that goes back to the computer (Claude). */
     needsPastedCode?: boolean;
+    /** The chat's provider id (`claude`, `codex`, …), for the step's words. */
+    provider?: string | null;
+    /** When the computer stops waiting (ms since epoch); the card says how many minutes are left. */
+    expiresAt?: number | null;
+    /** The free model "Start with … instead" moves this launch to, while the account can use DAEX Free Models; null otherwise. */
+    freeModel?: { modelId: string; label: string } | null;
+    /** The account has a computer of its own: the card names Share my sign-ins. */
+    ownComputer?: boolean;
+    /** What the wait costs, in the server's words (free: "Nothing is charged…"); null on a size that uses no credits. */
+    charge?: { free: boolean; sentence: string } | null;
   };
 };
 

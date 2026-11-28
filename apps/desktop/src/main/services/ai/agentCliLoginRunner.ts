@@ -236,6 +236,9 @@ function prependPathEntry(env: NodeJS.ProcessEnv, folder: string): void {
   env[key] = current ? `${folder}${path.delimiter}${current}` : folder;
 }
 
+/** The longest a start may ask for (`AgentCliLoginStartArgs.timeoutMs`): a cloud start's whole sign-in wait. */
+const MAX_START_TIMEOUT_MS = 30 * 60_000;
+
 export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
   const logins = new Map<string, LoginRecord>();
   const pollMs = deps.pollMs ?? VERIFY_POLL_MS;
@@ -486,8 +489,10 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     }
     // A login already there may have ended it at once (`launch`).
     if (isLive(record)) {
-      later(record, timeoutMs, () => {
-        if (isLive(record)) finish(record, { state: "failed", message: "The sign-in timed out after 10 minutes." });
+      // A cloud start's wait asks for one sign-in that lasts its whole wait (at most 30 minutes).
+      const limitMs = typeof args.timeoutMs === "number" && args.timeoutMs > timeoutMs ? Math.min(MAX_START_TIMEOUT_MS, args.timeoutMs) : timeoutMs;
+      later(record, limitMs, () => {
+        if (isLive(record)) finish(record, { state: "failed", message: `The sign-in timed out after ${Math.round(limitMs / 60_000)} minutes.` });
       });
     }
     logins.set(record.status.loginId, record);

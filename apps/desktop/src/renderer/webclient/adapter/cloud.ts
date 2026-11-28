@@ -21,7 +21,7 @@ import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
 import type { CloudAgentLimitsState } from "../../../../../account-directory/src/cloud/contract";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
-import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
+import { launchFreeModelVia, type AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
 import type { BrowserAccountClient } from "../account/client";
 import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
 import type { CloudKeptLaneRestorePreview, CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
@@ -382,6 +382,12 @@ export function createWebCloudNamespace(
       const api = accountClient.cloudApi();
       if (!api) throw new Error("Account sign-in isn't configured for this web client.");
       return await api.sendSignInCode(instanceId, jobId, code);
+    },
+    // "Start with a free model instead" on a waiting launch: an account call by the launch id.
+    launchFreeModel: async ({ launchId }) => {
+      const api = accountClient.cloudApi();
+      if (!api) throw new Error("Account sign-in isn't configured for this web client.");
+      return await launchFreeModelVia(api, launchId);
     },
     // A lane's computer, all through the account server (no computer of the person's needed).
     laneLife: (async ({ method, args }: { method: string; args?: unknown }) => {

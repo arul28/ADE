@@ -6,12 +6,17 @@
  */
 
 import type {
+  CloudLaunchRecord,
   CloudLaunchSignIn,
   CloudLaunchStage,
   CloudRemoteSignInStatus,
 } from "../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_LAUNCH_SIGN_IN_TIMED_OUT,
+  CLOUD_SIGN_IN_CODE_EXPIRED,
+  CLOUD_SIGN_IN_CODE_REFUSED,
+  CLOUD_SIGN_IN_LINK_CHANGED,
+  CLOUD_SIGN_IN_WAIT_MS,
   cloudRemoteSignInOf,
   cloudRemoteSignInRefusal,
   cloudRemoteSignInRuns,
@@ -21,8 +26,12 @@ import { cloudSignInSpec } from "../../../../desktop/src/shared/cloudSignIns";
 import { isFreeModelId } from "../../../../desktop/src/shared/freeModels";
 import type { CloudBootLaunchDeps, ReportStages } from "./cloudBootLaunch";
 
-/** How long a launch waits for its provider's sign-in; the server ends it a little later (`SIGN_IN_WAIT_MS` in launches.ts). */
-export const SIGN_IN_WAIT_MS = 30 * 60_000;
+/**
+ * How long a wait lasts unless the launch's request says otherwise (a cloud
+ * Mac: `cloudSignInWaitMsFor`). The server ends the launch at its `expiresAt`
+ * plus a grace (`failUnjoinedLaunches`).
+ */
+export const SIGN_IN_WAIT_MS = CLOUD_SIGN_IN_WAIT_MS;
 /** How often the wait reads the sign-in's progress (local: the runner and the provider's status). */
 const SIGN_IN_POLL_MS = 5_000;
 /** How often the wait pulls the account vault and reads the launch (a cancel ends the wait). */
@@ -39,6 +48,19 @@ export type ProviderReadiness = "ready" | "missing" | "unknown";
  */
 export type ProviderReady = (provider: string, options?: { fresh?: boolean; model?: string | null }) => Promise<ProviderReadiness>;
 type DetectAuth = (options: { force: boolean; skipCliAuthProbe: true }) => Promise<DetectedAuth[]>;
+/**
+ * Each agent CLI's sign-in as read from disk and the environment, whether
+ * DAEX's copy of the CLI is here yet or still to be downloaded on first use
+ * (`detectCliAuthStatuses`, and Muse's own read). `verified` only when the
+ * read is sure (a key).
+ */
+export type ReadCliSignIns = (options: { force: boolean }) => Promise<Array<{ cli: string; authenticated: boolean; verified: boolean }>>;
+/**
+ * The agent CLIs whose sign-in a disk read sees with no CLI installed: a new
+ * cloud computer downloads them at the first turn, so before that their
+ * signed-out state reads `missing` here, not `unknown`.
+ */
+const CLI_SIGN_IN_PROVIDERS: ReadonlySet<string> = new Set(["copilot", "grok", "kimi", "muse", "droid", "devin", "qwen"]);
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -63,7 +85,7 @@ async function defaultCodexHome(): Promise<string | null> {
  * OpenCode on a free model is ready with no key: Zen's free models need none,
  * and an ADE Free Model runs on the computer's ADE account.
  */
-export function createProviderReady(detectAuth: DetectAuth, env: NodeJS.ProcessEnv = process.env): ProviderReady {
+export function createProviderReady(detectAuth: DetectAuth, env: NodeJS.ProcessEnv = process.env, readCliSignIns?: ReadCliSignIns): ProviderReady {
   return async (provider, options) => {
     if (provider === "opencode" && isFreeModelId(options?.model)) return "ready";
     const row = cloudRemoteSignInOf(provider);
@@ -77,6 +99,12 @@ export function createProviderReady(detectAuth: DetectAuth, env: NodeJS.ProcessE
       const codexHome = provider === "codex" ? await defaultCodexHome() : null;
       const { savedSignInPresent } = await import("../../../../desktop/src/main/services/ai/providerConnectionStatus");
       return (await savedSignInPresent(provider, codexHome ? { ...env, CODEX_HOME: codexHome } : env)) ? "ready" : "missing";
+    }
+    // An agent CLI not downloaded yet: its sign-in on disk (a shared one, a saved key) still reads.
+    // Signed in, a guess is `unknown` (the chat goes on); nothing at all is `missing` (the step shows).
+    if (readCliSignIns && CLI_SIGN_IN_PROVIDERS.has(provider)) {
+      const status = (await readCliSignIns({ force: options?.fresh === true })).find((entry) => entry.cli === provider);
+      if (status) return !status.authenticated ? "missing" : status.verified ? "ready" : "unknown";
     }
     const auth = await detectAuth({ force: options?.fresh === true, skipCliAuthProbe: true });
     // OpenCode and Pi read an OpenRouter key, and the other model keys too.
@@ -93,10 +121,15 @@ export function createProviderReady(detectAuth: DetectAuth, env: NodeJS.ProcessE
   };
 }
 
-export type SignInWait = { kind: "ready"; waited: boolean } | { kind: "failed"; error: string } | { kind: "cancelled" };
+export type SignInWait =
+  | { kind: "ready"; waited: boolean }
+  /** The person moved the chat to a DAEX Free Model from the step (`POST .../free-model`): it starts on that. */
+  | { kind: "switched"; provider: string; model: string }
+  | { kind: "failed"; error: string }
+  | { kind: "cancelled" };
 
 /** What the launch shows while it waits: the provider's own sign-in, a key to save, or ADE desktop. */
-function signInOf(provider: string, started: CloudRemoteSignInStatus | null, startError: string | null): CloudLaunchSignIn {
+function signInOf(provider: string, started: CloudRemoteSignInStatus | null, startError: string | null, expiresAt: number | null = null): CloudLaunchSignIn {
   const row = cloudRemoteSignInOf(provider);
   const kind = row?.remoteSignIn ?? "desktop";
   return {
@@ -109,7 +142,17 @@ function signInOf(provider: string, started: CloudRemoteSignInStatus | null, sta
     needsPastedCode: started?.needsPastedCode === true,
     signInId: row?.accountSignIn ?? null,
     reason: startError ?? started?.reason ?? (row && !cloudRemoteSignInRuns(row) ? cloudRemoteSignInRefusal(row) : null),
+    ...(expiresAt != null ? { expiresAt } : {}),
   };
+}
+
+/**
+ * Why a sign-in started again, for the step: a device code the provider let
+ * expire, a code the provider refused, or a link that ended some other way.
+ */
+function restartReasonOf(kind: CloudLaunchSignIn["kind"], status: CloudRemoteSignInStatus): string {
+  if (kind === "device") return CLOUD_SIGN_IN_CODE_EXPIRED;
+  return status.codeSent || status.verdict === "refused" ? CLOUD_SIGN_IN_CODE_REFUSED : CLOUD_SIGN_IN_LINK_CHANGED;
 }
 
 /** What the wait needs from the brain: the readiness read, the provider's own sign-in, and the vault pull. */
@@ -124,8 +167,12 @@ export type SignInWaitHooks = {
   show: (signIn: CloudLaunchSignIn) => Promise<boolean>;
   /** The provider can run now. */
   ready?: (signIn: CloudLaunchSignIn) => Promise<void>;
+  /** How long this wait lasts (`cloudSignInWaitMsFor` of the launch's request); `SIGN_IN_WAIT_MS` when left out. */
+  waitMs?: number;
   /** Read at each refresh: true ends the wait (a cancelled launch). */
   isCancelled?: () => Promise<boolean>;
+  /** Read right after `isCancelled`: the person moved the chat to a DAEX Free Model, so the wait ends with it. */
+  switchedTo?: () => { provider: string; model: string } | null;
   /** Names the wait in log lines (a launch id or a message id). Never chat text. */
   logMeta: Record<string, unknown>;
 };
@@ -145,8 +192,11 @@ export async function waitForProviderSignIn(
   stages: CloudLaunchStage[],
   sleep: (ms: number) => Promise<void>,
   model?: string | null,
+  waitMs: number = SIGN_IN_WAIT_MS,
 ): Promise<SignInWait> {
   const { launchId, logger } = deps;
+  // The launch as last read for a cancel: it also says whether the chat moved to a free model.
+  let latest: CloudLaunchRecord | null = null;
   return await waitForSignIn(deps, provider, {
     show: async (signIn) => await report({
       state: "waiting_for_sign_in",
@@ -161,9 +211,18 @@ export async function waitForProviderSignIn(
         logger.warn("cloud_boot_launch.sign_in_launch_read_failed", { launchId, error: errorText(error) });
         return null;
       });
+      if (record) latest = record;
       return record?.state === "cancelled";
     },
+    switchedTo: () => {
+      const chat = latest?.request?.chat;
+      // Only a move to a free model, and only away from what this wait started with.
+      if (!chat || chat.provider !== "opencode" || !isFreeModelId(chat.modelId)) return null;
+      if (provider === "opencode" && isFreeModelId(model)) return null;
+      return { provider: chat.provider, model: chat.modelId };
+    },
     logMeta: { launchId },
+    waitMs,
   }, sleep, model);
 }
 
@@ -188,18 +247,24 @@ export async function waitForSignIn(
   if (await readiness(true) !== "missing") return { kind: "ready", waited: false };
   const row = cloudRemoteSignInOf(provider);
   const remoteSignIn = row && cloudRemoteSignInRuns(row) ? deps.remoteSignIn : undefined;
+  // One deadline from the start, shown on the step, so the person knows how long they have.
+  const deadline = Date.now() + (hooks.waitMs ?? SIGN_IN_WAIT_MS);
+  // Why the last restart happened: kept on the step until a new code goes or the next restart.
+  let carried: string | null = null;
   // A start that threw (the runner wasn't ready): tried again at each refresh, a few times.
   let startFailed = false;
   let startRetries = 0;
   const start = async (): Promise<CloudLaunchSignIn> => {
     startFailed = false;
-    if (!remoteSignIn) return signInOf(provider, null, null);
+    if (!remoteSignIn) return signInOf(provider, null, null, deadline);
     try {
-      return signInOf(provider, await remoteSignIn.start(provider), null);
+      // One link for the whole wait: the runner lives until the wait's own end.
+      const started = signInOf(provider, await remoteSignIn.start(provider, { timeoutMs: Math.max(60_000, deadline - Date.now()) }), null, deadline);
+      return carried && !started.reason ? { ...started, reason: carried } : started;
     } catch (error) {
       startFailed = true;
       logger.warn("cloud_boot_launch.sign_in_start_failed", { ...meta, provider, error: errorText(error) });
-      return signInOf(provider, null, errorText(error).slice(0, 300));
+      return signInOf(provider, null, errorText(error).slice(0, 300), deadline);
     }
   };
   let signIn = await start();
@@ -212,7 +277,11 @@ export async function waitForSignIn(
   };
   logger.info("cloud_boot_launch.waiting_for_sign_in", { ...meta, provider, kind: signIn.kind });
   await show();
-  const deadline = Date.now() + SIGN_IN_WAIT_MS;
+  // The provider's sign-in this wait started ends with it, whatever ended the wait.
+  const stopSignIn = async () => {
+    if (!signIn.jobId || !remoteSignIn?.cancel) return;
+    await remoteSignIn.cancel(signIn.jobId).catch((error: unknown) => logger.warn("cloud_boot_launch.sign_in_cancel_failed", { ...meta, provider, error: errorText(error) }));
+  };
   let restarts = 0;
   let nextRefresh = Date.now() + SIGN_IN_REFRESH_MS;
   while (Date.now() < deadline) {
@@ -224,9 +293,14 @@ export async function waitForSignIn(
       });
       if (status?.state === "failed" && restarts < SIGN_IN_RESTARTS) {
         restarts += 1;
+        // The new link comes with why: the person never pastes into a page that changed without a word.
+        carried = restartReasonOf(signIn.kind, status);
+        logger.info("cloud_boot_launch.sign_in_restarted", { ...meta, provider, why: carried === CLOUD_SIGN_IN_CODE_REFUSED ? "code_refused" : carried === CLOUD_SIGN_IN_CODE_EXPIRED ? "code_expired" : "link_changed" });
         signIn = await start();
       } else if (status) {
-        signIn = { ...signIn, url: status.url ?? signIn.url, userCode: status.userCode ?? signIn.userCode, needsPastedCode: status.needsPastedCode, reason: status.reason };
+        // A code sent on the new link: the change sentence has done its work.
+        if (status.codeSent) carried = null;
+        signIn = { ...signIn, url: status.url ?? signIn.url, userCode: status.userCode ?? signIn.userCode, needsPastedCode: status.needsPastedCode, reason: status.reason ?? carried };
       }
       await show();
     }
@@ -239,15 +313,27 @@ export async function waitForSignIn(
       // A key or a desktop sign-in has no job to poll: a report that didn't land goes again here.
       if (!signIn.jobId) await show();
       await deps.refreshVault?.().catch((error: unknown) => logger.warn("cloud_boot_launch.vault_refresh_failed", { ...meta, error: errorText(error) }));
-      if (await hooks.isCancelled?.()) return { kind: "cancelled" };
+      if (await hooks.isCancelled?.()) {
+        await stopSignIn();
+        return { kind: "cancelled" };
+      }
+      const switched = hooks.switchedTo?.() ?? null;
+      if (switched) {
+        logger.info("cloud_boot_launch.sign_in_switched_to_free_model", { ...meta, provider });
+        await stopSignIn();
+        await hooks.ready?.(signIn);
+        return { kind: "switched", ...switched };
+      }
     }
     if (await readiness(false) !== "missing") {
       logger.info("cloud_boot_launch.signed_in", { ...meta, provider });
+      await stopSignIn();
       await hooks.ready?.(signIn);
       return { kind: "ready", waited: true };
     }
   }
   // The server's own timeout error: its cleanup then deletes this unused computer.
   logger.info("cloud_boot_launch.sign_in_timed_out", { ...meta, provider });
+  await stopSignIn();
   return { kind: "failed", error: CLOUD_LAUNCH_SIGN_IN_TIMED_OUT };
 }
