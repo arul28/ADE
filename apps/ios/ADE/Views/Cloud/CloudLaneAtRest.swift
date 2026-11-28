@@ -113,6 +113,9 @@ struct CloudLaneAtRestScreen: View {
   @ObservedObject private var cloudStore = AccountCloudStore.shared
   @Environment(\.dismiss) private var dismiss
   private var syncService: SyncService { syncPublishes.service }
+  /// The lane's computer as the account server lists it: a Mac starts, and one it can't wake offers no wake.
+  private var laneInstance: CloudServerInstance? { syncService.cloudServerInstance(fleetKey: subject.fleetKey) }
+  private var onMac: Bool { laneInstance?.isMac == true }
 
   /// The lane ADE kept when its computer was deleted: New computer and Delete show here.
   private var keptLane: CloudLaneWithoutComputer? {
@@ -209,10 +212,10 @@ struct CloudLaneAtRestScreen: View {
         Button {
           Task { await wake() }
         } label: {
-          if waking { ProgressView().controlSize(.small) } else { Label("Wake", systemImage: "power") }
+          if waking { ProgressView().controlSize(.small) } else { Label(onMac ? "Start" : "Wake", systemImage: "power") }
         }
-        .disabled(waking || subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix))
-        .accessibilityLabel("Wake the lane's computer")
+        .disabled(waking || subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) || laneInstance?.unavailable != nil)
+        .accessibilityLabel(onMac ? "Start the lane's Mac" : "Wake the lane's computer")
         .adeInspectable("CloudLane.AtRest.Wake")
       }
       // Size, free and delete are account actions: none of them wakes the
@@ -271,10 +274,10 @@ struct CloudLaneAtRestScreen: View {
       titleVisibility: .visible,
       presenting: changedFileAsk
     ) { _ in
-      Button("Wake and open") { Task { await wake() } }
+      Button(onMac ? "Start and open" : "Wake and open") { Task { await wake() } }
       Button("Cancel", role: .cancel) {}
     } message: { file in
-      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening it wakes the lane's computer, which uses \(CloudBalanceWords(cloudStore.account).cloudUnit).")
+      Text("\(file.path) changed on the lane and GitHub doesn't have the change. Opening it \(onMac ? "starts the lane's Mac" : "wakes the lane's computer"), which uses \(CloudBalanceWords(cloudStore.account).cloudUnit).")
     }
     .adeInspectable("CloudLane.AtRest")
   }

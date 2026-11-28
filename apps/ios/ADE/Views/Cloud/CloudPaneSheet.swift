@@ -904,6 +904,17 @@ func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine?
   if let work = instance.laneWork {
     object["laneWork"] = ["unpushed": work.unpushed as Any? ?? NSNull(), "prState": work.prState as Any? ?? NSNull()]
   }
+  // The Mac: its state, what the server refuses on it, and a computer it can't wake now.
+  if instance.isMac {
+    object["os"] = "mac"
+    if let mac = instance.mac,
+       let data = try? JSONEncoder().encode(mac),
+       let json = try? JSONSerialization.jsonObject(with: data) {
+      object["mac"] = json
+    }
+  }
+  if !instance.unsupported.isEmpty { object["unsupported"] = instance.unsupported }
+  if let unavailable = instance.unavailable { object["unavailable"] = unavailable }
   guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
   return try? JSONDecoder().decode(CloudPhoneMachine.self, from: data)
 }

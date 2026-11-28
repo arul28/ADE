@@ -1,13 +1,13 @@
 import { useMemo } from "react";
-import { AppleLogo, Cpu } from "@phosphor-icons/react";
-import { cloudMacOfferOf, cloudMacRateText, cloudMacShapeText, cloudMacTimeAt } from "../../../../shared/cloudMac";
-import { rootAppStoreApi } from "../../../state/appStore";
+import { Cpu } from "@phosphor-icons/react";
+import { cloudMacOfferOf } from "../../../../shared/cloudMac";
 import { cloudCatalogOf, cloudHoursLeftMilli, cloudSmallHoursSentence, cloudSmallRateMilli, type CloudAccountState } from "../../../../shared/adeCloud";
 import { cloudTiers } from "../../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
 import { CloudSizeCards } from "./CloudSizeCards";
+import { CloudMacSizeCard } from "./CloudMacSizeCard";
 
 /**
  * The four sizes, side by side: CPU, memory, what each runs, and how long
@@ -50,29 +50,7 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
           ariaLabel="Size for new cloud lanes"
           words={words}
         />
-        {mac ? (
-          <div className="adecd-mac-size" data-picked={onMac || undefined}>
-            <AppleLogo size={22} weight="fill" aria-hidden />
-            <div className="adecd-mac-size-text">
-              <b>Mac</b>
-              <span className="kit-num" data-face="ui">{cloudMacShapeText(mac)} · {cloudMacRateText(mac, words)}</span>
-              <small>{mac.summary} {mac.keeps}</small>
-            </div>
-            <div className="adecd-mac-size-side">
-              <b className="kit-num" data-face="ui">{cloudMacTimeAt(mac, leftMilli)}</b>
-              <span>left on a Mac</span>
-              <button
-                type="button"
-                className="kit-btn"
-                data-size="sm"
-                aria-pressed={onMac}
-                onClick={() => rootAppStoreApi.getState().setCloudDefaultOs(onMac ? "linux" : "mac")}
-              >
-                {onMac ? `Start new lanes on Linux` : "Start new lanes on a Mac"}
-              </button>
-            </div>
-          </div>
-        ) : null}
+        {mac ? <CloudMacSizeCard offer={mac} leftMilli={leftMilli} onMac={onMac} /> : null}
       </div>
     </section>
   );

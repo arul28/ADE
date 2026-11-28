@@ -279,7 +279,15 @@ struct CloudSessionCopyScreen: View {
   }
 
   private var wakeFooter: some View {
-    VStack(spacing: 6) {
+    let instance = syncService.cloudServerInstance(fleetKey: fleetKey)
+    let onMac = instance?.isMac == true
+    return VStack(spacing: 6) {
+      if let unavailable = instance?.unavailable {
+        Text(unavailable)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       if let wakeError {
         Text(wakeError)
           .font(.caption)
@@ -291,12 +299,12 @@ struct CloudSessionCopyScreen: View {
       } label: {
         HStack(spacing: 6) {
           if waking { ProgressView().controlSize(.small).tint(.white) }
-          Text(waking ? "Waking the lane's computer…" : "Wake to use it")
+          Text(waking ? (onMac ? "Starting the lane's Mac…" : "Waking the lane's computer…") : (onMac ? "Start to use it" : "Wake to use it"))
         }
         .frame(maxWidth: .infinity)
       }
       .buttonStyle(ADEKitButtonStyle(prominent: true))
-      .disabled(waking || fleetKey == nil)
+      .disabled(waking || fleetKey == nil || instance?.unavailable != nil)
       .adeInspectable("Work.CloudSessionCopy.Wake")
     }
     .padding(.horizontal, 16)
@@ -385,6 +393,8 @@ func workCloudRestingMoveTarget(session: TerminalSessionSummary, title: String, 
         sync.isCloudFleetKey(fleetKey) else { return nil }
   switch cloudLaneState(fleetKey: fleetKey, sync: sync, store: AccountCloudStore.shared) {
   case .asleep?, .wakeFailed?:
+    // The server refuses a move on this computer (a DAEX Cloud Mac): no Hand off › Another machine.
+    if sync.cloudServerInstance(fleetKey: fleetKey)?.allows("move") == false { return nil }
     return WorkCloudRestingMoveTarget(sessionId: session.id, title: title, fleetKey: fleetKey, deleted: false)
   case .deleted?:
     return WorkCloudRestingMoveTarget(sessionId: session.id, title: title, fleetKey: fleetKey, deleted: true)

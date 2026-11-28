@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { AppleLogo, ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
-import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, CLOUD_MAC_START_WORDS, cloudMachineAllows, cloudMacOfferOf, type CloudComputerAction } from "../../../../shared/cloudMac";
+import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, cloudMachineAllows, type CloudComputerAction } from "../../../../shared/cloudMac";
 import {
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
@@ -53,10 +53,11 @@ import { CLOUD_EXTRA_ANCHOR, CloudPlans } from "./CloudPlans";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
+import { CloudMacExplainer } from "./CloudMacExplainer";
+import { CloudMacRowNote } from "./CloudMacRowNote";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
 import { useHasOwnComputer, useOwnWebComputers } from "../../../state/ownComputers";
-import { rootAppStoreApi, useRootAppStore } from "../../../state/appStore";
 import { useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import {
   STATE_LABEL,
@@ -70,7 +71,6 @@ import {
   removedReasonText,
   prefersReducedMotion,
   type DashLane,
-  type DashMac,
 } from "./cloudDashboardModel";
 import { clearCloudLaneCaches, cloudLaneChangesAvailable, cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
 import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
@@ -316,7 +316,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         </header>
         <div className="kit-card-body" data-flush="true" ref={tableRef}>
           {computersUnread ? <ComputersUnreadNotice onRetry={refresh} /> : null}
-          {!inside ? <CloudMacExplainer account={account} lanes={lanes} /> : null}
+          {!inside ? <CloudMacExplainer account={account} hasMacLane={lanes.some((lane) => lane.isMac)} /> : null}
           {inside ? (
             <LookInside lane={inside} now={now} busy={busyKey === inside.key} onBack={() => setInsideKey(null)} onClear={() => void clearCaches(inside)} />
           ) : (
@@ -718,7 +718,7 @@ function LaneTable({
               <span aria-hidden="true" />
             </div>
             {lane.unavailable && !status ? <div className="adecd-row-note" data-tone="warn" role="presentation">{lane.unavailable}</div> : null}
-            {lane.mac && !status ? <MacRowNote mac={lane.mac} now={now} /> : null}
+            {lane.mac && !status ? <CloudMacRowNote mac={lane.mac} now={now} /> : null}
             {actions.length ? (
               <span className="adecd-row-menu">
                 <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} />
@@ -784,46 +784,6 @@ function laneMenuActions(lane: DashLane, args: {
 }
 
 const cssId = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "_");
-
-/**
- * The line under a Mac row: the server's sentence for where it is (nothing
- * while it runs) and its drive as the last stop saved it. What a stop keeps is
- * said once, in the box above the table (`CloudMacExplainer`).
- */
-function MacRowNote({ mac, now }: { mac: DashMac; now: number }) {
-  const failed = mac.phase === "start_failed" || mac.phase === "drive_lost";
-  const drive = mac.phase === "stopped" && mac.drive
-    ? `Drive ${mac.drive}${mac.savedAt != null ? `, saved ${formatAgo(mac.savedAt, now)}` : ""}.`
-    : null;
-  const parts = [mac.phase === "running" ? null : mac.sentence, drive].filter(Boolean);
-  if (!parts.length) return null;
-  return (
-    <div className="adecd-row-note" data-tone={failed ? "warn" : undefined} role="presentation">
-      {parts.join(" ")}
-    </div>
-  );
-}
-
-/**
- * How a DAEX Cloud Mac works, in two sentences above the table while the
- * account has a Mac lane: the catalog's own words, so a person who never
- * heard of a cloud Mac reads what a stop keeps before it surprises them.
- */
-function CloudMacExplainer({ account, lanes }: { account: CloudAccountState; lanes: readonly DashLane[] }) {
-  const read = useRootAppStore((state) => state.cloudMacExplainerRead);
-  const offer = cloudMacOfferOf(account);
-  // Only while the account has a Mac lane, until a person reads it once (synced, account-wide).
-  if (read || !offer || !lanes.some((lane) => lane.isMac)) return null;
-  return (
-    <div className="adecd-mac-explainer">
-      <AppleLogo size={16} weight="fill" aria-hidden />
-      <p>
-        <b>How a {CLOUD_MAC_NAME} works.</b> {offer.keeps} The next message starts a new Mac with the same drive {CLOUD_MAC_START_WORDS}. While it waits for a free Mac, nothing is charged.
-      </p>
-      <button type="button" className="kit-btn" data-size="xs" onClick={() => rootAppStoreApi.getState().setCloudMacExplainerRead(true)}>Got it</button>
-    </div>
-  );
-}
 
 /** The idle cleanup's mark on a lane row: when it is deleted, or that ADE kept it after a failed save. */
 function IdleTag({ lane, now }: { lane: DashLane; now: number }) {

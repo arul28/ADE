@@ -35,7 +35,8 @@ import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { cloudHoursOnSizesLine, cloudTiers } from "../../../../shared/cloudTiers";
-import { CLOUD_MAC_NAME, cloudMacOfferOf, cloudMacPlanLine, cloudMacRateText } from "../../../../shared/cloudMac";
+import { cloudMacOfferOf, cloudMacPlanLine } from "../../../../shared/cloudMac";
+import { CloudMacRateRow } from "./CloudMacRateRow";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { CloudPhoneProviderPick } from "./CloudPhoneProviderPick";
 import { SettingsToggle } from "../primitives/SettingsControls";
@@ -423,9 +424,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                         <td className="kit-num">{tier.multiplierMilli > 0 ? `${words.count(tier.multiplierMilli / 1000)} an hour` : "Uses no credits"}</td>
                       </tr>
                     ))}
-                    {macOffer ? (
-                      <tr><th scope="row">{CLOUD_MAC_NAME}</th><td className="kit-num">{cloudMacRateText(macOffer, words)}</td></tr>
-                    ) : null}
+                    {macOffer ? <CloudMacRateRow offer={macOffer} words={words} /> : null}
                     {phoneOn ? (
                       <tr><th scope="row">{BRAND.CLOUD_NAME} iPhone</th><td className="kit-num">{`${words.count(words.phoneMilliPerMinute / 1000)} a minute`}</td></tr>
                     ) : null}

@@ -97,7 +97,7 @@ import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import type { CloudDiskGrowAnswer, CloudDiskGrowHost } from "./cloudDiskGrowHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierOfShape, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
-import { CLOUD_MAC_NAME, cloudMacOfferOf, cloudMacRateText } from "../../../shared/cloudMac";
+import { CLOUD_MAC_NAME, cloudMacOfferOf, cloudMacProviderRefusal, cloudMacRateText } from "../../../shared/cloudMac";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
 import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
@@ -969,6 +969,10 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         // The server decides whether this account has a Mac (`catalog.mac`, behind `mac_computers`).
         const offer = cloudMacOfferOf(account);
         if (!offer) throw new AdeExpectedError(`${BRAND.CLOUD_NAME} doesn't offer a Mac on this account. Start the lane on Linux.`, "user");
+        // A provider the server lists as not running on a Mac is refused before the question, in its words.
+        const macProvider = startsLaneOnly ? null : launch.chat?.create?.provider ?? null;
+        const providerRefusal = cloudMacProviderRefusal(offer, macProvider, "chat");
+        if (providerRefusal) throw new AdeExpectedError(providerRefusal, "user");
         const yes = await approve(approval, {
           action: "spend",
           title: `Start a lane on a ${CLOUD_MAC_NAME}`,

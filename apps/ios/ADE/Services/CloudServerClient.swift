@@ -36,6 +36,7 @@ enum CloudRefusalCode {
     "linear_needs_renewal", "plan_past_due", "too_many_messages", "message_taken",
     "computer_limit", "outside_agent_free_plan", "phone_needs_update", "phone_cant",
     "phone_busy", "phone_credits_out", "phone_not_on_account",
+    "mac_unsupported", "mac_busy", "computer_unavailable",
   ]
 
   /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,
@@ -77,6 +78,19 @@ struct CloudServerInstance: Decodable, Equatable {
   /// The files git ignores on it, as it last read them: a delete loses them.
   /// Nil before its first read and from older servers.
   let ignoredFiles: CloudPhoneAccount.IdleCleanup.IgnoredFiles?
+  /// `mac` on a DAEX Cloud Mac; nil on Linux and from an older server.
+  let os: String?
+  /// A Mac's own state; nil on Linux.
+  let mac: CloudMacState?
+  /// What the server refuses on this computer; empty allows everything.
+  let unsupported: [String]
+  /// Why it reads as it does (`statusReason`); `computer_unavailable` means no wake and no send now.
+  let statusReason: StatusReason?
+
+  struct StatusReason: Decodable, Equatable {
+    let code: String?
+    let message: String?
+  }
 
   struct Resources: Decodable, Equatable {
     let cpu: Int
@@ -87,6 +101,7 @@ struct CloudServerInstance: Decodable, Equatable {
   private enum CodingKeys: String, CodingKey {
     case id, name, status, pastDue, idleSaving, metadata, laneWork, type, resources, lastActiveAt, created, diskUsage
     case templateVersion, targetTemplate, updateState, ignoredFiles
+    case os, mac, unsupported, statusReason
   }
 
   init(id: String, name: String?, status: String, pastDue: Bool, idleSaving: Bool = false, metadata: [String: String], laneWork: CloudPhoneMachine.LaneWork? = nil) {
@@ -106,6 +121,10 @@ struct CloudServerInstance: Decodable, Equatable {
     targetTemplate = nil
     updateState = nil
     ignoredFiles = nil
+    os = nil
+    mac = nil
+    unsupported = []
+    statusReason = nil
   }
 
   init(from decoder: Decoder) throws {
@@ -126,7 +145,20 @@ struct CloudServerInstance: Decodable, Equatable {
     targetTemplate = c.lenient(String.self, forKey: .targetTemplate)
     updateState = c.lenient(String.self, forKey: .updateState)
     ignoredFiles = c.lenient(CloudPhoneAccount.IdleCleanup.IgnoredFiles.self, forKey: .ignoredFiles)
+    os = c.lenient(String.self, forKey: .os)
+    mac = os == "mac" ? c.lenient(CloudMacState.self, forKey: .mac) : nil
+    unsupported = c.lenient([String].self, forKey: .unsupported) ?? []
+    statusReason = c.lenient(StatusReason.self, forKey: .statusReason)
   }
+
+  var isMac: Bool { os == "mac" }
+  /// The server can't wake or send to it now: its sentence (`CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`), else nil.
+  var unavailable: String? {
+    guard statusReason?.code == "computer_unavailable" else { return nil }
+    return statusReason?.message.flatMap { nonEmptyTrimmed($0) } ?? CloudMacWords.unavailableSentence
+  }
+  /// Whether the server lets this computer take `action` (the client never decides it).
+  func allows(_ action: String) -> Bool { !unsupported.contains(action) }
 
   /// Its channel has a newer image and no update is under way: Update moves it there.
   var updateBehind: Bool {
