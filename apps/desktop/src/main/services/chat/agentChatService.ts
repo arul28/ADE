@@ -79304,12 +79304,22 @@ export function createAgentChatService(args: {
     // provider that listed models takes its rows again from the registry now:
     // whichever build publishes last carries the newest lists, and no build
     // has to be ranked against another.
-    const modelsByProvider = await Promise.all(readModelsByProvider.map(async ({ provider }) => {
-      const models = latestProviderModelReads.get(providerModelReadKey(provider, catalogArgs?.cursorSource)) ?? [];
-      return isAcpChatProvider(provider) && models.length
-        ? { provider, models: await listAcpModelInfos(provider).catch(() => models) }
-        : { provider, models };
+    const latestRead = (provider: ModelProviderGroup): AgentChatModelInfo[] =>
+      latestProviderModelReads.get(providerModelReadKey(provider, catalogArgs?.cursorSource)) ?? [];
+    const acpRowsNow = new Map<ModelProviderGroup, AgentChatModelInfo[]>();
+    await Promise.all(readModelsByProvider.map(async ({ provider }) => {
+      const models = latestRead(provider);
+      if (isAcpChatProvider(provider) && models.length) {
+        acpRowsNow.set(provider, await listAcpModelInfos(provider).catch(() => models));
+      }
     }));
+    // The snapshot is taken after the last await: nothing runs between it and
+    // the publish below, so a read that lands while this build waited (a
+    // Cursor refresh during Qwen's settings read) is what this build publishes.
+    const modelsByProvider = readModelsByProvider.map(({ provider }) => {
+      const models = latestRead(provider);
+      return { provider, models: models.length ? acpRowsNow.get(provider) ?? models : models };
+    });
     for (const { provider, models } of modelsByProvider) {
       for (const info of models) {
         const descriptor =
