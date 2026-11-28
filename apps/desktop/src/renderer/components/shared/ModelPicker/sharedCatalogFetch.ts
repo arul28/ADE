@@ -22,7 +22,6 @@ import {
   invalidateRuntimeCatalogScope,
   isPersonalChatCatalogScopeKey,
   noteRuntimeCatalogScopePin,
-  getSharedRuntimeCatalog,
   rememberRuntimeCatalog,
   reserveRuntimeCatalogScope,
   runtimeCatalogScopeInvalidationGeneration,
@@ -32,16 +31,6 @@ import {
 } from "./runtimeCatalogCache";
 
 export type { SharedCatalogFetchResult };
-
-/**
- * Refresh reads for one machine's bucket can run side by side (a person's
- * Refresh beside a forced read for a stale catalog). Each takes a start
- * number; a read that started before the one already published answers with
- * the published catalog instead of replacing it. Cached reads take no number:
- * they only show what the host holds and must never drop a refresh.
- */
-const refreshReadStarted = new Map<string, number>();
-const refreshReadPublished = new Map<string, number>();
 
 export type SharedCatalogFetchArgs = {
   scopeKey: string;
@@ -84,8 +73,6 @@ export async function fetchSharedRuntimeCatalog(
   if (existing) return await existing;
 
   const scopeSerial = reserveRuntimeCatalogScope(scopeKey);
-  const readSeq = mode === "cached" ? null : (refreshReadStarted.get(scopeKey) ?? 0) + 1;
-  if (readSeq != null) refreshReadStarted.set(scopeKey, readSeq);
   noteRuntimeCatalogScopePin(scopeKey, pin);
   const fetchArgs = {
     mode,
@@ -99,13 +86,6 @@ export async function fetchSharedRuntimeCatalog(
         catalogScopeKey: scopeKey,
         ...(pin ? { pin } : {}),
       });
-      if (readSeq != null) {
-        const published = getSharedRuntimeCatalog(scopeKey);
-        if (published && readSeq < (refreshReadPublished.get(scopeKey) ?? 0)) {
-          return { status: "ok", catalog: published };
-        }
-        refreshReadPublished.set(scopeKey, readSeq);
-      }
       const visible = rememberRuntimeCatalog(next, { ...fetchArgs, scopeKey, scopeSerial, invalidationGeneration });
       return { status: "ok", catalog: visible };
     } catch {

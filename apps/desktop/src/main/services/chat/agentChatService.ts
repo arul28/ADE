@@ -78521,13 +78521,6 @@ export function createAgentChatService(args: {
   const MODEL_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
   const MODEL_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
   let modelCatalogCache: AgentChatModelCatalog | null = null;
-  /**
-   * Builds run side by side (a person's Refresh beside a scheduled force), so
-   * each takes a start number and only the latest-started build that finished
-   * publishes: an older build landing last must not replace a newer list.
-   */
-  let modelCatalogBuildSeq = 0;
-  let modelCatalogPublishedSeq = 0;
   // A newly applied model manifest can add, hide, or re-default models, so the
   // cached catalog is stale until the next rebuild — served once more while a
   // background refresh picks up the change, never rebuilt on the caller.
@@ -78732,6 +78725,29 @@ export function createAgentChatService(args: {
       }
     }
     return discoveredLocalModels;
+  };
+
+  /** An ACP provider's rows as the registry holds them now (Qwen merges its own settings first). */
+  const listAcpModelInfos = async (provider: AcpChatProvider): Promise<AgentChatModelInfo[]> => {
+    if (provider === "qwen") {
+      const settings = await loadQwenUserSettings();
+      if (settings.models.length) {
+        mergeDynamicAcpModelDescriptors(
+          "qwen",
+          settings.models.map((model) => createDynamicAcpModelDescriptor("qwen", model.id, {
+            displayName: model.displayName,
+          })),
+        );
+      }
+      const descriptors = listAcpModelDescriptorsForProvider(provider, {
+        ...(settings.models.length
+          ? { configuredModelIds: settings.models.map((model) => model.id) }
+          : {}),
+      });
+      return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
+    }
+    const descriptors = listAcpModelDescriptorsForProvider(provider);
+    return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
   };
 
   const loadAvailableModels = async (args: {
@@ -78999,25 +79015,7 @@ export function createAgentChatService(args: {
           // only from a copy already here).
           warmAcpModelCatalog(provider, { logger });
         }
-        if (provider === "qwen") {
-          const settings = await loadQwenUserSettings();
-          if (settings.models.length) {
-            mergeDynamicAcpModelDescriptors(
-              "qwen",
-              settings.models.map((model) => createDynamicAcpModelDescriptor("qwen", model.id, {
-                displayName: model.displayName,
-              })),
-            );
-          }
-          const descriptors = listAcpModelDescriptorsForProvider(provider, {
-            ...(settings.models.length
-              ? { configuredModelIds: settings.models.map((model) => model.id) }
-              : {}),
-          });
-          return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
-        }
-        const descriptors = listAcpModelDescriptorsForProvider(provider);
-        return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
+        return await listAcpModelInfos(provider);
       } catch {
         return [];
       }
@@ -79210,7 +79208,6 @@ export function createAgentChatService(args: {
     if (mode === "cached" && modelCatalogCache) {
       return withModelCatalogStaleFlag(modelCatalogCache, isModelCatalogRefreshStale());
     }
-    const buildSeq = ++modelCatalogBuildSeq;
 
     const activateAllDynamic = mode === "force" && !refreshProvider;
     const shouldRefreshProvider = (provider: AgentChatModelCatalogRefreshProvider): boolean =>
@@ -79237,7 +79234,7 @@ export function createAgentChatService(args: {
       "devin",
       "antigravity",
     ] as ModelProviderGroup[]).filter((provider) => !providerIsDisabled(provider));
-    const modelsByProvider = await Promise.all(
+    const readModelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
         try {
           return {
@@ -79289,6 +79286,16 @@ export function createAgentChatService(args: {
 
     const descriptorInfo = new Map<string, { provider: ModelProviderGroup; info: AgentChatModelInfo }>();
     const descriptors: ModelDescriptor[] = [];
+    // Builds run side by side, and a Refresh waiting on a provider's discovery
+    // can finish after another build already read that provider's older list.
+    // So an ACP provider that listed models takes its list again from the
+    // registry now: whichever build publishes last carries the newest lists,
+    // and no build has to be ranked against another.
+    const modelsByProvider = await Promise.all(readModelsByProvider.map(async (entry) => (
+      isAcpChatProvider(entry.provider) && entry.models.length
+        ? { ...entry, models: await listAcpModelInfos(entry.provider).catch(() => entry.models) }
+        : entry
+    )));
     for (const { provider, models } of modelsByProvider) {
       for (const info of models) {
         const descriptor =
@@ -79547,9 +79554,6 @@ export function createAgentChatService(args: {
         })),
       })),
     };
-    // A build that started before the published one answers with that one.
-    if (buildSeq < modelCatalogPublishedSeq && modelCatalogCache) return modelCatalogCache;
-    modelCatalogPublishedSeq = buildSeq;
     modelCatalogCache = catalog;
     modelCatalogBuiltInputsKey = inputsKeyAtBuild;
     modelCatalogInputsChangedMemo = null;
