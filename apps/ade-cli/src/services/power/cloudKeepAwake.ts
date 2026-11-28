@@ -432,7 +432,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
 
   /** Sends the next timer when it changed; true when the server holds it. */
   const syncTimedWake = async (url: string | null, nextWakeAt: number | null): Promise<boolean> => {
-    if (!options.sendTimedWake) return false;
+    // A Mac has no wake URL and its wake is a new Mac: nothing to hold or clear (each clear was refused every tick).
+    if (!options.sendTimedWake || onMac) return false;
     const wanted = url && nextWakeAt != null ? `${url}|${nextWakeAt}` : "none";
     if (wanted === sentWake) return wanted !== "none";
     try {

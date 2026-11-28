@@ -22,6 +22,11 @@ import { BRAND } from "../../../shared/brand";
 /** A DAEX Cloud Mac's id: `mac` and 32 hex (NoMac's; the account server's `macProvider.ts`). */
 const CLOUD_MAC_ID = /^mac[0-9a-f]{32}$/;
 
+/** Whether a cloud computer's id is a DAEX Cloud Mac's. */
+export function isCloudMacId(id: string): boolean {
+  return CLOUD_MAC_ID.test(id);
+}
+
 /** Whether this ADE runs on an ADE Cloud computer (the machine template sets the variable): a Linux one or a Mac. */
 export function isAdeCloudComputer(env: NodeJS.ProcessEnv = process.env): boolean {
   const id = env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
