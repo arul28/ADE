@@ -1,5 +1,6 @@
 import type { GithubDirectError, GithubDirectErrorKind } from "../types";
 import { BRAND } from "../brand";
+import { GITHUB_APP_INSTALL_URL } from "./githubAppIdentity";
 
 /**
  * The words for each state a direct GitHub read can end in (spec section 5,
@@ -15,7 +16,6 @@ import { BRAND } from "../brand";
 export type GithubDirectItems = "pull requests" | "issues" | "branches" | "files";
 
 /** Same pages as `githubRelayConfig.ts` and Settings › GitHub. */
-export const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 export const GITHUB_INSTALLATIONS_SETTINGS_URL = "https://github.com/settings/installations";
 export const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = `https://github.com/settings/personal-access-tokens/new?name=${BRAND.NAME}&description=${BRAND.NAME}%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&checks=write&statuses=read&workflows=write`;
 
@@ -101,14 +101,14 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
         return {
           title: "Read only",
           body: `You can read ${repoLabel(context)}, but ${BRAND.NAME} can't change it until the ${BRAND.NAME} GitHub App is installed on ${ownerLabel(context)}.`,
-          primary: { label: "Install on GitHub", kind: "link", url: ADE_GITHUB_APP_INSTALL_URL },
+          primary: { label: "Install on GitHub", kind: "link", url: GITHUB_APP_INSTALL_URL },
           secondary: null,
         };
       }
       return {
         title: `Install the ${BRAND.NAME} GitHub App`,
         body: `${BRAND.NAME} can't read ${repoLabel(context)} yet. Install the ${BRAND.NAME} GitHub App on ${ownerLabel(context)}.`,
-        primary: { label: "Install on GitHub", kind: "link", url: ADE_GITHUB_APP_INSTALL_URL },
+        primary: { label: "Install on GitHub", kind: "link", url: GITHUB_APP_INSTALL_URL },
         secondary: null,
       };
     case "rights_not_accepted": {

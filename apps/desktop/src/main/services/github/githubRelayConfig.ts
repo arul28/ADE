@@ -10,10 +10,9 @@ import {
   resolveAppUserTokenForRelay,
 } from "./githubAppUserAuthFailure";
 import { BRAND } from "../../../shared/brand";
+import { GITHUB_APP_INSTALL_URL, GITHUB_APP_SLUG } from "../../../shared/github/githubAppIdentity";
 
 export const ADE_GITHUB_APP_DISPLAY_NAME = BRAND.NAME;
-export const ADE_GITHUB_APP_SLUG = "ade-for-github";
-export const ADE_GITHUB_APP_INSTALL_URL = `https://github.com/apps/${ADE_GITHUB_APP_SLUG}/installations/new`;
 export const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
 // Default hosted GitHub App webhook relay. This is a project-operated Cloudflare
 // Worker used for the ADE GitHub App integration during beta; it can be pointed
@@ -142,8 +141,8 @@ function baseStatus(repo: GitHubRepoRef | null, patch: Partial<GitHubAppInstalla
   return {
     repo,
     appName: ADE_GITHUB_APP_DISPLAY_NAME,
-    appSlug: ADE_GITHUB_APP_SLUG,
-    installUrl: ADE_GITHUB_APP_INSTALL_URL,
+    appSlug: GITHUB_APP_SLUG,
+    installUrl: GITHUB_APP_INSTALL_URL,
     manageUrl: GITHUB_APP_INSTALLATIONS_URL,
     relayConfigured: false,
     installed: false,

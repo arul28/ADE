@@ -10763,8 +10763,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getAppInstallationStatus: resolved({
         repo: { owner: "acme-labs", name: "acme-shop" },
         appName: BRAND.NAME,
-        appSlug: "ade-for-github",
-        installUrl: "https://github.com/apps/ade-for-github/installations/new",
+        appSlug: "daex-for-github",
+        installUrl: "https://github.com/apps/daex-for-github/installations/new",
         manageUrl: "https://github.com/settings/installations",
         relayConfigured: true,
         installed: true,

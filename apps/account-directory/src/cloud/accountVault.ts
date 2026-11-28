@@ -1,5 +1,5 @@
 import { trustedHttpsOrigin } from "../trustedOrigin";
-import { ADE_GITHUB_APP_INSTALL_URL } from "../../../desktop/src/shared/github/githubDirectStateCopy";
+import { GITHUB_APP_INSTALL_URL } from "../../../desktop/src/shared/github/githubAppIdentity";
 import { githubAppRuntime, serveToken, type GithubAppEnv } from "../githubApp/grants";
 import { sendCloudEmail } from "./email";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
@@ -375,7 +375,7 @@ export async function serverGitCheck(env: RelayEnv & GithubAppEnv, authorization
   if (app === "not_installed" && facts.git === "none") {
     const visibility = await githubRepoVisibility(origin);
     if (visibility !== "public") {
-      return { ok: false, code: "github_app_not_installed", message: giveAdeAccessSentence(origin), installUrl: ADE_GITHUB_APP_INSTALL_URL };
+      return { ok: false, code: "github_app_not_installed", message: giveAdeAccessSentence(origin), installUrl: GITHUB_APP_INSTALL_URL };
     }
     // A public repository clones without the App; only a push would need it.
     logCloud("cloud.git_check_app_not_installed_public", {});

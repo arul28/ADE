@@ -58,8 +58,8 @@ function makeInstall(overrides: Partial<GitHubAppInstallationStatus> = {}): GitH
   return {
     repo: { owner: "o", name: "r" },
     appName: "ADE",
-    appSlug: "ade-for-github",
-    installUrl: "https://github.com/apps/ade-for-github/installations/new",
+    appSlug: "daex-for-github",
+    installUrl: "https://github.com/apps/daex-for-github/installations/new",
     manageUrl: "https://github.com/settings/installations",
     relayConfigured: false,
     installed: false,

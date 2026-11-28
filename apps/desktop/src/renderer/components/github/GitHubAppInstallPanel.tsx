@@ -39,9 +39,9 @@ import {
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { plainErrorText } from "../../lib/plainError";
 import { BRAND } from "../../../shared/brand";
+import { GITHUB_APP_INSTALL_URL, GITHUB_APP_SLUG } from "../../../shared/github/githubAppIdentity";
 
 const ADE_GITHUB_APP_NAME = BRAND.NAME;
-const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
 const POST_AUTH_STATUS_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
 
@@ -136,8 +136,8 @@ export function GitHubAppInstallPanel({
       setStatus({
         repo: null,
         appName: ADE_GITHUB_APP_NAME,
-        appSlug: "ade-for-github",
-        installUrl: ADE_GITHUB_APP_INSTALL_URL,
+        appSlug: GITHUB_APP_SLUG,
+        installUrl: GITHUB_APP_INSTALL_URL,
         manageUrl: GITHUB_APP_INSTALLATIONS_URL,
         relayConfigured: false,
         installed: false,
@@ -510,7 +510,7 @@ export function GitHubAppInstallPanel({
     </button>
   );
   const installButton = (
-    <button type="button" style={primaryBtnStyle} {...primaryBtnProps} onClick={() => openExternalUrl(status?.installUrl ?? ADE_GITHUB_APP_INSTALL_URL)}>
+    <button type="button" style={primaryBtnStyle} {...primaryBtnProps} onClick={() => openExternalUrl(status?.installUrl ?? GITHUB_APP_INSTALL_URL)}>
       <ArrowSquareOut size={12} weight="bold" />
       Install
     </button>
