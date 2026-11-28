@@ -738,8 +738,9 @@ final class CloudAtRestStore: ObservableObject {
   private var mentionMenus: [String: (snapshot: CloudMentionSnapshot?, checkedAt: Date)] = [:]
   private var mentionReads: [String: Task<CloudMentionSnapshot?, Never>] = [:]
   private static let mentionRecheck: TimeInterval = 30
-  /// Bumped on an account change: an answer for the last account drops.
-  private var generation = 0
+  /// Bumped on an account change: an answer for the last account drops,
+  /// also in a caller that awaited it (it compares the value it started with).
+  private(set) var generation = 0
 
   private init() {}
 

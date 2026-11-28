@@ -47,7 +47,8 @@ export async function restingMentionSnapshot(
   const address = restingMentionAddress(sessionId);
   if (!address) return null;
   // Another account in this window starts empty: it never sees the last one's file names.
-  const key = `${accountScopeGeneration()}\n${address.machineKey}\n${address.projectKey}\n${address.laneId ?? ""}`;
+  const generation = accountScopeGeneration();
+  const key = `${generation}\n${address.machineKey}\n${address.projectKey}\n${address.laneId ?? ""}`;
   const entry = entries.get(key) ?? { snapshot: null, checkedAt: 0, inFlight: null };
   entries.set(key, entry);
   if (Date.now() - entry.checkedAt >= RECHECK_MS) {
@@ -73,5 +74,7 @@ export async function restingMentionSnapshot(
   const waitMs = options.waitMs === undefined ? FIRST_READ_WAIT_MS : options.waitMs;
   const pending = entry.inFlight;
   const snapshot = entry.snapshot ?? (pending ? await (waitMs == null ? pending : withinMs(pending, waitMs)) : null);
+  // The account changed during the wait: the answer is the last account's.
+  if (accountScopeGeneration() !== generation) return null;
   return snapshot ? { snapshot, laneId: address.laneId } : null;
 }

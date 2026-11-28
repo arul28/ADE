@@ -12311,7 +12311,8 @@ export function AgentChatPane({
       if (chatComputerGoneRef.current || freedChatLaneRef.current) return [];
       // No other source of file names while it rests: the search waits for the copy (once per sleep).
       const saved = await restingMentionSnapshot(selectedSessionId, { waitMs: null }).catch(() => null);
-      if (!saved) return [];
+      // The computer can go while the copy downloads.
+      if (!saved || chatComputerGoneRef.current || freedChatLaneRef.current) return [];
       return cloudMentionSnapshotFiles(saved.snapshot, { laneId: saved.laneId ?? laneId, query: trimmed, limit: 60, includeDirectories: true })
         .map((hit) => ({
           path: hit.path,

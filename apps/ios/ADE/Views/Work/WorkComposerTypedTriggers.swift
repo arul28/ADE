@@ -2648,12 +2648,15 @@ final class WorkComposerSuggestionController: ObservableObject {
     applyRestingAt(filter: filter, rest: rest, liveRows: liveRows, snapshot: held, fileLane: fileLane)
     if let address, let sync = syncService {
       if held == nil, filter == nil || filter == .files { atFilesPending = true }
+      let account = CloudAtRestStore.shared.generation
       mentionTask = Task { [weak self] in
         let snapshot = await CloudAtRestStore.shared.mentionSnapshot(
           machineKey: address.machineKey, projectKey: address.projectKey, laneId: address.laneId, using: sync
         )
         guard !Task.isCancelled, let self, self.atGeneration == generation else { return }
-        self.applyRestingAt(filter: filter, rest: rest, liveRows: liveRows, snapshot: snapshot, fileLane: fileLane)
+        // A sign-out after the read but before this resumes: the copy is the last account's, so it shows nothing.
+        let current = CloudAtRestStore.shared.generation == account ? snapshot : nil
+        self.applyRestingAt(filter: filter, rest: rest, liveRows: liveRows, snapshot: current, fileLane: fileLane)
         self.recombineAt()
       }
     }

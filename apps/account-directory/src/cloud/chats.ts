@@ -802,7 +802,7 @@ async function deleteObjectsUnder(bucket: R2Bucket, prefix: string): Promise<num
  * where it is now, as its read does (`handleGetChat`); a lane's cleanup
  * (`followMove: false`) deletes only the row under the key it listed.
  */
-export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachineKey: string, chatId: string, options: { followMove?: boolean; keepMenus?: boolean } = {}): Promise<boolean> {
+export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachineKey: string, chatId: string, options: { followMove?: boolean; keepOwnMenus?: boolean } = {}): Promise<boolean> {
   const bucket = bucketFor(env);
   if (!bucket) throw new Error("cloud_chats_bucket_missing");
   const row = await copyRow(env, userId, namedMachineKey, chatId)
@@ -824,16 +824,15 @@ export async function deleteSavedChat(env: CloudEnv, userId: string, namedMachin
     env.DB.prepare("delete from cloud_chat_copies where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?").bind(userId, machineKey, chatId, row.r2_key),
   ]);
   if ((deleted[2]?.meta?.changes ?? 0) !== 1) return false;
+  // The saved @ menus that list it drop it first, before the cleanup below that can fail (a retry finds no row).
+  // A caller deleting the whole lane deletes this computer's menus after; the computer it moved from still drops it.
+  const now = Date.now();
+  if (!options.keepOwnMenus) await dropChatFromMentionSnapshots(env, userId, machineKey, chatId, now);
+  if (row.forked_from_machine_key && row.forked_from_machine_key !== machineKey) await dropChatFromMentionSnapshots(env, userId, row.forked_from_machine_key, chatId, now);
   // Its fork capsule goes too: under this key, and under the key it moved from.
   await deleteCapsule(env, userId, machineKey, chatId);
   if (row.forked_from_machine_key && row.forked_from_machine_key !== machineKey) await deleteCapsule(env, userId, row.forked_from_machine_key, chatId);
   await sweep(env, [{ key: row.r2_key, exact: false }]);
-  // The saved @ menus that list it drop it (a caller deleting the whole lane deletes them after).
-  if (!options.keepMenus) {
-    const now = Date.now();
-    await dropChatFromMentionSnapshots(env, userId, machineKey, chatId, now);
-    if (row.forked_from_machine_key && row.forked_from_machine_key !== machineKey) await dropChatFromMentionSnapshots(env, userId, row.forked_from_machine_key, chatId, now);
-  }
   logCloud("cloud.chat_deleted", { userId, machineKey, chatId });
   return true;
 }
@@ -914,7 +913,7 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
     .bind(userId, machineKey, laneId).all<{ chat_id: string }>();
   let removed = 0;
   for (const row of rows.results ?? []) {
-    if (await deleteSavedChat(env, userId, machineKey, row.chat_id, { followMove: false, keepMenus: true })) removed += 1;
+    if (await deleteSavedChat(env, userId, machineKey, row.chat_id, { followMove: false, keepOwnMenus: true })) removed += 1;
   }
   // The lane's CLI and shell copies, Git summary and left capsules go with it.
   await deleteSessionCopiesForLane(env, userId, machineKey, laneId);
