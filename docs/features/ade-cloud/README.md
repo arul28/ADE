@@ -2198,8 +2198,10 @@ One busy list, `decideCloudBusy` in
   the saved time it holds, and the server answers "unchanged". A copy it
   holds answers at once while it is checked; the first read waits at most
   800 ms. A save goes out only when every roster read worked (a failed read
-  keeps the copy saved before) and within the rest save's own time; the
-  copy is cut to fit its cap as UTF-8, rows first to 40%. A deleted saved
+  keeps the copy saved before) and within the rest save's own time. A copy
+  that fits its cap as UTF-8 keeps everything; past it, rows keep 40% (more
+  when the file names need less) and lanes share the rest, a small lane
+  keeping all its names. A deleted saved
   chat leaves the copies that list it, and a computer deleted with its lane
   takes its copies. A deleted computer's chat lists no files: it continues
   on a new computer through the account queue, which takes text only. Until

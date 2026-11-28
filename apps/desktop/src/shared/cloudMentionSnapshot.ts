@@ -133,18 +133,18 @@ function utf8Bytes(value: string): number {
 /** What one value adds to the JSON body: its escaped form and a comma. */
 const jsonBytes = (value: unknown): number => utf8Bytes(JSON.stringify(value)) + 1;
 
-/** The rows' share of the copy; file names fill the rest. */
+/** The rows' share of a copy past the cap, unless the file names leave them more. */
 const ROW_BUDGET_BYTES = Math.floor(CLOUD_MENTION_SNAPSHOT_MAX_BYTES * 0.4);
 /** A lane entry's own JSON (`"id":{"files":[],"directories":[],"truncated":false}`) past its names. */
 const LANE_ENTRY_BYTES = 64;
 
 /**
- * Rows that fit `ROW_BUDGET_BYTES`, in their order. Past it, kinds take turns
- * (each in its own order), so one long kind can't push the others out.
+ * Rows that fit `budget`, in their order. Past it, kinds take turns (each in
+ * its own order), so one long kind can't push the others out.
  */
-function fitRows(rows: ChatMentionSuggestion[]): ChatMentionSuggestion[] {
+function fitRows(rows: ChatMentionSuggestion[], budget: number): ChatMentionSuggestion[] {
   const costs = rows.map(jsonBytes);
-  if (costs.reduce((sum, cost) => sum + cost, 0) <= ROW_BUDGET_BYTES) return rows;
+  if (costs.reduce((sum, cost) => sum + cost, 0) <= budget) return rows;
   const byKind = new Map<string, number[]>();
   rows.forEach((row, index) => byKind.set(row.kind, [...(byKind.get(row.kind) ?? []), index]));
   const queues = [...byKind.values()];
@@ -153,7 +153,7 @@ function fitRows(rows: ChatMentionSuggestion[]): ChatMentionSuggestion[] {
   for (let turn = 0; queues.some((queue) => turn < queue.length); turn += 1) {
     for (const queue of queues) {
       const index = queue[turn];
-      if (index === undefined || used + costs[index]! > ROW_BUDGET_BYTES) continue;
+      if (index === undefined || used + costs[index]! > budget) continue;
       used += costs[index]!;
       keep.add(index);
     }
@@ -161,10 +161,29 @@ function fitRows(rows: ChatMentionSuggestion[]): ChatMentionSuggestion[] {
   return rows.filter((_, index) => keep.has(index));
 }
 
+/** A lane's names in browse order, up to `budget` bytes of JSON. */
+function laneFiles(laneId: string, items: FilesQuickOpenItem[], budget: number): CloudMentionSnapshotFiles {
+  const entry: CloudMentionSnapshotFiles = { files: [], directories: [], truncated: false };
+  let used = LANE_ENTRY_BYTES + jsonBytes(laneId);
+  for (const item of items) {
+    const cost = jsonBytes(item.path);
+    if (used + cost > budget) {
+      entry.truncated = true;
+      break;
+    }
+    used += cost;
+    (item.isDirectory ? entry.directories : entry.files).push(item.path);
+  }
+  return entry;
+}
+
 /**
- * The copy a computer saves: its rows (capped per kind and in bytes) and each
- * lane's file names in browse order (shallowest first, folders with them),
- * cut so its JSON stays within `CLOUD_MENTION_SNAPSHOT_MAX_BYTES` as UTF-8.
+ * The copy a computer saves: its rows (capped per kind) and each lane's file
+ * names in browse order (shallowest first, folders with them). A copy whose
+ * JSON fits `CLOUD_MENTION_SNAPSHOT_MAX_BYTES` as UTF-8 keeps all of them.
+ * Past it, rows keep `ROW_BUDGET_BYTES` (more when the names need less), and
+ * lanes share the rest: a small lane keeps all its names and leaves what it
+ * doesn't use to the others.
  */
 export function buildCloudMentionSnapshot(args: {
   savedAt: number;
@@ -172,27 +191,35 @@ export function buildCloudMentionSnapshot(args: {
   /** By lane id; each list already in browse order (`quickOpen` with an empty query). */
   files: Record<string, FilesQuickOpenItem[]>;
 }): CloudMentionSnapshot {
-  const read = readCloudMentionSnapshot({ version: CLOUD_MENTION_SNAPSHOT_VERSION, savedAt: args.savedAt, rows: args.rows, files: {} });
-  const snapshot: CloudMentionSnapshot = { version: CLOUD_MENTION_SNAPSHOT_VERSION, savedAt: args.savedAt, rows: fitRows(read?.rows ?? []), files: {} };
-  const budget = CLOUD_MENTION_SNAPSHOT_MAX_BYTES - utf8Bytes(JSON.stringify(snapshot));
-  const lanes = Object.entries(args.files).filter(([laneId]) => isChatMentionId(laneId)).slice(0, MAX_LANES);
-  // An even share per lane, so one huge lane can't leave the others empty.
-  const share = lanes.length ? Math.floor(budget / lanes.length) : 0;
-  for (const [laneId, items] of lanes) {
-    const entry: CloudMentionSnapshotFiles = { files: [], directories: [], truncated: false };
-    let used = LANE_ENTRY_BYTES + jsonBytes(laneId);
-    for (const item of items) {
-      if (!item.path || item.path.length > MAX_PATH) continue;
-      const cost = jsonBytes(item.path);
-      if (used + cost > share) {
-        entry.truncated = true;
-        break;
-      }
-      used += cost;
-      (item.isDirectory ? entry.directories : entry.files).push(item.path);
-    }
-    snapshot.files[laneId] = entry;
-  }
+  const rows = readCloudMentionSnapshot({ version: CLOUD_MENTION_SNAPSHOT_VERSION, savedAt: args.savedAt, rows: args.rows, files: {} })?.rows ?? [];
+  const lanes = Object.entries(args.files)
+    .filter(([laneId]) => isChatMentionId(laneId))
+    .slice(0, MAX_LANES)
+    .map(([laneId, items]) => ({ laneId, items: items.filter((item) => item.path && item.path.length <= MAX_PATH) }));
+  const whole: CloudMentionSnapshot = {
+    version: CLOUD_MENTION_SNAPSHOT_VERSION,
+    savedAt: args.savedAt,
+    rows,
+    files: Object.fromEntries(lanes.map(({ laneId, items }) => [laneId, laneFiles(laneId, items, Infinity)])),
+  };
+  if (utf8Bytes(JSON.stringify(whole)) <= CLOUD_MENTION_SNAPSHOT_MAX_BYTES) return whole;
+
+  const needs = lanes.map(({ laneId, items }) => items.reduce((sum, item) => sum + jsonBytes(item.path), LANE_ENTRY_BYTES + jsonBytes(laneId)));
+  const envelope = utf8Bytes(JSON.stringify({ ...whole, rows: [], files: {} }));
+  const rowBudget = Math.max(ROW_BUDGET_BYTES, CLOUD_MENTION_SNAPSHOT_MAX_BYTES - envelope - needs.reduce((sum, need) => sum + need, 0));
+  const snapshot: CloudMentionSnapshot = { ...whole, rows: fitRows(rows, rowBudget), files: {} };
+  // Smallest lane first: each takes what it needs, up to an even share of what is left.
+  let left = CLOUD_MENTION_SNAPSHOT_MAX_BYTES - utf8Bytes(JSON.stringify(snapshot));
+  const budgets = new Map<number, number>();
+  const bySize = lanes.map((_, index) => index).sort((a, b) => needs[a]! - needs[b]!);
+  bySize.forEach((index, turn) => {
+    const budget = Math.min(needs[index]!, Math.floor(left / (bySize.length - turn)));
+    budgets.set(index, budget);
+    left -= budget;
+  });
+  lanes.forEach(({ laneId, items }, index) => {
+    snapshot.files[laneId] = laneFiles(laneId, items, budgets.get(index) ?? 0);
+  });
   return snapshot;
 }
 

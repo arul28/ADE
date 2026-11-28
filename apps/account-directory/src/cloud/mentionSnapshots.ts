@@ -20,8 +20,12 @@ import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
  * One copy per (computer, project). Names and file paths are the person's:
  * the copy is gzipped, then sealed with the account's key. A save replaces
  * the copy only when its `savedAt` (the computer's clock) is strictly newer,
- * so a client holding one saved time never misses a change. Only the
- * computer writes: a browser (`Origin`) is refused. A read with
+ * so a client holding one saved time never misses a change; one more than
+ * `MAX_CLOCK_AHEAD_MS` past the server's clock is refused, so no save can
+ * hold off the computer's later ones for long. Only the computer writes: a
+ * browser (`Origin`) is refused. The computer's key matches in any case
+ * (the column is `collate nocase`); the copy is sealed under the key as
+ * stored. A read with
  * `since` equal to the saved time answers `{ unchanged: true }`, so a client
  * downloads the copy once per sleep; `lane` keeps only that lane's files.
  * A computer keeps its newest `MAX_PROJECTS_PER_COMPUTER` copies. A deleted
@@ -33,6 +37,8 @@ const BODY_OVERHEAD_BYTES = 16 * 1024;
 const MAX_PROJECT_KEY = 300;
 /** Copies one computer keeps, newest first: a lane computer opens one project. */
 const MAX_PROJECTS_PER_COMPUTER = 8;
+/** How far past the server's clock a saved time may be: a save from later than that is refused. */
+const MAX_CLOCK_AHEAD_MS = 10 * 60_000;
 
 const notFound = () => fail("not_found", "ADE Cloud has no saved menu for that computer.", 404);
 const unavailable = () => fail("unavailable", "Saved menus aren't available right now. Try again soon.", 503);
@@ -40,7 +46,7 @@ const unavailable = () => fail("unavailable", "Saved menus aren't available righ
 const snapshotAad = (userId: string, machineKey: string, projectKey: string): string =>
   `ade.cloud.mentions.v1\0${userId}\0${machineKey}\0${projectKey}`;
 
-type SnapshotRow = { sealed: string; saved_at: number };
+type SnapshotRow = { machine_key: string; sealed: string; saved_at: number };
 
 async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream("gzip"));
@@ -87,7 +93,7 @@ async function handlePut(request: Request, env: CloudEnv, userId: string, namedM
   const machineKey = computer.machine_key;
   const projectKey = projectKeyOf(body.value.projectKey);
   const snapshot = readCloudMentionSnapshot(body.value.snapshot);
-  if (!projectKey || !snapshot) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
+  if (!projectKey || !snapshot || snapshot.savedAt > now + MAX_CLOCK_AHEAD_MS) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
   const sealed = await sealSnapshot(keys.aes, userId, machineKey, projectKey, snapshot);
@@ -107,19 +113,19 @@ async function handlePut(request: Request, env: CloudEnv, userId: string, namedM
   return json({ ok: true, kept: (written?.meta?.changes ?? 0) === 0 });
 }
 
-async function handleGet(url: URL, env: CloudEnv, userId: string, machineKey: string, now: number): Promise<Response> {
+async function handleGet(url: URL, env: CloudEnv, userId: string, namedMachineKey: string, now: number): Promise<Response> {
   const projectKey = projectKeyOf(url.searchParams.get("project"));
   if (!projectKey) return notFound();
-  const row = await env.DB.prepare("select sealed, saved_at from cloud_mention_snapshots where user_id = ? and machine_key = ? and project_key = ?")
-    .bind(userId, machineKey, projectKey).first<SnapshotRow>();
+  const row = await env.DB.prepare("select machine_key, sealed, saved_at from cloud_mention_snapshots where user_id = ? and machine_key = ? and project_key = ?")
+    .bind(userId, namedMachineKey, projectKey).first<SnapshotRow>();
   if (!row) return notFound();
   const since = Number(url.searchParams.get("since"));
   if (Number.isFinite(since) && since === row.saved_at) return json({ unchanged: true, savedAt: row.saved_at });
   const keys = await userKeys(env, userId, now);
   if (!keys) return unavailable();
-  let snapshot = await openSnapshot(keys.aes, userId, machineKey, projectKey, row.sealed);
+  let snapshot = await openSnapshot(keys.aes, userId, row.machine_key, projectKey, row.sealed);
   if (!snapshot) {
-    logCloud("cloud.mention_snapshot_unreadable", { userId, machineKey });
+    logCloud("cloud.mention_snapshot_unreadable", { userId, machineKey: row.machine_key });
     return fail("snapshot_unreadable", "This saved menu can't be read right now.", 503);
   }
   const laneId = url.searchParams.get("lane")?.trim();
@@ -144,16 +150,16 @@ export async function dropChatFromMentionSnapshots(env: CloudEnv, userId: string
       // Another delete or a save can change the copy between the read and the write:
       // then it is read again, so each deleted chat leaves it.
       for (let attempt = 0; attempt < 4; attempt += 1) {
-        const row = await env.DB.prepare("select sealed, saved_at from cloud_mention_snapshots where user_id = ? and machine_key = ? and project_key = ?")
+        const row = await env.DB.prepare("select machine_key, sealed, saved_at from cloud_mention_snapshots where user_id = ? and machine_key = ? and project_key = ?")
           .bind(userId, machineKey, projectKey).first<SnapshotRow>();
-        const snapshot = row ? await openSnapshot(keys.aes, userId, machineKey, projectKey, row.sealed) : null;
+        const snapshot = row ? await openSnapshot(keys.aes, userId, row.machine_key, projectKey, row.sealed) : null;
         const kept = snapshot?.rows.filter((entry) => !(entry.kind === "chat" && entry.id === chatId));
         if (!row || !snapshot || !kept || kept.length === snapshot.rows.length) break;
         const next: CloudMentionSnapshot = { ...snapshot, savedAt: row.saved_at + 1, rows: kept };
         const written = await env.DB.prepare(`
           update cloud_mention_snapshots set sealed = ?, saved_at = ?, updated_at = ?
           where user_id = ? and machine_key = ? and project_key = ? and saved_at = ?
-        `).bind(await sealSnapshot(keys.aes, userId, machineKey, projectKey, next), next.savedAt, now, userId, machineKey, projectKey, row.saved_at).run();
+        `).bind(await sealSnapshot(keys.aes, userId, row.machine_key, projectKey, next), next.savedAt, now, userId, row.machine_key, projectKey, row.saved_at).run();
         if ((written.meta?.changes ?? 0) > 0) break;
       }
     }

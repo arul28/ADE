@@ -3405,9 +3405,15 @@ describe("ADE Cloud without a computer", () => {
     // The computer's own next save is still newer than that change; a path in another case files it under its own key.
     expect(await (await save(INSTANCE, "KEY-A", NOW + 30, "upload-fix")).json()).toEqual({ ok: true, kept: false });
     expect(harness.rows("select machine_key from cloud_mention_snapshots")).toEqual([{ machine_key: "key-a" }]);
+    // A read in another case finds that copy.
+    const upper = await harness.send(OWNER, "GET", `/cloud/mentions/KEY-A?project=${encodeURIComponent(project)}`);
+    expect(((await upper.json()) as { snapshot?: { savedAt: number } }).snapshot?.savedAt).toBe(NOW + 30);
+    // A save from far past the server's clock is refused, so it can't hold off the computer's next ones.
+    expect((await save(INSTANCE, "key-a", NOW + HOUR, "future")).status).toBe(400);
+    expect((await read(`&since=${NOW + 30}`)).body).toEqual({ unchanged: true, savedAt: NOW + 30 });
 
-    // Deleting the lane's saved chats deletes the menu its computer saved.
-    expect((await harness.send(OWNER, "DELETE", `/cloud/chats/key-a/lanes/${LANE}`)).status).toBe(200);
+    // Deleting the lane's saved chats deletes the menu its computer saved, whatever case the path used.
+    expect((await harness.send(OWNER, "DELETE", `/cloud/chats/KEY-A/lanes/${LANE}`)).status).toBe(200);
     expect((await read("")).status).toBe(404);
 
     // And deleting the account's saved data does too.

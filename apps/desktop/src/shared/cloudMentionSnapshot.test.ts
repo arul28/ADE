@@ -23,7 +23,20 @@ describe("buildCloudMentionSnapshot", () => {
     expect(readCloudMentionSnapshot(JSON.parse(JSON.stringify(snapshot)))).toEqual(snapshot);
   });
 
-  it("keeps rows within their share, every kind taking turns, and still fits the cap", () => {
+  it("keeps every row and name when the whole copy fits, however they split", () => {
+    const long = "界".repeat(290);
+    const rows: ChatMentionSuggestion[] = Array.from({ length: 250 }, (_, index) => ({ kind: "chat" as const, id: `chat-${index}`, title: long, subtitle: long }));
+    const other = "8b2f4c1d-6e3a-4f5b-a7c9-2d0e1f3a4b56";
+    const big = Array.from({ length: 6_000 }, (_, index) => ({ path: `src/feature-${index}/component-${index}.tsx`, score: 1 }));
+    const snapshot = buildCloudMentionSnapshot({ savedAt: 1, rows, files: { [LANE]: big, [other]: [{ path: "README.md", score: 1 }] } });
+    expect(bytesOf(snapshot)).toBeLessThanOrEqual(CLOUD_MENTION_SNAPSHOT_MAX_BYTES);
+    expect(snapshot.rows).toHaveLength(250);
+    expect(snapshot.files[LANE]).toMatchObject({ truncated: false });
+    expect(snapshot.files[LANE]!.files).toHaveLength(6_000);
+    expect(snapshot.files[other]!.files).toEqual(["README.md"]);
+  });
+
+  it("trims rows past the cap fairly, every kind taking turns, and keeps the files", () => {
     const long = "界".repeat(290);
     const rows: ChatMentionSuggestion[] = [
       ...Array.from({ length: 500 }, (_, index) => ({ kind: "chat" as const, id: `chat-${index}`, title: long, subtitle: long })),
