@@ -582,6 +582,7 @@ import { CODEX_APP_SERVER_STARTUP_ARGS, codexLinuxShellArgs, providerSelfUpdateE
 import { embeddedProviderLoginEnv } from "../../../shared/providerLoginIsolation";
 import {
   pinnedToolForProvider,
+  pinnedToolChatErrorMessage,
   pinnedToolNotReadyError,
   resolvePinnedCursorAgentCli,
 } from "../ai/pinnedProviderTools";
@@ -24803,6 +24804,8 @@ export function createAgentChatService(args: {
 
     return {
       ...event,
+      // The card under it carries Download/Retry, so a failed download names those.
+      ...(match.category === "missing" ? { message: pinnedToolChatErrorMessage(event.message) } : {}),
       errorInfo: {
         category: match.category === "missing" ? "agent_cli_missing" : "agent_cli_auth",
         ...(existingInfo?.provider ? { provider: existingInfo.provider } : { provider: match.displayName }),

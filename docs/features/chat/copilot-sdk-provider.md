@@ -50,13 +50,18 @@ renderer or iOS.
 
 ## Runtime and pins
 
+- The SDK is also a dependency of `apps/ade-cli` (same version): the
+  standalone runtime's build installs only that package, and the CLI bundle
+  inlines the SDK from there. Bump both together; `verify-built-cli.mjs`
+  fails a build whose bundles name a package `apps/ade-cli` does not install.
 - `@github/copilot-sdk` 1.0.28 (`apps/desktop/package.json`) ships runtime
   1.0.105 in `@github/copilot-sdk-<platform>`. DAEX pins it as tool `copilot`
   (from `package-lock.json`) and downloads it to `~/.ade/tools`; the installer
   does not carry it. The worker starts it via `RuntimeConnection.forStdio`.
 - The terminal pin `copilot-cli` (`apps/ade-cli/scripts/pins/copilot-cli.json`)
   is the same 1.0.105, so chat and terminal run the same Copilot. A bump moves
-  all three: `npm install @github/copilot-sdk@<v>` in `apps/desktop`, then
+  all three: `npm install @github/copilot-sdk@<v>` in `apps/desktop` and in
+  `apps/ade-cli`, then
   `npm run tools:manifest` and `npm run tools:pin -- copilot-cli <runtime>` in
   `apps/ade-cli` (the SDK's `package.json` names `copilotCliVersion`).
 - Download happens at launch / `daex serve` when the machine shows signs of

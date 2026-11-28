@@ -289,10 +289,12 @@ function failedSpawnExecutable(text: string): string | null {
  * A chat start that throws one of these is the chat's own agent missing.
  */
 export function isPinnedToolNotReadyMessage(text: string): boolean {
-  return /\bADE is downloading .+ for this machine\b/.test(text)
-    || /\bCouldn't download .+?: .+ Retry from Settings > Providers\./.test(text)
+  // The product name is BRAND.NAME (DAEX); an older brain says ADE. The step
+  // after "Couldn't download" is "Try again …" now, "Retry from Settings" before.
+  return /\b(?:DAEX|ADE) is downloading .+ for this machine\b/.test(text)
+    || /\bCouldn't download .+?: .+ (?:Try again in a couple of minutes|Use Retry on this card|Retry from Settings > Providers)\b/.test(text)
     || /\bis not available on this machine \(/.test(text)
-    || /\bADE has not downloaded .+ for this machine\b/.test(text);
+    || /\b(?:DAEX|ADE) has not downloaded .+ for this machine\b/.test(text);
 }
 
 /**

@@ -38,6 +38,6 @@ export function museBinaryBlocker(resolution: MuseExecutableResolution): string 
   if (resolution.source === "unsupported") return `${BRAND.NAME} has no pinned Muse build for this platform.`;
   const version = resolution.pinnedVersion ? ` (${resolution.pinnedVersion})` : "";
   return resolution.fetchPending
-    ? `${BRAND.NAME}'s pinned Muse build${version} is not downloaded yet. Download it from Settings > Providers.`
+    ? `${BRAND.NAME}'s pinned Muse build${version} is not downloaded yet. It downloads the first time this machine uses it.`
     : `${BRAND.NAME}'s pinned Muse build${version} is not available.`;
 }

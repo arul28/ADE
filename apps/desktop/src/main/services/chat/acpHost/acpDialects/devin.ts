@@ -51,6 +51,12 @@
  *    not. MCP http and sse are advertised, and the handshake's
  *    `_meta.mcpConfigPath` lands inside `$XDG_CONFIG_HOME/devin`.
  *
+ * Re-checked 2026-11-28 on 3000.15.14 (the pin after Devin deleted 3000.11.3
+ * from its CDN), through ADE's host with no login: the same handshake,
+ * `session/new` with `mode` and `model`, set mode, and the same -32000 login
+ * error on a prompt. New: it advertises and answers `session/close`; ADE still
+ * ends the process (`kill_process`), which stays correct.
+ *
  * Unverified and left alone: `session/prompt` beyond the auth error, usage,
  * compaction, and `authenticate` all need a real login. `oneProcessPerSession`
  * stays false — no multi-session Devin process was exercised.

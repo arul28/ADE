@@ -1,5 +1,6 @@
 import { isToolError } from "./errors";
 import { type ToolResolution, type ToolsContext, resolveTool, tryResolvePreviousTool, tryResolveTool } from "./install";
+import { resolveDeletedPinReplacement } from "./overrides";
 
 /**
  * The one place the pinned tools cache is consulted by an executable resolver.
@@ -20,7 +21,8 @@ import { type ToolResolution, type ToolsContext, resolveTool, tryResolvePrevious
  *     pin to resolve and the bundled copy is the only answer.
  */
 export function lookupCachedTool(name: string, context: ToolsContext = {}): ToolResolution | null {
-  return missOnToolError(() => tryResolveTool(name, context));
+  // A pin the vendor deleted can never install; its recorded stand-in is the pin.
+  return missOnToolError(() => tryResolveTool(name, context)) ?? resolveDeletedPinReplacement(name, context);
 }
 
 function missOnToolError(resolve: () => ToolResolution | null): ToolResolution | null {
@@ -71,6 +73,6 @@ export function pinnedToolFetchPending(name: string, context: ToolsContext = {})
     resolveTool(name, context);
     return false;
   } catch (error) {
-    return isToolError(error) && error.kind === "not-installed";
+    return isToolError(error) && error.kind === "not-installed" && !resolveDeletedPinReplacement(name, context);
   }
 }

@@ -28,10 +28,10 @@ describe("museBinaryBlocker", () => {
     ["an unsupported host", resolution({ source: "unsupported" }), false],
     ["a pending fetch", resolution({ pinnedVersion: "1.4.7-R6101.1", fetchPending: true }), true],
     ["an unavailable build", resolution({ pinnedVersion: "1.4.7-R6101.1" }), false],
-  ])("blocks %s and offers a download only while one can start", (_label, value, offersDownload) => {
+  ])("blocks %s and says it downloads only while one can start", (_label, value, offersDownload) => {
     const blocker = museBinaryBlocker(value);
     expect(blocker).toBeTruthy();
     if (value.pinnedVersion) expect(blocker).toContain(value.pinnedVersion);
-    expect(/download it/i.test(blocker ?? "")).toBe(offersDownload);
+    expect(/\bdownloads\b/i.test(blocker ?? "")).toBe(offersDownload);
   });
 });
