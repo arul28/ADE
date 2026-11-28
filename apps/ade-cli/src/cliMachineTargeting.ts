@@ -286,6 +286,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   let projectAlias: string | null = null;
   let machineClone = false;
   let cloudSize: string | null = null;
+  let cloudOs: string | null = null;
   let workCopySync: "none" | "discard" | null = null;
   let scratch = false;
   let terminatorArgs: string[] | null = null;
@@ -345,6 +346,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flag === "--no-code" && inline == null && workCopyVerb && primary === "shell") { scratch = true; continue; }
     // The size of a new ADE Cloud computer (`--machine cloud`); no chat or lane verb has a --size of its own.
     if (flag === "--size" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) { cloudSize = takeValue(); continue; }
+    // Linux or a DAEX Cloud Mac for the new computer; without it, Linux (a saved Mac default is the app's, for a person's own picks).
+    if (flag === "--os" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) { cloudOs = takeValue().toLowerCase(); continue; }
     if (flag === "--code" && workCopyVerb) {
       const value = takeValue();
       const sync = workCopySyncFromCode(value);
@@ -391,6 +394,11 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (cloudSize !== null && !cloudLane) {
     throw new CliUsageError(`--size picks the size of a new ${BRAND.CLOUD_NAME} computer: add --machine cloud.`);
   }
+  if (cloudOs !== null && !cloudLane) {
+    throw new CliUsageError(`--os picks Linux or a Mac for a new ${BRAND.CLOUD_NAME} computer: add --machine cloud.`);
+  }
+  if (cloudOs !== null && cloudOs !== "linux" && cloudOs !== "mac") throw new CliUsageError("--os must be linux or mac.");
+  if (cloudOs === "mac" && cloudSize !== null) throw new CliUsageError(`A ${BRAND.CLOUD_NAME} Mac has one size: leave out --size.`);
   const sizeId = cloudSize === null ? null : cloudSize.toLowerCase().replace(/[\s-]+/g, "");
   if (sizeId !== null && !isCloudTierId(sizeId)) {
     throw new CliUsageError(`--size must be one of: ${CLOUD_TIER_IDS.join(", ")}.`);
@@ -422,7 +430,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       machineProject: machineProject ?? projectAlias,
       machineClone,
       // No --size stays null: the brain picks the person's saved size for new lanes.
-      ...(cloudLane ? { cloudSize: sizeId } : {}),
+      ...(cloudLane ? { cloudSize: sizeId, ...(cloudOs === "mac" ? { cloudOs: "mac" as const } : {}) } : {}),
       ...(usesWorkCopy
         ? {
             machineWorkCopy: {
@@ -1536,7 +1544,7 @@ function withChatCreateLane(params: JsonObject, laneId: string): JsonObject {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   ADE CLOUD LANES: `--machine cloud [--size <size>]`.
+   ADE CLOUD LANES: `--machine cloud [--size <size> | --os mac]`.
 
    One new ADE Cloud computer for one new lane, the repository there, and the
    chat started there. This machine's brain owns the launch (`cloud.lane_launch`
@@ -1708,7 +1716,9 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   const launchId = asString(launchArgs.launchId) ?? randomUUID();
   // No --size: the brain uses the size the person saved for new lanes (Small when none).
   const sizeId = options.cloudSize ?? null;
-  const launch: JsonObject = { ...launchArgs, launchId, cloud: sizeId ? { sizeId } : {} };
+  // A Mac only with --os mac on this command.
+  const mac = options.cloudOs === "mac";
+  const launch: JsonObject = { ...launchArgs, launchId, cloud: mac ? { os: "mac" } : sizeId ? { sizeId } : {} };
   const say = (line: string) => {
     if (!options.json) process.stderr.write(`daex: ${line}\n`);
   };
@@ -1732,7 +1742,7 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
         throw new CliUsageError(`This computer's ${BRAND.NAME} has no ${BRAND.CLOUD_NAME} lane launch ${launchId}. To start a new one, pass --prompt.`);
       }
       // Always, --json too (stderr), before the launch waits: the id is what follows or resumes it.
-      const sizeText = held ? "the size it started with" : (sizeId ?? "your default size");
+      const sizeText = held ? "the size it started with" : mac ? "a Mac" : (sizeId ?? "your default size");
       process.stderr.write(`daex: ${held ? "going on with" : "starting"} a lane on ${BRAND.CLOUD_NAME} (${sizeText}). Launch id ${launchId}.\n`);
       let lastLine = "";
       const { outcome, status, answer } = await followCloudLaneLaunch({

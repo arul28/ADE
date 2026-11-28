@@ -97,6 +97,7 @@ import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import type { CloudDiskGrowAnswer, CloudDiskGrowHost } from "./cloudDiskGrowHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierOfShape, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import { CLOUD_MAC_NAME, cloudMacOfferOf, cloudMacRateText } from "../../../shared/cloudMac";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
 import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
@@ -342,17 +343,17 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
    * composer show. An account it couldn't read goes on: the server decides,
    * and an unattended agent is still refused for unknown hours in `approve()`.
    */
-  const newComputerCheck = async (sizeId: string | null = null): Promise<CloudAccountState | null> => {
+  const newComputerCheck = async (sizeId: string | null = null, os: "mac" | null = null): Promise<CloudAccountState | null> => {
     const account = await readAccount();
-    const block = cloudLaneStartBlock(account, { newLane: true, sizeId });
+    const block = cloudLaneStartBlock(account, { newLane: true, sizeId, os });
     if (block) throw new Error(block.message);
     return account;
   };
 
   /** A retry's account check: the hours only, as its replacement's disk is checked by the server once the failed computer is gone. */
-  const retryCheck = async (sizeId: string | null = null): Promise<CloudAccountState | null> => {
+  const retryCheck = async (sizeId: string | null = null, os: "mac" | null = null): Promise<CloudAccountState | null> => {
     const account = await readAccount();
-    const block = cloudLaneStartBlock(account, { newLane: false, sizeId });
+    const block = cloudLaneStartBlock(account, { newLane: false, sizeId, os });
     if (block) throw new Error(block.message);
     return account;
   };
@@ -422,6 +423,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       /** False: it uses no hours (a Small lane), so the hours check doesn't apply. */
       usesHours?: false;
       /**
+       * Starts a DAEX Cloud Mac: only a person's yes starts one. A full-auto
+       * chat shows them the card; an automation or a DAEX MCP app is refused.
+       */
+      macStart?: boolean;
+      /**
        * A second yes on the card (a lane delete's "Keep for later"): the
        * person picks it instead of `confirm`, and the answer's `choice` says
        * so. Never picked for a caller nobody watches: that one gets `confirm`.
@@ -471,7 +477,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     // An ADE MCP app or an automation run has nobody to show it to.
     // A computer that is not a new lane's is the person's call too: a
     // full-auto chat shows them the card, and nobody else may make one.
-    const personDecides = card.action === "person_only" || card.tierChange === true || card.makesComputer === true
+    const personDecides = card.action === "person_only" || card.tierChange === true || card.makesComputer === true || card.macStart === true
       || (card.action === "delete" && !card.madeByThisChat);
     if (viaAdeMcp || automation || (level === "full-auto" && !personDecides)) {
       const where = viaAdeMcp ? `this app connected through ${BRAND.NAME} MCP` : automation ? "this automation run" : "this full-auto chat";
@@ -479,6 +485,10 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (card.action === "person_only") {
         notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can decide it.`);
         throw new CloudDeclined(`${card.title}: declined. Only the person can decide it (Settings › Integrations › DAEX Cloud).`);
+      }
+      if (card.macStart) {
+        notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can start a Mac.`);
+        throw new CloudDeclined(`${card.title}: declined. A ${CLOUD_MAC_NAME} starts only with the person's yes. Start the lane on Linux, or ask them to start it on a Mac.`);
       }
       if (card.tierChange) {
         notice(`${BRAND.NAME} said no to "${card.title}" in ${where}: only you can change a computer's size.`);
@@ -897,10 +907,19 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // That is ADE's default for this launch, so a Small may move to Medium
       // when its setup needs more memory (`CLOUD_AUTO_SIZE`); a size asked for stays.
       const askedSize = record(asked.cloud).sizeId;
+      // A Mac only when this start asks for one (`os: "mac"`, `--os mac`): a saved
+      // Mac default is never read here, so agents, automations and the CLI start Linux.
+      const askedOs = record(asked.cloud).os;
+      if (askedOs != null && askedOs !== "linux" && askedOs !== "mac") throw new Error("Pick linux or mac for the computer.");
+      const mac = askedOs === "mac";
       const sizeDefaulted = askedSize == null || askedSize === "";
+      if (mac && !sizeDefaulted) throw new Error(`A ${CLOUD_MAC_NAME} has one size: leave out the size.`);
       const sizeId = sizeDefaulted ? readDefaultTier() ?? "small" : askedSize;
       if (!isCloudTierId(sizeId)) throw new Error(`Pick a size: ${CLOUD_TIER_IDS.join(", ")}.`);
-      const launch: ChatLaunchArgs = { ...asked, cloud: { sizeId, sizeChoice: sizeDefaulted ? "default" : "picked" } };
+      const launch: ChatLaunchArgs = {
+        ...asked,
+        cloud: { sizeId, sizeChoice: sizeDefaulted ? "default" : "picked", ...(mac ? { os: "mac" as const } : {}) },
+      };
       const laneOnly = launch.kind === "lane";
       const host = deps.laneLaunch?.() ?? null;
       if (!host) throw new Error(`This ${BRAND.NAME} can't start a lane on ${BRAND.CLOUD_NAME}. Use the ${BRAND.NAME} app, or the daex command where ${BRAND.NAME} runs in the background.`);
@@ -937,13 +956,36 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // The one step a default Small may take, said before the yes (it may also start there, for a repository that needed it).
       const mayMoveUp = startChoice === "default" && startSize === CLOUD_AUTO_SIZE.from;
       const startsLaneOnly = saved ? saved.kind === "lane" : laneOnly;
+      // A retry starts again as what it was: a Mac stays a Mac.
+      const startsMac = saved ? saved.cloud?.os === "mac" : mac;
       // Refused before the question, never after a yes: the launch itself,
       // then the account (hours, computers, disk), with the sentences
       // `cloud.status` and the composer show.
       const problem = saved ? null : cloudLaneLaunchStartRefusal({ args: launch, originUrl: startArgs.originUrl })?.message ?? null;
       if (problem) throw new AdeExpectedError(problem, "user");
-      const account = saved ? await retryCheck(startSize) : await newComputerCheck(startSize);
+      const account = saved ? await retryCheck(startSize, startsMac ? "mac" : null) : await newComputerCheck(startSize, startsMac ? "mac" : null);
       await outsideAgentCheck(approval, account);
+      if (startsMac) {
+        // The server decides whether this account has a Mac (`catalog.mac`, behind `mac_computers`).
+        const offer = cloudMacOfferOf(account);
+        if (!offer) throw new AdeExpectedError(`${BRAND.CLOUD_NAME} doesn't offer a Mac on this account. Start the lane on Linux.`, "user");
+        const yes = await approve(approval, {
+          action: "spend",
+          title: `Start a lane on a ${CLOUD_MAC_NAME}`,
+          body: `${BRAND.NAME} starts a ${CLOUD_MAC_NAME} (${offer.cpu} CPU, ${offer.memoryGb} GB, ${offer.driveGb} GB drive) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}. It uses ${cloudMacRateText(offer, cloudUnitWords(account))} while it runs.${offer.keeps ? ` ${offer.keeps}` : ""}`,
+          confirm: "Start the Mac",
+          newMachine: true,
+          macStart: true,
+          personPlace: CLOUD_LANE_PERSON_PLACE,
+        });
+        try {
+          const started = await host.start({ ...startArgs, madeByAgent: yes.maker });
+          if (started.created || (replaces && started.status.launch.phase !== "failed")) yes.counted();
+          return started.status;
+        } finally {
+          yes.release();
+        }
+      }
       const catalog = cloudCatalogOf(account);
       const tier = cloudTier(catalog, startSize);
       if (!tier) throw new Error(`${BRAND.CLOUD_NAME} doesn't offer that size right now. Pick another one.`);
