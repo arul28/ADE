@@ -38,7 +38,7 @@ import {
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
-import { withOptimisticLifecycle } from "../../state/sessionLifecycleOptimism";
+import { SupersededLifecycleWriteError, withOptimisticLifecycle } from "../../state/sessionLifecycleOptimism";
 import { settleLifecyclePatch, unsettleLifecyclePatch } from "../../lib/sessionLifecycleOverlay";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
@@ -1043,9 +1043,13 @@ function reportSettleFailures(
   groups: SettleMachineGroup[],
   results: PromiseSettledResult<unknown>[],
 ): void {
-  const failed = groups.filter((_, index) => results[index]?.status === "rejected");
+  // A machine whose rows the user acted on again mid-write did not fail; the
+  // rows show that later action (`SupersededLifecycleWriteError`).
+  const isFailure = (result: PromiseSettledResult<unknown> | undefined): result is PromiseRejectedResult =>
+    result?.status === "rejected" && !(result.reason instanceof SupersededLifecycleWriteError);
+  const failed = groups.filter((_, index) => isFailure(results[index]));
   if (!failed.length) return;
-  const firstError = (results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason;
+  const firstError = (results.find(isFailure) as PromiseRejectedResult).reason;
   console.error(`[SessionListPane] ${action} failed`, {
     machines: failed.map((group) => group.machineName),
     error: firstError,

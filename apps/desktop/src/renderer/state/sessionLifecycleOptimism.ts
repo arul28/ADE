@@ -44,11 +44,41 @@ export type LifecycleRowDecorator = {
 
 const overlay = new SessionLifecycleOverlay({ confirmGraceMs: CONFIRM_GRACE_MS });
 /**
- * The newest write started on each row, kept while it runs. A write whose row
- * names a newer token was superseded by a later action, whether or not that
- * later patch is still painting.
+ * What each write is about. A failed write was superseded only when a later
+ * write on the row is about the same thing: Un-settle replaces a settle, Wake
+ * replaces a snooze, but the woke-clear after a wake touches only the marker,
+ * so a failed wake still reports.
  */
-const latestTokenBySession = new Map<string, number>();
+const WRITE_INTENT: Record<LifecycleWriteAction, keyof SessionLifecyclePatch> = {
+  settle: "settledAt",
+  unsettle: "settledAt",
+  snooze: "snoozedUntil",
+  wake: "snoozedUntil",
+  settle_override: "settleOverride",
+  clear_woke: "wokeAt",
+};
+
+/** Per row, the newest write started on each intent, kept while any write on the row runs. */
+const writesBySession = new Map<string, { inFlight: number; latestByIntent: Map<string, number> }>();
+
+function noteWriteStarted(sessionId: string, token: number, action: LifecycleWriteAction): void {
+  const row = writesBySession.get(sessionId) ?? { inFlight: 0, latestByIntent: new Map<string, number>() };
+  row.inFlight += 1;
+  row.latestByIntent.set(WRITE_INTENT[action], token);
+  writesBySession.set(sessionId, row);
+}
+
+function writeSuperseded(sessionId: string, token: number, action: LifecycleWriteAction): boolean {
+  const latest = writesBySession.get(sessionId)?.latestByIntent.get(WRITE_INTENT[action]);
+  return latest != null && latest > token;
+}
+
+function noteWriteFinished(sessionId: string): void {
+  const row = writesBySession.get(sessionId);
+  if (!row) return;
+  row.inFlight -= 1;
+  if (row.inFlight <= 0) writesBySession.delete(sessionId);
+}
 const listeners = new Set<() => void>();
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -138,9 +168,10 @@ export function reconcileLifecycleRows(rows: readonly TerminalSessionSummary[]):
 }
 
 /**
- * A write that failed after a later action on the same row replaced its patch
- * (a settle aborted because the user pressed Un-settle while it ran). The row
- * already shows the later action, so the failure is not the user's to see.
+ * A write that failed after a later action on the same row replaced it (a
+ * settle aborted because the user pressed Un-settle while it ran; see
+ * `WRITE_INTENT`). The row already shows the later action, so the failure is
+ * not the user's to see.
  */
 export class SupersededLifecycleWriteError extends Error {
   constructor(readonly cause: unknown) {
@@ -184,15 +215,11 @@ export async function withOptimisticLifecycle<T>(
   const ids = sessionIds.filter((id) => Boolean(id));
   const tokens = ids.map((sessionId) => {
     const token = overlay.begin(sessionId, patch);
-    latestTokenBySession.set(sessionId, token);
+    noteWriteStarted(sessionId, token, options.action);
     return { sessionId, token };
   });
-  const isLatest = ({ sessionId, token }: { sessionId: string; token: number }) =>
-    latestTokenBySession.get(sessionId) === token;
   const finish = () => {
-    for (const entry of tokens) {
-      if (isLatest(entry)) latestTokenBySession.delete(entry.sessionId);
-    }
+    for (const { sessionId } of tokens) noteWriteFinished(sessionId);
   };
   const startedAt = performance.now();
   if (tokens.length) emit();
@@ -220,7 +247,8 @@ export async function withOptimisticLifecycle<T>(
     });
     return result;
   } catch (error) {
-    const superseded = tokens.length > 0 && !tokens.some(isLatest);
+    const superseded = tokens.length > 0
+      && tokens.every(({ sessionId, token }) => writeSuperseded(sessionId, token, options.action));
     // Only this write's layer goes: a later action on the row keeps painting.
     for (const { sessionId, token } of tokens) overlay.reject(sessionId, token);
     finish();
