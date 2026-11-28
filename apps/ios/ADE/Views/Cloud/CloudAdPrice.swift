@@ -241,7 +241,8 @@ struct CloudAdPriceWords: Equatable {
 
   /// Line 2: why it has the full price while ads are on, or nil.
   func reasonLine(_ price: CloudPricingState.Price) -> String? {
-    guard ads.on, ads.available, !price.isAd else { return nil }
+    // Two equal rates (a paid plan's Small, an iPhone started before Pricing v3): one price, no reason.
+    guard ads.on, ads.available, !price.isAd, price.rateMilli != price.otherRateMilli else { return nil }
     switch price.reason {
     case "ads_off", "no_ads_here": return nil
     case "cli_session": return "Full price: a CLI session runs here"
@@ -333,11 +334,6 @@ struct CloudAdPriceWords: Equatable {
       return "up to \(cloudHoursCount(ad)) \(ad == 1 ? "hour" : "hours") on \(tier.withArticle) with ads · \(cloudHoursCount(full)) with no ads"
     }
     return "\(cloudHoursCount(full)) \(full == 1 ? "hour" : "hours") on \(tier.withArticle)"
-  }
-
-  /// One "time on" part per size that uses credits, for a plan card.
-  func timeOnSizes(_ milli: Int, tiers: [CloudPhoneTier]) -> [String] {
-    tiers.filter { $0.id != "small" }.compactMap { timeOn(milli, tier: $0) }
   }
 }
 

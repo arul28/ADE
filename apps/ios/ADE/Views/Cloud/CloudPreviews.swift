@@ -186,7 +186,17 @@ enum CloudPreviews {
   ///   `asked` (asked region, notice not seen), and a reason for the awake
   ///   Medium while ads are on: `cli`, `automation`, `outside`, `idle`, `unverified`
   /// - surface: none (the page), `plans`, `machine`, `notice`
+  /// `duo-cloud-v3-loading`: the page before anything is known.
   @MainActor private static func pricingV3View(_ name: String) -> AnyView? {
+    // The page before anything is known (`CloudPageSkeleton`).
+    if name == "duo-cloud-v3-loading" {
+      return AnyView(NavigationStack {
+        ScrollView { CloudPageSkeleton().padding(.horizontal, 16).padding(.top, 8) }
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationTitle(Brand.cloudName)
+          .navigationBarTitleDisplayMode(.inline)
+      })
+    }
     let parts = name.dropFirst("duo-cloud-v3-".count).split(separator: "-").map(String.init)
     guard parts.count >= 2 else { return nil }
     let plan = parts[0], state = parts[1], surface = parts.count > 2 ? parts[2] : "page"

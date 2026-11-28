@@ -207,6 +207,21 @@ final class AccountCloudStore: ObservableObject {
     }
   }
 
+  /// The DAEX Cloud page's own account read (`CloudPaneStore.reloadDirect`),
+  /// kept here too: the page's hero and the cards that read this store (the
+  /// Ads card, every price line) show the same answer. A consent or provider
+  /// saved while it was out keeps its answer, as `refresh` does.
+  func readAccountForPage(_ client: CloudServerClient) async -> CloudPhoneAccount? {
+    let generation = accountGeneration
+    let saves = sponsoredSaves
+    let pickSaves = providerSaves
+    guard var next = await readAccount(client) else { return nil }
+    guard generation == accountGeneration else { return next }
+    keepSavedAnswers(&next, sponsoredSavesAtStart: saves, providerSavesAtStart: pickSaves)
+    if next != account { account = next }
+    return next
+  }
+
   private func readAccount(_ client: CloudServerClient) async -> CloudPhoneAccount? {
     do {
       return try await client.account()

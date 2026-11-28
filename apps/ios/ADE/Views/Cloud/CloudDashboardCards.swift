@@ -25,9 +25,8 @@ struct CloudDashboardScreen: View {
       VStack(alignment: .leading, spacing: 16) {
         switch store.phase {
         case .loading where store.machines.isEmpty && store.account == nil:
-          ProgressView()
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 40)
+          // Nothing known yet: the page's own shape, so nothing jumps when it fills.
+          CloudPageSkeleton()
         case .failed(let message):
           ADESettingsNotice(message: "Couldn't read \(Brand.cloudName). \(message)", actionTitle: "Try again") {
             Task { await store.reload() }
@@ -173,7 +172,18 @@ struct CloudHero: View {
         balance(account, words: words)
         // No disk: each size has its own disk maximum, and only one
         // computer's nearly full disk is ever shown (on its own page).
-        meters(account, words: words)
+        if accountStore.account?.pricing != nil {
+          // Pricing v3, each fact once: the computers header has the count and
+          // Sizes the hours at each size; what happens at zero is one line here.
+          if let past = pastYourPlan(account, words: words) {
+            Text("When \(words.unit) run out: \(past.value.lowercased()). \(past.note).")
+              .font(.system(size: 12))
+              .foregroundStyle(CloudBrandColor.skyText2)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        } else {
+          meters(account, words: words)
+        }
       }
       .padding(16)
       .padding(.bottom, 6)
@@ -274,10 +284,12 @@ struct CloudHero: View {
       .accessibilityElement(children: .combine)
       CloudCreditsBar(account: account)
       // The same number as the big one above, so the two never disagree.
-      // Pricing v3: the time it lasts on a Medium, at both prices ("Time on a plan").
-      if let adWords = CloudAdPriceWords(account), let medium = store.tiers.first(where: { $0.id == "medium" }),
+      // Pricing v3 with ads on: the time it lasts on a Medium, at both prices ("Time on a plan").
+      // Ads off or not offered: today's line below.
+      if let adWords = CloudAdPriceWords(account), adWords.pricing.showsTwoPrices, adWords.pricing.ads.on,
+         let medium = store.tiers.first(where: { $0.id == "medium" }),
          let line = adWords.timeOn(hours.leftMilli, tier: medium) {
-        Text(cloudCapitalized(line))
+        Text(cloudCapitalized(line) + ".")
           .font(.system(size: 12.5))
           .foregroundStyle(CloudBrandColor.skyText)
           .fixedSize(horizontal: false, vertical: true)
@@ -341,7 +353,7 @@ struct CloudHero: View {
           of: nil,
           fraction: nil,
           note: cloudPricing() != nil
-            ? (cloudPricing()?.ads.available == true ? "Left at this size. Free with ads." : "Left at this size")
+            ? "Left at this size"
             : account.sponsored?.smallNeedsLook == true
             ? "Left at this size. Opening a \(Brand.cloudName) chat in the US makes it unlimited again."
             : account.sponsored?.smallUsesHoursWithoutCards == true ? "Left at this size. Sponsored cards make it unlimited." : "Left at this size"
@@ -406,6 +418,8 @@ struct CloudCreditsBar: View {
     let parts = parts
     // The plan, or more when extra credits ran past it.
     let total = max(1, max(account.hours.includedMilli, parts.reduce(0) { $0 + $1.milli }))
+    // Whole credits that add up to the total; Left keeps the big number's value.
+    let shown = CloudBalanceWords(account).wholeParts(parts.map(\.milli), total: parts.reduce(0) { $0 + $1.milli }, fixed: parts.firstIndex { $0.id == "left" })
     VStack(alignment: .leading, spacing: 10) {
       GeometryReader { geo in
         HStack(spacing: 0) {
@@ -422,7 +436,7 @@ struct CloudCreditsBar: View {
       .frame(height: 8)
       .accessibilityHidden(true)
       HStack(alignment: .top, spacing: 8) {
-        ForEach(parts) { part in
+        ForEach(Array(parts.enumerated()), id: \.element.id) { index, part in
           VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
               Circle().fill(part.color).frame(width: 7, height: 7)
@@ -431,7 +445,7 @@ struct CloudCreditsBar: View {
                 .foregroundStyle(CloudBrandColor.skyText2)
                 .fixedSize(horizontal: false, vertical: true)
             }
-            Text(CloudBalanceWords(account).number(part.milli))
+            Text(shown[index])
               .font(.system(size: 15, weight: .medium))
               .monospacedDigit()
               .foregroundStyle(CloudBrandColor.skyText)
@@ -743,11 +757,16 @@ struct CloudSizesCard: View {
 
   var body: some View {
     if !tiers.isEmpty {
-      ADEKitCard(title: "Sizes", symbol: "cpu", hint: "Every size has a screen the agent can use.", flush: true) {
+      ADEKitCard(title: accountStore.account?.pricing != nil ? "Sizes and prices" : "Sizes", symbol: "cpu", hint: "Every size has a screen the agent can use.", flush: true) {
         VStack(spacing: 0) {
           ForEach(Array(tiers.enumerated()), id: \.element.id) { index, tier in
             if index > 0 { ADESettingsHairline() }
             row(tier)
+          }
+          // Pricing v3: the iPhone's price lives here too, while the account has the iPhone.
+          if let phone = phoneRow {
+            ADESettingsHairline()
+            phone
           }
         }
       }
@@ -756,6 +775,54 @@ struct CloudSizesCard: View {
 
   private func facts(_ tier: CloudPhoneTier) -> String {
     tier.specs.joined(separator: " · ")
+  }
+
+  /// The DAEX Cloud iPhone as a row: both prices from the catalog, and the
+  /// minutes the credits left buy at the price it has now (a live phone's own
+  /// price, else the ad price while ads are on).
+  private var phoneRow: AnyView? {
+    guard account.phoneOn, let adWords = CloudAdPriceWords(account), let rates = account.catalog?.phone else { return nil }
+    let pair = CloudRatePair(fullMilli: rates.milliPerMinute, adMilli: rates.adMilliPerMinute)
+    let ads = adWords.pricing.showsTwoPrices && adWords.pricing.ads.on
+    let rateNow = adWords.pricing.phone?.rateMilli ?? (ads ? pair.adMilli : pair.fullMilli)
+    let minutes = rateNow > 0 ? leftMilli / rateNow : nil
+    return AnyView(HStack(alignment: .center, spacing: 12) {
+      Image(systemName: "iphone")
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(CloudBrandColor.mark)
+        .frame(width: 28, height: 28)
+        .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+      VStack(alignment: .leading, spacing: 3) {
+        Text("\(Brand.cloudName) iPhone")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+        Text("An iPhone simulator for your agents")
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textSecondary)
+        Text(adWords.rate(pair, unit: .minute))
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 8)
+      VStack(alignment: .trailing, spacing: 0) {
+        Text(minutes.map { "\($0.formatted(.number.locale(Locale(identifier: "en_US")))) min" } ?? "Unlimited")
+          .font(.system(size: minutes == nil ? 18 : 24, weight: .semibold))
+          .monospacedDigit()
+          .foregroundStyle(CloudBrandColor.mark)
+          .lineLimit(1)
+          .minimumScaleFactor(0.6)
+        Text(minutes == nil ? "this month" : "left on it")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 11)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine))
   }
 
   private func row(_ tier: CloudPhoneTier) -> some View {
@@ -1004,5 +1071,79 @@ struct CloudAgentsCard: View {
       }
       .buttonStyle(ADEKitRowButtonStyle())
     }
+  }
+}
+
+// MARK: Loading
+
+/// The page before anything is known: the credits card, the Ads card and a
+/// few computer rows in their real places and sizes, so nothing jumps when
+/// the account arrives. Still: no animation, no timer.
+struct CloudPageSkeleton: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      // The credits card: its dusk sky, the label, the big number and the bar.
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(spacing: 8) {
+          CloudLogo(size: 18, glow: false)
+          bar(width: 120, height: 12, on: true)
+          Spacer()
+          bar(width: 72, height: 10, on: true)
+        }
+        bar(width: 130, height: 10, on: true)
+        bar(width: 170, height: 34, on: true)
+        Capsule().fill(Color.white.opacity(0.12)).frame(height: 8)
+        HStack(spacing: 24) {
+          ForEach(0..<3, id: \.self) { _ in
+            VStack(alignment: .leading, spacing: 6) {
+              bar(width: 56, height: 9, on: true)
+              bar(width: 44, height: 13, on: true)
+            }
+          }
+        }
+        bar(width: 230, height: 10, on: true)
+      }
+      .padding(16)
+      .padding(.bottom, 6)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background { CloudSky() }
+      .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+      .environment(\.colorScheme, .dark)
+      // The Ads card and the computers: rows where they will be.
+      card(rows: 1, tall: true)
+      card(rows: 3, tall: false)
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Reading \(Brand.cloudName)")
+  }
+
+  private func bar(width: CGFloat, height: CGFloat, on sky: Bool) -> some View {
+    RoundedRectangle(cornerRadius: height / 2, style: .continuous)
+      .fill(sky ? Color.white.opacity(0.16) : ADEKit.track)
+      .frame(width: width, height: height)
+  }
+
+  private func card(rows: Int, tall: Bool) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 10) {
+        RoundedRectangle(cornerRadius: 7, style: .continuous).fill(ADEKit.track).frame(width: 28, height: 28)
+        bar(width: 110, height: 12, on: false)
+        Spacer()
+      }
+      .padding(.horizontal, ADEKit.inset)
+      .padding(.vertical, 12)
+      ForEach(0..<rows, id: \.self) { index in
+        if index > 0 || !tall { ADESettingsHairline() }
+        VStack(alignment: .leading, spacing: 7) {
+          bar(width: tall ? 250 : 150, height: 11, on: false)
+          bar(width: tall ? 210 : 110, height: 9, on: false)
+          if tall { bar(width: 230, height: 9, on: false) }
+        }
+        .padding(.horizontal, ADEKit.inset)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .adeKitCard(padding: nil)
   }
 }

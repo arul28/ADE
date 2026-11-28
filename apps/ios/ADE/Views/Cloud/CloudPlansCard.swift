@@ -70,25 +70,26 @@ struct CloudPlansCard: View {
   /// exist under Pricing v3 (today: unlimited with sponsored cards in the US).
   private func smallFact(_ column: Column) -> String {
     guard column.id == "free" else { return "Unlimited Small" }
-    if let adWords { return adWords.pricing.ads.available ? "Small: Free with ads" : "Small uses \(words.unit)" }
+    if let adWords { return adWords.pricing.ads.available ? "Free Small computers with ads" : "Small uses \(words.unit)" }
     return freeSmallNeedsCards ? "Unlimited Small with cards (US)" : "Unlimited Small"
   }
 
   /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("infinity", adWords.map { $0.pricing.ads.available ? "Unlimited Small computers on paid plans, and on Free with ads." : "Unlimited Small computers on paid plans." } ?? (freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a \(Brand.cloudName) chat opened there each week." : words.smallUnlimitedSentence), "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
+      howRow("infinity", adWords != nil ? "Each lane has its own computer." : (freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a \(Brand.cloudName) chat opened there each week." : words.smallUnlimitedSentence), adWords != nil ? "A Linux computer your agents work on. \(cloudSmallFairUseSentence)" : "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
-      howRow("clock", "\(words.title) run the bigger sizes", "and renew every month. \(words.unitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
+      // Pricing v3: the rates live in Sizes and prices, each plan's hours on its card.
+      howRow("clock", "\(words.title) run the bigger sizes", adWords != nil ? "and renew every month." : "and renew every month. \(words.unitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
       Divider().overlay(ADEKit.edge)
       howRow("desktopcomputer", "Cloud computers", "count every lane's computer, asleep or awake. Free one up and its lane and chats stay.")
       Divider().overlay(ADEKit.edge)
       howRow("moon.stars", "Computers sleep on their own", "a few minutes after work stops, so your \(words.unit) only go to real work.")
       // The ADE Cloud iPhone, only while it is on for the account: it draws
       // from the credits, with no minutes of its own.
-      if account.phoneOn {
+      if account.phoneOn, adWords == nil {
         Divider().overlay(ADEKit.edge)
-        howRow("iphone", "The \(Brand.cloudName) iPhone", "uses \(phoneRateText), for agents to test your app on an iPhone simulator in the cloud.")
+        howRow("iphone", "The \(Brand.cloudName) iPhone", "uses \(words.phoneRate), for agents to test your app on an iPhone simulator in the cloud.")
       }
     }
     .background(ADEKit.track.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -232,24 +233,11 @@ struct CloudPlansCard: View {
   }
 
   /// "100 hours on a Medium · 40 on a Large · 25 on an X-Large": the account's plan's hours.
-  /// Pricing v3: each size at both prices ("up to 125 hours on a Medium with ads · 100 with no ads · …").
   private var currentHoursLine: String? {
     guard let facts = columns.first(where: { $0.id == account.currentPlanId })?.facts else { return nil }
-    if let adWords {
-      let parts = adWords.timeOnSizes(facts.includedMilli, tiers: tiers)
-      return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
     return cloudHoursOnSizes(facts.includedMilli, tiers: tiers)
   }
 
-  /// The iPhone's rate: both prices under Pricing v3 (the catalog's `phone`), else today's one.
-  private var phoneRateText: String {
-    if let adWords, let phone = account.catalog?.phone {
-      let pair = CloudRatePair(fullMilli: phone.milliPerMinute, adMilli: phone.adMilliPerMinute)
-      return adWords.rate(pair, unit: .minute)
-    }
-    return words.phoneRate
-  }
 
   private func accessibilityLabel(_ column: Column, current: Bool, isNew: Bool) -> String {
     var parts: [String] = []

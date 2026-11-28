@@ -494,8 +494,34 @@ struct CloudBalanceWords: Equatable {
     scale = max(1, account?.pricing?.creditScale ?? account?.catalog?.creditScale ?? 1)
   }
 
-  /// A number of them, at the account's scale: "4,180", "2.5".
-  func number(_ milli: Int) -> String { cloudCredits(milli, scale: scale) }
+  /// A balance or used amount at the account's scale: "4,180". Under Pricing
+  /// v3 (scale above 1) always whole credits, rounded down (`copy.md`); at the
+  /// old unit today's tenths ("2.5"). Rates use `CloudAdPriceWords`.
+  func number(_ milli: Int) -> String {
+    guard scale > 1 else { return cloudCredits(milli, scale: scale) }
+    return wholeCredits(milli).formatted(.number.locale(Locale(identifier: "en_US")))
+  }
+
+  /// Whole shown credits, rounded down.
+  func wholeCredits(_ milli: Int) -> Int { max(0, milli) * scale / 1000 }
+
+  /// The parts of one total in whole credits that add up to the total's
+  /// whole credits (largest remainder, `copy.md`). `fixed` keeps its own
+  /// rounded-down value (the balance the big number shows); the others share
+  /// what is left of the total. At the old unit each part is shown as is.
+  func wholeParts(_ millis: [Int], total: Int, fixed: Int?) -> [String] {
+    guard scale > 1 else { return millis.map(number) }
+    var shown = millis.map(wholeCredits)
+    let others = millis.indices.filter { $0 != fixed }
+    let target = wholeCredits(total) - (fixed.map { shown[$0] } ?? 0)
+    var missing = target - others.reduce(0) { $0 + shown[$1] }
+    let byRemainder = others.sorted { (max(0, millis[$0]) * scale) % 1000 > (max(0, millis[$1]) * scale) % 1000 }
+    for index in byRemainder where missing > 0 && (max(0, millis[index]) * scale) % 1000 > 0 {
+      shown[index] += 1
+      missing -= 1
+    }
+    return shown.map { $0.formatted(.number.locale(Locale(identifier: "en_US"))) }
+  }
 
   /// "credits".
   var unit: String { "credits" }
