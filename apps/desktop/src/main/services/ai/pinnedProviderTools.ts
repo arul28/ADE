@@ -43,9 +43,9 @@ import { getMuseBinaryStatus, startMuseBinaryFetch } from "./museExecutable";
 import { devinDeletedPinFallback } from "./devinFallForward";
 import { BRAND } from "../../../shared/brand";
 
-// Every download of Devin (a chat, a CLI, a launch's prefetch, a Retry) goes
-// through the tools cache's on-demand path; when Devin's host no longer has
-// the pinned build, its current build stands in (devinFallForward.ts).
+// Every tracked download of Devin (a chat, a CLI, a launch's prefetch, a
+// Retry) reaches this; when Devin's host no longer has the pinned build, its
+// current build stands in (devinFallForward.ts).
 registerDeletedPinFallback("devin", (failure, context) => devinDeletedPinFallback(failure, context));
 
 /** The pinned tool behind a provider id, or null for a provider ADE pins nothing for. */

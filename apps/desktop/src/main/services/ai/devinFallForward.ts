@@ -168,20 +168,19 @@ async function fallForward(pin: { package: string; version: string }, target: To
 }
 
 let running: Promise<DevinFallForwardOutcome> | null = null;
-let switched: DevinFallForwardOutcome | null = null;
 
 /**
  * The tools cache's `DeletedPinFallback` for Devin (registered in
  * `pinnedProviderTools.ts`): resolves true once Devin's current build stands
- * in for the deleted pin. One attempt at a time; after a switch, later calls
- * answer from it without the network. Never rejects.
+ * in for the deleted pin. One attempt at a time; a stand-in already installed
+ * for `context` answers without the network. Never rejects.
  */
 export function devinDeletedPinFallback(
   failure: ToolError,
   context: ToolsContext = {},
   logger: FallForwardLogger | null = null,
 ): Promise<boolean> {
-  if (switched) return Promise.resolve(switched.action === "switched");
+  if (resolveDeletedPinReplacement(DEVIN_TOOL, context)) return Promise.resolve(true);
   let target: ToolTarget;
   let pin: { package: string; version: string };
   try {
@@ -208,8 +207,7 @@ export function devinDeletedPinFallback(
       };
       (logger ?? getMachineMainLogger()).warn("ai.devin_fall_forward", fields);
       if (outcome.action === "switched") {
-        switched = outcome;
-        // Once per process, grouped per pin: the pin needs moving in the next release.
+        // Once per install, grouped per pin: the pin needs moving in the next release.
         captureProblem(`Devin deleted the pinned build ${pin.version}; running ${outcome.devinVersion}`, {
           level: "warning",
           handled: true,

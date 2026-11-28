@@ -47,8 +47,9 @@ const inFlight = new Map<string, Promise<ToolError | null>>();
  * What the brain does when a tool's pinned build is gone from its vendor's
  * host (its download answers HTTP 403 or 404): install the vendor's current
  * build as the pin's stand-in, or resolve false to keep the failure. Devin
- * registers one (`devinFallForward.ts` in desktop); a network error, a 5xx or
- * any other failure never reaches it.
+ * registers one (`devinFallForward.ts` in desktop). Every tracked fetch of the
+ * tool reaches it (on demand, a Retry, the launch and `ade serve` prefetches);
+ * a network error, a 5xx or any other failure never does.
  */
 export type DeletedPinFallback = (failure: ToolError, context: ToolsContext) => Promise<boolean>;
 const deletedPinFallbacks = new Map<string, DeletedPinFallback>();
@@ -145,6 +146,17 @@ export function pinnedToolNeedsFetch(name: string, context: ToolsContext = {}): 
   return pinnedToolFetchPending(name, context);
 }
 
+/** `run`, and when it fails because the pinned build is gone, `name`'s registered fallback. */
+async function runOrFallBack(name: string, run: () => Promise<unknown>, context: ToolsContext): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    const fallback = deletedPinFallbacks.get(name);
+    if (fallback && isDeletedPinFailure(error) && await fallback(error, context).catch(() => false)) return;
+    throw error;
+  }
+}
+
 /**
  * Run one fetch of `name` as the process's only fetch of it: a caller that asks
  * while it runs joins it, a status read sees it in flight, and a success bumps
@@ -152,7 +164,7 @@ export function pinnedToolNeedsFetch(name: string, context: ToolsContext = {}): 
  * `ensureTools` through this, so an on-demand caller never queues a second
  * install behind theirs. Resolves to the failure, or null.
  */
-export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>): Promise<ToolError | null> {
+export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>, context: ToolsContext = {}): Promise<ToolError | null> {
   const running = inFlight.get(name);
   if (running) return running;
   let settle!: (error: ToolError | null) => void;
@@ -164,7 +176,7 @@ export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>):
   inFlight.set(name, fetch);
   void (async () => {
     try {
-      await run();
+      await runOrFallBack(name, run, context);
       installGeneration += 1;
       lastFailure.delete(name);
       settle(null);
@@ -220,14 +232,8 @@ function startTrackedDownload(name: string, context: ToolsContext): Promise<Tool
     // Deep import, lazily: the resolvers reach this module on every spawn,
     // and only a real miss should load the download stack.
     const { ensureTools } = await import("./install");
-    try {
-      await ensureTools([name], { ...context, onProgress: notePinnedToolProgress });
-    } catch (error) {
-      const fallback = deletedPinFallbacks.get(name);
-      if (fallback && isDeletedPinFailure(error) && await fallback(error, context).catch(() => false)) return;
-      throw error;
-    }
-  }).then((error) => {
+    await ensureTools([name], { ...context, onProgress: notePinnedToolProgress });
+  }, context).then((error) => {
     if (error) {
       lastFailureAt.set(name, Date.now());
       // The typed kind is the diagnosis; the message can carry local paths.
