@@ -12,6 +12,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudAdsViewOf, cloudPricingOf } from "../../../shared/cloudAdPriceWords";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -72,7 +73,7 @@ export type AdeCloudTrayNotice = {
  */
 export function adeCloudAccountBlock(
   account: CloudAccountState | null,
-  options: { newLane: boolean; sizeId?: string | null },
+  options: { newLane: boolean; sizeId?: string | null; personMessage?: boolean },
 ): AdeCloudTrayNotice | null {
   // One wording with `cloud.status` and the launch's early refusal.
   const block = cloudLaneStartBlock(account, options);
@@ -177,14 +178,18 @@ export function useAdeCloudDraft({
   // size a new lane gets and how long those hours last at it.
   const hoursLeftMilli = account ? cloudHoursLeftMilli(account) : null;
   const words = useMemo(() => cloudUnitWords(account), [account]);
+  // Pricing v3: the size menu shows each size's two prices (the account's ads decide which leads).
+  const priced = useMemo(() => (cloudPricingOf(account) ? { view: cloudAdsViewOf(account) } : null), [account]);
   const runOnLine = useMemo(() => {
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
     // Small never uses hours: it stays unlimited, also at 0 hours left (`cloudTierHoursAt` says so).
     if (!cloudTierUsesHours(tier)) return `${tier.label} · ${cloudTierHoursAt(tier, 0).toLowerCase()}`;
+    // Pricing v3: free with ads on here (Free's Small), whatever credits are left.
+    if (priced?.view?.available && priced.view.on && tier.adMultiplierMilli === 0) return `${tier.label} · free with ads`;
     if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no ${words.noun} left`;
     return `${tier.label} · ${cloudTierHoursAt(tier, hoursLeftMilli ?? 0)} left at this size`;
-  }, [account, hoursLeftMilli, tierId, tiers, words]);
+  }, [account, hoursLeftMilli, priced, tierId, tiers, words]);
 
   return {
     /**
@@ -221,6 +226,8 @@ export function useAdeCloudDraft({
     hoursLeftMilli,
     /** The account's words (`cloudUnitWords`). */
     words,
+    /** Pricing v3's ads for the size menu's two prices; null without Pricing v3. */
+    priced,
     runOnLine,
     refresh: machines.refresh,
   };
@@ -427,7 +434,8 @@ export function useAdeCloudComposer(input: {
       return { tone: "blocked", message: draft.doBlock, short: `${BRAND.CLOUD_NAME} can't start work now.`, actions: [] };
     }
     // A new lane's size decides whether hours matter (Small never uses them).
-    const accountBlock = adeCloudAccountBlock(draft.account, { newLane, sizeId: newLane ? draft.tierId : null });
+    // A chat draft's send is the person's first message (Pricing v3: Free's Small starts free with ads); a CLI's is not.
+    const accountBlock = adeCloudAccountBlock(draft.account, { newLane, sizeId: newLane ? draft.tierId : null, personMessage: !input.isCliDraft });
     if (accountBlock) return accountBlock;
     // Antigravity runs on the sign-in the account carries from a computer of
     // the person's own. Known not carried, say how; on the web, also while

@@ -20,6 +20,7 @@ import {
   type CloudMachine,
 } from "./adeCloud";
 import { cloudTier, cloudTierUsesHours } from "./cloudTiers";
+import { cloudAdsViewOf, cloudPricingOf } from "./cloudAdPriceWords";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "./types/chatLaunch";
 import type { AgentChatFileRef } from "./types/chat";
@@ -150,17 +151,40 @@ export type CloudLaneStartBlock = {
   short: string;
 };
 
+/** Pricing v3: ads are on here and `size` costs nothing with them (Free's Small), so a person's message starts it free. */
+function freeWithAdsNow(account: CloudAccountState, size: { adMultiplierMilli?: number | null }): boolean {
+  const view = cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+  return view?.available === true && view.on && size.adMultiplierMilli === 0;
+}
+
+/** The server's way out on Free under Pricing v3 (its `out_of_hours` sentence), so both refusals read the same. */
+function freeSmallWayOut(account: CloudAccountState): string {
+  const view = account.plan === "free" && cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+  if (!view?.available) return "";
+  return view.on ? " Small computers keep working in chats with ads: send a message to start one." : " With ads on, Small computers keep working.";
+}
+
 export function cloudLaneStartBlock(
   account: CloudAccountState | null | undefined,
-  options: { newLane: boolean; sizeId?: string | null } = { newLane: true },
+  options: {
+    newLane: boolean;
+    sizeId?: string | null;
+    /**
+     * Pricing v3: the start carries a person's first chat message, which the
+     * server counts as the new computer's ad proof. A size free with ads (ads
+     * on here, its ad price 0: Free's Small) then uses no credits, so it is
+     * not refused here. Never for a CLI, an agent or an automation.
+     */
+    personMessage?: boolean;
+  } = { newLane: true },
 ): CloudLaneStartBlock | null {
   if (!account) return null;
   // A partial answer (an older server) can lack a part: that check is skipped, never thrown.
   const { extraHours } = account as Partial<CloudAccountState>;
   const catalog = cloudCatalogOf(account);
-  // Only a size the catalog rates above 0 uses hours.
+  // Only a size the catalog rates above 0 uses hours (or, with a person's message, its price with ads).
   const size = options.sizeId ? cloudTier(catalog, options.sizeId) : null;
-  const usesHours = size != null && cloudTierUsesHours(size);
+  const usesHours = size != null && cloudTierUsesHours(size) && !(options.personMessage && freeWithAdsNow(account, size));
   // A held free plan (GitHub rules, refused) stops every size, Small too.
   const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
   const why = github && github.state !== "ok" ? github.sentence : null;
@@ -168,7 +192,7 @@ export function cloudLaneStartBlock(
     // The free plan's GitHub rules hold its credits: their sentence says why and what to do.
     return {
       code: "out_of_hours",
-      message: why ?? (cloudSmallUsesHours(catalog) ? CLOUD_OUT_OF_HOURS_MESSAGE : `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`),
+      message: why ?? (cloudSmallUsesHours(catalog) ? `${CLOUD_OUT_OF_HOURS_MESSAGE}${freeSmallWayOut(account)}` : `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`),
       short: why ? "Free credits wait on GitHub." : "Out of credits for this size.",
     };
   }

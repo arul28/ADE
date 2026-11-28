@@ -7,9 +7,12 @@
 import {
   capitalizeCloudPhrase,
   formatCloudHoursRate,
+  type CloudAccountState,
   type CloudMachine,
   type CloudMachineState,
+  type CloudPricingState,
 } from "../../../shared/adeCloud";
+import { cloudAdsViewOf, cloudComputerPriceOf, cloudPriceNowCompact } from "../../../shared/cloudAdPriceWords";
 import { buildAccountMachineSnapshot } from "../../../shared/accountMachineSnapshot";
 import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import type { AdeAccountMachine } from "../../../shared/types/account";
@@ -108,12 +111,21 @@ function cloudCurrentHoursRate(box: CloudMachine): number | null {
   return box.hoursRate;
 }
 
-/** "Uses 2.5 hours an hour" while awake; "No hours" asleep or stopped (credits words for a credits account). */
-export function describeCloudRate(box: CloudMachine, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string | null {
+/**
+ * "Uses 2.5 hours an hour" while awake; "No hours" asleep or stopped (credits words for a credits account).
+ * Under Pricing v3 an awake computer the server prices reads its price now, in the compact form ("8/h with ads").
+ */
+export function describeCloudRate(
+  box: CloudMachine,
+  words: CloudUnitWords = CLOUD_CREDIT_WORDS,
+  account?: (Pick<CloudAccountState, "plan"> & { pricing?: CloudPricingState | null }) | null,
+): string | null {
   if (box.pastDue) return "Suspended";
   if (box.state === "asleep" || box.state === "stopped") return `No ${words.noun}`;
   const rate = cloudCurrentHoursRate(box);
-  return rate != null ? capitalizeCloudPhrase(formatCloudHoursRate(rate, words)) : null;
+  if (rate == null) return null;
+  const price = cloudComputerPriceOf(account, box.instanceId);
+  return price ? cloudPriceNowCompact(price, cloudAdsViewOf(account), words) : capitalizeCloudPhrase(formatCloudHoursRate(rate, words));
 }
 
 export const CLOUD_STATE_LABELS: Record<CloudMachineState, string> = {
@@ -140,11 +152,14 @@ export type CloudGroupTotals = {
   running: number;
 };
 
-export function cloudGroupTotals(boxes: readonly CloudMachine[]): CloudGroupTotals {
+/** `account`: under Pricing v3, each computer the server prices adds its price now (the ad price where it has it). */
+export function cloudGroupTotals(boxes: readonly CloudMachine[], account?: { pricing?: CloudPricingState | null } | null): CloudGroupTotals {
   let hoursRate = 0;
   let running = 0;
   for (const box of boxes) {
-    hoursRate += cloudCurrentHoursRate(box) ?? 0;
+    const rate = cloudCurrentHoursRate(box);
+    const price = rate != null ? cloudComputerPriceOf(account, box.instanceId) : null;
+    hoursRate += price ? price.rateMilli / 1000 : rate ?? 0;
     if (box.state === "running" || box.state === "starting") running += 1;
   }
   return { hoursRate, running };

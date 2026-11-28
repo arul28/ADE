@@ -853,6 +853,7 @@ export function BatchLaunchModal({
                 onChoose={adeCloud.chooseTier}
                 onSetDefault={adeCloud.setDefaultTier}
                 words={adeCloud.words}
+                priced={adeCloud.priced}
               />
               <span>
                 A new {adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for each lane.

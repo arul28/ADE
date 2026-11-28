@@ -8,7 +8,10 @@
 
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
 
-type WakeForUse = (target: RemoteRuntimeTarget) => Promise<boolean>;
+/** `adProof`: a person's message is why it wakes (Pricing v3, `POST .../start`). */
+export type CloudWakeUse = { adProof?: { chatId: string; messageId: string } | null };
+
+type WakeForUse = (target: RemoteRuntimeTarget, use?: CloudWakeUse) => Promise<boolean>;
 
 let hook: WakeForUse | null = null;
 
@@ -16,8 +19,8 @@ export function setCloudWakeForUse(next: WakeForUse | null): void {
   hook = next;
 }
 
-export async function cloudWakeForUse(target: RemoteRuntimeTarget): Promise<boolean> {
-  return hook ? await hook(target) : false;
+export async function cloudWakeForUse(target: RemoteRuntimeTarget, use?: CloudWakeUse): Promise<boolean> {
+  return hook ? await hook(target, use) : false;
 }
 
 /**

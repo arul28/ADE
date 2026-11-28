@@ -3,13 +3,9 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
-  At,
-  Check,
   CircleNotch,
-  Copy,
   DotsThree,
   GithubLogo,
-  IdentificationCard,
   Question,
   SignOut,
   Trash,
@@ -46,7 +42,7 @@ import { ConfirmSheet, YourMacsCard } from "./YourMacsCard";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { ModernPage, ModernSection } from "../settings/primitives";
-import { AccountHero, type AccountThisComputer } from "./AccountHero";
+import { AccountHero } from "./AccountHero";
 import { OtherMachinesUpdateSection } from "../settings/OtherMachinesUpdateSection";
 import "./accountPage.css";
 import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
@@ -371,32 +367,7 @@ export function SignInCard({
 // Signed-in: the account's own details, and sign out (this computer only).
 // ---------------------------------------------------------------------------
 
-function CopyIdButton({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-  const write = window.ade?.app?.writeClipboardText;
-  if (!write) return null;
-  return (
-    <button
-      type="button"
-      className="ade-acct-btn ade-acct-icon-btn"
-      data-variant="ghost"
-      aria-label={copied ? "Copied" : "Copy account ID"}
-      title={copied ? "Copied" : "Copy account ID"}
-      onClick={() => {
-        void write(value).then(() => {
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1_500);
-        }).catch(() => {});
-      }}
-    >
-      {copied ? <Check size={13} weight="bold" /> : <Copy size={13} weight="bold" />}
-    </button>
-  );
-}
-
 function AccountDetailsSection({
-  status,
-  providerCaption,
   showRepoBridge,
   onDismissRepoBridge,
   onConnectGithub,
@@ -405,8 +376,6 @@ function AccountDetailsSection({
   onDeleteAccount,
   deleting,
 }: {
-  status: AdeAccountStatus;
-  providerCaption: string | null;
   showRepoBridge: boolean;
   onDismissRepoBridge: () => void;
   onConnectGithub: () => void;
@@ -433,22 +402,7 @@ function AccountDetailsSection({
       tone="violet"
     >
       <dl className="ade-acct-facts">
-        <div className="ade-acct-fact">
-          <dt><At size={13} weight="bold" />Email</dt>
-          <dd>
-            <span className="ade-acct-fact-value">{status.email ?? `Your ${BRAND.NAME} account`}</span>
-            {providerCaption ? <span className="ade-acct-fact-note">{providerCaption}</span> : null}
-          </dd>
-        </div>
-        {status.userId ? (
-          <div className="ade-acct-fact">
-            <dt><IdentificationCard size={13} weight="bold" />Account ID</dt>
-            <dd>
-              <span className="ade-acct-fact-value ade-net-mono" title={status.userId}>{status.userId}</span>
-              <CopyIdButton value={status.userId} />
-            </dd>
-          </div>
-        ) : null}
+        {/* Email, its sign-in method and the account ID are in the banner above (ADE-227). */}
         <AccountInviteFact account={cloudAccount} inviteParam={inviteParam} />
         {showRepoBridge ? (
           <div className="ade-acct-fact">
@@ -552,7 +506,6 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
-  const [thisComputer, setThisComputer] = useState<AccountThisComputer | null>(null);
   const [repoBridgeDismissed, setRepoBridgeDismissed] = useState(() => readDismissed(REPO_BRIDGE_DISMISS_KEY));
   const backRef = useRef<HTMLButtonElement>(null);
 
@@ -667,12 +620,9 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
         onAvatarError={() => setAvatarBroken(true)}
         tint={ringTint}
         providerCaption={providerCaption}
-        thisComputer={thisComputer}
       />
-      <YourMacsCard onThisComputer={setThisComputer} between={<OtherMachinesUpdateSection group="Account" compact />} />
+      <YourMacsCard between={<OtherMachinesUpdateSection group="Account" compact />} />
       <AccountDetailsSection
-        status={status}
-        providerCaption={providerCaption}
         showRepoBridge={showRepoBridge}
         onDismissRepoBridge={dismissRepoBridge}
         onConnectGithub={() => navigate(settingsRouteFor("integrations.github"))}

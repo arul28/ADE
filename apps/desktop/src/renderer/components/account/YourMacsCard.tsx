@@ -65,7 +65,6 @@ import { Banner } from "../ui/notice/Banner";
 import { ModernRows, ModernSection } from "../settings/primitives";
 import { RoutePills } from "./MachineRoutes";
 import { routesAvailable, useMachineRoutesControl } from "./useMachineRoutes";
-import type { AccountThisComputer } from "./AccountHero";
 import { machineRouteItems } from "./machineRouteModel";
 import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
@@ -435,11 +434,8 @@ function SignInLinkFallback({ url }: { url: string }) {
 }
 
 export function YourMacsCard({
-  onThisComputer,
   between,
 }: {
-  /** The banner's card: this computer's name, version and routes. */
-  onThisComputer?: (computer: AccountThisComputer | null) => void;
   /** Placed between Your computers and Connections (the update section). */
   between?: ReactNode;
 } = {}) {
@@ -918,36 +914,21 @@ export function YourMacsCard({
     }
   }, [pendingForget, workspace]);
 
-  /** "Reachable over your local network and Tailscale", for this computer's row. */
+  /**
+   * This computer's row line, the one home of its facts: "DAEX 1.4.2 · Reachable over your local network
+   * and Tailscale". Its name, presence and route pills sit on the row; "not on your account" is the banner.
+   */
   const reachLine = (row: ComputerDisplayRow): string | null => {
-    if (!row.thisMac || !row.accountMachine) return null;
-    const names = routes.routeItemsFor(row)
-      .filter((item) => item.tone === "on")
-      .map((item) => (item.kind === "lan" ? "your local network" : item.label));
-    if (names.length === 0) return null;
-    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-    return `Reachable over ${list}`;
+    if (!row.thisMac) return null;
+    const names = row.accountMachine
+      ? routes.routeItemsFor(row)
+        .filter((item) => item.tone === "on")
+        .map((item) => (item.kind === "lan" ? "your local network" : item.label))
+      : [];
+    const list = names.length === 0 ? null : names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    return [thisComputerVersion?.text ?? null, list ? `Reachable over ${list}` : null].filter(Boolean).join(" · ") || null;
   };
 
-  const { localRoutes } = routes;
-  const thisRow = rows.find((row) => row.thisMac) ?? null;
-  const thisRowMachine = thisRow?.accountMachine ?? null;
-  const thisComputerName = thisRow?.name ?? THIS_MACHINE_NAME;
-  // Unknown until both the directory and this computer's identity answer, so
-  // the banner never calls an unverified computer Online.
-  const thisComputerListed: boolean | null = result?.state === "ok" && localIdentity?.machineKey
-    ? !thisMachineMissing
-    : null;
-  const versionText = thisComputerVersion?.text ?? null;
-  useEffect(() => {
-    if (!onThisComputer || webMode) return;
-    onThisComputer({
-      name: thisComputerName,
-      version: versionText,
-      listed: thisComputerListed,
-      routes: machineRouteItems(thisRowMachine, localRoutes),
-    });
-  }, [localRoutes, onThisComputer, thisComputerListed, thisComputerName, thisRowMachine, versionText, webMode]);
 
   const directoryOffline =
     (!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))

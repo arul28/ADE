@@ -60,6 +60,9 @@ const mockRestores = new Map<string, { record: CloudKeptLaneRestoreRecord; start
 import {
   CLOUD_BACKUP_NOT_SAVED_SENTENCE,
   CLOUD_BACKUP_TOO_LARGE_SENTENCE,
+  type CloudAdsState,
+  type CloudComputerPrice,
+  type CloudFullPriceReason,
   type CloudLaneBackup,
   type CloudLaneBackupFacts,
 } from "../../../account-directory/src/cloud/contract";
@@ -85,8 +88,8 @@ function mockBackup(facts: Pick<CloudLaneBackupFacts, "branchRef" | "laneName" |
 }
 import { CLOUD_PLAN_SEEN_STORAGE_KEY } from "./components/settings/cloudDashboard/cloudPlanMoment";
 
-type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "limit" | "upgraded" | "emptyplus";
-const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld", "pastdue", "limit", "upgraded", "emptyplus"];
+type Scenario = "free" | "empty" | "plus" | "pro" | "max" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "limit" | "upgraded" | "emptyplus";
+const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "max", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld", "pastdue", "limit", "upgraded", "emptyplus"];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -186,7 +189,7 @@ function machine(spec: LaneSpec, now: number): CloudLaneMachine {
 const round = (gb: number) => Math.round(gb * 10) / 10;
 
 type Fixture = {
-  planId: "free" | "plus" | "pro";
+  planId: "free" | "plus" | "pro" | "max";
   usedMilli: number;
   lanes: LaneSpec[];
   without: Array<{ name: string; reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit" }>;
@@ -344,6 +347,8 @@ function fixture(scenario: Scenario): Fixture {
         })),
         without: [],
       };
+    case "max":
+      return { ...fixture("pro"), planId: "max", usedMilli: 1_210_000 };
     case "downgrade":
       return { ...fixture("pro"), downgrade: true };
     case "pastdue":
@@ -499,8 +504,10 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       percentUsed: percent,
       state: left <= 0 && !fix.extraHours && (fix.earnedMilli ?? 0) <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
-    extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    phone: fix.planId === "free" ? undefined : { access: "on" },
+    // As the server counts it: extra credits are only what was used past the plan's credits.
+    extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.extraHours ? Math.max(0, fix.usedMilli - includedMilli) : 0 },
+    // The server gives the iPhone by its list or switch, never by plan: Free has it too.
+    phone: { access: "on" },
     // No account disk; the plan limits computers, asleep or not, and the server names the next plan up.
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
@@ -684,6 +691,51 @@ export function applyBrowserMockCloud(ade: any): void {
   if (state.sponsored && (formatParam === "below_reply" || formatParam === "above_prompt" || formatParam === "inline")) {
     state = { ...state, sponsored: { ...state.sponsored, format: formatParam } };
   }
+  // Pricing v3 (`&mockPricing=`): `on` / `off` (the notice answered, ads on or off), `notice` (a region
+  // where ads start on, notice not seen), `ask` (a region that asks first, not seen), `none` (no ads in
+  // this country), `zero` (a discount of 0, ads on). `&mockPriceReasons=1|2` gives the awake computers each
+  // full-price reason in turn.
+  const pricingParam = param("mockPricing");
+  const pricingKinds = ["on", "off", "notice", "ask", "none", "zero"] as const;
+  type PricingKind = (typeof pricingKinds)[number];
+  const pricingKind = (pricingKinds as readonly string[]).includes(pricingParam ?? "") ? pricingParam as PricingKind : null;
+  // `1`: the ad price, a CLI session, no chat in use; `2`: an automation, an outside agent, unverified.
+  const reasonsPage = Number(param("mockPriceReasons") ?? 0);
+  const reasonsParam = reasonsPage === 1 || reasonsPage === 2;
+  const specByInstance = new Map(fix.lanes.map((spec, index) => [machines[index]!.instanceId, spec]));
+  /** The account's prices now, as the server works them out, for the ads state it holds. */
+  const pricedState = (next: CloudAccountState, ads: CloudAdsState): CloudAccountState => {
+    const catalog = next.catalog;
+    const reasons: Array<CloudFullPriceReason | null> = [null, "cli_session", "not_in_use", "automation", "outside_agent", "unverified"];
+    let awakeIndex = reasonsPage === 2 ? 3 : 0;
+    const computers: CloudComputerPrice[] = machines.map((box) => {
+      const size = catalog.sizes.find((entry) => entry.tier === specByInstance.get(box.instanceId)?.tier);
+      const full = size?.multiplierMilli ?? 0;
+      const ad = size?.adMultiplierMilli ?? full;
+      const awake = box.state === "running";
+      const picked = awake && reasonsParam ? reasons[awakeIndex++ % reasons.length]! : null;
+      const reason: CloudFullPriceReason | null = !ads.available ? "no_ads_here" : !ads.on ? "ads_off" : !awake ? "not_in_use" : picked;
+      const now = reason == null ? "ad" as const : "full" as const;
+      return { instanceId: box.instanceId, now, reason, adUntil: now === "ad" ? Date.now() + 40 * 60_000 : null, rateMilli: now === "ad" ? ad : full, otherRateMilli: now === "ad" ? full : ad };
+    });
+    // The server's iPhone rate under Pricing v3 (5 credits a minute).
+    return { ...next, credits: { phoneMilliPerMinute: catalog.phone?.milliPerMinute ?? 500 }, pricing: { creditScale: catalog.creditScale ?? 10, ads, computers, phone: null } };
+  };
+  if (pricingKind) {
+    const discountPct = pricingKind === "zero" ? 0 : 20;
+    const free = state.plan === "free";
+    const available = pricingKind !== "none";
+    const noticeSeen = pricingKind === "on" || pricingKind === "off" || pricingKind === "zero";
+    const on = available && (pricingKind === "on" || pricingKind === "zero");
+    const catalog = cloudCatalog({ pro: true, max: true }, state.planId ?? "free", { v3: { discountPct, smallFullMilli: free ? 500 : 0, freeSmallMilli: 500 } });
+    state = {
+      ...state,
+      catalog,
+      // The server answers the old sponsored state too; the ad request follows it.
+      sponsored: { ads: true, consent: on ? "granted" : noticeSeen ? "declined" : null, test: true, format: state.sponsored?.format ?? "below_reply" },
+    };
+    state = pricedState(state, { available, on, startsOn: pricingKind !== "ask", noticeSeen, discountPct, windowMinutes: 60 });
+  }
   // `&mockFreeModels=ask|on|declined|abroad`: ADE Free Models for this account, test ads only, on any
   // plan. `ask` opens the one-time sheet on the first pick; `abroad` lists them as unavailable (country).
   // `locked-too-new|locked-no-github|locked-used|checking`: the GitHub rule locks them (not yet asked);
@@ -755,19 +807,44 @@ export function applyBrowserMockCloud(ade: any): void {
     deletedInstanceIds: [],
     message: null,
   });
+  // `&mockCloudLatency=400`: each account read answers after this many ms, as the account server does (load timing).
+  const latency = Math.max(0, Number(param("mockCloudLatency")) || 0);
+  const lag = () => (latency ? new Promise<void>((resolve) => window.setTimeout(resolve, latency)) : Promise.resolve());
   const base = ade.cloud ?? {};
   ade.cloud = {
     ...base,
-    getStatus: async () => ({ connected: true, signedOut: false, instanceCount: machines.length, runningCount: result().runningCount, error: null }),
-    listMachines: async () => result(),
+    getStatus: async () => {
+      await lag();
+      return { connected: true, signedOut: false, instanceCount: machines.length, runningCount: result().runningCount, error: null };
+    },
+    listMachines: async () => {
+      await lag();
+      return result();
+    },
     onStatusChanged: (cb: () => void) => {
       statusListeners.add(cb);
       return () => statusListeners.delete(cb);
     },
     getAgentLimits: base.getAgentLimits ?? (async () => ({ maxShape: "4x8", machinesPerDay: 3, unattendedHours: true, askBeforeVm: true })),
     setAgentLimits: base.setAgentLimits ?? (async (limits: unknown) => limits),
-    setSponsoredConsent: async (choice: CloudSponsoredChoice, confirmed?: boolean) => {
+    setSponsoredConsent: async (choice: CloudSponsoredChoice, confirmed?: boolean, noticeSeen?: boolean) => {
       if (!state.sponsored) return null;
+      // Pricing v3: the switch and the notice's answers move the account's ads, and every price with them.
+      if (state.pricing) {
+        const ads = state.pricing.ads;
+        // As the server (US rules): after a no, a yes needs the second confirm (409 `sponsored_confirm`).
+        if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
+          throw new Error("Turning ads back on takes a second confirm. Try again.");
+        }
+        const on = ads.available && (choice === "granted" || choice === "notice");
+        const { confirmYes: _wasConfirmYes, ...rest } = state.sponsored;
+        state = pricedState(
+          { ...state, sponsored: { ...rest, consent: on ? "granted" : "declined", ...(on ? {} : { confirmYes: true }) } },
+          { ...ads, on, noticeSeen: ads.noticeSeen || noticeSeen === true },
+        );
+        for (const listener of statusListeners) listener();
+        return state.sponsored ?? null;
+      }
       // As the server: after a no, a yes needs the second confirm.
       if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
         throw new Error(`Turning sponsored cards back on takes a second confirm. Try again, or update ${BRAND.NAME} if it doesn't ask.`);

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowSquareOut, CheckCircle, Clock, Cloud, Cpu, ListChecks, Moon, Pulse, SunHorizon, Trash, Warning } from "@phosphor-icons/react";
+import { ArrowSquareOut, CheckCircle, Clock, Cloud, Coins, Cpu, Info, ListChecks, Moon, Pulse, SunHorizon, Trash, Warning } from "@phosphor-icons/react";
 import { idleCleanupWhen, type CloudIdleCleanupEntry } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { useCloudAccount } from "../../state/cloudAccountStore";
@@ -295,6 +295,9 @@ function statusLineIcon(line: CloudLaneStatusLine): ReactNode {
   if (line.tone === "warn" || line.tone === "crit") return <Warning size={12} weight="fill" />;
   if (line.key === "job") return <Cloud size={12} weight="bold" />;
   if (line.key === "work" && line.tone === "ok") return <CheckCircle size={12} weight="fill" />;
+  // Pricing v3: what the computer costs now, and why the full price.
+  if (line.key === "price") return <Coins size={12} />;
+  if (line.key === "price-reason") return <Info size={12} />;
   return <Pulse size={12} />;
 }
 

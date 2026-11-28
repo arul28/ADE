@@ -479,7 +479,9 @@ import { readAccountProjectList } from "../../state/useRepositoryCopies";
 import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus, CloudTierRequestsAboveComposer, useCloudTierRequestCards } from "../cloudLane/CloudLaneChatCards";
 import { CloudLaneComputerDeletedBanner, cloudLaneComputerDeletedFacts } from "../cloudLane/CloudLaneComputerDeletedBanner";
-import { useCloudAccount } from "../../state/cloudAccountStore";
+import { cloudAccountNow, useCloudAccount, useCloudAccountPricedPhoneId } from "../../state/cloudAccountStore";
+import { readCloudPhoneStatus, useCloudPhoneHeldBy } from "../../state/cloudPhoneLive";
+import { askCloudCliStart } from "../cloudLane/cloudCliStartNotice";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { useChatCloudLaneJob } from "../cloudLane/cloudLaneStores";
 import { chatAccountQueueRoute } from "./chatAccountQueueRoute";
@@ -4492,6 +4494,30 @@ async function readMachineFile(filePath: string, pin: OpenProjectBinding | null)
  */
 const CLOUD_TYPING_PING_MS = 30_000;
 
+/** Where a person's message in this pane counts as Pricing v3's proof: the chat, its cloud computer, the iPhone it holds. */
+type CloudAdsProofTarget = { sessionId: string | null; instanceId: string | null; phoneId: string | null };
+
+/**
+ * Pricing v3's proof that a person sent a message in a chat that uses DAEX
+ * Cloud (`POST /cloud/sponsored/sent`): only from the person's own send in
+ * this pane (never a CLI, an automation or an outside agent), only for the
+ * pane's own chat on a cloud computer or holding the cloud iPhone, and only
+ * while the account has `pricing` (read at the send, never remembered).
+ * Account level, no pin: `instanceId` is the chat's own computer. Never
+ * blocks or fails the send.
+ */
+function noteCloudAdsSent(target: CloudAdsProofTarget, sessionId: string, messageId: string | null): void {
+  // No id of the send: nothing a wake's proof or a repeat could match, so no proof.
+  if (!messageId || target.sessionId !== sessionId || (!target.instanceId && !target.phoneId)) return;
+  if (!cloudAccountNow()?.pricing) return;
+  void window.ade?.cloud?.sponsoredSent?.({
+    instanceId: target.instanceId,
+    ...(target.phoneId ? { phoneId: target.phoneId } : {}),
+    chatId: sessionId,
+    messageId,
+  })?.catch(() => undefined);
+}
+
 export function AgentChatPane({
   laneId,
   laneLabel,
@@ -4534,6 +4560,7 @@ export function AgentChatPane({
   onSessionCreated,
   workDraftKind = "chat",
   onLaunchCliSession,
+  onShowChatDraft,
   onOpenShellSession,
   onImportedSession,
   onOpenExistingImportedSession,
@@ -4634,6 +4661,8 @@ export function AgentChatPane({
   onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   workDraftKind?: "chat" | "cli";
   onLaunchCliSession?: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
+  /** Work's draft: switch it to a chat, keeping the prompt (Pricing v3's CLI notice, "Open as a chat"). */
+  onShowChatDraft?: () => void;
   onOpenShellSession?: (
     laneId: string,
     pin?: OpenProjectBinding | null,
@@ -7543,6 +7572,31 @@ export function AgentChatPane({
   // A subagent's transcript, or a chat ADE started under another one: nobody's to show a card in.
   const isSubagentView = subagentView != null || Boolean(selectedSession?.orchestrationParentSessionId) || selectedSession?.spawnKind === "subagent";
   const chatCloudInstanceId = chatCloudLane?.instanceId ?? null;
+  // Pricing v3: the account's cloud iPhone when this chat holds it (the brain
+  // that drives it names the chat of its latest call). Ads and the proof below
+  // follow it, on any machine. Strings from both stores, so the pane re-renders
+  // only when the answer changes; no read of its own.
+  const pricedPhoneId = useCloudAccountPricedPhoneId(!isSubagentView && renderedSessionId != null);
+  const heldPhoneId = useCloudPhoneHeldBy(isSubagentView ? null : renderedSessionId, pricedPhoneId);
+  // Only the brain that drives the phone names its chat, and the top bar reads
+  // through the tab's machine. A chat on another machine reads the phone
+  // through its own machine when it opens and when each turn ends (its agent's
+  // phone calls happen in turns). No timer; nothing while no phone runs.
+  const renderedChatPinRef = useRef(renderedChatRuntimePin);
+  renderedChatPinRef.current = renderedChatRuntimePin;
+  const phoneReadThroughChat = pricedPhoneId != null
+    && renderedSessionId != null
+    && !isSubagentView
+    && renderedChatPinKey != null
+    && renderedChatPinKey !== projectBinding?.key;
+  useEffect(() => {
+    if (!phoneReadThroughChat || turnActive) return;
+    void readCloudPhoneStatus(renderedChatPinRef.current).catch(() => undefined);
+  }, [phoneReadThroughChat, renderedSessionId, renderedChatPinKey, turnActive]);
+  const cloudAdsProofRef = useRef<CloudAdsProofTarget>({ sessionId: null, instanceId: null, phoneId: null });
+  cloudAdsProofRef.current = isSubagentView
+    ? { sessionId: null, instanceId: null, phoneId: null }
+    : { sessionId: renderedSessionId, instanceId: chatCloudInstanceId, phoneId: heldPhoneId };
   // An ADE Free Models chat (`shared/adeFreeModels.ts`), on any machine: it
   // runs only while someone has it open, so the open pane tells the account
   // server (account level, by chat id), and its replies get sponsored cards.
@@ -7565,9 +7619,10 @@ export function AgentChatPane({
         turnActive={turnActive}
         paneVisible={isTileVisible}
         freeModelChat={freeModelChat}
+        phoneId={heldPhoneId}
       />
     )),
-    [isSubagentView, chatCloudInstanceId, renderedSessionId, selectedEventsForDisplay, turnActive, isTileVisible, freeModelChat],
+    [isSubagentView, chatCloudInstanceId, renderedSessionId, selectedEventsForDisplay, turnActive, isTileVisible, freeModelChat, heldPhoneId],
   );
   // A live turn that has gone quiet is worth saying out loud (see
   // `turnStallSilenceMs`). The tick runs only while a turn is active, so a
@@ -15368,6 +15423,17 @@ export function AgentChatPane({
     if (cloudSend) {
       // Send is off while the label above the box shows; this is the guard.
       if (cloudSend.notice) return;
+      // Pricing v3: a person's CLI on a cloud computer uses the full price while
+      // ads are on. Asked every time, before any computer is made; a chat
+      // keeps the prompt.
+      if (kind === "cli") {
+        const choice = await askCloudCliStart(cloudAccountNow());
+        if (choice !== "cli") {
+          if (choice === "chat") onShowChatDraft?.();
+          return;
+        }
+        if (!paneMountedRef.current) return;
+      }
       const cloudLane = cloudSend.lane;
       const cloudRequestKey = `ade-cloud:${cloudLane?.laneId ?? "new"}:${draftLaunchRequestKey({
         kind,
@@ -15598,6 +15664,7 @@ export function AgentChatPane({
     launchDraftIntoNewLane,
     modelId,
     onLaunchCliSession,
+    onShowChatDraft,
     openLaunchedDraftSession,
     patchDraftLaunchJob,
     parallelLaunchBusy,
@@ -18119,6 +18186,10 @@ export function AgentChatPane({
         await sendMessageOrSteerIfBusy();
       }
       listPatch.flush();
+      // The person sent a message: Pricing v3's proof for this chat's computer or iPhone.
+      if (steerResult?.reason !== "queue_full") {
+        noteCloudAdsSent(cloudAdsProofRef.current, sessionId, steerResult?.steerId ?? sendIdentity?.record.clientSendId ?? null);
+      }
       if (steerResult?.reason === "queue_full") {
         // The steer queue is full — the backend dropped the message (and emitted
         // its own notice). Restore the composer rather than clearing it as if the
@@ -23696,6 +23767,7 @@ export function AgentChatPane({
                                   disabled={shellLaunchBusy}
                                   hoursLeftMilli={adeCloud.hoursLeftMilli}
                                   words={adeCloud.words}
+                                  priced={adeCloud.priced}
                                 />
                               ) : null}
                               {cursorCloudMode && !parallelChatMode ? (

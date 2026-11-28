@@ -13,6 +13,7 @@ import {
   type CloudComputerLimitLane,
   type CloudNextPlan,
 } from "../../../shared/adeCloud";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { formatAgo, ipcErrorMessage } from "../../lib/format";
 import { showToast } from "../app/toast/toastStore";
@@ -208,7 +209,7 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
         <p className="adecl-limit-step-q">{label} · ${next.priceUsd} a month</p>
         <ul className="adecl-limit-facts">
           <li>{plural(next.computerLimit, "cloud computer")}{detail ? `, ${next.computerLimit - detail.limit} more than now` : ""}</li>
-          {nextHours != null ? <li>{formatCloudHours(nextHours)} credits a month</li> : null}
+          {nextHours != null ? <li>{formatCloudHours(nextHours, cloudUnitWords(account).scale)} credits a month</li> : null}
           {/* A paid plan's Small never uses credits; a Free account's may now (sponsored cards off). */}
           <li>{account && cloudSmallUsesHours(cloudCatalogOf(account)) ? "Unlimited Small computers" : "Small computers stay unlimited"}</li>
         </ul>

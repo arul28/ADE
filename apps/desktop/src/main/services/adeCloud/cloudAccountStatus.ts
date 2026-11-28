@@ -24,8 +24,17 @@ import {
   type CloudPlanId,
 } from "../../../shared/adeCloud";
 import { cloudLaneStartBlock, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
-import { cloudHoursOnSizesLine, cloudTierOfMachine, cloudTierUsesHours, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
-import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudHoursOnSizesLine, cloudTierOfMachine, cloudTierUsesHours, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import {
+  cloudAdsSentence,
+  cloudAdsViewOf,
+  cloudFullPriceReasonLine,
+  cloudPricingOf,
+  cloudPriceNowText,
+  cloudRateText,
+  cloudTierRatePair,
+} from "../../../shared/cloudAdPriceWords";
 import { NO_PROVIDER_SENTENCE } from "./cloudAccess";
 import { BRAND } from "../../../shared/brand";
 
@@ -195,7 +204,63 @@ export type CloudAccountStatus = {
   } | null;
   /** A plain sentence when part of the picture couldn't be read, else null. */
   message: string | null;
+  /**
+   * Pricing v3, only while the account state carries `pricing` (else null;
+   * an older brain sends none). The numbers above stay in Medium-hour units:
+   * multiply by `creditScale` for the credits the apps show. The words here
+   * are already at that scale.
+   */
+  pricing?: CloudStatusPricing | null;
 };
+
+/** `CloudAccountStatus.pricing`: what the account pays now, as words the apps use. */
+export type CloudStatusPricing = {
+  creditScale: number;
+  ads: {
+    /** The person's country has ads. False: nothing about ads applies. */
+    available: boolean;
+    on: boolean;
+    discountPct: number;
+    /** "Ads are on: Small computers are free, and bigger ones cost 20% less.", null where ads aren't available. */
+    sentence: string | null;
+    /** Where the person turns them on or off (only a person does). */
+    setting: string;
+  };
+  /** Each size's price a hour: "8 credits an hour with ads · 10 with no ads". */
+  sizes: Array<{ id: CloudTierId; price: string }>;
+  /** Each computer's price now, and why it has the full price while ads are on. */
+  computers: Array<{ instanceId: string; now: "ad" | "full"; price: string; reason: string | null; adUntil: string | null }>;
+  /** The live iPhone's price now, or null when none runs. */
+  iphone: { price: string; reason: string | null; adUntil: string | null } | null;
+};
+
+function pricingStatusOf(account: CloudAccountState | null, tiers: readonly CloudTier[], words: CloudUnitWords): CloudStatusPricing | null {
+  const pricing = cloudPricingOf(account);
+  const view = cloudAdsViewOf(account);
+  if (!pricing || !view) return null;
+  const until = (ms: number | null) => (ms != null ? new Date(ms).toISOString() : null);
+  return {
+    creditScale: pricing.creditScale,
+    ads: {
+      available: view.available,
+      on: view.on,
+      discountPct: view.discountPct,
+      sentence: view.available ? cloudAdsSentence(view, view.on ? "on" : "ask") : null,
+      setting: `Settings › ${BRAND.CLOUD_NAME} › Ads`,
+    },
+    sizes: tiers.map((tier) => ({ id: tier.id, price: cloudRateText(cloudTierRatePair(tier), view, words) })),
+    computers: pricing.computers.map((price) => ({
+      instanceId: price.instanceId,
+      now: price.now,
+      price: cloudPriceNowText(price, view, words),
+      reason: cloudFullPriceReasonLine(price, view),
+      adUntil: until(price.adUntil),
+    })),
+    iphone: pricing.phone
+      ? { price: cloudPriceNowText(pricing.phone, view, words, "minute"), reason: cloudFullPriceReasonLine(pricing.phone, view), adUntil: until(pricing.phone.adUntil) }
+      : null,
+  };
+}
 
 const PLAN_ORDER: readonly CloudPlanId[] = ["free", "plus", "pro", "max"];
 
@@ -350,5 +415,6 @@ export function buildCloudAccountStatus(input: {
         }
       : null,
     message: result.state !== "ok" ? canStartLane.reason : !account ? CLOUD_ACCOUNT_UNKNOWN_MESSAGE : null,
+    pricing: pricingStatusOf(account, tiers, words),
   };
 }

@@ -24,7 +24,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import { cloudUnitWords } from "../../desktop/src/shared/cloudUnitWords";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
@@ -5278,19 +5278,20 @@ ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List mach
   the rest run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
 
-  Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud credits, and
-  so do you once their first chat runs on ${BRAND.CLOUD_NAME} (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
+  Invites: a friend who enters your link gets extra free cloud credits (daex cloud invite says how many), and
+  so do you once their first chat runs on ${BRAND.CLOUD_NAME} (${CLOUD_REFERRAL_REWARD_LIMIT} invites at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
-  Earned credits never expire; they are used after the plan's credits and before
+  Credits from invites never expire; they are used after the plan's credits and before
   extra credits. The free plan is given once per computer and once per GitHub
   account, which must be at least 30 days old (or add a card, no charge).
 
   Plans: Free, Plus, Pro and Max. \`daex cloud status\` lists each with its price,
   cloud computers and credits, from ${BRAND.CLOUD_NAME} itself. Change it in Settings › ${BRAND.CLOUD_NAME} › Plans.
-  Unlimited Small computers on every plan: they never use your credits. Bigger
-  computers use credits: a credit is an hour on a Medium computer or a minute
-  on the ${BRAND.CLOUD_NAME} iPhone, so the same credits last less on a Large or an
-  X-Large (status shows them as time on each).
+  Small computers never use credits on paid plans; on Free they are free with
+  ads where ads are offered. Bigger computers and the ${BRAND.CLOUD_NAME} iPhone use
+  credits, so the same credits last less on a Large or an X-Large. \`daex cloud
+  status\` shows each size's price (with ads and with no ads, where ads are
+  offered) and the credits left as time on each size.
   Each plan has a number of cloud computers, asleep or not. At the limit a new
   lane is refused: free up a computer from another lane (daex cloud lanes free
   <lane>: the lane and its chats stay, and it gets a new computer at its next
@@ -22334,13 +22335,15 @@ function formatCloudAccount(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const account = isRecord(raw) ? raw : {};
   const hours = isRecord(account.hours) ? account.hours : {};
-  const hoursOf = (milli: unknown) => (typeof milli === "number" ? formatCloudHours(milli) : "—");
+  // Pricing v3 (the account carries `pricing`): whole credits at its scale, and no credit sentence.
+  const v3 = isRecord(account.pricing);
+  const words = cloudUnitWords(account as Pick<CloudAccountState, "credits"> & { pricing?: CloudAccountState["pricing"] });
+  const hoursOf = (milli: unknown) => (typeof milli === "number" ? words.num(milli) : "—");
   const billing = isRecord(account.billing) ? account.billing : {};
   const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
   const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
   const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
-  const words = cloudUnitWords(account as Pick<CloudAccountState, "credits">);
   const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} credits left, resets ${resets}`;
   // Cloud computers asleep or not, of the plan's limit.
   const counted = isRecord(account.computers)
@@ -22349,10 +22352,12 @@ function formatCloudAccount(value: unknown): string {
   const computers = counted ? ` ${counted.total} of ${counted.limit} cloud computers in use (asleep or not).` : "";
   // One balance, which the ADE Cloud iPhone draws from too.
   const unitLine = ` Medium computers use ${words.count(1)} an hour, Large ${words.count(2.5)}, X-Large ${words.count(4)}; the ${BRAND.CLOUD_NAME} iPhone ${words.count(words.phoneMilliPerMinute / 1000)} a minute.`;
-  const smallLine = `\nUnlimited Small computers. They never use your credits.${unitLine}${computers}`;
+  const smallLine = v3
+    ? `\nSmall computers are free on paid plans, and on Free with ads. Each size's price: daex cloud status.${computers}`
+    : `\nUnlimited Small computers. They never use your credits.${unitLine}${computers}`;
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
-  const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned ${words.noun} left (they never expire).` : "";
+  const earnedLine = earned.grantedMilli > 0 ? `\n${words.num(earned.leftMilli)} earned ${words.noun} left (they never expire).` : "";
   const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
   const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
   // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
@@ -22360,7 +22365,9 @@ function formatCloudAccount(value: unknown): string {
   const githubLine = github && github.state !== "ok" && github.sentence
     ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? ` Add the card in Settings › ${BRAND.CLOUD_NAME}.` : ""}`
     : "";
-  const out = "out of credits (Small keeps working; bigger computers and the iPhone stop)";
+  const out = v3
+    ? "out of credits (bigger computers and the iPhone stop; Small keeps working on paid plans, and on Free in chats with ads)"
+    : "out of credits (Small keeps working; bigger computers and the iPhone stop)";
   return (hours.state === "zero" ? `${plan}: ${out}. ${left}` : `${plan}: ${left}`) + smallLine + earnedLine + freeLine + githubLine;
 }
 
@@ -22372,10 +22379,12 @@ function formatCloudInvite(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const referral = readCloudReferralSummary(raw);
   if (!referral) return JSON.stringify(raw, null, 2);
+  // Pricing v3: the account's credit scale (an older brain sends none: 1).
+  const scale = isRecord(raw) && typeof raw.creditScale === "number" && raw.creditScale > 0 ? raw.creditScale : 1;
   const lines = [
     `Your invite link: ${referral.link}`,
-    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud credits, and so do you once their first chat runs on ${BRAND.CLOUD_NAME}.`,
-    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} credits earned.`,
+    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli, scale)} extra free cloud credits, and so do you once their first chat runs on ${BRAND.CLOUD_NAME}.`,
+    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} invites used, ${formatCloudHours(referral.hoursEarnedMilli, scale)} credits from invites.`,
   ];
   if (referral.canEnterCode && referral.enterCodeUntil != null) {
     lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);

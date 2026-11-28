@@ -28,7 +28,7 @@ import {
   type CloudWakeForUseResult,
 } from "../../../shared/adeCloud";
 import { getErrorMessage } from "../shared/utils";
-import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
+import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger, type CloudWakeAdProof } from "./cloudProvider";
 import type { CloudVault } from "./cloudAccess";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { wakeThroughTransition } from "./cloudInstanceOps";
@@ -140,7 +140,7 @@ export function cloudInstanceForMachine(
 export async function wakeCloudMachineForUse(
   client: CloudProvider,
   machine: { machineKey: string; hostname?: string | null },
-  options: { logger?: CloudLogger; now?: () => number } = {},
+  options: { logger?: CloudLogger; now?: () => number; adProof?: CloudWakeAdProof | null } = {},
 ): Promise<CloudWakeForUseResult> {
   const now = options.now ?? (() => Date.now());
   // Bounded: this sits in front of a connect, which must not wait on a slow provider.
@@ -170,7 +170,7 @@ export async function wakeCloudMachineForUse(
   }
   const started = now();
   try {
-    await wakeThroughTransition(client, instance.id, now);
+    await wakeThroughTransition(client, instance.id, now, options.adProof);
   } catch (error) {
     // Hours, disk, a block, too many awake, a delete under way: every refusal
     // carries the server's code and sentence, and the caller shows the sentence.

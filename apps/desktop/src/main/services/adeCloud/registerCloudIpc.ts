@@ -26,7 +26,7 @@ import {
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
-import { isGravityUrl, type CloudFreeModelsSeenRequest, type CloudFreeModelsState, type CloudSponsoredAdAnswer, type CloudSponsoredAdRequest, type CloudSponsoredHideRequest, type CloudSponsoredSeenRequest, type CloudSponsoredState } from "../../../shared/adeCloud";
+import { isGravityUrl, type CloudFreeModelsSeenRequest, type CloudFreeModelsState, type CloudAdProofAnswer, type CloudAdSentRequest, type CloudSponsoredAdAnswer, type CloudSponsoredAdRequest, type CloudSponsoredHideRequest, type CloudSponsoredSeenRequest, type CloudSponsoredState } from "../../../shared/adeCloud";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
 import { isCloudTierId } from "../../../shared/cloudTiers";
@@ -283,11 +283,11 @@ export function registerCloudIpc(args: {
   // so no pin: the server checks the plan, the answer, and that the chat's
   // computer is one of this account's ADE Cloud computers. The renderer only
   // shows what the server returns.
-  ipcMain.handle(IPC.cloudSponsoredConsent, async (event, arg: { consent?: unknown; confirmed?: unknown }): Promise<CloudSponsoredState | null> => {
+  ipcMain.handle(IPC.cloudSponsoredConsent, async (event, arg: { consent?: unknown; confirmed?: unknown; noticeSeen?: unknown }): Promise<CloudSponsoredState | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredConsent)) return null;
     if (arg?.consent !== "granted" && arg?.consent !== "declined" && arg?.consent !== "notice") throw new AdeExpectedError("Pick yes or no.", "user");
-    const state = await accountApi().setSponsoredConsent(arg.consent, arg.confirmed === true);
-    logger.info("cloud.sponsored_consent", { consent: arg.consent });
+    const state = await accountApi().setSponsoredConsent(arg.consent, arg.confirmed === true, arg.noticeSeen === true);
+    logger.info("cloud.sponsored_consent", { consent: arg.consent, noticeSeen: arg.noticeSeen === true });
     sendToAllWindows(IPC.cloudStatusChanged);
     return state;
   });
@@ -313,7 +313,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudSponsoredAd, async (event, arg: CloudSponsoredAdRequest | undefined): Promise<CloudSponsoredAdAnswer> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredAd)) return { ad: null, reason: "unavailable" };
     // An ADE Free Models chat on any machine asks with no ADE Cloud computer (null).
-    if (!arg || (arg.instanceId !== null && typeof arg.instanceId !== "string") || typeof arg.chatId !== "string" || typeof arg.turnId !== "string") {
+    if (!arg || (arg.instanceId !== null && typeof arg.instanceId !== "string") || (arg.phoneId != null && typeof arg.phoneId !== "string") || typeof arg.chatId !== "string" || typeof arg.turnId !== "string") {
       return { ad: null, reason: "unavailable" };
     }
     try {
@@ -321,6 +321,35 @@ export function registerCloudIpc(args: {
     } catch (error) {
       logger.info("cloud.sponsored_ad_failed", { error: getErrorMessage(error) });
       return { ad: null, reason: "unavailable" };
+    }
+  });
+  // Pricing v3's proof that a person sent a message in a chat on one of the
+  // account's cloud computers or holding its iPhone. Account level, so no pin:
+  // the renderer names the chat's own computer (`instanceId`) and the server
+  // checks it is the caller's. Never thrown: a refusal is "not counted".
+  ipcMain.handle(IPC.cloudSponsoredSent, async (event, arg: CloudAdSentRequest | undefined): Promise<CloudAdProofAnswer> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredSent)) return { counted: false };
+    if (
+      !arg
+      || (arg.instanceId !== null && typeof arg.instanceId !== "string")
+      || (arg.phoneId != null && typeof arg.phoneId !== "string")
+      || typeof arg.chatId !== "string" || !arg.chatId
+      || typeof arg.messageId !== "string" || !arg.messageId
+      || (!arg.instanceId && !arg.phoneId)
+    ) {
+      return { counted: false };
+    }
+    try {
+      return await accountApi().sponsoredSent({
+        instanceId: arg.instanceId,
+        ...(arg.phoneId ? { phoneId: arg.phoneId } : {}),
+        chatId: arg.chatId,
+        messageId: arg.messageId,
+      });
+    } catch (error) {
+      // A lost proof prices the computer without ads: a warn, so Sentry sees it (rate-limited by the log bridge).
+      logger.warn("cloud.sponsored_sent_failed", { error: getErrorMessage(error) });
+      return { counted: false };
     }
   });
   // ADE Free Models (`freeModels.ts`): account level, so no pin. The chat may
@@ -531,12 +560,12 @@ export function registerCloudIpc(args: {
   // Remote connections wake a sleeping box the person is about to use. Only a
   // machine known as a cloud box is looked up (`knowsBox`: at most one bounded
   // read for an unknown one), so a Connect to a laptop barely waits.
-  setCloudWakeForUse(async (target) => {
+  setCloudWakeForUse(async (target, use) => {
     const machineKey = target.pairedMachine?.machineKey?.trim();
     if (!machineKey || !(await machines.knowsBox(machineKey))) return false;
     const client = await savedClient().catch(() => null);
     if (!client) return false;
-    const result = await wakeCloudMachineForUse(client, { machineKey, hostname: target.hostname }, { logger }).catch((error: unknown) => {
+    const result = await wakeCloudMachineForUse(client, { machineKey, hostname: target.hostname }, { logger, adProof: use?.adProof ?? null }).catch((error: unknown) => {
       logger.warn("cloud.wake_for_use_failed", { error: getErrorMessage(error) });
       return null;
     });

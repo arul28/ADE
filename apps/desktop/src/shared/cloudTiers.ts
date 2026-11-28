@@ -1,6 +1,7 @@
 import type { CloudCatalog, CloudTierId as CatalogTierId } from "../../../account-directory/src/cloud/contract";
 import type { CloudMachine } from "./adeCloud";
 import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "./cloudUnitWords";
+import { cloudHoursBothText, cloudTierRatePair, type CloudAdsView } from "./cloudAdPriceWords";
 
 /**
  * The four sizes a person picks for an ADE Cloud lane: Small, Medium, Large
@@ -34,6 +35,12 @@ export type CloudTier = {
   memoryGb: number;
   /** Hours of the plan (Medium-hours) this size uses per hour awake, in thousandths (the account's catalog). 0 for Small, unless Free's Small uses hours (sponsored cards off). */
   multiplierMilli: number;
+  /**
+   * Pricing v3: the ad price of this size, same unit as `multiplierMilli`
+   * (which is then the full price). Null when the server sends none (Pricing
+   * v3 doesn't reach the account): one price, today's.
+   */
+  adMultiplierMilli: number | null;
   /** How far the disk may grow at this size, or null from an older server that does not say. */
   diskMaxGb: number | null;
 };
@@ -79,6 +86,7 @@ export function cloudTiers(catalog: Pick<CloudCatalog, "sizes">): CloudTier[] {
       cpu: size.cpu,
       memoryGb: size.memoryGb,
       multiplierMilli: size.multiplierMilli,
+      adMultiplierMilli: typeof size.adMultiplierMilli === "number" && Number.isFinite(size.adMultiplierMilli) ? size.adMultiplierMilli : null,
       diskMaxGb: typeof size.diskMaxGb === "number" ? size.diskMaxGb : null,
     }];
   });
@@ -187,13 +195,11 @@ function withArticle(label: string): string {
  * Empty when no size uses hours. A plan's line, so never Small: a plan's
  * Small is unlimited, even when this account's Free Small uses hours.
  */
-export function cloudHoursOnSizesLine(includedMilli: number, tiers: readonly CloudTier[]): string {
+export function cloudHoursOnSizesLine(includedMilli: number, tiers: readonly CloudTier[], view: CloudAdsView | null = null): string {
+  // Pricing v3: one size reads at a glance ("up to 62 hours on a Medium with ads · 50 with no ads"); the price table lists the rest.
   return tiers
-    .filter((tier) => tier.id !== "small" && cloudTierUsesHours(tier))
-    .map((tier, index) => {
-      const hours = cloudTierHoursAt(tier, includedMilli).replace(/ h$/, "");
-      return index === 0 ? `${hours} ${hours === "1" ? "hour" : "hours"} on ${withArticle(tier.label)}` : `${hours} on ${withArticle(tier.label)}`;
-    })
+    .filter((tier) => tier.id !== "small" && cloudTierUsesHours(tier) && (!view || tier.id === "medium"))
+    .map((tier, index) => cloudHoursBothText(includedMilli, cloudTierRatePair(tier), view, withArticle(tier.label), index === 0))
     .join(" · ");
 }
 
