@@ -7343,6 +7343,29 @@ describe("Pricing v3's ad price", () => {
       expect(usedMilli(harness) - before).toBe(2 * 500 + 9 * 400);
     });
 
+    it("a Mac the webhook moves to running is on its price at once: with ads on and a proof in its window, minute one costs 4, not 5", async () => {
+      seedMac({ status: "starting", awake_since: null, mac_state: "starting" });
+      // A person's message already counted for it (its window open); its row still holds the full rate.
+      harness.insert("cloud_ad_targets", { target: MAC, user_id: OWNER, proof_at: clock, updated_at: clock });
+      expect(priced(MAC)).toEqual({ rate: 500 * 60, adFull: null });
+      const before = usedMilli(harness);
+      // NoMac says ready, signed as NoMac signs.
+      harness.env.NOMAC_WEBHOOK_SECRET = "whsec_test";
+      clock = t0 + 10_000;
+      const raw = JSON.stringify({ id: "evt_mac_ready", type: "mac.ready", data: { session: { ...session, ready_at: new Date(clock).toISOString() } } });
+      const t = Math.floor(clock / 1000);
+      const v1 = createHmac("sha256", "whsec_test").update(`${t}.${raw}`).digest("hex");
+      const delivered = await handleNomacWebhook(new Request("https://directory.test/cloud/nomac/webhook", { method: "POST", headers: { "nomac-signature": `t=${t},v1=${v1}` }, body: raw }), harness.env, clock);
+      expect(delivered.status).toBe(200);
+      expect(computer(harness, MAC)).toMatchObject({ status: "running", awake_since: clock });
+      expect(priced(MAC)).toEqual({ rate: 400 * 60, adFull: 500 * 60 });
+      // Stopped 50 s in, before any tick: one minute, at the price with ads.
+      endAt(clock + 50_000);
+      await tickAt(clock + 55_000);
+      expect(computer(harness, MAC).status).toBe("stopped");
+      expect(usedMilli(harness) - before).toBe(400);
+    });
+
     it("a queued Mac charges nothing; its charge starts at the tick that sees it ready", async () => {
       seedMac({ status: "starting", awake_since: null, mac_state: "queued" });
       Object.assign(session, { state: "queued", ready_at: null });
