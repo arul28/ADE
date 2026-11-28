@@ -31,4 +31,12 @@ public enum Brand {
     /// version keeps every app that registers only `ade://` from running.
     /// Mirrors `BRAND.LINK_SCHEME_FOR_NEW_LINKS` on desktop.
     public static let linkSchemeForNewLinks = "daex"
+
+    /// The GitHub App's slug ("DAEX for GitHub"); the install page is
+    /// `github.com/apps/<slug>/installations/new`. Mirrors `GITHUB_APP_SLUG`
+    /// in apps/desktop/src/shared/github/githubAppIdentity.ts.
+    public static let githubAppSlug = "daex-for-github"
+    /// Every slug the app has had, current first. Bot comments and check runs
+    /// made before the rename keep `ade-for-github`. Mirrors `GITHUB_APP_SLUGS`.
+    public static let githubAppSlugs = [githubAppSlug, "ade-for-github"]
 }

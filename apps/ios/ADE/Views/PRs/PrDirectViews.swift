@@ -31,7 +31,7 @@ struct GitHubDirectStateCopy: Equatable {
   var secondary: GitHubDirectStateAction?
 }
 
-let adeGitHubAppInstallURL = URL(string: "https://github.com/apps/ade-for-github/installations/new")!
+let adeGitHubAppInstallURL = URL(string: "https://github.com/apps/\(Brand.githubAppSlug)/installations/new")!
 private let githubInstallationsURL = URL(string: "https://github.com/settings/installations")!
 
 /// The words for each state a direct read can end in (spec section 5, the
