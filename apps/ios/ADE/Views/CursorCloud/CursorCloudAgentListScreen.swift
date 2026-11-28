@@ -238,9 +238,8 @@ struct CursorCloudStatusChip: View {
   }
 
   var body: some View {
-    Text(status.uppercased())
-      .font(.system(size: 9, weight: .bold, design: .monospaced))
-      .tracking(1)
+    Text(status.adeSentenceCased)
+      .font(.system(size: 9.5, weight: .medium, design: .monospaced))
       .foregroundStyle(tint)
       .padding(.horizontal, 5)
       .padding(.vertical, 2)

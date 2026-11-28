@@ -80,7 +80,7 @@ import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT, buildSyncHostPortCandidates } from "./syncProtocol";
-import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncBrowserTabCloser, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncBrowserTabControl, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { MacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
@@ -206,8 +206,8 @@ type SyncServiceArgs = {
    * served to iOS and the hosted web client through `workTools.*`.
    */
   workToolsStateService?: WorkToolsStateService | null;
-  /** The desktop browser bridge, for `workTools.closeBrowserTab`. */
-  builtInBrowserService?: SyncBrowserTabCloser | null;
+  /** The desktop browser bridge, for `workTools.closeBrowserTab` and `workTools.openBrowserTab`. */
+  builtInBrowserService?: SyncBrowserTabControl | null;
   /** Apple device environment for remote surfaces; absent off macOS. */
   appleDeviceService?: AppleDeviceRemoteService | null;
   /** The lanes' Android emulators for remote surfaces; every host. */
@@ -268,6 +268,7 @@ type SyncServiceArgs = {
     | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   onRemoteFileWrite?: () => void;
+  onRemoteUse?: (use: { action: string; args: unknown } | "terminal_input") => void;
   /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */
   onLaneShareEvent?: (event: LaneShareHostEvent) => void;
   rosterProvider?: SyncRosterProvider;
@@ -1400,6 +1401,7 @@ export function createSyncService(args: SyncServiceArgs) {
     projectCatalogProvider: args.projectCatalogProvider,
     projectScopes: args.projectScopes,
     onRemoteFileWrite: args.onRemoteFileWrite,
+    onRemoteUse: args.onRemoteUse,
     rosterProvider: args.rosterProvider,
     foreignChatProvider: args.foreignChatProvider,
     personalChatScope: args.personalChatScope,

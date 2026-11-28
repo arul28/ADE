@@ -298,7 +298,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       );
     },
     blockquote: ({ children }) => (
-      <blockquote className={`mb-3 border-s-2 ps-3 text-muted-fg/72 last:mb-0 ${accent.blockquoteBorder} ${RTL_FOLLOWS_FIRST_BLOCK_CLASS}`}>
+      <blockquote className={`mb-3 border-s-2 ps-3 text-muted-fg/72 last:mb-0 [[data-theme=light]_&]:text-fg ${accent.blockquoteBorder} ${RTL_FOLLOWS_FIRST_BLOCK_CLASS}`}>
         {children}
       </blockquote>
     ),

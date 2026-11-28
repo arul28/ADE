@@ -299,16 +299,15 @@ export function ConnectedTag() {
   );
 }
 
-/** The uppercase chip a tile shows when it is not connected. */
+/** The small chip a tile shows when it is not connected. */
 export function ProviderTileBadge({ children }: { children: React.ReactNode }) {
   return (
     <span
       style={{
-        fontSize: 9,
-        fontFamily: MONO_FONT,
+        fontSize: 10,
+        fontFamily: SANS_FONT,
+        fontWeight: 500,
         color: COLORS.textMuted,
-        textTransform: "uppercase",
-        letterSpacing: "0.6px",
       }}
     >
       {children}

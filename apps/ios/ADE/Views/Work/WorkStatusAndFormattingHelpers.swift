@@ -1737,10 +1737,10 @@ func sessionStatusLabel(_ session: TerminalSessionSummary, summary: AgentChatSes
 
 func sessionStatusLabel(for status: String) -> String {
   switch status {
-  case "awaiting-input": return "NEEDS INPUT"
-  case "active": return "RUNNING"
-  case "idle": return "IDLE"
-  default: return "ENDED"
+  case "awaiting-input": return "Needs input"
+  case "active": return "Running"
+  case "idle": return "Idle"
+  default: return "Ended"
   }
 }
 
@@ -1820,7 +1820,7 @@ func pendingInputResolutionLabel(for resolution: String) -> String {
   case "accepted": return "Accepted"
   case "declined": return "Declined"
   case "cancelled": return "Cancelled"
-  default: return resolution.replacingOccurrences(of: "_", with: " ").capitalized
+  default: return resolution.replacingOccurrences(of: "_", with: " ").lowercased().adeSentenceCased
   }
 }
 

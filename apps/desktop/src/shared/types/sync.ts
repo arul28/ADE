@@ -3603,6 +3603,8 @@ export type SyncRemoteCommandAction =
   | "workTools.closeBrowserTab"
   | "workTools.readBrowserTabFrame"
   | "workTools.sendBrowserTabInput"
+  | "workTools.listDevServers"
+  | "workTools.openBrowserTab"
   // Proof records for the hosted web client's citations and scene stills. Read-only;
   // the desktop reads the same list through its own IPC.
   | "computerUse.listArtifacts"

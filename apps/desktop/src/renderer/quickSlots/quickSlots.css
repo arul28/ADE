@@ -162,8 +162,7 @@
 .ade-qs-kind {
   margin-top: auto;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-  font-size: 8px;
-  letter-spacing: 0.08em;
+  font-size: 9px;
   color: var(--color-muted-fg);
 }
 
@@ -299,8 +298,7 @@ html[data-reduce-motion="true"] .ade-qs-cell {
 
 .ade-qs-picker-kind {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-  font-size: 8px;
-  letter-spacing: 0.06em;
+  font-size: 9px;
   color: var(--color-muted-fg);
 }
 

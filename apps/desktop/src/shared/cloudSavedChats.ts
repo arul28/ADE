@@ -5,13 +5,17 @@
 
 import {
   cloudChatRowSettingsOf,
+  cloudLaneColorOf,
   type CloudChatComputer,
+  type CloudChatProofSource,
   type CloudChatRow,
   type CloudChatRowInput,
   type CloudChatRowSettings,
   type CloudChatTranscriptPage,
   type CloudComputerDeleteReason,
 } from "../../../account-directory/src/cloud/contract";
+import { bytesToBase64 } from "./base64";
+import type { CloudSavedChatProof } from "./cloudApiClient";
 import type { AgentChatSessionSummary } from "./types/chat";
 
 export type { CloudChatComputer, CloudChatRowSettings, CloudComputerDeleteReason };
@@ -21,6 +25,13 @@ export type { CloudChatComputer, CloudChatRowSettings, CloudComputerDeleteReason
  * computer rests. Null when the chat has none.
  */
 export { cloudChatRowSettingsOf };
+
+/**
+ * A lane color as a saved row or a launch carries it (`#rrggbb`, lower case),
+ * or null. The computer sends its lane's color with each row; a client checks
+ * it again before it paints with it.
+ */
+export { cloudLaneColorOf };
 
 /**
  * A saved row's settings as summary fields, checked again: a client never
@@ -61,6 +72,19 @@ export type CloudSavedChatPage = CloudChatTranscriptPage;
 export type CloudSavedChatsListArgs = { machineKey?: string | null; projectKey?: string | null; limit?: number; cursor?: string | null };
 export type CloudSavedChatReadArgs = { machineKey: string; chatId: string; before?: number | null; limit?: number };
 export type CloudSavedChatDeleteArgs = { machineKey: string; chatId: string };
+/** One proof picture a saved chat cited, by the chat's own saved copy (`machineKey`, `chatId`). */
+export type CloudSavedChatProofArgs = { machineKey: string; chatId: string; artifactId: string };
+/**
+ * A saved proof picture as a client shows it: a data URL of a WebP, PNG,
+ * JPEG or GIF (its type from its bytes), and whether it is a picture or a
+ * still of a video. Null from the bridge when nothing was saved.
+ */
+export type CloudSavedChatProofResult = { dataUrl: string; source: CloudChatProofSource };
+
+/** A saved proof's bytes as the data URL a client shows (no Buffer: the web client builds it too). */
+export function savedChatProofResultOf(proof: CloudSavedChatProof): CloudSavedChatProofResult {
+  return { dataUrl: `data:${proof.mimeType};base64,${bytesToBase64(new Uint8Array(proof.bytes))}`, source: proof.source };
+}
 
 export function cloudSavedChatsUrl(base: string): string {
   return `${base.replace(/\/+$/, "")}/cloud/chats`;

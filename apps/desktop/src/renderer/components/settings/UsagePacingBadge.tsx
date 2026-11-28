@@ -2,13 +2,13 @@ import type { UsagePacing, UsagePacingStatus } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 const PACING_STYLES: Record<string, { bg: string; border: string; text: string; label: string }> = {
-  "far-behind":     { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "var(--color-muted-fg)", label: "FAR BEHIND" },
-  "behind":         { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "var(--color-secondary-fg)", label: "BEHIND" },
-  "slightly-behind":{ bg: "rgba(34,197,94,0.06)",   border: "rgba(34,197,94,0.20)",   text: "var(--color-muted-fg)", label: "SLIGHTLY BEHIND" },
-  "on-track":       { bg: "rgba(34,197,94,0.10)",   border: "rgba(34,197,94,0.30)",   text: "#22C55E", label: "ON TRACK" },
-  "slightly-ahead": { bg: "rgba(245,158,11,0.08)",  border: "rgba(245,158,11,0.25)",  text: "#F59E0B", label: "SLIGHTLY AHEAD" },
-  "ahead":          { bg: "rgba(245,158,11,0.10)",   border: "rgba(245,158,11,0.30)",  text: "#F59E0B", label: "AHEAD" },
-  "far-ahead":      { bg: "rgba(239,68,68,0.10)",   border: "rgba(239,68,68,0.30)",   text: "#EF4444", label: "FAR AHEAD" },
+  "far-behind":     { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "var(--color-muted-fg)", label: "Far behind" },
+  "behind":         { bg: "rgba(113,113,122,0.08)", border: "rgba(113,113,122,0.25)", text: "var(--color-secondary-fg)", label: "Behind" },
+  "slightly-behind":{ bg: "rgba(34,197,94,0.06)",   border: "rgba(34,197,94,0.20)",   text: "var(--color-muted-fg)", label: "Slightly behind" },
+  "on-track":       { bg: "rgba(34,197,94,0.10)",   border: "rgba(34,197,94,0.30)",   text: "#22C55E", label: "On track" },
+  "slightly-ahead": { bg: "rgba(245,158,11,0.08)",  border: "rgba(245,158,11,0.25)",  text: "#F59E0B", label: "Slightly ahead" },
+  "ahead":          { bg: "rgba(245,158,11,0.10)",   border: "rgba(245,158,11,0.30)",  text: "#F59E0B", label: "Ahead" },
+  "far-ahead":      { bg: "rgba(239,68,68,0.10)",   border: "rgba(239,68,68,0.30)",   text: "#EF4444", label: "Far ahead" },
 };
 
 function formatEta(hours: number | null): string {
@@ -47,7 +47,7 @@ export function UsagePacingBadge({
       {/* Status badge */}
       <div className="flex items-center gap-2">
         <span
-          className="inline-flex items-center gap-1.5 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[1px]"
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 font-sans text-[10px] font-medium"
           style={{ background: style.bg, border: `1px solid ${style.border}`, color: style.text }}
         >
           <span

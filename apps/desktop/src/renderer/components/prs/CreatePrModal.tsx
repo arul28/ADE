@@ -819,7 +819,7 @@ export function CreatePrModal({
                           {[
                             { label: "AHEAD", value: selectedNormalLane.status.ahead, color: C.textPrimary },
                             { label: "BEHIND", value: selectedNormalLane.status.behind, color: C.textSecondary },
-                            { label: "STATUS", value: selectedNormalLane.status.dirty ? "DIRTY" : "CLEAN", color: selectedNormalLane.status.dirty ? C.warning : C.success },
+                            { label: "STATUS", value: selectedNormalLane.status.dirty ? "Dirty" : "Clean", color: selectedNormalLane.status.dirty ? C.warning : C.success },
                           ].map((stat) => (
                             <div
                               key={stat.label}
@@ -1121,14 +1121,12 @@ export function CreatePrModal({
                               color: C.accent,
                               fontFamily: "var(--font-sans)",
                               fontSize: 10,
-                              fontWeight: 700,
-                              textTransform: "uppercase" as const,
-                              letterSpacing: "1px",
+                              fontWeight: 600,
                               padding: "4px 10px",
                               cursor: "pointer",
                             }}
                           >
-                            VIEW
+                            View
                           </button>
                         </div>
                       ))}
@@ -1165,14 +1163,12 @@ export function CreatePrModal({
                       color: C.textSecondary,
                       fontFamily: "var(--font-sans)",
                       fontSize: 11,
-                      fontWeight: 700,
-                      textTransform: "uppercase" as const,
-                      letterSpacing: "1px",
+                      fontWeight: 600,
                       padding: "10px 18px",
                       cursor: "pointer",
                     }}
                   >
-                    CANCEL
+                    Cancel
                   </button>
                 </RadixDialog.Close>
               )}
@@ -1186,9 +1182,7 @@ export function CreatePrModal({
                     color: C.textSecondary,
                     fontFamily: "var(--font-sans)",
                     fontSize: 11,
-                    fontWeight: 700,
-                    textTransform: "uppercase" as const,
-                    letterSpacing: "1px",
+                    fontWeight: 600,
                     padding: "10px 18px",
                     cursor: "pointer",
                     display: "flex",
@@ -1197,7 +1191,7 @@ export function CreatePrModal({
                   }}
                 >
                   <ArrowLeft size={12} weight="bold" />
-                  BACK
+                  Back
                 </button>
               )}
               {numericStep === 3 && (
@@ -1219,9 +1213,7 @@ export function CreatePrModal({
                     color: C.bgMain,
                     fontFamily: "var(--font-sans)",
                     fontSize: 11,
-                    fontWeight: 700,
-                    textTransform: "uppercase" as const,
-                    letterSpacing: "1px",
+                    fontWeight: 600,
                     padding: "10px 20px",
                     cursor: canProceed ? "pointer" : "not-allowed",
                     opacity: canProceed ? 1 : 0.5,
@@ -1230,7 +1222,7 @@ export function CreatePrModal({
                     gap: 6,
                   }}
                 >
-                  NEXT STEP
+                  Next step
                   <ArrowRight size={12} weight="bold" />
                 </button>
               )}
@@ -1246,9 +1238,7 @@ export function CreatePrModal({
                     color: C.bgMain,
                     fontFamily: "var(--font-sans)",
                     fontSize: 11,
-                    fontWeight: 700,
-                    textTransform: "uppercase" as const,
-                    letterSpacing: "1px",
+                    fontWeight: 600,
                     padding: "10px 20px",
                     cursor: (busy || !canProceed) ? "not-allowed" : "pointer",
                     opacity: (busy || !canProceed) ? 0.5 : 1,
@@ -1258,7 +1248,7 @@ export function CreatePrModal({
                   }}
                 >
                   {busy && <CircleNotch size={12} className="animate-spin" />}
-                  {busy ? "CREATING..." : "CREATE PR"}
+                  {busy ? "Creating…" : "Create PR"}
                 </button>
               )}
               {numericStep === 3 && results && (
@@ -1272,14 +1262,12 @@ export function CreatePrModal({
                       color: C.bgMain,
                       fontFamily: "var(--font-sans)",
                       fontSize: 11,
-                      fontWeight: 700,
-                      textTransform: "uppercase" as const,
-                      letterSpacing: "1px",
+                      fontWeight: 600,
                       padding: "10px 24px",
                       cursor: "pointer",
                     }}
                   >
-                    DONE
+                    Done
                   </button>
                 </RadixDialog.Close>
               )}

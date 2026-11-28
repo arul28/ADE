@@ -3,6 +3,7 @@ import {
   ATTENTION_EVENT_KINDS,
   ATTENTION_MESSAGE_EVENT_KIND,
   ATTENTION_PHASES,
+  ATTENTION_POLICY_EVENT_KINDS,
   ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
   DEFAULT_ATTENTION_PREFERENCES,
   attentionDestinationDeepLink,
@@ -15,8 +16,10 @@ import {
   type AttentionItem,
   type AttentionMachineRef,
   type AttentionPhase,
+  type AttentionPolicyEventKind,
   type AttentionPreferences,
   type AttentionPreferenceScope,
+  type AttentionScopePatch,
   type AttentionPresence,
   type AttentionProjectRef,
   type AttentionSnapshot,
@@ -161,6 +164,7 @@ function parseProject(value: unknown): AttentionProjectRef | null {
     || typeof candidate.projectId !== "string"
     || typeof candidate.name !== "string"
     || !optionalString(candidate.rootPath)
+    || !optionalString(candidate.settingsKey)
   ) return null;
   return candidate as AttentionProjectRef;
 }
@@ -359,9 +363,11 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
     required("eventPolicies", (field) => {
       const policies = record(field);
       if (!policies) return false;
+      // Every item event must be in the account's map; the newer events
+      // (messages, goals, the background service) fall back to their default.
       return (partial || ATTENTION_EVENT_KINDS.every((kind) => kind in policies))
         && Object.entries(policies).every(([kind, policy]) =>
-          ATTENTION_EVENT_KINDS.includes(kind as AttentionEventKind)
+          ATTENTION_POLICY_EVENT_KINDS.includes(kind as AttentionPolicyEventKind)
           && ["off", "ambient", "notify"].includes(String(policy)));
     })
     && required("notificationsEnabled", (field) => typeof field === "boolean")
@@ -388,13 +394,14 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
 
 function parseAttentionPreferences(value: unknown): AttentionPreferences {
   const candidate = record(value);
-  const account = record(candidate?.account);
+  const account = candidate?.account === undefined ? DEFAULT_ATTENTION_PREFERENCES.account : record(candidate.account);
   const normalizedAccount = account && account.dockBadgeScope === undefined
     ? { ...account, dockBadgeScope: "local" }
     : account;
-  const devices = record(candidate?.devices);
+  const devices = candidate?.devices === undefined ? {} : record(candidate.devices);
   const machines = candidate?.machines === undefined ? {} : record(candidate.machines);
-  const projects = record(candidate?.projects);
+  const projects = candidate?.projects === undefined ? {} : record(candidate.projects);
+  const mutedSessionIds = candidate?.mutedSessionIds === undefined ? [] : candidate.mutedSessionIds;
   if (
     !candidate
     || !isPreferenceScope(normalizedAccount)
@@ -404,8 +411,8 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
     || !Object.values(machines).every((scope) => isPreferenceScope(scope, true))
     || !projects
     || !Object.values(projects).every((scope) => isPreferenceScope(scope, true))
-    || !Array.isArray(candidate.mutedSessionIds)
-    || !candidate.mutedSessionIds.every((id) => typeof id === "string")
+    || !Array.isArray(mutedSessionIds)
+    || !mutedSessionIds.every((id) => typeof id === "string")
   ) {
     throw new Error(
       `Activity preferences were incompatible. Update ${BRAND.NAME} and retry.`,
@@ -414,7 +421,10 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
   return {
     ...candidate,
     account: normalizedAccount,
+    devices,
     machines,
+    projects,
+    mutedSessionIds,
   } as AttentionPreferences;
 }
 
@@ -783,9 +793,16 @@ export function createAttentionNamespace(
         undefined,
         { userInitiated: true },
       ));
-      return result?.preferences === undefined
+      const preferences = result?.preferences === undefined || result.preferences === null
         ? DEFAULT_ATTENTION_PREFERENCES
         : parseAttentionPreferences(result.preferences);
+      // An older relay sends no `features`; the answer stays as it was.
+      return Array.isArray(result?.features)
+        ? {
+          ...preferences,
+          relayFeatures: result.features.filter((feature): feature is string => typeof feature === "string"),
+        }
+        : preferences;
     },
 
     async putPreferences(
@@ -799,6 +816,9 @@ export function createAttentionNamespace(
       const {
         devices: _deviceOverrides,
         machines: _machineOverrides,
+        projects: _projectOverrides,
+        relayFeatures: _relayFeatures,
+        relayUpdatedAt: _relayUpdatedAt,
         ...accountPreferences
       } = preferences;
       await request(
@@ -819,7 +839,7 @@ export function createAttentionNamespace(
     async putMachinePreferences(
       accountOwnerId: string,
       machineKey: string,
-      preferences: Partial<AttentionPreferenceScope>,
+      preferences: AttentionScopePatch,
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
@@ -859,7 +879,7 @@ export function createAttentionNamespace(
     async putDevicePreferences(
       accountOwnerId: string,
       deviceId: string,
-      preferences: Partial<AttentionPreferenceScope>,
+      preferences: AttentionScopePatch,
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
@@ -871,6 +891,27 @@ export function createAttentionNamespace(
         "device preference update",
         "PATCH",
         `/attention/account/preferences/devices/${encodeURIComponent(id)}`,
+        preferences,
+        { userInitiated: true },
+      );
+    },
+
+    /** One project's notification override, on its own atomic relay route. */
+    async putProjectPreferences(
+      accountOwnerId: string,
+      projectId: string,
+      preferences: AttentionScopePatch,
+    ) {
+      const owner = accountClient.getSnapshot().userId?.trim() ?? "";
+      if (!owner || owner !== accountOwnerId.trim()) {
+        throw new Error("The ADE account changed before Activity settings could be saved.");
+      }
+      const id = projectId.trim();
+      if (!id) throw new Error("A project is required to change its notifications.");
+      await request(
+        "project preference update",
+        "PATCH",
+        `/attention/account/preferences/projects/${encodeURIComponent(id)}`,
         preferences,
         { userInitiated: true },
       );

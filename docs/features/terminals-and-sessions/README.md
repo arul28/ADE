@@ -766,6 +766,9 @@ Renderer surfaces:
     `snoozedUntil`. One `setTimeout` at the soonest deadline (at most 10 min)
     re-derives the partition.
   - The board model (`buildWorkBoardModel`, `lanePrWaitingReason`).
+  - Pinned chats move to the top of their lane or board column immediately.
+    Status and Time show a Pinned group across machines. A chat's pin is
+    saved on its owning runtime and appears on other connected devices.
   - Chips, pins and sort are saved per project; a deeplink override is
     transient and clears on any change. `reorderWorkLanes` switches to Manual.
 - `apps/desktop/src/renderer/components/terminals/workLaneOrder.ts`,
@@ -1697,7 +1700,9 @@ sliding window, not an absolute offset).
   the brain that owns the chat and refuses a terminal that is not live there.
   The chat pane's **Watching** section (`ChatTerminalWatches.tsx`) reads and
   stops them through the chat's pin and re-reads on the `meta-updated`
-  session event the service raises for the chat (`sessionService.notifyChanged`).
+  session event the service raises for the chat (`sessionService.notifyChanged`),
+  and again when a lost link to the chat's computer comes back. A failed read
+  is shown by the pane's one shells-and-watches notice (`ChatTerminalsReadNotice`).
 - **Persistence:** in memory only. Watches end when the brain restarts; agents
   re-arm. CTO tools: `watchTerminal` / `unwatchTerminal`.
 

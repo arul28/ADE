@@ -393,6 +393,8 @@ struct WorkMarkdownBlockView: View {
       Divider()
     case .proofCitation(let artifactId, let caption):
       WorkProofCitationView(artifactId: artifactId, caption: caption)
+        // Its saved-proof state belongs to this id, never to the row's place.
+        .id(artifactId)
     case .proofCompare(let compare):
       WorkProofCompareView(compare: compare)
     }
@@ -603,7 +605,7 @@ struct WorkCodeBlockView: View {
         } label: {
           Text(copied ? "Copied" : "Copy")
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(copied ? ADEColor.success : ADEColor.accent)
+            .foregroundStyle(copied ? ADEColor.successText : ADEColor.accentText)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }

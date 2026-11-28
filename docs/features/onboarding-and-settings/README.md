@@ -415,15 +415,26 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
 - Opening a project with no own computer online binds the tab to ADE Cloud
   (`openAdeCloudProject`, `renderer/state/adeCloudTabs.ts`): the normal pages
   with its ADE Cloud lanes.
-- `projects/AddProjectForm.tsx`: **Add project** from GitHub. **Open a
-  folder…** and **New empty project…** sit under it
-  (`AddProjectMoreActions.tsx`), with a computer picker when others are
-  connected. The repository, then one row per machine (this computer except on
-  hosted web, and every saved machine). Offline machines cannot be ticked; the
-  form never connects or wakes one; a machine with a copy says "already here".
-  Each ticked machine clones on its own (`projectCopyJobs.ts`; a retry goes to
-  the same machine). **Opens on** picks where it opens; a closed form gets
-  "<repo> is ready on <machine>" with **Open**, or a toast naming the machine.
+- `projects/AddProjectForm.tsx`: **Add project** from GitHub. The project
+  belongs to the account, not to a computer: **Add project** puts it on the
+  account and opens its tab at once (`openAddedAccountProject`), copy or no
+  copy. **Also put a copy on** (optional) lists this computer (not on hosted
+  web) and the connected computers only; nothing is ticked by default, and
+  each row shows the full folder the copy goes to (**Change…** picks
+  another). Each ticked computer clones in the background on its own
+  (`projectCopyJobs.ts`; a retry goes to the same machine), and the tab moves
+  to the first copy that is there (`useAdeCloudTabFollowsCopy`); a closed form
+  says "<repo> is ready on <machine>" with **Open**, or a toast names the
+  machine that failed. A computer with no copy can still be picked when work
+  starts (the composer's clone step). Signed out (or an address only the
+  cloning computer can read), the list reads **Put a copy on** and the form
+  opens a copy instead: the first ticked one once it is cloned, else one
+  already there. A failed clone ends that wait, so its folder can change
+  before Retry. `CloneLocallyDialog` passes `opensCopy` to open the new copy
+  rather than the project's tab.
+  **Open a folder…** and **New empty project…** sit under it
+  (`AddProjectMoreActions.tsx`), with a computer picker beside them when
+  others are connected.
 - `projects/ProjectCopiesMenu.tsx`: a project's copies (Home chip, sidebar
   computers tag, the tab's **Copies** submenu). One row per machine: the copy
   in use, another copy (moves the tab with that copy's binding), "not here"
@@ -672,9 +683,12 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   - `ADE_THEME_FAMILIES` each have a dark and light variant. `dark` and
     `light` use the stylesheet palettes; others set inline `--color-*` on
     `<html>`.
-  - **Only `<html>` carries `data-theme` / `data-theme-id`**; the stylesheet
-    re-declares `--color-*` under `[data-theme]`, so the attribute lower down
-    resets the palette.
+  - The app theme uses `data-theme` and `data-theme-id` on `<html>`. The
+    Appearance preview sets its own `data-theme` and resolves the surface
+    kit's card colours inside that preview.
+  - Hover or focus a theme swatch to see its colours in the composer and
+    transcript preview. Select the swatch to apply it. Theme files groups
+    import, export, and links to theme libraries under one disclosure.
   - `LEGACY_THEME_ID_ALIASES` maps retired ids (obsidian, high-contrast,
     midnight, evergreen, parchment, blush). `themeFollowsSystem` paints the
     family's variant for `systemColorScheme` (`effectiveThemeId`).
@@ -790,9 +804,14 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     viewing. MCP server definitions belong to your account. The MCP page
     searches the registry and the discovered servers and shows ten rows at a
     time in each list. **Try again** shows progress while ADE checks account sync.
-  - **Links on GitHub** checks repository access before offering **Add**.
-    Repository admins can add the links. Other collaborators can copy the commands
-    to share with an admin.
+  - **Links on GitHub** (Linear page) turns typed Linear keys into links on
+    github.com through repository autolinks, one per team key. Only a
+    repository admin can read or add them, so when an admin opens the page ADE
+    adds the missing ones itself, once per repository and key (remembered on
+    this computer, so a link the admin deletes is not added again from here).
+    **Add** shows only when that failed or a link was removed later. Anyone
+    else gets a quiet note, not a warning: inside ADE's PR view keys link
+    anyway (see [Issues](../issues/README.md)).
   - **ADE agent** (Linear page) reads `viewerIsAdmin` from the Linear connection
     status (Linear's `viewer.admin`, asked in the same identity query on every
     route: this computer, a pinned machine, the CLI, ADE Cloud and the web
@@ -913,7 +932,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   status; routes the gh-CLI/token banner by `target`; keys dismissal on the
   sub-state, so a newly unreadable store re-raises it.
 - `settings/LinearIntegrationSection.tsx`, `LinearSection.tsx`: Linear OAuth or
-  API key, workspace status, GitHub autolink setup.
+  API key, workspace status, automatic GitHub autolinks for admins.
 - `settings/PrChatTranscriptsSection.tsx`: `prTranscriptGists.enabled` under
   Project → Agents.
 - `settings/ResetAdeSection.tsx`: **Reset ADE**, last on General (this machine
@@ -1961,7 +1980,7 @@ Project section, or the default page. `isMachineScopedSettingsRoute`
 | Sharing (You, desktop only) | `laneShare/SharingSettingsPage.tsx`, `laneShare/laneShareDefaults.tsx` | **Lanes you shared** (`#sharing-by-me`: every share on any machine, by project, a row per person; rows for this window's machine and project show and change rights and usage; a share elsewhere can be stopped), **Lanes shared with you** (`#sharing-with-me`: Accept, Open, Decline, Leave; no project needed), **Default access** (`#sharing-defaults`, account key `laneShare.defaultRights`, scope `all`). In `ACCOUNT_ONLY_TAB_IDS`; hidden on the web (no channel for `lane_share`). See [lane sharing](../lanes/lane-sharing.md). |
 | Agents (Project) | `PrChatTranscriptsSection.tsx` | PR transcript gists (id `lanes-git.pr-chat-transcripts`). |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear. Legacy `?tab=integrations`, `github`, `linear`, and `?integration=github|linear`; `?integration=cli` follows the `ade-cli` anchor to General. |
-| Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | `AttentionPreferences` delivery: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the completion sound. Then Activity's surfaces: the notch (enabled; reveal `always` or `hover`, the same strip either way; expanded panel), celebrations, sounds, hide-previews, per-machine mute, and delivery switches for iPhones and iPads registered to the account. The notch always flashes for work that needs you, and the strip shows state-group counts. One `useActivitySettings()` model; `ActivitySettingsControls` also mounts in the Activity popover and pane. Legacy `?tab=attention`, `activity`, and `#attention-notch`, `#celebrations`, `#attention-sounds`, `#hide-previews`. |
+| Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | `AttentionPreferences` delivery: per-event policy (off / ambient / notify) for agent, PR, message, goal and background-service events, everywhere or for one project, computer or phone (scope switcher above the matrix; "Choose events" under Machines), quiet hours (saved with this computer's time zone), focus suppression, phone delivery and escalation, the completion sound. Then Activity's surfaces: the notch (enabled; reveal `always` or `hover`, the same strip either way; expanded panel), celebrations, sounds, hide-previews, per-machine mute, and delivery switches for iPhones and iPads registered to the account. The notch always flashes for work that needs you, and the strip shows state-group counts. One `useActivitySettings()` model; `ActivitySettingsControls` also mounts in the Activity popover and pane. Legacy `?tab=attention`, `activity`, and `#attention-notch`, `#celebrations`, `#attention-sounds`, `#hide-previews`. |
 | Passwords & Secrets (This computer) | `passwords/PasswordsSection.tsx`, `PasswordDialogs.tsx`, `passwordsFormat.ts` | One end-to-end encrypted vault (logins, passkeys, secrets), on by default; secrets for every or one project, in the account or this computer only, `.env` import and export. `?tab=secrets` / `secret` open Secrets. See [Passwords & Secrets](../passwords/README.md). |
 | Deleted & Archived (Project) | `lanes/LanesSettingsPage.tsx` (`DeletedArchivedPage`), `RecentlyDeletedSection.tsx`, `ArchiveSection.tsx`, `EveryCopyList.tsx`, `state/everyCopyRead.ts` | Recently deleted lanes and chats, and the archive, from every online copy of the project in one list (no picker; an asleep ADE Cloud computer is not read, and neither is the ADE Cloud account itself). Each row acts on its own machine's pin. Legacy `?tab=archive`, `archived`, `recently-deleted`, `trash`. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Disk space (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk and lane storage, cleanup history, idle-archive rules, session lifecycle, project files, for the copy picked on the page. Rule fields show the value in force with "Inherited". Legacy `?tab=storage`, `disk`, `space`, `session-lifecycle`; `?tab=diagnostics` opens Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |

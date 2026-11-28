@@ -37,6 +37,9 @@ const CATALOG_ICON: Record<ActivityIconKey, React.ElementType> = {
   "merge-ready": GitMerge,
   "pull-request": GitPullRequest,
   closed: Prohibit,
+  message: Bell,
+  goal: CheckCircle,
+  service: WarningCircle,
 };
 
 /** A message's body, when it says more than its title. */

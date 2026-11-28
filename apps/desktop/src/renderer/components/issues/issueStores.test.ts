@@ -12,7 +12,8 @@ import {
   peekGitHubIssue,
   useGitHubIssue,
 } from "./githubIssueStore";
-import { editLinearIssue, peekLinearIssue } from "./linearIssueStore";
+import { editLinearIssue, peekLinearIssue, useCachedLinearWorkspace, useLinearWorkspaceTeamKeys } from "./linearIssueStore";
+import { LINEAR_CONNECTION_CHANGED_EVENT } from "../../lib/linearConnectionEvents";
 import { initialIssueForm, writeIssueDraft } from "./issueCreateDraft";
 
 // The issue stores and the create draft, through their exported functions with
@@ -172,6 +173,46 @@ describe("a read that started before an edit", () => {
     read.resolve(rawGitHubIssue(5, "Old title"));
     await refresh;
     expect(peekGitHubIssue(root, "acme", "ade", 5)?.title).toBe("Saved title");
+  });
+});
+
+describe("Linear workspace team keys", () => {
+  afterEach(() => {
+    delete (window as any).ade;
+  });
+
+  // The keys decide which `ENG-12` in PR text opens an issue, through the
+  // connection that is live now. A read from before a workspace switch must
+  // not put the old workspace back.
+  it("a read from before Linear switched workspace does not land after the new one", async () => {
+    const root = `/root/${Math.random()}`;
+    useAppStore.setState({ project: { rootPath: root, displayName: "ADE" }, projectBinding: { ...TEST_PIN, key: `local:${root}`, rootPath: root } } as never);
+    const oldStatus = deferred<unknown>();
+    const newStatus = deferred<unknown>();
+    let team = "";
+    const getLinearIssuePickerData = vi.fn(async () => ({ ...EMPTY_CATALOG, states: [{ teamKey: team }] }));
+    (window as any).ade = {
+      cto: {
+        getLinearConnectionStatus: vi.fn().mockReturnValueOnce(oldStatus.promise).mockReturnValueOnce(newStatus.promise),
+        getLinearIssuePickerData,
+      },
+    };
+
+    const { result } = renderHook(() => {
+      useLinearWorkspaceTeamKeys();
+      return useCachedLinearWorkspace();
+    });
+    window.dispatchEvent(new Event(LINEAR_CONNECTION_CHANGED_EVENT));
+
+    team = "NEW";
+    newStatus.resolve({ connected: true, organizationUrlKey: "newco" });
+    await vi.waitFor(() => expect(result.current).toMatchObject({ keys: ["NEW"], workspaceUrlKey: "newco" }));
+
+    team = "OLD";
+    oldStatus.resolve({ connected: true, organizationUrlKey: "oldco" });
+    await vi.waitFor(() => expect(getLinearIssuePickerData).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(result.current).toMatchObject({ keys: ["NEW"], workspaceUrlKey: "newco" });
   });
 });
 

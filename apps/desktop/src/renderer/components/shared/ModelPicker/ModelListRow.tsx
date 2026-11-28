@@ -381,7 +381,7 @@ export const ModelListRow = memo(function ModelListRow({
                   the bolt, so the label is never cut to a few letters. */}
               {localBadge ? (
                 <span
-                  className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-emerald-300/85"
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/[0.12] px-1.5 py-px text-[9.5px] font-medium leading-none text-emerald-300/85"
                   title="Offline-ready"
                 >
                   <Lightning size={8} weight="fill" className="shrink-0" aria-hidden />
@@ -402,7 +402,7 @@ export const ModelListRow = memo(function ModelListRow({
               {freeBadge ? <FreeModelBadge badge={freeBadge} /> : null}
               {maxModeBadge ? (
                 <span
-                  className="inline-flex shrink-0 items-center rounded-full bg-amber-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-amber-300/85"
+                  className="inline-flex shrink-0 items-center rounded-full bg-amber-500/[0.12] px-1.5 py-px text-[9.5px] font-medium leading-none text-amber-300/85"
                   title="Only runs in Cursor's Max mode, which bills at higher rates"
                 >
                   Max
@@ -429,7 +429,7 @@ export const ModelListRow = memo(function ModelListRow({
               title={needsSignIn && isAvailable ? "Not signed in. Sign in" : "Sign in"}
               data-model-picker-not-signed-in={needsSignIn && isAvailable ? "true" : undefined}
               className={cn(
-                "inline-flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-full border text-[9px] font-semibold uppercase tracking-wide hover:bg-amber-400/[0.16] @[236px]/row:w-[56px]",
+                "inline-flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-full border text-[9.5px] font-medium hover:bg-amber-400/[0.16] @[236px]/row:w-[56px]",
                 MODEL_ROW_WARN_TONE,
               )}
             >
@@ -508,7 +508,7 @@ export const ModelListRow = memo(function ModelListRow({
               className={cn(
                 "hidden h-6 shrink-0 items-center justify-center gap-1 self-center rounded-full border",
                 serviceTierMode ? "w-[78px] @[380px]/row:inline-flex" : "w-[58px] @[360px]/row:inline-flex",
-                "text-[9px] font-semibold uppercase leading-none tracking-wide",
+                "text-[9.5px] font-medium leading-none",
                 "disabled:cursor-not-allowed",
                 fastBlocked && "opacity-45",
                 // Rest reads as plainly off; hover only darkens; the press itself
@@ -546,7 +546,7 @@ export const ModelListRow = memo(function ModelListRow({
                 : `The server is running ${effectiveFastLabel}, as asked.`}
               className={cn(
                 // It sits beside the speed column and goes with it.
-                "hidden h-6 shrink-0 items-center self-center rounded-full border px-1.5 text-[9px] font-semibold uppercase leading-none tracking-wide @[360px]/row:inline-flex",
+                "hidden h-6 shrink-0 items-center self-center rounded-full border px-1.5 text-[9.5px] font-medium leading-none @[360px]/row:inline-flex",
                 fastTierDeclined ? MODEL_ROW_WARN_TONE : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/55",
               )}
             >

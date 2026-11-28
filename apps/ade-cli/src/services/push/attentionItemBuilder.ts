@@ -477,11 +477,14 @@ export function attentionProjectRef(
   name: string,
   rootPath: string | null | undefined,
   canonicalProjectId: (rootPath: string | null | undefined) => string | null,
+  projectSettingsKey?: (rootPath: string | null | undefined) => string | null,
 ): AttentionItem["project"] {
   const canonicalId = canonicalProjectId(rootPath);
+  const settingsKey = projectSettingsKey?.(rootPath) ?? null;
   return {
     projectId,
     ...(canonicalId ? { canonicalId } : {}),
+    ...(settingsKey ? { settingsKey } : {}),
     name,
     rootPath: rootPath ?? null,
   };
@@ -557,6 +560,8 @@ export type AttentionItemBuildContext = {
   rosterPhaseAnchors: Map<string, RosterPhaseAnchor>;
   loadRoster: () => Promise<ActivityRosterProject[]>;
   canonicalProjectId: (rootPath: string | null | undefined) => string | null;
+  /** The project's notification settings key (`AttentionProjectRef.settingsKey`). */
+  projectSettingsKey?: (rootPath: string | null | undefined) => string | null;
   /** Monotonic revision floors, so a republished row never moves backwards. */
   lastPublishedRevisionById: ReadonlyMap<string, number>;
   remoteAcknowledgedRevisionById: ReadonlyMap<string, number>;
@@ -600,6 +605,7 @@ function buildMessageItems(
         scope?.projectName ?? `${BRAND.NAME} project`,
         scope?.projectRoot,
         context.canonicalProjectId,
+        context.projectSettingsKey,
       ),
       laneId: message.laneId,
       laneName: message.laneName,
@@ -689,6 +695,7 @@ function buildRunItems(context: AttentionItemBuildContext, machine: AttentionIte
         scope?.projectName ?? `${BRAND.NAME} project`,
         scope?.projectRoot,
         context.canonicalProjectId,
+        context.projectSettingsKey,
       ),
       laneId: null,
       laneName: run.lane,
@@ -821,6 +828,7 @@ async function buildRosterItems(
           project.displayName,
           project.rootPath,
           context.canonicalProjectId,
+          context.projectSettingsKey,
         ),
         laneId: chat.laneId,
         laneName: laneNames.get(chat.laneId) ?? null,
@@ -907,6 +915,7 @@ function buildPrItems(
         scope?.projectName ?? `${BRAND.NAME} project`,
         scope?.projectRoot,
         context.canonicalProjectId,
+        context.projectSettingsKey,
       ),
       laneId: null,
       laneName: pr.lane,

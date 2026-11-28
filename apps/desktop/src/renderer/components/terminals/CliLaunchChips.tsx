@@ -1,6 +1,7 @@
 import type { TerminalResumeLaunchConfig } from "../../../shared/types";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
+import { reasoningEffortLabel } from "../shared/ModelPicker/modelFacts";
 
 export function cliPermissionLabel(launch: TerminalResumeLaunchConfig | null): string | null {
   if (launch?.codexApprovalPolicy === "on-request") return "Ask first";
@@ -52,12 +53,12 @@ export function CliLaunchChips({
         <span className="min-w-0 shrink truncate px-1 text-[11px] font-medium text-fg/70">{providerLabel}</span>
       )}
       {launch?.reasoningEffort ? (
-        <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] font-semibold uppercase text-fg/65">
-          {launch.reasoningEffort}
+        <span className="rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-1 text-[10px] font-medium text-fg/65">
+          {reasoningEffortLabel(launch.reasoningEffort, modelDescriptor ?? undefined)}
         </span>
       ) : null}
       {(launch?.fastMode ?? launch?.codexFastMode) ? (
-        <span className="rounded-md border border-amber-300/15 bg-amber-500/[0.06] px-1.5 py-1 text-[10px] font-semibold text-amber-100/80">
+        <span className="rounded-md border border-amber-300/15 bg-amber-500/[0.06] px-1.5 py-1 text-[10px] font-medium text-amber-100/80">
           Fast
         </span>
       ) : null}

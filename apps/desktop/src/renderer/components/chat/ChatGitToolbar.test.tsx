@@ -449,7 +449,7 @@ describe("ChatGitToolbar", () => {
     await waitFor(() => {
       expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-1"] }, tabPin());
     });
-    expect(await screen.findByText("MERGED #333")).toBeTruthy();
+    expect(await screen.findByText("Merged #333")).toBeTruthy();
   });
 
   it("renders a projection-only PR badge without targeting its synthetic id for row refresh", async () => {
@@ -493,7 +493,7 @@ describe("ChatGitToolbar", () => {
       </MemoryRouter>,
     );
 
-    const badge = await screen.findByText("MERGED #404");
+    const badge = await screen.findByText("Merged #404");
     fireEvent.click(badge.closest("button")!);
 
     await waitFor(() => {
@@ -656,6 +656,6 @@ describe("ChatGitToolbar", () => {
     });
 
     expect(screen.getByText("PR #222")).toBeTruthy();
-    expect(screen.queryByText("MERGED #111")).toBeNull();
+    expect(screen.queryByText("Merged #111")).toBeNull();
   });
 });

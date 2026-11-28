@@ -910,6 +910,8 @@ struct WorkChatSessionView: View {
   /// One presentation host for every box in this transcript. Boxes reach it
   /// through `\.workOutputViewer` rather than each carrying its own cover.
   @StateObject var outputViewer = WorkOutputViewerModel()
+  /// The one text-selection sheet for this chat's transcript rows.
+  @StateObject var textSelection = WorkMessageTextSelectionModel()
   /// The skill chip sheet: one per chat surface, asked for by chips in cells.
   @StateObject var skillInstructions = WorkSkillInstructionsModel()
   @State var composerSettingMutationInFlight = false
@@ -1089,6 +1091,9 @@ struct WorkChatSessionView: View {
   /// hides the comments chip, which is how an older host shows nothing new.
   var onUpdateThreadComment: (@MainActor (String, String?, Bool?) async throws -> Void)? = nil
   var onDeleteThreadComment: (@MainActor (String) async throws -> Void)? = nil
+  /// `chat.createThreadComment` for a text quote. Nil on a host that cannot
+  /// take one from the phone; the selection sheet then offers copy only.
+  var onCreateThreadComment: (@MainActor (WorkThreadCommentDraft) async throws -> Void)? = nil
   /// Cross-machine handoff card actions and the send gate (where new messages
   /// go). Nil hides the card's buttons and sends without asking (an older host
   /// has no record).
@@ -2914,7 +2919,15 @@ struct WorkChatSessionView: View {
       },
       content: artifactContent,
       load: onLoadArtifact,
-      resolveMissing: onResolveMissingProof
+      resolveMissing: onResolveMissingProof,
+      savedProof: { [syncServiceReference, sessionId = session.id] id in
+        await syncServiceReference.service?.savedCloudChatProof(sessionId: sessionId, artifactId: id)
+      },
+      wakeComputer: { [syncServiceReference, sessionId = session.id] in
+        await syncServiceReference.service?.wakeSavedCloudChatComputer(sessionId: sessionId)
+      },
+      // Live and reachable: a link that drops turns this false, and the citations ask the account again.
+      linkLive: isLive
     )
   }
 
@@ -2959,6 +2972,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSyncService, WorkSyncServiceReference(syncServiceReference.service))
             .modifier(WorkOptionalSyncServiceObject(service: syncServiceReference.service))
             .environment(\.workOutputViewer, outputViewer)
+            .environment(\.workMessageTextSelection, textSelection)
             .environment(\.workSkillInstructions, skillInstructions)
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
@@ -3571,6 +3585,12 @@ struct WorkChatSessionView: View {
           )
           .presentationDetents([.medium, .large])
           .presentationDragIndicator(.visible)
+        }
+        .onAppear { textSelection.canComment = onCreateThreadComment != nil }
+        .onChange(of: onCreateThreadComment != nil) { _, available in textSelection.canComment = available }
+        .onChange(of: session.id) { _, _ in textSelection.intent = nil }
+        .sheet(item: $textSelection.intent) { intent in
+          messageTextSelectionSheet(intent)
         }
         .sheet(isPresented: $threadCommentsSheetPresented) {
           WorkThreadCommentsSheet(
@@ -4528,6 +4548,14 @@ private struct WorkChatComposerDraftInput: View {
     }
     .task(id: composerDraftRestore?.id) {
       draftState.applyRestore(composerDraftRestore)
+    }
+    // A keystroke in a chat on an ADE Cloud computer keeps that computer
+    // awake (`SyncService.noteChatTyping`). Only a focused field counts: a
+    // restored or seeded draft is not typing, and a chat left open sends nothing.
+    .onReceive(draftState.$text.dropFirst()) { text in
+      guard draftState.isFocused, !isPersonalChat, let composerChatSessionId,
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+      syncService.noteChatTyping(sessionId: composerChatSessionId, modelId: chatSummary.currentModelId)
     }
     // A scene's button put a reply in this chat's prompt box. Never sent here.
     .onReceive(WorkSceneReplyCenter.replies) { request in

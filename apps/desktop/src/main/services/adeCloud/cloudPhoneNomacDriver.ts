@@ -73,6 +73,7 @@ const NOMAC_TOOL_WORDS: ReadonlyArray<readonly [RegExp, string]> = [
   [/`?\bapp_run\b`?/g, "`ade apple launch`"],
   [/`?\bscreen_record\b`?/g, "`ade apple record start`"],
   [/`?\btests_run\b`?/g, "`ade apple test`"],
+  [/\bPass path:/g, "Pass --path <folder>:"],
 ];
 
 /** A NoMac answer's text in ADE's words, without NoMac's name. */

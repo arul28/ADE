@@ -200,3 +200,29 @@ html[data-reduce-motion="true"] .ade-ap-choice:hover .ade-nt-sound-art i { anima
 
 
 
+
+/* ── scope: Everywhere, or one project, computer or phone ───────────── */
+
+.ade-nt-scopebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ade-nt-scope-spacer { flex: 1 1 auto; }
+.ade-nt-scopebar + .ade-nt-note { margin-bottom: 12px; }
+.ade-nt-matrix[data-scope-off] { opacity: 0.55; }
+/* A level that comes from Everywhere: the same mark, quieter. */
+.ade-nt-cell[data-inherited][aria-checked="true"] .ade-nt-mark { opacity: 0.45; }
+.ade-nt-inherit {
+  margin-right: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.ade-nt-inherit:hover:not(:disabled) { text-decoration: underline; }
+.ade-nt-inherit:disabled { cursor: not-allowed; opacity: 0.5; }

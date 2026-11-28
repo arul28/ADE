@@ -11,7 +11,7 @@ import type {
   BuiltInBrowserPermissionDecision,
   BuiltInBrowserProfileDiagnostics,
 } from "../../../../shared/types/builtInBrowser";
-import { formatBytes } from "../../../lib/format";
+import { formatBytes, sentenceCase } from "../../../lib/format";
 import { cn } from "../../ui/cn";
 
 export type BrowserProfilePanelProps = {
@@ -94,12 +94,12 @@ export function BrowserProfilePanel({
                 className="flex min-w-0 items-center gap-2 rounded border border-fg/[0.05] bg-black/15 px-1.5 py-1"
               >
                 <span className={cn(
-                  "rounded px-1 py-0.5 text-[8px] font-semibold uppercase",
+                  "rounded px-1 py-0.5 text-[9px] font-medium",
                   decision.decision === "allow"
                     ? "bg-emerald-400/10 text-emerald-100/70"
                     : "bg-rose-400/10 text-rose-100/70",
                 )}>
-                  {decision.decision}
+                  {sentenceCase(decision.decision)}
                 </span>
                 <span className="min-w-0 flex-1 truncate" title={`${decision.origin} · ${decision.permission}`}>
                   {decision.origin} · {decision.permission}

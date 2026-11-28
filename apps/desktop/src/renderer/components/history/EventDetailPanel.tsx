@@ -16,7 +16,7 @@ import { Button } from "../ui/Button";
 import type { TimelineEvent } from "./timelineTypes";
 import { getStatusClasses, getEventMeta, CATEGORY_META } from "./eventTaxonomy";
 import { EventMachineChip } from "./EventMachineChip";
-import { relativeWhen, formatDate, formatDurationMs } from "../../lib/format";
+import { relativeWhen, formatDate, formatDurationMs, sentenceCase } from "../../lib/format";
 
 /* ─── helpers ─────────────────────────────────────────────────────── */
 
@@ -172,11 +172,11 @@ function PanelContent({
           </h2>
           <div
             className={cn(
-              "inline-flex w-fit items-center border rounded-md px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[1px]",
+              "inline-flex w-fit items-center border rounded-md px-2 py-0.5 font-sans text-[10px] font-medium",
               statusClasses,
             )}
           >
-            {event.status}
+            {sentenceCase(event.status)}
           </div>
         </div>
       </div>
@@ -212,11 +212,11 @@ function PanelContent({
           <MetaCell label="Status">
             <span
               className={cn(
-                "inline-flex items-center border px-1.5 py-px font-mono text-[9px] font-bold uppercase tracking-[1px]",
+                "inline-flex items-center border px-1.5 py-px font-sans text-[10px] font-medium",
                 statusClasses,
               )}
             >
-              {event.status}
+              {sentenceCase(event.status)}
             </span>
           </MetaCell>
 

@@ -2254,10 +2254,10 @@ func workComposerRuntimeProvider(forModelId modelId: String, currentProvider: St
 
 func workModelTierLabel(_ tier: WorkModelOption.Tier) -> String {
   switch tier {
-  case .fast: return "FAST"
-  case .balanced: return "BALANCED"
-  case .flagship: return "FLAGSHIP"
-  case .reasoning: return "REASONING"
+  case .fast: return "Fast"
+  case .balanced: return "Balanced"
+  case .flagship: return "Flagship"
+  case .reasoning: return "Reasoning"
   }
 }
 

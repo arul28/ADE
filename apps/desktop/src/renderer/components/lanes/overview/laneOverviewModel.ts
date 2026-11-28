@@ -56,6 +56,8 @@ export type LaneChatRow = {
   activityAt: string;
   /** 0 needs you, 1 working, 2 open and waiting, 3 done. */
   rank: number;
+  /** Pinned in Work. A pinned row leads the list. */
+  pinned: boolean;
 };
 
 function phaseRank(phase: string): number {
@@ -105,6 +107,7 @@ function rowFromTerminal(row: TerminalSessionSummary, nowMs: number, subagentBus
     elapsedSince: sessionElapsedAnchor(row, state.phase, state.liveness),
     activityAt: sessionActivityInstant(row),
     rank: phaseRank(state.phase),
+    pinned: Boolean(row.pinned),
   };
 }
 
@@ -137,6 +140,7 @@ function rowFromChat(chat: AgentChatSessionSummary, nowMs: number): LaneChatRow 
     elapsedSince: state.liveness === "pr_watch" ? chat.activePrWatch?.startedAt ?? activityAt : activityAt,
     activityAt,
     rank: phaseRank(state.phase),
+    pinned: false,
   };
 }
 
@@ -170,7 +174,9 @@ export function buildLaneChatRows(args: {
     seen.add(chat.sessionId);
     rows.push(rowFromChat(chat, nowMs));
   }
-  return rows.sort((a, b) => (a.rank - b.rank) || b.activityAt.localeCompare(a.activityAt));
+  return rows.sort((a, b) => (Number(b.pinned) - Number(a.pinned))
+    || (a.rank - b.rank)
+    || b.activityAt.localeCompare(a.activityAt));
 }
 
 /** The rows to show and how many "Show all" would add. */

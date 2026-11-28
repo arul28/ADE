@@ -2,6 +2,7 @@ import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { SponsoredReplySlot } from "./sponsored/SponsoredReplySlot";
 import { SponsoredDockOutlet, SponsoredOutletsContext, useNewSponsoredOutlets } from "./sponsored/sponsoredOutlets";
 import { msToNextBeat } from "../../lib/workBeat";
+import { sentenceCase } from "../../lib/format";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { captureError } from "../../../shared/sentry/capture";
@@ -260,7 +261,7 @@ import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
-import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
+import { chatApiPin, chatReadFailure, requireChatPin, withChatPin, type ChatReadFailure } from "./chatMachinePin";
 import { beginChatSendTiming, noteChatSendBubbleShown, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
 import {
   deliveredSendsFor,
@@ -287,7 +288,7 @@ import {
 } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecyclePillVisible } from "../work/useSessionLifecycleSnapshot";
-import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { listedProjectLanesNow, useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { remoteConnectionMarkNow, useReadRetryOnReconnect, useRemoteConnectionMark, useRemoteTargetReconnecting } from "../../state/projectMachines";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { useCloudModelCatalog } from "../../state/cloudModelCatalog";
@@ -487,7 +488,7 @@ import { useChatLaneMoveSource } from "../laneMove/useChatLaneMoveSource";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
-import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import { cloudLaneStartBlock, withCloudLaneColor } from "../../../shared/cloudLaneLaunch";
 import { accountProjectForOrigin } from "../projects/useHomeAccountProjects";
 import { resolveAdeCloudLaneBinding } from "./adeCloudLaneBinding";
 import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
@@ -516,7 +517,7 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, noticeForChat, shownChatNotice, type ChatNotice } from "./chatNotice";
-import { chatQueueMachineKey, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
+import { chatQueueMachineKey, isCloudPin, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
 import { releaseHeldAttachments, releaseSentHeldAttachments } from "./heldChatAttachments";
 import { prepareDeviceHeldForSend } from "./deviceHeldSend";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
@@ -4477,6 +4478,13 @@ async function readMachineFile(filePath: string, pin: OpenProjectBinding | null)
   return { bytes, contentType: match[1] || "application/octet-stream" };
 }
 
+/**
+ * A cloud chat's typing signal goes out at most this often while the person
+ * types. The computer sleeps three minutes after the last one, so a 30 s
+ * spacing survives five missed pings.
+ */
+const CLOUD_TYPING_PING_MS = 30_000;
+
 export function AgentChatPane({
   laneId,
   laneLabel,
@@ -4721,6 +4729,9 @@ export function AgentChatPane({
     [chatFontSizePx, chatTranscriptDensity],
   );
   const lanes = useAppStore((s) => s.lanes);
+  // Read by launches that pick a new ADE Cloud lane's color, without joining their dependencies.
+  const lanesRef = useRef(lanes);
+  lanesRef.current = lanes;
   // Per-chat runtime routing. A lane owns its machine and a chat inherits its
   // machine from its lane, so a chat opened from the union Work sidebar can
   // live on a machine this tab is NOT bound to. Its calls are pinned to that
@@ -10436,24 +10447,47 @@ export function AgentChatPane({
   // starts no query and no process. The text is read from the draft store, so
   // typing does not render the pane, and one request per chat and model is
   // enough.
+  //
+  // A chat on an ADE Cloud computer, any provider: the same call is the
+  // typing signal (`cloudRemoteUseKind`), repeated at most every
+  // `CLOUD_TYPING_PING_MS` while the draft changes, so the computer sleeps
+  // three minutes after the last keystroke instead of under the person. Only
+  // a changed draft sends: a chat left open sends nothing. It travels over the
+  // live link only and never wakes a sleeping computer.
   useEffect(() => {
     if (!isTileActive || !selectedSessionId || !selectedSessionModelId || turnActive) return undefined;
     const desc = getModelById(selectedSessionModelId);
-    if (!desc?.isCliWrapped || desc.family !== "anthropic") return undefined;
+    const warmsClaudeSdk = Boolean(desc?.isCliWrapped && desc.family === "anthropic");
     const warmupKey = `${selectedSessionId}:${selectedSessionModelId}`;
-    if (claudeTypingWarmupKeyRef.current === warmupKey) return undefined;
-    const requestWarm = () => {
-      if (claudeTypingWarmupKeyRef.current === warmupKey) return;
-      if (!draftStore.get().trim()) return;
-      claudeTypingWarmupKeyRef.current = warmupKey;
-      withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
-        sessionId: selectedSessionId,
-        modelId: selectedSessionModelId,
-        sdkOnly: true,
-      }, chatPin)).catch(() => { /* best-effort: the send loads what it needs */ });
+    let lastDraft = draftStore.get();
+    let lastTypingPingAt = 0;
+    const request = () => withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
+      sessionId: selectedSessionId,
+      modelId: selectedSessionModelId,
+      sdkOnly: true,
+    }, chatPin)).catch(() => { /* best-effort: the send loads what it needs */ });
+    const onDraft = () => {
+      const draft = draftStore.get();
+      const changed = draft !== lastDraft;
+      lastDraft = draft;
+      if (!draft.trim()) return;
+      if (warmsClaudeSdk && claudeTypingWarmupKeyRef.current !== warmupKey) {
+        claudeTypingWarmupKeyRef.current = warmupKey;
+        lastTypingPingAt = Date.now();
+        void request();
+        return;
+      }
+      // A saved draft put back on switching chats is not typing (the store notifies inside that restore).
+      if (!changed || composerDraftHydratingRef.current) return;
+      const pin = chatRuntimePinRef.current;
+      if (!isCloudPin(pin)) return;
+      const at = Date.now();
+      if (at - lastTypingPingAt < CLOUD_TYPING_PING_MS) return;
+      lastTypingPingAt = at;
+      void request();
     };
-    requestWarm();
-    return draftStore.subscribe(requestWarm);
+    onDraft();
+    return draftStore.subscribe(onDraft);
   }, [draftStore, isTileActive, selectedSessionId, selectedSessionModelId, turnActive]);
 
   useEffect(() => {
@@ -11818,6 +11852,16 @@ export function AgentChatPane({
   // turn footer on the first paint instead of flashing a red FAILED line until
   // the session list arrives.
   const usageLimitResume = renderedSession?.usageLimitResume ?? null;
+  // A limit ADE is waiting out ("Paused"); one with no reset or with
+  // auto-resume off reads "Usage limit" and is not live here.
+  const usageLimitLive = usageLimitResume != null
+    && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused");
+  // The paused turn's footer quotes when the limit resets; parsed once here.
+  const usageLimitPausedResetAtMs = (() => {
+    if (!usageLimitLive || !usageLimitResume?.resetAt) return null;
+    const parsed = Date.parse(usageLimitResume.resetAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  })();
 
   useLayoutEffect(() => {
     if (!isTileVisible) return undefined;
@@ -12884,6 +12928,40 @@ export function AgentChatPane({
     () => permissionLadderFamilyForProvider(resolveChatRuntimeProvider(selectedModelDesc)),
     [selectedModelDesc],
   );
+  const currentNativeControls = useMemo<NativeControlState>(() => ({
+    interactionMode,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    opencodePermissionMode,
+    droidPermissionMode,
+    copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
+    musePermissionMode,
+    cursorModeId,
+    cursorConfigValues,
+  }), [
+    interactionMode,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    opencodePermissionMode,
+    droidPermissionMode,
+    copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
+    musePermissionMode,
+    cursorModeId,
+    cursorConfigValues,
+  ]);
+  const nativeControlsRef = useRef<NativeControlState>(currentNativeControls);
+  useEffect(() => {
+    nativeControlsRef.current = currentNativeControls;
+  }, [currentNativeControls]);
+
   const previousLadderFamilyRef = useRef<PermissionLadderFamily | null>(null);
   useEffect(() => {
     const next = activeLadderFamily;
@@ -12935,29 +13013,42 @@ export function AgentChatPane({
     // level while applying a stepped one, landing ACP providers a rung above
     // the user's choice.
     const resolved = resolvePermissionLevel(level, next === "acp" ? "opencode" : next);
+    // An immediate usage-limit switch reads the transferred controls in this
+    // commit, before the setters below render the updated picker.
     switch (next) {
       case "claude":
+        nativeControlsRef.current = { ...nativeControlsRef.current, claudePermissionMode: resolved.claudePermissionMode };
         setClaudePermissionMode(resolved.claudePermissionMode);
         break;
       case "codex":
+        nativeControlsRef.current = {
+          ...nativeControlsRef.current,
+          codexApprovalPolicy: resolved.codexApprovalPolicy,
+          codexSandbox: resolved.codexSandbox,
+        };
         setCodexApprovalPolicy(resolved.codexApprovalPolicy);
         setCodexSandbox(resolved.codexSandbox);
         break;
       case "opencode":
+        nativeControlsRef.current = { ...nativeControlsRef.current, opencodePermissionMode: resolved.opencodePermissionMode };
         setOpenCodePermissionMode(resolved.opencodePermissionMode);
         break;
       case "droid":
+        nativeControlsRef.current = { ...nativeControlsRef.current, droidPermissionMode: resolved.droidPermissionMode };
         setDroidPermissionMode(resolved.droidPermissionMode);
         break;
       case "muse":
+        nativeControlsRef.current = { ...nativeControlsRef.current, musePermissionMode: resolved.musePermissionMode };
         setMusePermissionMode(resolved.musePermissionMode);
         break;
       case "cursor":
+        nativeControlsRef.current = { ...nativeControlsRef.current, cursorModeId: resolved.cursorModeId };
         setCursorModeId(resolved.cursorModeId);
         break;
       case "acp":
         // ACP providers take their level through the shared in-process mode,
         // which OpenCode's control already owns on this surface.
+        nativeControlsRef.current = { ...nativeControlsRef.current, opencodePermissionMode: resolved.opencodePermissionMode };
         setOpenCodePermissionMode(resolved.opencodePermissionMode);
         break;
     }
@@ -12972,40 +13063,6 @@ export function AgentChatPane({
     musePermissionMode,
     opencodePermissionMode,
   ]);
-
-  const currentNativeControls = useMemo<NativeControlState>(() => ({
-    interactionMode,
-    claudePermissionMode,
-    codexApprovalPolicy,
-    codexSandbox,
-    codexConfigSource,
-    opencodePermissionMode,
-    droidPermissionMode,
-    copilotPermissionMode,
-    copilotContextTier,
-    copilotAutoTier,
-    musePermissionMode,
-    cursorModeId,
-    cursorConfigValues,
-  }), [
-    interactionMode,
-    claudePermissionMode,
-    codexApprovalPolicy,
-    codexSandbox,
-    codexConfigSource,
-    opencodePermissionMode,
-    droidPermissionMode,
-    copilotPermissionMode,
-    copilotContextTier,
-    copilotAutoTier,
-    musePermissionMode,
-    cursorModeId,
-    cursorConfigValues,
-  ]);
-  const nativeControlsRef = useRef<NativeControlState>(currentNativeControls);
-  useEffect(() => {
-    nativeControlsRef.current = currentNativeControls;
-  }, [currentNativeControls]);
 
   const flushPendingComposerDraftWrite = useCallback(() => {
     if (composerDraftWriteTimerRef.current != null) {
@@ -14901,7 +14958,7 @@ export function AgentChatPane({
         origin: `https://${origin}`,
         accountProjectId: (list.state === "ready" ? accountProjectForOrigin(list.projects, cloud.originUrl) : null)?.id ?? null,
         laneName,
-        laneConfig: configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
+        laneConfig: withCloudLaneColor(configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null, listedProjectLanesNow(lanesRef.current)),
         sizeId: cloud.sizeId,
         sizeChoice: cloud.sizeChoice,
       }),
@@ -15011,7 +15068,8 @@ export function AgentChatPane({
       // owns every ADE Cloud launch; there is no renderer chain to fall back to.
       const { cloud: _cloud, originClientId: _originClientId, ...cloudArgs } = args;
       void startAdeCloudLaunch({
-        args: { ...cloudArgs, laneId: newLaneId, laneName },
+        // The computer holds only this lane, so this window picks its color among the project's lanes.
+        args: { ...cloudArgs, laneId: newLaneId, laneName, laneConfig: withCloudLaneColor(laneConfig, listedProjectLanesNow(lanesRef.current), existingLane?.laneId) },
         sizeId: cloud.sizeId,
         ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
         originUrl: cloud.originUrl,
@@ -16841,6 +16899,124 @@ export function AgentChatPane({
     return true;
   }, [projectRoot]);
 
+  /**
+   * The session update a model pick kept local needs: the model (or preset),
+   * and the fast, thinking and native controls that came with it. Send applies
+   * it right before it sends; a chat stopped at a usage limit applies it as
+   * soon as the pick renders (`usageLimitSwitch`). Send passes the controls
+   * it read before its first await, so a chat opened meanwhile cannot lend
+   * this one its controls. `whole` writes every field instead of the change
+   * from the chat's summary, for a summary an unfinished switch made stale.
+   */
+  const buildDeferredSessionUpdate = useCallback((
+    sessionId: string,
+    nativeControls: NativeControlState = nativeControlsRef.current,
+    whole = false,
+  ) => {
+    // A pick can move the chat onto a preset or off one, which the model id
+    // alone cannot show: the row can already name the model while the
+    // preset decides what launches.
+    const routePick = sessionRoutePickRef.current?.sessionId === sessionId ? sessionRoutePickRef.current : null;
+    // Whole, a preset pick names its preset again; a plain one leaves a
+    // preset only as it would otherwise (an explicit leave also ends a route).
+    const routeChanged = routePick !== null && (
+      routePick.presetId !== (selectedSession?.presetId ?? null) || (whole && Boolean(routePick.presetId))
+    );
+    // With no model known for the chat yet, only a model the person picked
+    // in this chat counts as a change; an empty or stale composer does not.
+    const pickedWithoutSessionModel = !selectedSessionModelId
+      && Boolean(modelId)
+      && deferredComposerSessionIdRef.current === sessionId;
+    const modelChanged = (whole && Boolean(modelId))
+      || (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
+      || pickedWithoutSessionModel
+      || routeChanged;
+    const fastModeChanged = whole
+      || (selectedSession?.fastMode === true) !== fastMode
+      || (selectedSession?.fastTier === "ultrafast") !== (fastMode && fastTier === "ultrafast");
+    const reasoningChanged = whole
+      || (selectedSession?.reasoningEffort ?? null) !== reasoningEffort
+      || (routeChanged && reasoningEffort !== null && reasoningTiers.includes(reasoningEffort));
+    const modelUpdate: { modelId?: string; presetId?: string | null } = !modelChanged
+      ? {}
+      // A preset names its own model.
+      : routePick?.presetId && routeChanged
+        ? { presetId: routePick.presetId }
+        // A plain pick on a preset chat leaves the preset.
+        : routeChanged ? { modelId, presetId: null } : { modelId };
+    return {
+      modelChanged,
+      fastModeChanged,
+      update: {
+        ...modelUpdate,
+        ...(fastModeChanged
+          ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
+          : {}),
+        ...(reasoningChanged ? { reasoningEffort } : {}),
+        ...(modelChanged ? summarizeNativeControls(sessionProvider, nativeControls) : {}),
+        ...(modelChanged && sessionProvider === "cursor"
+          ? { cursorConfigValues: nativeControls.cursorConfigValues }
+          : {}),
+      },
+    };
+  }, [fastMode, fastTier, modelId, reasoningEffort, reasoningTiers, selectedSession, selectedSessionModelId, sessionProvider]);
+
+  // Apply the pick on a limited chat after its model and controls render.
+  const latestComposerPick = useRef(0);
+  const [usageLimitSwitch, setUsageLimitSwitch] = useState<{ sessionId: string; pick: number } | null>(null);
+  // Switches write one at a time, and one a newer pick of the same chat
+  // replaced while it waited is never written. An earlier write still in
+  // flight (a Cursor model check) cannot land after a later one and leave
+  // the released queue on the earlier model.
+  const usageLimitSwitchChainRef = useRef<Promise<void>>(Promise.resolve());
+  const usageLimitSwitchNewestRef = useRef(new Map<string, number>());
+  useEffect(() => {
+    if (!usageLimitSwitch) return;
+    const { sessionId, pick } = usageLimitSwitch;
+    setUsageLimitSwitch(null);
+    if (sessionId !== selectedSessionId || turnActive || latestComposerPick.current !== pick) return;
+    const newest = usageLimitSwitchNewestRef.current;
+    // With a switch of this chat still queued or unconfirmed, the summary the
+    // pick compares against is stale: the pick writes its whole state, and it
+    // replaces that switch even when it goes back to the stored model.
+    const afterUnfinishedSwitch = newest.has(sessionId);
+    const { modelChanged, update } = buildDeferredSessionUpdate(sessionId, nativeControlsRef.current, afterUnfinishedSwitch);
+    if (!modelChanged) return;
+    const routePick = sessionRoutePickRef.current;
+    // The chat's machine as the pick rendered, kept for the queued write.
+    const switchPin = chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current);
+    newest.set(sessionId, pick);
+    const write = usageLimitSwitchChainRef.current.then(async () => {
+      if (newest.get(sessionId) !== pick) return false;
+      await withChatPin(switchPin, (chatPin) => agentChatApiRef.current.updateSession({
+        sessionId,
+        ...update,
+        ...(sessionProvider === "cursor" ? { cursorCloudServiceTier } : {}),
+      }, chatPin));
+      // The switch counts as unfinished until the summary shows it.
+      await refreshSessions().catch(() => {});
+      return true;
+    });
+    usageLimitSwitchChainRef.current = write.then(() => {}, () => {}).finally(() => {
+      if (newest.get(sessionId) === pick) newest.delete(sessionId);
+    });
+    void write
+      .then((written) => {
+        if (!written) return;
+        if (latestComposerPick.current === pick && renderSelectedSessionIdRef.current === sessionId) {
+          if (deferredComposerSessionIdRef.current === sessionId) deferredComposerSessionIdRef.current = null;
+          setSessionRoutePick((current) => current === routePick ? null : current);
+        }
+      })
+      .catch((switchError: unknown) => {
+        if (latestComposerPick.current === pick && renderSelectedSessionIdRef.current === sessionId) {
+          setError(errorMessage(switchError));
+        }
+      });
+    // The pick triggers one switch using the model and controls from its render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usageLimitSwitch]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // Logged only for a plain send to a chat (`chatSendTiming.ts`); other branches drop it.
     const sendTiming = beginChatSendTiming();
@@ -17603,6 +17779,8 @@ export function AgentChatPane({
     let handedOff: { sessionId: string; submittedAt: string; texts: string[]; alreadyThere: number; identityKey: string; clientSendId: string } | null = null;
     // The send's identity (chat + payload) and client id, once a send (not a steer) went out.
     let sendIdentity: { identityKey: string; record: UnconfirmedSend } | null = null;
+    // Read before the first await: the person can open another chat while it waits.
+    const nativeControlsAtSend = nativeControlsRef.current;
     try {
       // Files and comments kept on this device while the chat's computer
       // rested go to it now, before the message and before the exclusion
@@ -17618,6 +17796,7 @@ export function AgentChatPane({
         attachments: attachmentsSnapshot,
         carriesComments: includeThreadComments && threadCommentsSessionAtSend != null,
         machineRests: chatComputerRestingRef.current,
+        machineName: chatMachineNameRef.current,
       });
       if (deviceHeld.stagedHeldPaths.length) {
         for (const path of deviceHeld.stagedHeldPaths) sentHeldAttachmentPathsRef.current.add(path);
@@ -17659,34 +17838,9 @@ export function AgentChatPane({
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
-      // A pick can move the chat onto a preset or off one, which the model id
-      // alone cannot show: the row can already name the model while the
-      // preset decides what launches.
-      const routePick = selectedSessionId && sessionRoutePickRef.current?.sessionId === selectedSessionId
-        ? sessionRoutePickRef.current
-        : null;
-      const selectedRouteChanged = routePick !== null && routePick.presetId !== (selectedSession?.presetId ?? null);
-      // With no model known for the chat yet, only a model the person picked
-      // in this chat counts as a change; an empty or stale composer does not.
-      const pickedWithoutSessionModel = !selectedSessionModelId
-        && Boolean(modelId)
-        && deferredComposerSessionIdRef.current === selectedSessionId;
-      const selectedModelChanged =
-        Boolean(selectedSessionId)
-        && (
-          (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
-          || pickedWithoutSessionModel
-          || selectedRouteChanged
-        );
-      const selectedFastModeChanged =
-        Boolean(selectedSessionId)
-        && (
-          (selectedSession?.fastMode === true) !== fastMode
-          || (selectedSession?.fastTier === "ultrafast") !== (fastMode && fastTier === "ultrafast")
-        );
-      const selectedReasoningChanged =
-        Boolean(selectedSessionId)
-        && (selectedSession?.reasoningEffort ?? null) !== reasoningEffort;
+      const deferredUpdate = selectedSessionId ? buildDeferredSessionUpdate(selectedSessionId, nativeControlsAtSend) : null;
+      const selectedModelChanged = deferredUpdate?.modelChanged === true;
+      const selectedFastModeChanged = deferredUpdate?.fastModeChanged === true;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const selectedContextAttachments = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
@@ -17714,39 +17868,10 @@ export function AgentChatPane({
         || shouldPromoteLightSession
       )) {
         setOptimisticIfAllowed(sessionId);
-        const sessionModelUpdate = (): { modelId?: string; presetId?: string | null } => {
-          if (!selectedModelChanged) return {};
-          // A preset names its own model.
-          if (routePick?.presetId && selectedRouteChanged) return { presetId: routePick.presetId };
-          // A plain pick on a preset chat leaves the preset.
-          return selectedRouteChanged ? { modelId, presetId: null } : { modelId };
-        };
-        const modelUpdate = sessionModelUpdate();
-        const fastModeUpdate = selectedFastModeChanged
-          ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
-          : {};
-        const reasoningUpdate = selectedReasoningChanged
-          || (
-            selectedRouteChanged
-            && reasoningEffort !== null
-            && reasoningTiers.includes(reasoningEffort)
-          )
-          ? { reasoningEffort }
-          : {};
-        const pendingNativeUpdate = selectedModelChanged
-          ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
-          : {};
-        const pendingCursorConfig = selectedModelChanged && sessionProvider === "cursor"
-          ? { cursorConfigValues: nativeControlsRef.current.cursorConfigValues }
-          : {};
         const updateSessionId = sessionId;
         await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
           sessionId: updateSessionId,
-          ...modelUpdate,
-          ...fastModeUpdate,
-          ...reasoningUpdate,
-          ...pendingNativeUpdate,
-          ...pendingCursorConfig,
+          ...deferredUpdate?.update,
         }, chatPin));
         deferredComposerSessionIdRef.current = null;
         setSessionRoutePick(null);
@@ -18163,6 +18288,7 @@ export function AgentChatPane({
     }
     return steerResult;
   }, [
+    buildDeferredSessionUpdate,
     countSentMessages,
     noteCloudQueuedSendBubble,
     putUnsentSendInSavedDraft,
@@ -20532,7 +20658,7 @@ export function AgentChatPane({
    * listens on the right machine.
    */
   const [attachedShells, setAttachedShells] = useState<TerminalSessionSummary[]>([]);
-  const [shellsLoadError, setShellsLoadError] = useState(false);
+  const [shellsLoadFailure, setShellsLoadFailure] = useState<ChatReadFailure | null>(null);
   const [shellsReloadNonce, setShellsReloadNonce] = useState(0);
   // A read that lost its link (sent as it dropped, or before it was ready)
   // reads again, on the chat's machine, once that link is back.
@@ -20543,7 +20669,7 @@ export function AgentChatPane({
     // Never show the previous chat's shells while the new read is in flight.
     shellIdsRef.current = new Set();
     setAttachedShells(keepEmptyArray);
-    setShellsLoadError(false);
+    setShellsLoadFailure(null);
     // A personal chat's shell is the Chats page's own panel; the project's
     // session list does not hold it (and with no project open, there is none).
     if (!sessionId || isBoundScopePane) return undefined;
@@ -20554,13 +20680,16 @@ export function AgentChatPane({
     const listSessions = window.ade?.sessions?.list;
     if (typeof listSessions !== "function") return undefined;
     let cancelled = false;
+    // Session changes can start overlapping reads: only the newest one lands.
+    let latest = 0;
     const load = async () => {
+      const request = ++latest;
       const failed = beginShellsRead();
+      const pin = chatRuntimePinRef.current;
       try {
-        const pin = chatRuntimePinRef.current;
         const args = { chatSessionId: sessionId, limit: null };
         const listed = await listSessions(args, requireChatPin(pin));
-        if (cancelled) return;
+        if (cancelled || request !== latest) return;
         // A runtime that cannot answer this read answers with nothing; that is
         // "no shells", not a failure (only a rejected promise is one).
         const rows = Array.isArray(listed) ? listed : [];
@@ -20575,16 +20704,17 @@ export function AgentChatPane({
         ));
         shellIdsRef.current = new Set(shells.map((row) => row.id));
         setAttachedShells((previous) => reuseStructurallyEqualArray(shells, previous));
-        setShellsLoadError(false);
+        setShellsLoadFailure(null);
       } catch (error) {
         // A pane that cannot read the list says so with a retry rather than
         // looking like a chat with no shells (notices.md: no false empty state).
-        console.error("[AgentChatPane] attached shells read failed", { sessionId, error });
+        if (cancelled || request !== latest) return;
+        const failure = chatReadFailure(error, pin);
+        // An unreachable computer is expected and reads again on its own; only a real failure is an error.
+        (failure.unreachable ? console.warn : console.error)("[AgentChatPane] attached shells read failed", { sessionId, error });
         failed(error);
-        if (!cancelled) {
-          setAttachedShells(keepEmptyArray);
-          setShellsLoadError(true);
-        }
+        setAttachedShells(keepEmptyArray);
+        setShellsLoadFailure(failure);
       }
     };
     void load();
@@ -20710,11 +20840,11 @@ export function AgentChatPane({
       workflowPlans={selectedWorkflowPlans}
       shells={attachedShells}
       shellsPin={chatRuntimePin}
-      shellsLoadError={shellsLoadError}
+      shellsLoadFailure={shellsLoadFailure}
       onRetryShells={() => setShellsReloadNonce((current) => current + 1)}
       terminalWatches={chatTerminalWatches.watches}
       onStopTerminalWatch={chatTerminalWatches.stop}
-      terminalWatchesLoadError={chatTerminalWatches.loadError}
+      terminalWatchesLoadFailure={chatTerminalWatches.loadFailure}
       onRetryTerminalWatches={chatTerminalWatches.retry}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
@@ -21728,11 +21858,11 @@ export function AgentChatPane({
                   {session.completion ? (
                     <span
                       className={cn(
-                        "inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em]",
+                        "inline-flex items-center rounded border px-1.5 py-0.5 font-sans text-[9px] font-medium",
                         completionBadgeClass(session.completion.status),
                       )}
                     >
-                      {session.completion.status}
+                      {sentenceCase(session.completion.status)}
                     </span>
                   ) : null}
                   {sessionIndicatorStatus ? (
@@ -21986,6 +22116,7 @@ export function AgentChatPane({
     if (isPersistentIdentitySurface && sessionMutationKind) {
       return false;
     }
+    const pick = ++latestComposerPick.current;
     // A model change is the person's; ADE sets the flag again after its own.
     draftKeepsMachineDefaultsRef.current = false;
     const previousFastMode = fastModeRef.current;
@@ -22065,6 +22196,15 @@ export function AgentChatPane({
     if (!selectedSessionId || turnActive) {
       applyModelSelectionSnapshot(snapshot);
       return true;
+    }
+
+    // A chat stopped at a usage limit applies the pick at once (see
+    // `usageLimitSwitch`): the switch is what moves it off the
+    // limit and sends its queue to the new model (ADE-289).
+    // Every limit state holds the queue, "no reset" and "auto-resume off" too,
+    // so any of them switches now.
+    if (usageLimitResume && renderedSessionId === selectedSessionId) {
+      setUsageLimitSwitch({ sessionId: selectedSessionId, pick });
     }
 
     // Keep the selection local until submit(). Submit applies the
@@ -23080,7 +23220,7 @@ export function AgentChatPane({
                   <span className="h-2 w-2 rounded-full bg-violet-400/60 ade-thinking-pulse" style={{ animationDelay: '0.16s' }} />
                   <span className="h-2 w-2 rounded-full bg-violet-400/60 ade-thinking-pulse" style={{ animationDelay: '0.32s' }} />
                 </div>
-                <span className="font-sans text-[11px] font-medium tracking-widest text-muted-fg/30 uppercase">Loading sessions</span>
+                <span className="font-sans text-[11px] font-medium text-muted-fg/30">Loading sessions…</span>
               </div>
             </div>
           ) : (
@@ -23242,12 +23382,8 @@ export function AgentChatPane({
                           ? cloudQueueWait.label
                           : chatConnectionMark ? `Starting ${providerDisplayLabel(selectedSession?.provider, "the agent")}…` : null}
                         usageLimitResumeActive={usageLimitResume != null}
-                        // Only a limit ADE is waiting out reads "Paused"; one with no
-                        // reset or with auto-resume off reads "Usage limit".
-                        usageLimitResumeTurnId={usageLimitResume
-                          && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused")
-                          ? usageLimitResume.turnId ?? null
-                          : null}
+                        usageLimitResumeTurnId={usageLimitLive ? usageLimitResume?.turnId ?? null : null}
+                        usageLimitResumeResetAtMs={usageLimitPausedResetAtMs}
                         // Subagent transcripts are a secondary, plain surface:
                         // they keep the cheap paint-on-arrival render so only
                         // the user's own prose pays for the paced reveal.

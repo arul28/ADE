@@ -86,6 +86,10 @@ enum ADEAnalyticsFeature: String, CaseIterable {
   case githubConnect = "github_connect"
   /// An ADE Cloud plan landed (bought, or moved up) and the phone said so: `completed` only.
   case cloudPlan = "cloud_plan"
+  /// The host took a thread comment made on the phone: `completed` only.
+  case threadComment = "thread_comment"
+  /// A lane's dev server opened in a desktop browser from the phone: `completed` only.
+  case devServerOpen = "dev_server_open"
 }
 
 /// What the person did in the invite funnel, in the desktop's action names.
@@ -931,6 +935,13 @@ final class ProductAnalytics {
     if nsError.domain == ASAuthorizationError.errorDomain,
        nsError.code == ASAuthorizationError.canceled.rawValue {
       return (provider, .cancelled, "authorization_canceled")
+    }
+    // Apple's 1000 ("unknown") is what iOS returns when no Apple Account is
+    // signed in on the phone (Apple's review devices among them). The phone
+    // can't do Sign in with Apple; the provider is not broken.
+    if nsError.domain == ASAuthorizationError.errorDomain,
+       nsError.code == ASAuthorizationError.unknown.rawValue {
+      return (provider, .unavailable, code)
     }
     let reason: ADEAnalyticsSignInFailureReason
     switch code {

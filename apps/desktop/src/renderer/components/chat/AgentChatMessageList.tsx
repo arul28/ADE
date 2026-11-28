@@ -72,7 +72,7 @@ import { oneLineRedacted, redactCommandLine } from "../../../shared/secretRedact
 import { cn } from "../ui/cn";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { formatTime } from "../../lib/format";
+import { formatTime, sentenceCase } from "../../lib/format";
 import { isRestartInterruptedNotice } from "../../../shared/chatAutoResume";
 import { subscribeToTicker } from "../../lib/ticker";
 import { toLayoutPx } from "../../lib/webZoom";
@@ -461,21 +461,21 @@ function ResetCreditNoticeRow({
       className,
     )}>
       {icon}
-      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
-      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{chipLabel}</span>
+      <span className="text-fg/55">{message}</span>
       {canSpend ? (
         <button
           type="button"
           disabled={spending}
           onClick={() => { void spend(); }}
           data-testid="reset-credit-use"
-          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
         >
           Use reset
         </button>
       ) : null}
       {outcome ? (
-        <span className="normal-case tracking-normal text-fg/42">{outcome}</span>
+        <span className="text-fg/42">{outcome}</span>
       ) : null}
     </div>
   );
@@ -515,19 +515,19 @@ function RootFullAccessNoticeRow({
       className,
     )}>
       {icon}
-      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
-      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{chipLabel}</span>
+      <span className="text-fg/55">{message}</span>
       {canAllow ? (
         <button
           type="button"
           disabled={busy}
           onClick={() => { void allow(); }}
-          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
         >
           Allow on this machine
         </button>
       ) : null}
-      {allowed ? <span className="normal-case tracking-normal text-fg/42">Allowed. The next message runs with Full access.</span> : null}
+      {allowed ? <span className="text-fg/42">Allowed. The next message runs with Full access.</span> : null}
     </div>
   );
 }
@@ -661,7 +661,7 @@ function QuietTurnCard({
     <div className="w-fit max-w-[var(--chat-content-width,52rem)] rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-3 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/78">
       <div className="flex items-center gap-2">
         <Warning size={13} weight="duotone" className="shrink-0 text-amber-200/75" />
-        <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">recovery</span>
+        <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-amber-200/55">Recovery</span>
         <span className="min-w-0 truncate">{title}</span>
       </div>
       <div className="mt-1.5 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/64">
@@ -1068,9 +1068,9 @@ function renderNoticeDetail(
           {detail.metrics.map((metric) => (
             <div
               key={`${metric.label}:${metric.value}`}
-              className="rounded-lg border border-border/12 bg-black/10 px-2.5 py-2"
+              className="rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 ade-chat-well"
             >
-              <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55">{metric.label}</div>
+              <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55 ade-chat-well-label">{metric.label}</div>
               <div className={cn("mt-1 text-sm font-medium", metric.tone ? chatChipToneClass(metric.tone) : "text-fg/75")}>
                 {metric.value}
               </div>
@@ -1080,22 +1080,22 @@ function renderNoticeDetail(
       ) : null}
       {detail.sections?.map((section) => (
         <div key={section.title} className="space-y-1.5">
-          <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55">{section.title}</div>
+          <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55 ade-chat-well-label">{section.title}</div>
           <div className="space-y-1.5">
             {section.items.map((item, index) => (
               typeof item === "string" ? (
                 <div
                   key={`${section.title}:text:${index}`}
-                  className="whitespace-pre-wrap break-words rounded-lg border border-border/12 bg-black/10 px-2.5 py-2"
+                  className="whitespace-pre-wrap break-words rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 ade-chat-well"
                 >
                   {item}
                 </div>
               ) : (
                 <div
                   key={`${section.title}:${item.label}:${item.value}:${index}`}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-border/12 bg-black/10 px-2.5 py-2"
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 ade-chat-well"
                 >
-                  <span className="text-muted-fg/60">{item.label}</span>
+                  <span className="text-muted-fg/60 ade-chat-well-label">{item.label}</span>
                   <span className={cn("text-right font-medium", item.tone ? chatChipToneClass(item.tone) : "text-fg/75")}>
                     {item.value}
                   </span>
@@ -2462,12 +2462,12 @@ function ToolResultCard({
           <span className={cn("inline-flex", (event.status ?? "completed") === "running" && "ade-tool-bounce")}>
             <StatusIcon status={event.status ?? "completed"} />
           </span>
-          <span className={cn("ade-chat-status-pill inline-flex items-center gap-1.5 border px-2 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider", meta.badgeCls)}>
+          <span className={cn("ade-chat-status-pill inline-flex items-center gap-1.5 border px-2 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-medium", meta.badgeCls)}>
             <ToolIcon size={11} weight="bold" />
             {meta.label}
           </span>
           {sourceChip ? (
-            <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.16em]", chatChipToneClass(sourceChip.tone))}>
+            <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*8/14)] font-medium", chatChipToneClass(sourceChip.tone))}>
               {sourceChip.label}
             </span>
           ) : null}
@@ -2493,8 +2493,8 @@ function ToolResultCard({
               {toolNote.text}
             </span>
           ) : event.status ? (
-            <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-wider", statusColorClass(event.status))}>
-              {event.status}
+            <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)]", statusColorClass(event.status))}>
+              {sentenceCase(event.status)}
             </span>
           ) : null}
         </div>
@@ -2740,12 +2740,12 @@ function CommandEventCard({
 
   const commandBody = (
     <>
-      <div className="rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80">
+      <div className="rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80 ade-chat-well">
         <span className="select-none text-amber-500/40">$ </span>
         {redactCommandLine(event.command ?? "")}
       </div>
       {hasOutput ? (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60">
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60 ade-chat-well">
           {event.output}
         </pre>
       ) : null}
@@ -3161,8 +3161,8 @@ function renderEvent(
           >
             <ProviderLogo family={event.fromProvider} size={20} />
           </span>
-          <span className="text-[11px] font-semibold uppercase tracking-[0.14em] leading-none text-fg/45">
-            handoff
+          <span className="text-[11px] font-semibold leading-none text-fg/45">
+            Handoff
           </span>
           <ArrowRight size={14} weight="bold" className="block shrink-0" aria-hidden />
           <span
@@ -3679,10 +3679,10 @@ function renderEvent(
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className={cn(
-                "font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.18em]",
+                "font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium",
                 isFailed ? "text-red-300/60" : "text-cyan-300/50",
               )}>
-                Web Search
+                Web search
               </span>
               {event.action ? (
                 <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/25">{event.action}</span>
@@ -3727,7 +3727,7 @@ function renderEvent(
         ) : (
           <ShieldCheck size={13} weight="bold" className="text-indigo-400/60" />
         )}
-        <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-indigo-300/55">
+        <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-indigo-300/55">
           {isStarted ? "Guardian reviewing" : "Guardian approved"}
         </span>
         {event.action ? (
@@ -3878,7 +3878,7 @@ function renderEvent(
     return (
       <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-sky-300/14 bg-sky-500/[0.05] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-sky-100/78">
         <ShieldCheck size={12} weight="duotone" className="shrink-0 text-sky-200/70" />
-        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-sky-200/55">safety</span>
+        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-sky-200/55">Safety</span>
         <span className="min-w-0 truncate">
           {event.state.fasterModel ? `Buffering, ${event.state.fasterModel} ready` : "Buffering"}
         </span>
@@ -3896,7 +3896,7 @@ function renderEvent(
     return (
       <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-fg/[0.08] bg-fg/[0.035] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/64">
         {isRunning ? <ChatStatusGlyph status="working" size={12} /> : <Circle size={10} weight="fill" className="shrink-0 text-fg/32" />}
-        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-fg/38">wait</span>
+        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/38">Wait</span>
         <span className="min-w-0 truncate">{duration ? `Sleeping ${duration}` : "Sleeping"}</span>
       </div>
     );
@@ -3906,7 +3906,7 @@ function renderEvent(
     return (
       <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
         <Warning size={12} weight="duotone" className="shrink-0 text-amber-200/75" />
-        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">thread</span>
+        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-amber-200/55">Thread</span>
         <span className="min-w-0 truncate">Deleted upstream. Next message starts fresh.</span>
       </div>
     );
@@ -3943,7 +3943,7 @@ function renderEvent(
             {`Context${modelLabel ? ` · ${modelLabel}` : ""} · ${totalLabel}/${maxLabel} (${percent.toFixed(0)}%)`}
           </span>
         </div>
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25">
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/25 [[data-theme=light]_&]:bg-fg/10">
           <div className="h-full rounded-full bg-cyan-300/65" style={{ width: `${percent}%` }} />
         </div>
         <div className="mt-3 space-y-1.5">
@@ -3997,7 +3997,7 @@ function renderEvent(
     return (
       <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-amber-400/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
         <Target size={11} weight="duotone" className="shrink-0 text-amber-300/80" />
-        <span className="shrink-0 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">goal</span>
+        <span className="shrink-0 text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-amber-200/55">Goal</span>
         <span className="min-w-0 truncate">{message}</span>
       </div>
     );
@@ -4015,7 +4015,7 @@ function renderEvent(
     return (
       <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-amber-400/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
         <Target size={11} weight="duotone" className="shrink-0 text-amber-300/80" />
-        <span className="shrink-0 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">goal</span>
+        <span className="shrink-0 text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-amber-200/55">Goal</span>
         <span className="min-w-0 truncate">{message}</span>
       </div>
     );
@@ -4133,8 +4133,8 @@ function renderEvent(
           title={childSessionId ? "Open the spawned chat" : undefined}
         >
           <Robot size={11} weight="duotone" className={cn("shrink-0", isPeer ? "text-slate-300/60" : "text-violet-300/70")} aria-hidden />
-          <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", isPeer ? "text-slate-300/50" : "text-violet-300/55")}>
-            {isPeer ? "chat" : "subagent"}
+          <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium", isPeer ? "text-slate-300/50" : "text-violet-300/55")}>
+            {isPeer ? "Chat" : "Subagent"}
           </span>
           <span className="min-w-0 truncate">{childTitle}</span>
           {childSessionId ? <CaretRight size={10} className={cn("shrink-0", isPeer ? "text-slate-300/55" : "text-violet-300/55")} /> : null}
@@ -4326,8 +4326,8 @@ function renderEvent(
     const NoticeIcon = style.icon;
     const hasDetail = hasNoticeDetail(event.detail);
     const chipLabel = event.noticeKind === "rate_limit" && inferredSeverity !== "error"
-      ? "usage"
-      : event.noticeKind.replace("_", " ");
+      ? "Usage"
+      : sentenceCase(event.noticeKind);
 
     // "A reset credit is banked" is the one usage notice with something to DO.
     // A notice that reports a spendable credit and offers no way to spend it is
@@ -4380,8 +4380,8 @@ function renderEvent(
           style.text,
         )}>
           <NoticeIcon size={11} weight="bold" />
-          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
-          <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
+          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{chipLabel}</span>
+          <span className="text-fg/55">{event.message}</span>
           {detail ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/42">{detail}</span> : null}
         </div>
       );
@@ -4409,7 +4409,7 @@ function renderEvent(
           summary={
             <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
               <NoticeIcon size={12} weight="bold" className={style.text} />
-              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
+              <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-medium", style.border, style.bg, style.text)}>
                 {chipLabel}
               </span>
               <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55">{event.message}</span>
@@ -4428,8 +4428,8 @@ function renderEvent(
         style.text,
       )}>
         <NoticeIcon size={11} weight="bold" />
-        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
-        <span className="normal-case tracking-normal text-fg/45">{event.message}</span>
+        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{chipLabel}</span>
+        <span className="text-fg/45">{event.message}</span>
       </div>
     );
   }
@@ -4570,7 +4570,7 @@ function renderEvent(
     /* Generic approvals stay compact; ask-user requests render as inline chat controls. */
     const resolvedLabel = (() => {
       if (resolvedState !== "accepted" && resolvedState !== "declined") return "Closed";
-      if (isPlanApproval) return resolvedState === "accepted" ? "Plan Approved" : "Plan Rejected";
+      if (isPlanApproval) return resolvedState === "accepted" ? "Plan approved" : "Plan rejected";
       if (isAskUser) return resolvedState === "accepted" ? "Answered" : "Declined";
       return resolvedState === "accepted" ? "Accepted" : "Declined";
     })();
@@ -4660,14 +4660,14 @@ function renderEvent(
       <div className={cn(GLASS_CARD_CLASS, "px-4 py-2.5")} style={SURFACE_INLINE_CARD_STYLE}>
         <div className="flex items-center gap-2">
           {requestSource ? (
-            <span className={cn("inline-flex h-5 w-5 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-black/20")}>
+            <span className={cn("inline-flex h-5 w-5 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-black/20 ade-chat-well")}>
               <ProviderLogo family={requestSource} size={11} />
             </span>
           ) : null}
           {isResolved ? (
             <span
               className={cn(
-                "inline-flex items-center gap-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider",
+                "inline-flex items-center gap-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-medium",
                 approvalToneClass(resolvedState),
               )}
             >
@@ -4683,14 +4683,14 @@ function renderEvent(
           ) : (
             <>
               <ChatStatusGlyph status="waiting" size={11} />
-              <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-wider text-fg/50">
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/50">
                 {approvalWaitingLabel({ isPlanApproval, isAskUser, isPermissionRequest })}
               </span>
             </>
           )}
         </div>
         {isPlanApproval && bodyText.trim().length > 0 ? (
-          <div className="mt-2 rounded-lg border border-fg/[0.06] bg-black/15 px-3 py-2">
+          <div className="mt-2 rounded-lg border border-fg/[0.06] bg-black/15 px-3 py-2 ade-chat-well">
             <MarkdownBlock markdown={bodyText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         ) : null}
@@ -4746,11 +4746,11 @@ function renderEvent(
           sessionId={options?.sessionId ?? null}
           details={(
             <details>
-              <summary className="cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/40 transition-colors hover:text-muted-fg/65">
+              <summary className="cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-muted-fg/40 transition-colors hover:text-muted-fg/65">
                 Details
               </summary>
-              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/15 px-3 py-2">
-                <div className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55">
+              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/15 px-3 py-2 ade-chat-well">
+                <div className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55 [[data-theme=light]_&]:text-muted-fg">
                   {errorCopyValue}
                 </div>
                 <MessageCopyButton value={errorCopyValue} className="shrink-0" />
@@ -4904,14 +4904,14 @@ function renderEvent(
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.16em]",
+          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)]",
           turnStatusToneClass({ isFailure, isInterrupted }),
         )}
       >
         <Warning size={11} weight="bold" />
-        <span>{event.turnStatus}</span>
+        <span>{sentenceCase(event.turnStatus)}</span>
         {event.message ? (
-          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] normal-case tracking-normal text-fg/55">
+          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55">
             {event.message}
           </span>
         ) : null}
@@ -4925,12 +4925,12 @@ function renderEvent(
       event.contract.status === "blocked"
       || event.contract.status === "launch_failed"
       || event.contract.status === "failed";
-    const label = `${event.contract.workerIntent} ${event.contract.status}`.replace(/_/g, " ");
+    const label = sentenceCase(`${event.contract.workerIntent} ${event.contract.status}`);
     const detail = (event.message ?? "").trim();
     return (
       <div
         className={cn(
-          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.16em]",
+          "flex items-center gap-2 rounded-[var(--chat-radius-pill)] border px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)]",
           isFailure
             ? "border-red-500/14 bg-red-500/[0.05] text-red-300"
             : "border-border/14 bg-surface-recessed/70 text-muted-fg/55"
@@ -4939,7 +4939,7 @@ function renderEvent(
         <Warning size={11} weight="bold" />
         <span>{label}</span>
         {detail ? (
-          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] normal-case tracking-normal text-fg/55">
+          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55">
             {detail}
           </span>
         ) : null}
@@ -4978,9 +4978,9 @@ function renderEvent(
     const statusTone = completionReportToneClass(event.report.status);
     return (
       <div className={cn("rounded-lg border px-3 py-2.5", statusTone)}>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em]">
+        <div className="flex flex-wrap items-center gap-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)]">
           <span>Completion</span>
-          <span className="text-current/80">{event.report.status}</span>
+          <span className="text-current/80">{sentenceCase(event.report.status)}</span>
           {event.report.artifacts.length > 0 ? (
             <span className="text-current/70">{event.report.artifacts.length} artifact{event.report.artifacts.length === 1 ? "" : "s"}</span>
           ) : null}
@@ -5107,6 +5107,26 @@ export function deriveTurnEndDurations(
  * and opens the drawer narrowed to it. The pictures show on the rows that
  * filed them — the link is a way back, not a second copy.
  */
+function LiveUsageLimitFooterLabel({ elapsed, resetAtMs, repeats }: {
+  elapsed: string | null;
+  resetAtMs: number | null | undefined;
+  repeats: string;
+}) {
+  const [expiredResetAtMs, setExpiredResetAtMs] = useState<number | null>(null);
+  useEffect(() => {
+    if (resetAtMs == null || resetAtMs <= Date.now()) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const expire = () => {
+      const remaining = resetAtMs - Date.now();
+      if (remaining <= 0) setExpiredResetAtMs(resetAtMs);
+      else timer = setTimeout(expire, Math.min(remaining, 2_147_483_647));
+    };
+    expire();
+    return () => clearTimeout(timer);
+  }, [resetAtMs]);
+  return <>{usageLimitTurnFooterLabel(elapsed, expiredResetAtMs === resetAtMs ? null : resetAtMs)}{repeats}</>;
+}
+
 function DoneTurnDivider({
   event,
   timestamp,
@@ -5129,6 +5149,7 @@ function DoneTurnDivider({
   turnDiffSummary = null,
   turnDiffSummaries = null,
   usageLimitResumeTurnId,
+  usageLimitResumeResetAtMs,
   endedAtUsageLimit = false,
   failureShown = false,
   repeatCount = 1,
@@ -5158,6 +5179,7 @@ function DoneTurnDivider({
    * attach a 429 to the result frame.
    */
   usageLimitResumeTurnId?: string | null;
+  usageLimitResumeResetAtMs?: number | null;
   /** The transcript read this turn's own error as a usage limit (`foldTurnFailureRows`). */
   endedAtUsageLimit?: boolean;
   /** This failed turn's failure line is drawn above (`foldTurnFailureRows`): no second "failed" here. */
@@ -5213,13 +5235,15 @@ function DoneTurnDivider({
   const usageLimitLive = isUsageLimitTurn(event, usageLimitResumeTurnId);
   const usageLimitPaused = !completed && (usageLimitLive || endedAtUsageLimit);
   const usageLimitElapsed = durationMs !== null ? formatTurnDuration(durationMs) : null;
-  // Only the turn the live limit is anchored to is "paused"; an older limited
-  // turn is history and says just what happened.
-  const usageLimitLabel = usageLimitPaused
-    ? `${usageLimitLive
-      ? usageLimitTurnFooterLabel(usageLimitElapsed)
-      : usageLimitElapsed ? `Usage limit · ${usageLimitElapsed}` : "Usage limit"}${repeatCount > 1 ? ` · ×${repeatCount}` : ""}`
-    : null;
+  const usageLimitRepeats = repeatCount > 1 ? ` · ×${repeatCount}` : "";
+  // Older limited turns keep their historical label.
+  const usageLimitLabel = usageLimitLive
+    ? <LiveUsageLimitFooterLabel
+      elapsed={usageLimitElapsed}
+      resetAtMs={event.turnId === usageLimitResumeTurnId ? usageLimitResumeResetAtMs : null}
+      repeats={usageLimitRepeats}
+    />
+    : `${usageLimitElapsed ? `Usage limit · ${usageLimitElapsed}` : "Usage limit"}${usageLimitRepeats}`;
   const usageLimitDetails = Boolean(usageLimitPaused && tokenLine);
   const content = usageLimitPaused ? (
     <span className="inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
@@ -5267,12 +5291,12 @@ function DoneTurnDivider({
         {completed ? (
           <span>{formatTime(timestamp)}</span>
         ) : (
-          <span className="font-sans font-medium uppercase tracking-wide">{event.status}</span>
+          <span className="font-sans font-medium">{sentenceCase(event.status)}</span>
         )}
         {reasonLabel ? (
           <>
             <span className="opacity-40">·</span>
-            <span className="font-sans normal-case">{reasonLabel}</span>
+            <span className="font-sans">{reasonLabel}</span>
           </>
         ) : null}
     </span>
@@ -5599,6 +5623,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   usageLimitResumeActive?: boolean;
   /** Turn that limit is anchored to, when the host reports one. */
   usageLimitResumeTurnId?: string | null;
+  usageLimitResumeResetAtMs?: number | null;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onReviewChanges?: () => void;
@@ -5686,6 +5711,7 @@ const EventRow = React.memo(function EventRow({
   sessionEnded,
   usageLimitResumeActive,
   usageLimitResumeTurnId,
+  usageLimitResumeResetAtMs,
   onOpenWorkspacePath,
   onNavigateSuggestion,
   onReviewChanges,
@@ -5884,6 +5910,7 @@ const EventRow = React.memo(function EventRow({
               : null}
             turnDiffSummaries={turnDiffSummaries}
             usageLimitResumeTurnId={usageLimitResumeTurnId}
+            usageLimitResumeResetAtMs={usageLimitResumeResetAtMs}
             endedAtUsageLimit={envelope.endedAtUsageLimit === true}
             failureShown={envelope.failureShown === true}
             repeatCount={envelope.repeatCount ?? 1}
@@ -6453,6 +6480,7 @@ function AgentChatMessageListMain({
   wakingLabel = null,
   usageLimitResumeActive = false,
   usageLimitResumeTurnId = null,
+  usageLimitResumeResetAtMs = null,
   onOpenWorkspacePath,
   respondingApprovalIds,
   pendingApprovalIds,
@@ -6559,6 +6587,8 @@ function AgentChatMessageListMain({
    */
   usageLimitResumeActive?: boolean;
   usageLimitResumeTurnId?: string | null;
+  /** When the live limit resets (ms), for the paused turn's footer. */
+  usageLimitResumeResetAtMs?: number | null;
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
   onInsertDraft?: (text: string) => void;
   /** Attaches an image or video from the thread to the next message ("Add to chat" on media). */
@@ -9522,6 +9552,7 @@ function AgentChatMessageListMain({
           sessionEnded={sessionEnded}
           usageLimitResumeActive={usageLimitResumeActive}
           usageLimitResumeTurnId={usageLimitResumeTurnId}
+          usageLimitResumeResetAtMs={usageLimitResumeResetAtMs}
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
           onReviewChanges={handleReviewChanges}
@@ -9601,6 +9632,7 @@ function AgentChatMessageListMain({
         sessionEnded={sessionEnded}
         usageLimitResumeActive={usageLimitResumeActive}
         usageLimitResumeTurnId={usageLimitResumeTurnId}
+        usageLimitResumeResetAtMs={usageLimitResumeResetAtMs}
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
         onReviewChanges={handleReviewChanges}
@@ -9638,7 +9670,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onReactToMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onReactToMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, usageLimitResumeResetAtMs, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

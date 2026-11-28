@@ -51,7 +51,7 @@ function stateBadgeStyle(item: GitHubPrListItem): React.CSSProperties {
     alignItems: "center",
     padding: "2px 7px",
     fontSize: 10,
-    fontWeight: 600,
+    fontWeight: 500,
     fontFamily: SANS_FONT,
     color: c.text,
     background: c.bg,
@@ -475,19 +475,17 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
         >
           {item.isBot ? (
             <span style={{
-              fontSize: 9,
-              fontWeight: 700,
+              fontSize: 10,
+              fontWeight: 500,
               fontFamily: SANS_FONT,
-              textTransform: "uppercase",
               padding: "1px 5px",
               marginRight: 5,
               borderRadius: 3,
               background: COLORS.hoverBg,
               color: COLORS.textDim,
-              letterSpacing: "0.3px",
               whiteSpace: "nowrap",
             }}>
-              bot
+              Bot
             </span>
           ) : null}
           <span style={{ fontFamily: MONO_FONT, fontSize: 11, fontWeight: 400, color: sc.text }}>

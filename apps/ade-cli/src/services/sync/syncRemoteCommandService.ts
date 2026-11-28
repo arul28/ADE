@@ -1,6 +1,6 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isLaneShareGuestCommand } from "./laneShareGuestPolicy";
-import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
+import { fallbackUnprojectedChatSession, listSessionsWithChatProjection } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { awaitCliProviderLogin } from "../../../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
@@ -328,6 +328,7 @@ import {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
+import { openLaneDevServerInBrowser, type WorkToolsBrowserTabOpener } from "./workToolsOpenBrowserTab";
 import type { ComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { ComputerUseArtifactListArgs } from "../../../../desktop/src/shared/types";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
@@ -622,8 +623,13 @@ export function measureSyncRemoteCommandResultBytes(result: unknown): number {
   }
 }
 
-/** The one browser call the sync surface makes: close a tab, as a person would. */
-export type SyncBrowserTabCloser = { closeTab(input: { tabId: string }): Promise<unknown> };
+/**
+ * The two browser calls the sync surface makes, both as the person would: close
+ * a tab, and open one of the lane's dev servers in a background tab.
+ */
+export type SyncBrowserTabControl = WorkToolsBrowserTabOpener & {
+  closeTab(input: { tabId: string }): Promise<unknown>;
+};
 
 type SyncRemoteCommandServiceArgs = {
   /** Webhook automations for phones and the web client (read-only); late-bound, null when absent. */
@@ -701,11 +707,11 @@ type SyncRemoteCommandServiceArgs = {
    */
   workToolsStateService?: WorkToolsStateService | null;
   /**
-   * The desktop browser over its bridge, for the one browser action a phone
-   * may take: closing a tab (`workTools.closeBrowserTab`). Null on a runtime
-   * with no browser surface.
+   * The desktop browser over its bridge, for the browser actions a phone may
+   * take: closing a tab (`workTools.closeBrowserTab`) and opening a lane's dev
+   * server (`workTools.openBrowserTab`). Null on a runtime with no browser surface.
    */
-  builtInBrowserService?: SyncBrowserTabCloser | null;
+  builtInBrowserService?: SyncBrowserTabControl | null;
   /**
    * The proof store the hosted web client's citations read. Absent on a runtime
    * that never built one, in which case `computerUse.*` is not registered and the
@@ -858,6 +864,13 @@ export type SyncRemoteCommandExecutionContext = {
    * rather than what the client says it is. Null: not a paired peer.
    */
   requester?: MachineUpdatePairing | null;
+  /**
+   * Set only by the host: the invoking peer may run controller commands (the
+   * owner's phone or web client, `isInteractiveControllerPeer`). A read that a
+   * viewer may also make leaves out what would change the desktop for anyone
+   * else (`workTools.readBrowserTabFrame`'s `viewport`). Absent: a viewer.
+   */
+  controller?: boolean;
 };
 
 /** The turn a host-set `expectedTurnId` names, added to a guest's args. */
@@ -2290,7 +2303,9 @@ function parseListSessionsArgs(value: Record<string, unknown>): ListSessionsArgs
   return {
     ...(laneId ? { laneId } : {}),
     ...(status ? { status } : {}),
-    ...(typeof limit === "number" ? { limit } : {}),
+    ...(value.limit === null ? { limit: null } : typeof limit === "number" ? { limit } : {}),
+    ...(value.openOnly === true ? { openOnly: true } : {}),
+    ...(value.includeArchived === false ? { includeArchived: false } : {}),
   };
 }
 
@@ -4684,7 +4699,10 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.getSessionDelta", { viewerAllowed: true }, async (payload) =>
     args.sessionDeltaService?.getSessionDelta(parseSessionIdArgs(payload, "work.getSessionDelta").sessionId) ?? null);
   register("work.listSessions", { viewerAllowed: true }, async (payload) => {
-    const sessions = await listRemoteWorkSessions(args, parseListSessionsArgs(payload));
+    const filters = parseListSessionsArgs(payload);
+    const sessions = filters.openOnly
+      ? await listSessionsWithChatProjection(args, filters)
+      : await listRemoteWorkSessions(args, filters);
     // `conditional: true` (newer phones) asks for `{ sessions, signature,
     // notModified }`, so a reconnect whose list did not change downloads a
     // signature instead of up to 200 rows. Without it the reply stays the bare
@@ -5112,6 +5130,11 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.stopRuntime", { viewerAllowed: true, queueable: true }, async (payload) => {
     const { sessionId } = parseStopRuntimeArgs(payload);
     const session = args.sessionService.get(sessionId);
+    if (payload.confirmProcessExit === true) {
+      const ptyId = requireString(payload.ptyId, "A terminal is required to confirm its exit.");
+      if (session?.ptyId !== ptyId) return { disposed: false, reason: "session-mismatch", processTreeExited: false };
+      return args.ptyService.disposeWithExitReceipt({ ptyId, sessionId });
+    }
     if (session?.ptyId) {
       await args.ptyService.dispose({ ptyId: session.ptyId, sessionId });
     }
@@ -6256,11 +6279,14 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
  * lives on the `work_tools` ADE action domain instead, where only the local
  * runtime channel can reach it.
  *
- * The one write is closing a tab, the way the person at the desktop would with
- * the tab's ×. It is controller-only (the owner's own phone, not a read-only
- * viewer) and never queued: a close replayed later could hit a tab the user
- * has since gone back to. The tab must be one this lane's pane shows, so a
- * phone cannot close another lane's tab by guessing its id.
+ * The two writes are closing a tab, the way the person at the desktop would
+ * with the tab's ×, and opening one of the lane's dev servers in a background
+ * tab. Both are controller-only (the owner's own phone, not a read-only viewer)
+ * and never queued: a close replayed later could hit a tab the user has since
+ * gone back to, and an open replayed later would put a page up nobody asked for
+ * any more. The tab to close must be one this lane's pane shows, so a phone
+ * cannot close another lane's tab by guessing its id; the page to open must be
+ * one of the lane's own dev servers on this machine's loopback.
  */
 function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const workToolsStateService = args.workToolsStateService;
@@ -6273,12 +6299,22 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
     workToolsStateService.readObservationPreview({
       path: requireString(payload.path, "workTools.readObservationPreview requires path."),
     }));
+  // The lane's dev servers on this machine, for the phone's "Dev servers" list.
+  // Read-only: the same list a desktop on another machine reads.
+  register("workTools.listDevServers", { viewerAllowed: true }, async (payload) =>
+    workToolsStateService.listDevServers({
+      laneId: requireString(payload.laneId, "workTools.listDevServers requires laneId."),
+    }));
   // A browser tab's live picture on the phone: each read renews a short watch
-  // on the desktop, so frames flow only while the sheet is open.
-  register("workTools.readBrowserTabFrame", { viewerAllowed: true, queueable: false }, async (payload) =>
+  // on the desktop, so frames flow only while the sheet is open. `viewport`
+  // (the phone's picture in points) asks the desktop to lay the page out at
+  // phone width for as long as the watch lasts; older hosts ignore it.
+  // A viewer still reads the frame, but only a controller may re-lay the tab out.
+  register("workTools.readBrowserTabFrame", { viewerAllowed: true, queueable: false }, async (payload, context) =>
     workToolsStateService.readBrowserTabFrame({
       tabId: requireString(payload.tabId, "workTools.readBrowserTabFrame requires tabId."),
       maxWidth: payload.maxWidth,
+      ...(context.controller === true ? { viewport: payload.viewport } : {}),
     }));
   // Take control of a browser tab from the phone: a tap, a scroll, typing.
   register(
@@ -6309,6 +6345,16 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
       await browser.closeTab({ tabId });
       return { ok: true, alreadyClosed: false };
     },
+  );
+  register(
+    "workTools.openBrowserTab",
+    { viewerAllowed: false, controllerAllowed: true, queueable: false },
+    async (payload) => openLaneDevServerInBrowser({
+      laneId: requireString(payload.laneId, "workTools.openBrowserTab requires laneId."),
+      rawUrl: requireString(payload.url, "workTools.openBrowserTab requires url."),
+      workTools: workToolsStateService,
+      browser: args.builtInBrowserService,
+    }),
   );
 }
 

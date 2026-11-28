@@ -45,7 +45,7 @@ export function PushDivergenceDialog({
     >
       <div className="flex items-center gap-1.5" style={{ ...LABEL_STYLE, color: COLORS.warning }}>
         <Warning size={11} weight="bold" />
-        <span>BRANCH ON ANOTHER MACHINE</span>
+        <span>Branch on another machine</span>
       </div>
       <div
         className="mt-1.5 truncate"

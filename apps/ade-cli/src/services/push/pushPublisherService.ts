@@ -64,6 +64,7 @@ import type {
 } from "./attentionItemBuilder";
 import { deriveProjectId } from "../projects/projectRegistry";
 import { BRAND } from "../../../../desktop/src/shared/brand";
+import { createProjectSettingsKeyReader } from "./projectSettingsKey";
 
 /** The subagent that raised a card, from the card's own request record. */
 function approvalRequestSubagentName(event: { detail?: unknown }): string | null {
@@ -402,6 +403,10 @@ export type PushDesktopAlert = {
   machineKey: string;
   /** The project (scope) the chat belongs to, which keys project settings. */
   projectId: string | null;
+  /** The project's machine-independent id (`deriveProjectId(rootPath)`). */
+  canonicalProjectId?: string | null;
+  /** The key project notification settings use (`AttentionProjectRef.settingsKey`). */
+  projectSettingsKey?: string | null;
   /** The Activity alert this is, when published; fences the click's "seen". */
   alertFingerprint?: string | null;
 };
@@ -1024,6 +1029,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
+  const readProjectSettingsKey = createProjectSettingsKeyReader();
+  const projectSettingsKey = (rootPath: string | null | undefined): string | null => {
+    const trimmed = rootPath?.trim();
+    if (!trimmed) return null;
+    const folderId = canonicalProjectId(trimmed);
+    try {
+      return readProjectSettingsKey(trimmed, folderId);
+    } catch (error) {
+      logWarn("attention.project_settings_key_failed", error);
+      return folderId;
+    }
+  };
+
   const loadActivityRoster = async (nowMs: number): Promise<ActivityRosterProject[]> => {
     if (!activityRosterProvider) return [];
     if (rosterCache && nowMs - rosterCache.at < ACTIVITY_ROSTER_CACHE_MS) {
@@ -1068,6 +1086,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       rosterPhaseAnchors,
       loadRoster: () => loadActivityRoster(nowMs),
       canonicalProjectId,
+      projectSettingsKey,
       lastPublishedRevisionById,
       userMessages: messages,
       remoteAcknowledgedRevisionById: new Map(
@@ -1116,12 +1135,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       alert.desktopAnnounced = true;
       const copy = alert.render();
       const itemId = `agent:${machineKey}:${alert.sessionId}`;
+      const scopeKey = (runs.get(alert.sessionId) ?? recentRuns.get(alert.sessionId))?.scopeKey ?? null;
       emitDesktopAlert({
         itemId,
         alertFingerprint: kind === "goal" ? null : lastAlertFingerprintById.get(itemId) ?? null,
         kind,
         sessionId: alert.sessionId,
-        projectId: (runs.get(alert.sessionId) ?? recentRuns.get(alert.sessionId))?.scopeKey ?? null,
+        projectId: scopeKey,
+        canonicalProjectId: scopeKey ? canonicalProjectId(scopes.get(scopeKey)?.projectRoot) : null,
+        projectSettingsKey: scopeKey ? projectSettingsKey(scopes.get(scopeKey)?.projectRoot) : null,
         title: copy.title,
         body: copy.body,
         at: new Date(nowMs).toISOString(),
@@ -3198,6 +3220,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       projectId?: string | null;
     }): Promise<AccountNotificationResult> {
       const { projectId, ...rest } = notification;
+      const project = projectId ? [...scopes.entries()].find(([key, scope]) =>
+        key === projectId || canonicalProjectId(scope.projectRoot) === projectId)?.[1] : undefined;
       return await deps.relayClient.sendAccountNotification({
         ...rest,
         deepLink: rest.deepLink
@@ -3207,6 +3231,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           })
           : null,
         machineKey: deps.store.getOrCreateIdentity().machineKey,
+        projectSettingsKey: projectSettingsKey(project?.projectRoot) ?? projectId,
       });
     },
 
@@ -3318,6 +3343,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         kind: "message",
         sessionId,
         projectId: scopeKey,
+        canonicalProjectId: canonicalProjectId(scope.projectRoot),
+        projectSettingsKey: projectSettingsKey(scope.projectRoot),
         title,
         body,
         at: message.sentAt,

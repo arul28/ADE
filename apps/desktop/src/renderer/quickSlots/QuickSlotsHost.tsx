@@ -16,6 +16,7 @@ import { eventMatchesBinding, getEffectiveBinding } from "../lib/keybindings";
 import { KEYBINDING_DEFINITIONS } from "../../shared/keybindings";
 import { showToast } from "../components/app/toast/toastStore";
 import { isMacPlatform } from "../lib/platform";
+import { sentenceCase } from "../lib/format";
 import { useRootAppStore } from "../state/appStore";
 import { ViewportOverlayPortal } from "../components/ui/ViewportOverlayHost";
 import {
@@ -521,7 +522,7 @@ export function QuickSlotsHost() {
                     ? <SlotIcon size={15} weight="duotone" />
                     : <span className="ade-qs-empty-mark" aria-hidden="true">+</span>}
                   <span className="ade-qs-label">{slot.label}</span>
-                  <span className="ade-qs-kind">{slot.kind ? slot.kind.toUpperCase() : "EMPTY"}</span>
+                  <span className="ade-qs-kind">{slot.kind ? sentenceCase(slot.kind) : "Empty"}</span>
                 </button>
               );
             })}

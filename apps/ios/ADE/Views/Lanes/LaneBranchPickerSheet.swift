@@ -678,9 +678,17 @@ struct LaneBranchPickerSheet: View {
     checkingOut = false
   }
 
+  private func activeWorkKindLabel(_ kind: String) -> String {
+    switch kind {
+    case "chat": return "Chat"
+    case "cli": return "CLI"
+    default: return "Terminal"
+    }
+  }
+
   private func activeWorkSummary(_ activeWork: [LaneBranchActiveWorkItem]) -> String {
     let visible = activeWork.prefix(4)
-    var lines = visible.map { "Terminal: \($0.title)" }
+    var lines = visible.map { "\(activeWorkKindLabel($0.kind)): \($0.title)" }
     let extra = activeWork.count - visible.count
     if extra > 0 {
       lines.append("+ \(extra) more")

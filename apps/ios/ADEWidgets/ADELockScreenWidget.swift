@@ -428,7 +428,7 @@ private struct LockScreenRectangularView: View {
                             .minimumScaleFactor(0.78)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text(status.shortLabel)
-                            .font(.system(size: status.shortLabel.count > 4 ? 7 : 8, weight: .bold, design: .rounded))
+                            .font(.system(size: status.shortLabel.count > 4 ? 7 : 8, weight: .medium, design: .rounded))
                             .foregroundStyle(status.tint)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
@@ -483,7 +483,7 @@ private struct LockScreenCircularView: View {
                             .contentTransition(.symbolEffect(.replace))
                     }
                     Text(status.shortLabel)
-                        .font(.system(size: status.shortLabel.count > 4 ? 6.5 : 7.5, weight: .bold, design: .rounded))
+                        .font(.system(size: status.shortLabel.count > 4 ? 6.5 : 7.5, weight: .medium, design: .rounded))
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
                 }

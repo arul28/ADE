@@ -1318,6 +1318,40 @@ enum WorkProofPreviewData {
     ]
   }()
 
+  static let commentsMarkdown = """
+  ## What changed
+
+  The Work tab lagged because every transcript row re-parsed its markdown on each refresh. Rows now keep their parsed blocks and only the streaming tail is parsed again.
+
+  Three things moved:
+
+  - The block cache is keyed by the message digest, not the text.
+  - A long reply is split into one cell per block, so a cell stays small.
+  - Inline code keeps its own font run instead of a pill.
+
+  ```swift
+  let blocks = parseMarkdownBlocks(preview.text, digest: message.markdownDigest)
+  ```
+
+  | Surface | Before | After |
+  | --- | --- | --- |
+  | Scroll | 41 fps | 60 fps |
+  | Open | 380 ms | 120 ms |
+
+  Next I would measure the Lanes tab the same way, since it shares the row cache.
+  """
+
+  @MainActor static let commentsTranscript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let stamp = ISO8601DateFormatter().string(from: Date())
+    var reply = WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 2, event: .assistantText(text: commentsMarkdown, turnId: "turn-1", itemId: "a1"))
+    reply.threadCommentMessageKey = "item:turn-1:a1"
+    return [
+      WorkChatEnvelope(sessionId: sessionId, timestamp: stamp, sequence: 1, event: .userMessage(text: "Why does the Work tab lag?", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
+      reply,
+    ]
+  }()
+
   static let skillInstructions = WorkSkillInstructions(
     status: "ready",
     name: "quality",
@@ -1450,6 +1484,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// A reply with links and a skill chip (long-press for the link menu, tap
   /// the chip for its instructions).
   case chatLinks = "chat-links"
+  /// A long reply to select, copy and comment on (long-press a part, then
+  /// Select text or Comment on this part). Comments are kept on the phone.
+  case chatComments = "chat-comments"
   /// The skill instructions sheet on its own.
   case skillInstructions = "skill-instructions"
   /// The browser card with each tab's × (close with undo).
@@ -1841,6 +1878,8 @@ struct ADEPreviewScreenHost: View {
         try? await Task.sleep(for: .seconds(1))
         WorkThreadEntityDirectory.shared.record(skillNames: ["quality"])
       }
+    case .chatComments:
+      WorkThreadCommentsPreviewHost()
     case .skillInstructions:
       WorkSkillInstructionsSheet(
         sessionId: WorkPreviewData.chatSummary.sessionId,
@@ -3615,6 +3654,39 @@ private struct WorkFreeModelsSignInPreviewHost: View {
         providerSignInMachineName: "MacBook Air"
       )
     }
+  }
+}
+
+/// `-adePreviewScreen chat-comments`: the real chat over a long reply, with
+/// thread comments kept in memory so select, copy and comment can be driven
+/// with no computer.
+struct WorkThreadCommentsPreviewHost: View {
+  @State private var comments: [ChatThreadComment] = []
+
+  var body: some View {
+    var view = workPreviewChatSessionView(transcript: WorkProofPreviewData.commentsTranscript)
+    view.threadComments = comments
+    view.onUpdateThreadComment = { id, body, include in
+      guard let index = comments.firstIndex(where: { $0.id == id }) else { return }
+      if let body { comments[index].body = body }
+      if let include { comments[index].includeInNextSend = include }
+    }
+    view.onDeleteThreadComment = { id in comments.removeAll { $0.id == id } }
+    view.onCreateThreadComment = { draft in
+      let stamp = ISO8601DateFormatter().string(from: Date())
+      comments.append(ChatThreadComment(
+        id: "preview-comment-\(comments.count + 1)",
+        sessionId: WorkPreviewData.chatSummary.sessionId,
+        messageKey: draft.messageKey,
+        messageExcerpt: draft.messageExcerpt,
+        anchor: .text(quote: draft.anchor.quote, prefix: draft.anchor.prefix, suffix: draft.anchor.suffix),
+        body: draft.body,
+        includeInNextSend: true,
+        createdAt: stamp,
+        updatedAt: stamp
+      ))
+    }
+    return NavigationStack { view }
   }
 }
 

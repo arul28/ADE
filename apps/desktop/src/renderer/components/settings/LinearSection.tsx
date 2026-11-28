@@ -2,16 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowClockwise,
   ArrowSquareOut,
-  CaretDown,
   CheckCircle,
   CircleNotch,
-  Copy,
   Key,
   LinkSimple,
 } from "@phosphor-icons/react";
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
-import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
-import { isGithubAutolinksRefusal } from "../../../shared/githubAutolinks";
+import { GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN, isGithubAutolinksRefusal } from "../../../shared/githubAutolinks";
 import { captureError } from "../../../shared/sentry/capture";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
@@ -61,14 +58,48 @@ function LinearWorkspaceAvatar({
 
 type GitHubAutolinkCandidate = {
   id: string;
-  title: string;
   desc: string;
   keyPrefix: string;
   urlTemplate: string;
   isAlphanumeric: boolean;
-  command: string;
   configured: boolean;
 };
+
+// ADE adds a repository's links once, on its own, for an admin. Every link this
+// computer added is remembered per repository and key, so one the admin later
+// deletes on GitHub is not added again from here. (Another computer may add it
+// once more; the repository itself is the truth, so nothing here is account state.)
+const ADDED_STORAGE_PREFIX = "ade.linear.autolinkAdded.v1:";
+
+function addedKey(repoSlug: string, keyPrefix: string): string {
+  return `${ADDED_STORAGE_PREFIX}${repoSlug.toLowerCase()}:${keyPrefix.toUpperCase()}`;
+}
+
+function wasAdded(repoSlug: string, keyPrefix: string): boolean {
+  try {
+    return window.localStorage.getItem(addedKey(repoSlug, keyPrefix)) != null;
+  } catch {
+    return false;
+  }
+}
+
+function rememberAdded(repoSlug: string, keyPrefix: string): void {
+  try {
+    window.localStorage.setItem(addedKey(repoSlug, keyPrefix), String(Date.now()));
+  } catch {
+    // Storage unavailable: at worst ADE offers the link again next time.
+  }
+}
+
+/**
+ * What a person GitHub refused to show the links sees. An admin whose sign-in
+ * can't read them can fix that; anyone else learns who adds them, and that
+ * ADE links the keys either way.
+ */
+function refusedLinksNote(refusal: string, repoSlug: string | null, exampleIssueKey: string): string {
+  if (GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN.test(refusal)) return refusal;
+  return `Only an admin of ${repoSlug ?? "this repository"} can add these on GitHub. In ADE's PR view, keys like ${exampleIssueKey} already open the issue.`;
+}
 
 export function LinearSection() {
   const issueTopBar = useIssueTopBarPreferences();
@@ -93,9 +124,13 @@ export function LinearSection() {
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
   const [githubAutolinks, setGithubAutolinks] = useState<GitHubAutolink[]>([]);
   const [autolinksLoading, setAutolinksLoading] = useState(false);
+  // GitHub listed the repository's links, so `githubAutolinks` is the truth.
+  const [autolinksRead, setAutolinksRead] = useState(false);
   // Why the links could not be read or added, in plain words.
   const [autolinkError, setAutolinkError] = useState<PlainError | null>(null);
   const [creatingAutolinkId, setCreatingAutolinkId] = useState<string | null>(null);
+  // Why ADE's own add (nobody pressed anything) failed: a quiet note, not an error banner.
+  const [autoAddFailure, setAutoAddFailure] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState("");
   const [validating, setValidating] = useState(false);
   const [oauthStarting, setOauthStarting] = useState(false);
@@ -107,6 +142,7 @@ export function LinearSection() {
   const oauthSessionIdRef = useRef<string | null>(null);
   const requestEpochRef = useRef(0);
   const autolinksRequestIdRef = useRef(0);
+  const autoAddTriedRef = useRef(new Set<string>());
 
   const invalidateLoadRequests = useCallback(() => {
     requestEpochRef.current += 1;
@@ -139,7 +175,10 @@ export function LinearSection() {
     return connection.authMode === "oauth" ? "OAuth" : "API key";
   }, [connection?.authMode]);
   const workspaceLabel = connection?.organizationName?.trim() || connection?.organizationUrlKey?.trim() || null;
-  const workspaceUrlKey = connection?.organizationUrlKey?.trim() || "YOUR-WORKSPACE";
+  const orgUrlKey = connection?.organizationUrlKey?.trim() || null;
+  // Without it a link would point at a placeholder workspace, so nothing is added.
+  const hasWorkspaceKey = orgUrlKey != null;
+  const workspaceUrlKey = orgUrlKey ?? "YOUR-WORKSPACE";
   const githubRepoSlug = githubRepo ? `${githubRepo.owner}/${githubRepo.name}` : null;
   const teamKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -149,48 +188,25 @@ export function LinearSection() {
     }
     return [...keys].sort((a, b) => a.localeCompare(b));
   }, [projects]);
-  const autolinkCandidates = useMemo<GitHubAutolinkCandidate[]>(() => {
-    const repoSlug = githubRepoSlug ?? "OWNER/REPO";
-    const adePrTemplate = `${ADE_DEEPLINK_HTTPS_BASE_URL}?type=pr&repo=${encodeURIComponent(repoSlug)}&number=<num>`;
-    const baseCandidates: Array<Omit<GitHubAutolinkCandidate, "configured" | "command">> = [
-      {
-        id: "ade-pr",
-        title: `${BRAND.NAME} pull requests`,
-        desc: `Opens the pull request in ${BRAND.NAME}`,
-        keyPrefix: "ADEPR-",
-        urlTemplate: adePrTemplate,
-        isAlphanumeric: false,
-      },
-      ...teamKeys.map((teamKey) => ({
+  const autolinkCandidates = useMemo<GitHubAutolinkCandidate[]>(() => (
+    teamKeys.map((teamKey) => {
+      const keyPrefix = `${teamKey}-`;
+      return {
         id: `linear-${teamKey}`,
-        title: `${teamKey} issues`,
         desc: `Opens the ${teamKey} issue in Linear`,
-        keyPrefix: `${teamKey}-`,
+        keyPrefix,
         urlTemplate: `https://linear.app/${encodeURIComponent(workspaceUrlKey)}/issue/${teamKey}-<num>`,
         isAlphanumeric: false,
-      })),
-    ];
-    return baseCandidates.map((candidate) => {
-      const configured = githubAutolinks.some((autolink) =>
-        autolink.keyPrefix.toLowerCase() === candidate.keyPrefix.toLowerCase()
-      );
-      const command = [
-        "gh",
-        "repo",
-        "autolink",
-        "create",
-        candidate.keyPrefix,
-        `"${candidate.urlTemplate}"`,
-        "--numeric",
-        `--repo ${githubRepoSlug ?? "OWNER/REPO"}`,
-      ].join(" ");
-      return { ...candidate, configured, command };
-    });
-  }, [githubAutolinks, githubRepoSlug, teamKeys, workspaceUrlKey]);
+        configured: githubAutolinks.some((autolink) => autolink.keyPrefix.toLowerCase() === keyPrefix.toLowerCase()),
+      };
+    })
+  ), [githubAutolinks, teamKeys, workspaceUrlKey]);
+  const exampleIssueKey = `${teamKeys[0] ?? "ENG"}-123`;
   const configuredAutolinkCount = autolinkCandidates.filter((candidate) => candidate.configured).length;
   // GitHub refused to show the links (not an admin, or a sign-in without
-  // Administration access). What is added is unknown, so no count and no Add:
-  // pressing it could only fail the same way.
+  // Administration access). What is added is unknown, so no rows and no Add:
+  // pressing it could only fail the same way. Not a warning either: inside
+  // ADE the keys link anyway (PR markdown and chat).
   const autolinksRefused = autolinkError != null && isGithubAutolinksRefusal(autolinkError.text);
 
   /* ── Load helpers ── */
@@ -216,7 +232,9 @@ export function LinearSection() {
     // repo and generated `gh repo autolink` commands wrong for the new project).
     const requestId = ++autolinksRequestIdRef.current;
     setAutolinksLoading(true);
+    setAutolinksRead(false);
     setAutolinkError(null);
+    setAutoAddFailure(null);
     try {
       const repo = await github.detectRepo(requirePin(pin));
       if (autolinksRequestIdRef.current !== requestId) return;
@@ -229,6 +247,7 @@ export function LinearSection() {
       const autolinks = await github.listRepoAutolinks(repo, requirePin(pin));
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks(autolinks);
+      setAutolinksRead(true);
     } catch (err) {
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks([]);
@@ -437,37 +456,58 @@ export function LinearSection() {
     }
   }, [invalidateLoadRequests, pin, setOauthSessionIdState, setOauthStartingState, setValidatingState]);
 
-  const handleCreateAutolink = useCallback(async (candidate: GitHubAutolinkCandidate) => {
+  /**
+   * Adds each link, carrying on past a failure so one refused key does not
+   * strand the rest. Each added link joins the list at once (so its row says
+   * Added) and is remembered. Returns the first failure, or null.
+   */
+  const addAutolinks = useCallback(async (candidates: GitHubAutolinkCandidate[]): Promise<PlainError | null> => {
     const github = window.ade?.github;
-    if (!github || !githubRepo) return;
-    setCreatingAutolinkId(candidate.id);
-    setAutolinkError(null);
-    try {
-      await github.createRepoAutolink({
-        owner: githubRepo.owner,
-        name: githubRepo.name,
-        keyPrefix: candidate.keyPrefix,
-        urlTemplate: candidate.urlTemplate,
-        isAlphanumeric: candidate.isAlphanumeric,
-      }, requirePin(pin));
-      await loadGithubAutolinks();
-    } catch (err) {
-      setAutolinkError(plainError(err, { fallback: `${BRAND.NAME} couldn't add the ${candidate.keyPrefix} link on GitHub.` }));
-    } finally {
-      setCreatingAutolinkId(null);
+    if (!github || !githubRepo) return null;
+    const repoSlug = `${githubRepo.owner}/${githubRepo.name}`;
+    let failure: PlainError | null = null;
+    for (const candidate of candidates) {
+      setCreatingAutolinkId(candidate.id);
+      try {
+        const created = await github.createRepoAutolink({
+          owner: githubRepo.owner,
+          name: githubRepo.name,
+          keyPrefix: candidate.keyPrefix,
+          urlTemplate: candidate.urlTemplate,
+          isAlphanumeric: candidate.isAlphanumeric,
+        }, requirePin(pin));
+        rememberAdded(repoSlug, candidate.keyPrefix);
+        setGithubAutolinks((current) => [...current, created]);
+      } catch (err) {
+        failure ??= plainError(err, { fallback: `${BRAND.NAME} couldn't add the ${candidate.keyPrefix} link on GitHub.` });
+      }
     }
-  }, [githubRepo, loadGithubAutolinks, pin]);
+    setCreatingAutolinkId(null);
+    return failure;
+  }, [githubRepo, pin]);
 
-  // The commands an admin runs to add the links this repository lacks.
-  const copyAutolinkCommandsForAdmin = useCallback(async () => {
-    const commands = autolinkCandidates.map((candidate) => candidate.command).join("\n");
-    try {
-      await window.ade.app.writeClipboardText(commands);
-      showToast({ tone: "success", title: "Copied the commands", message: "Send them to an admin of the repository. Each one adds one link." });
-    } catch {
-      showToast({ tone: "error", title: "Couldn't copy the commands", message: "Open each row to see its command." });
-    }
-  }, [autolinkCandidates]);
+  const addAutolinkByHand = useCallback(async (candidate: GitHubAutolinkCandidate) => {
+    setAutolinkError(null);
+    setAutoAddFailure(null);
+    setAutolinkError(await addAutolinks([candidate]));
+  }, [addAutolinks]);
+
+  // An admin never has to press Add: once the links are read (only an admin can
+  // read them) and the workspace's team keys are known, ADE adds the missing
+  // ones. Each key is tried once per page visit, and never again once added.
+  useEffect(() => {
+    if (!githubRepoSlug || !hasWorkspaceKey) return;
+    if (!autolinksRead || autolinksLoading || autolinkError || creatingAutolinkId !== null) return;
+    const missing = autolinkCandidates.filter((candidate) => {
+      const key = addedKey(githubRepoSlug, candidate.keyPrefix);
+      return !candidate.configured && !autoAddTriedRef.current.has(key) && !wasAdded(githubRepoSlug, candidate.keyPrefix);
+    });
+    if (!missing.length) return;
+    for (const candidate of missing) autoAddTriedRef.current.add(addedKey(githubRepoSlug, candidate.keyPrefix));
+    void addAutolinks(missing).then((failure) => {
+      if (failure) setAutoAddFailure(`ADE couldn't add these on GitHub: ${failure.text}`);
+    });
+  }, [addAutolinks, autolinkCandidates, autolinkError, autolinksLoading, autolinksRead, creatingAutolinkId, githubRepoSlug, hasWorkspaceKey]);
 
   const openApiSettings = (event: React.MouseEvent<HTMLAnchorElement>) => {
     const openExternal = window.ade?.app?.openExternal;
@@ -556,22 +596,17 @@ export function LinearSection() {
     </IntegrationCard>
   );
 
-  // Refused: an admin adds the links, so offer their commands. Otherwise a
-  // failure that may pass offers another try.
-  let autolinkActions: NoticeAction[] | undefined;
-  if (autolinksRefused) {
-    autolinkActions = githubRepoSlug
-      ? [{ label: "Copy commands for an admin", icon: <Copy size={12} />, onClick: () => void copyAutolinkCommandsForAdmin() }]
-      : undefined;
-  } else if (autolinkError?.next === "retry") {
-    autolinkActions = [{ label: "Reload links", onClick: () => void loadGithubAutolinks() }];
-  }
+  // A failure that may pass offers another try.
+  const autolinkActions: NoticeAction[] | undefined = autolinkError?.next === "retry"
+    ? [{ label: "Reload links", onClick: () => void loadGithubAutolinks() }]
+    : undefined;
+  const autolinksRefusedNote = autolinksRefused ? refusedLinksNote(autolinkError.text, githubRepoSlug, exampleIssueKey) : null;
 
   const linksCard = (
     <IntegrationCard
       icon={<LinkSimple size={16} weight="bold" />}
       title="Links on GitHub"
-      hint={<>Issue keys like ENG-123 and {BRAND.NAME} PR references become links in {githubRepoSlug ? <span className="ade-ig-mono">{githubRepoSlug}</span> : "this repository"}&rsquo;s PRs, commits and comments.</>}
+      hint={<>Issue keys like {exampleIssueKey} become links to Linear in {githubRepoSlug ? <span className="ade-ig-mono">{githubRepoSlug}</span> : "this repository"}&rsquo;s PRs, commits and comments on GitHub.</>}
       badge={autolinkCandidates.length > 0 && !autolinksRefused ? (
         <span className="kit-tag" data-tone={configuredAutolinkCount === autolinkCandidates.length ? "ok" : undefined}>
           {configuredAutolinkCount === autolinkCandidates.length ? "All added" : `${configuredAutolinkCount} of ${autolinkCandidates.length} added`}
@@ -594,51 +629,46 @@ export function LinearSection() {
     >
       {!githubRepoSlug && !autolinksLoading ? (
         <p className="ade-ig-note">This project has no GitHub origin remote, so there is nowhere to add links.</p>
-      ) : (
+      ) : autolinksRefusedNote ? (
+        <p className="ade-ig-note">{autolinksRefusedNote}</p>
+      ) : autolinkCandidates.length > 0 ? (
         <div className="ade-ig-mini-rows" style={{ marginTop: 0 }}>
           {autolinkCandidates.map((candidate) => {
             const busy = creatingAutolinkId === candidate.id;
             return (
-              <details key={candidate.id} className="ade-linear-link">
-                <summary className="ade-ig-mini-row" style={{ padding: "9px 12px" }}>
-                  <code className="kit-tag" style={{ flex: "none" }}>{candidate.keyPrefix}123</code>
-                  <span className="ade-ig-mini-detail">{candidate.desc}</span>
-                  {candidate.configured ? (
-                    <span className="kit-tag" data-tone="ok"><CheckCircle size={11} weight="fill" /> Added</span>
-                  ) : !autolinksLoading && !autolinkError && githubRepo ? (
-                    <button
-                      type="button"
-                      className="ade-modern-btn"
-                      data-size="sm"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        void handleCreateAutolink(candidate);
-                      }}
-                      disabled={!githubRepo || autolinksLoading || creatingAutolinkId !== null}
-                    >
-                      {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
-                      Add
-                    </button>
-                  ) : null}
-                  <CaretDown size={12} className="ade-linear-links-caret" aria-label="Show the gh command" />
-                </summary>
-                <code className="ade-int-command" style={{ margin: "0 12px 10px", color: "var(--color-muted-fg)" }}>
-                  {candidate.command}
-                </code>
-              </details>
+              <div key={candidate.id} className="ade-ig-mini-row" style={{ padding: "9px 12px" }}>
+                <code className="kit-tag" style={{ flex: "none" }}>{candidate.keyPrefix}123</code>
+                <span className="ade-ig-mini-detail">{candidate.desc}</span>
+                {candidate.configured ? (
+                  <span className="kit-tag" data-tone="ok"><CheckCircle size={11} weight="fill" /> Added</span>
+                ) : busy ? (
+                  <span className="kit-tag"><CircleNotch size={11} className="animate-spin" /> Adding</span>
+                ) : autolinksRead && !autolinksLoading && githubRepo && hasWorkspaceKey ? (
+                  <button
+                    type="button"
+                    className="ade-modern-btn"
+                    data-size="sm"
+                    onClick={() => void addAutolinkByHand(candidate)}
+                    disabled={creatingAutolinkId !== null}
+                  >
+                    Add
+                  </button>
+                ) : null}
+              </div>
             );
           })}
         </div>
-      )}
+      ) : null}
+      {autoAddFailure ? <p className="ade-ig-note">{autoAddFailure}</p> : null}
       {!teamKeys.length && githubRepoSlug ? (
         <p className="ade-ig-note">Links for your team keys appear once {BRAND.NAME} has loaded the workspace&rsquo;s projects.</p>
       ) : null}
-      {autolinkError ? (
+      {autolinkError && !autolinksRefused ? (
         <Banner
           layout="inline"
           model={{
             id: "linear-autolink-error",
-            tone: autolinksRefused ? "warning" : "error",
+            tone: "error",
             title: autolinkError.text,
             actions: autolinkActions,
           }}

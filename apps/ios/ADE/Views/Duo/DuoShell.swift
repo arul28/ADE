@@ -358,7 +358,7 @@ private struct DuoAppTabsMenuItem: ToolbarContent {
 /// toolbar buttons beside it.
 struct DuoHubBackToolbarItem: ToolbarContent {
   var body: some ToolbarContent {
-    #if compiler(>=6.4)
+    #if compiler(>=6.4) && !ADE_IOS_SDK_27_0
     if #available(iOS 27.1, *) {
       ToolbarItem(placement: .topBarLeading) { DuoHubBackButton() }
         .sharedBackgroundVisibility(.hidden)

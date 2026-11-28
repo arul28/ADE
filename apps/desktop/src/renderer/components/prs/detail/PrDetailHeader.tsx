@@ -171,7 +171,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
 
   const badge = provisional
     ? {
-      label: "RESOLVING",
+      label: "Resolving",
       color: COLORS.textMuted,
       bg: `color-mix(in srgb, ${COLORS.textMuted} 9%, transparent)`,
       border: `color-mix(in srgb, ${COLORS.textMuted} 19%, transparent)`,

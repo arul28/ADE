@@ -147,19 +147,68 @@ extension WorkChatSessionView {
   }
 
   private func assistantMarkdown(messageId: String) -> String? {
+    timelineMessage(id: messageId)?.markdown
+  }
+
+  /// The transcript message with this id, from what is shown first.
+  func timelineMessage(id messageId: String) -> WorkChatMessage? {
     for entry in visibleTimeline.reversed() {
       if case .message(let message) = entry.payload,
          message.id == messageId {
-        return message.markdown
+        return message
       }
     }
     for entry in timelineSnapshot.timeline.reversed() {
       if case .message(let message) = entry.payload,
          message.id == messageId {
-        return message.markdown
+        return message
       }
     }
     return nil
+  }
+
+  /// The selection sheet for one message: select any range, copy it, or (on
+  /// a finished agent reply whose host takes comments) comment on it.
+  @ViewBuilder
+  func messageTextSelectionSheet(_ intent: WorkMessageTextSelectionIntent) -> some View {
+    if let message = timelineMessage(id: intent.messageId) {
+      let isAssistant = message.role == "assistant"
+      let preview = isAssistant
+        ? (message.assistantPreview ?? workAssistantMessagePreview(message.markdown))
+        : nil
+      let isStreaming = message.id == streamingAssistantMessageId
+      let createComment = isAssistant ? onCreateThreadComment : nil
+      let commentKey = createComment != nil && !isStreaming ? message.threadCommentKey : nil
+      let unavailableReason: String? = {
+        guard createComment != nil else { return nil }
+        if isStreaming { return "You can comment once the reply finishes." }
+        if message.threadCommentKey == nil { return "This reply can't take comments." }
+        return nil
+      }()
+      WorkMessageTextSelectionSheet(
+        intent: intent,
+        markdown: preview?.text ?? workTextWithoutLeadingThreadReview(message.markdown),
+        monospaced: preview?.usesMonospacedRendering ?? false,
+        commentKey: commentKey,
+        commentUnavailableReason: unavailableReason,
+        onCreateComment: createComment,
+        onCommentAdded: {
+          reactionToast = ADEToastMessage(
+            text: "Comment added",
+            kind: .success,
+            detail: "It goes with your next message."
+          )
+        }
+      )
+      .presentationDragIndicator(.visible)
+    } else {
+      ContentUnavailableView(
+        "Message not found",
+        systemImage: "text.badge.xmark",
+        description: Text("This message is no longer in the thread.")
+      )
+      .presentationDetents([.medium])
+    }
   }
 
   @ViewBuilder
@@ -711,6 +760,8 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
       .environment(\.workSceneMessageId, model.messageId)
       .frame(maxWidth: .infinity, alignment: .leading)
       .workAssistantMessageContextMenu(
+        messageId: model.messageId,
+        block: model.block,
         onCopy: onCopyMessage,
         onOpenFullOutput: onOpenFullOutput,
         linkTexts: model.block.kind.inlineTexts,
@@ -748,6 +799,7 @@ struct WorkAssistantMonospacedRow: View, Equatable {
     WorkAssistantMonospacedPreview(text: model.text)
       .accessibilityLabel(model.accessibilityLabel)
       .workAssistantMessageContextMenu(
+        messageId: model.messageId,
         onCopy: onCopyMessage,
         onOpenFullOutput: onOpenFullOutput,
         reaction: model.reaction,

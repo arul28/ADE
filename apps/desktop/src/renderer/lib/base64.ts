@@ -8,17 +8,9 @@
  * would have thrown `RangeError` on a large enough input.
  */
 
-// Spreading a multi-megabyte array into String.fromCharCode exceeds the
-// argument limit, so widen in chunks.
-const CHUNK_SIZE = 0x8000;
+import { bytesToBase64 } from "../../shared/base64";
 
-export function bytesToBase64(bytes: Uint8Array): string {
-  const parts: string[] = [];
-  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
-    parts.push(String.fromCharCode(...bytes.subarray(i, i + CHUNK_SIZE)));
-  }
-  return btoa(parts.join(""));
-}
+export { bytesToBase64 };
 
 /** Decode base64 into a fresh byte array (no shared or offset buffer). */
 export function base64ToBytes(value: string): Uint8Array<ArrayBuffer> {

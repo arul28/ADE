@@ -57,7 +57,7 @@ export function SessionDeltaCard({
         <div className="space-y-2">
           {session?.summary ? <div className="text-[11px] text-muted-fg">{session.summary}</div> : null}
           <div className="flex flex-wrap items-center gap-2 text-[11px]">
-            <Chip className="text-[10px]">files {delta.filesChanged}</Chip>
+            <Chip className="text-[10px]">Files {delta.filesChanged}</Chip>
             <Chip className="text-[10px]">+{delta.insertions}</Chip>
             <Chip className="text-[10px]">-{delta.deletions}</Chip>
           </div>

@@ -23,6 +23,10 @@
  *    restores the chat from it with the same chat id. Every other provider
  *    needs none: the restore replays the saved transcript.
  *
+ * 4c. The proof each saved chat cites (`cloudProofSave.ts`): a picture as
+ *    WebP, a video as one still, once per file, at most
+ *    `PROOF_TRIES_PER_SAVE` a save (`buildChatProofTasks`). A client shows it with no wake.
+ *
  * Only projects whose runtime is open count: a project nobody opened since
  * boot has no new terminal output and no new chat turns.
  *
@@ -51,6 +55,7 @@ import {
   CLOUD_SESSION_MAX_BYTES,
   CLOUD_SESSION_MAX_LINES,
   CLOUD_SESSION_MAX_PER_COMPUTER,
+  cloudLaneColorOf,
 } from "../../../../account-directory/src/cloud/contract";
 import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
@@ -69,6 +74,7 @@ import type { AgentChatCrossMachineForkTransport, AgentChatCrossMachineHandoffCa
 import { redactProviderHistoryFile, type CloudChatUploadPendingResult } from "./cloudChatUploader";
 import { parseSavedTranscript, transcriptEndOf, type CapsuleTranscriptEnd } from "./cloudChatRestore";
 import { runLaneBackups, type BackupLane } from "./cloudLaneBackup";
+import { buildChatProofTasks, findProofFfmpeg, type ProofFfmpeg } from "./cloudProofSave";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -123,6 +129,10 @@ export type CloudRestSaveDeps = {
    * (`uploadSubagentCloudCopy`). Left out, no subagent is saved.
    */
   uploadSubagentCopy?: (parentSessionId: string, copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null }) => Promise<boolean>;
+  /** The chats with a saved copy on the account server, by the copy's generation (`savedCloudChats`). Left out, no proof is saved. */
+  savedChats?: () => ReadonlyMap<string, number>;
+  /** The ffmpeg that makes proof pictures (`findProofFfmpeg`); tests pass their own. */
+  proofFfmpeg?: () => Promise<ProofFfmpeg | null>;
   /** Every lane on the computer for its backup (`cloudLaneBackup.ts`). Left out, no backup is made. */
   backupLanes?: () => Promise<{ complete: boolean; lanes: BackupLane[] }>;
 };
@@ -147,6 +157,10 @@ type RestSaveState = {
   subagents?: Record<string, string>;
   /** Parent chat id → the activity mark its subagents were last read at. */
   subagentScans?: Record<string, string>;
+  /** Chat id → artifact id → the mark of the proof file saved, or found to have nothing to save. */
+  proofs?: Record<string, Record<string, string>>;
+  /** Chat id → the transcript mark its citations were last read at, with every one settled. */
+  proofScans?: Record<string, string>;
 };
 
 const emptyState = (machineKey: string | null): RestSaveState => ({ v: 1, machineKey, sessions: {}, git: {}, capsules: {}, eventWakes: null });
@@ -538,6 +552,8 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           eventWakes: Array.isArray(parsed.eventWakes) ? parsed.eventWakes : null,
           subagents: parsed.subagents ?? {},
           subagentScans: parsed.subagentScans ?? {},
+          proofs: parsed.proofs ?? {},
+          proofScans: parsed.proofScans ?? {},
         };
       }
     } catch {
@@ -605,6 +621,28 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       return projectKeyOf.get(runtime) ?? null;
     };
 
+    // Each project's open lanes, read once per save: the Git step walks them, and a copy's row carries its lane's color.
+    // Null: the list could not be read.
+    type RuntimeLanes = Awaited<ReturnType<AdeRuntime["laneService"]["list"]>>;
+    const lanesOf = new Map<AdeRuntime, Promise<RuntimeLanes | null>>();
+    const runtimeLanes = (runtime: AdeRuntime): Promise<RuntimeLanes | null> => {
+      let lanes = lanesOf.get(runtime);
+      if (!lanes) {
+        lanes = Promise.resolve().then(() => runtime.laneService.list({ includeArchived: false, includeStatus: false })).catch((error: unknown) => {
+          logger.warn("cloud.rest_save_lanes_read_failed", { error: errorText(error) });
+          return null;
+        });
+        lanesOf.set(runtime, lanes);
+      }
+      return lanes;
+    };
+    // Undefined: unknown (the lane list could not be read), never "no color".
+    const laneColorOf = async (runtime: AdeRuntime, laneId: string | null | undefined): Promise<string | null | undefined> => {
+      if (!laneId) return null;
+      const lanes = await runtimeLanes(runtime);
+      return lanes ? cloudLaneColorOf(lanes.find((lane) => lane.id === laneId)?.color) : undefined;
+    };
+
     // 2. Shell and CLI copies: the newest across every open project.
     const terminals: Array<{ runtime: AdeRuntime; row: TerminalSessionSummary }> = [];
     for (const runtime of runtimes) {
@@ -638,7 +676,15 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
             snapshot = null;
           }
         }
-        const mark = `${window?.endOffset ?? "none"}|${snapshotMark}|${row.status}`;
+        // An unknown color keeps the one the copy was last saved with (the end of its mark): a lane list
+        // that could not be read never clears a saved color. With no mark either (a lost state file), the copy
+        // waits for a rest that can read the lanes, since the server replaces the summary it holds.
+        const knownColor = await laneColorOf(runtime, row.laneId);
+        const previousMark = state.sessions[row.id];
+        if (knownColor === undefined && previousMark === undefined) return;
+        const laneColor = knownColor !== undefined ? knownColor : /\|(#[0-9a-f]{6})$/.exec(previousMark ?? "")?.[1] ?? null;
+        // The lane's color is in the mark: a lane recolored (or a copy saved before rows carried it) is sent again.
+        const mark = `${window?.endOffset ?? "none"}|${snapshotMark}|${row.status}${laneColor ? `|${laneColor}` : ""}`;
         if (state.sessions[row.id] === mark) return;
         let format: "text" | "xterm" = "text";
         let text: string;
@@ -667,6 +713,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           parentChatId: row.orchestrationParentSessionId ?? null,
           status: row.status ?? null,
           lastActivityAt: row.lastActivityAt ?? row.startedAt ?? null,
+          laneColor,
         };
         await api.putSessionCopy(machineKey, row.id, { instanceId, row: rowInput, format, text, lineCount });
         state.sessions[row.id] = mark;
@@ -679,12 +726,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
     // 3. A Git summary per lane, when it changed.
     const gitTasks: Array<() => Promise<void>> = [];
     for (const runtime of runtimes) {
-      let lanes: Awaited<ReturnType<AdeRuntime["laneService"]["list"]>> = [];
-      try {
-        lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false });
-      } catch (error) {
-        logger.warn("cloud.rest_save_lanes_read_failed", { error: errorText(error) });
-      }
+      const lanes = await runtimeLanes(runtime) ?? [];
       for (const lane of lanes) {
         if (!lane.worktreePath || !fs.existsSync(lane.worktreePath)) continue;
         gitTasks.push(async () => {
@@ -877,8 +919,25 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       }
     }
 
-    // Git first (small), then capsules (what a continue needs), then the copies, then subagents.
-    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks, ...subagentTasks], UPLOAD_PARALLEL, deadline);
+    // 4c. The proof each saved chat cites: once per file, a bounded number per save.
+    const proof = buildChatProofTasks({
+      runtimes,
+      savedChats: deps.savedChats?.() ?? null,
+      state,
+      api,
+      machineKey,
+      instanceId,
+      deadline,
+      idle,
+      findFfmpeg: deps.proofFfmpeg ?? findProofFfmpeg,
+      logger,
+    });
+
+    // Git first (small), then capsules (what a continue needs), then the copies and subagents. The chats'
+    // proof is optional: it gets only the time left after all of them, so a conversion never starves a save.
+    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks, ...subagentTasks], UPLOAD_PARALLEL, deadline)
+      + await runLimited(proof.tasks, UPLOAD_PARALLEL, deadline);
+    if (proof.counts.sent > 0) report.proofs = proof.counts.sent;
     // 5. The events that wake this computer at rest: a Linear workspace or webhook a rule here acts on.
     if (idle()) {
       const topics = eventWakeTopics(runtimes, deps.accountUserId());
@@ -907,6 +966,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       sessions: report.sessions,
       git: report.git,
       skipped: report.skipped,
+      proofs: report.proofs ?? 0,
       notStarted,
       ms: Date.now() - started,
     });

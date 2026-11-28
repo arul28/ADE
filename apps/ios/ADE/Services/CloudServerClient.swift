@@ -197,10 +197,14 @@ struct CloudSavedChatRow: Decodable, Equatable {
   /// The chat's composer settings as its computer last saved them (thinking
   /// level, Fast, preset, access mode). Nil from an older server or computer.
   let settings: [String: RemoteJSONValue]?
+  /// The lane's color (`#rrggbb`) as its computer saved it, so a resting
+  /// lane shows in its own color. Nil from an older server or computer, or
+  /// anything that isn't a `#rrggbb` hex.
+  let laneColor: String?
 
   private enum CodingKeys: String, CodingKey {
     case machineKey, chatId, instanceId, title, laneId, laneName, status, toolType, provider, model
-    case projectKey, projectId, projectRoot, lastActivityAt, lastSeq, updatedAt, computer, parentChatId, spawnKind, settings
+    case projectKey, projectId, projectRoot, lastActivityAt, lastSeq, updatedAt, computer, parentChatId, spawnKind, settings, laneColor
   }
 
   init(from decoder: Decoder) throws {
@@ -226,7 +230,15 @@ struct CloudSavedChatRow: Decodable, Equatable {
     parentChatId = c.lenient(String.self, forKey: .parentChatId)
     spawnKind = c.lenient(String.self, forKey: .spawnKind)
     settings = c.lenient([String: RemoteJSONValue].self, forKey: .settings)
+    laneColor = cloudLaneColor(c.lenient(String.self, forKey: .laneColor))
   }
+}
+
+/// A lane color as a saved row carries it (`#rrggbb`, lower case), or nil.
+/// The server checks it too; the phone never paints with an unchecked value.
+func cloudLaneColor(_ value: String?) -> String? {
+  guard let trimmed = value?.trimmingCharacters(in: .whitespaces), trimmed.count == 7, trimmed.first == "#" else { return nil }
+  return trimmed.dropFirst().allSatisfy(\.isHexDigit) ? trimmed.lowercased() : nil
 }
 
 /// One page of a saved chat (`CloudChatTranscriptPage`): newest part first,
@@ -470,6 +482,27 @@ struct CloudServerClient {
       CloudChatTranscriptPage.self,
       from: try await send("GET", "cloud/chats/\(segment(machineKey))/\(segment(chatId))", query: query, timeout: 30)
     )
+  }
+
+  /// One proof picture a saved chat cited, or a still of a cited video
+  /// (`GET /cloud/chats/:m/:c/proof/:artifact`), read with no wake. Nil when
+  /// none was saved (or an older server). The bytes are checked again here:
+  /// only WebP, PNG, JPEG and GIF are kept.
+  func savedChatProof(machineKey: String, chatId: String, artifactId: String) async throws -> CloudSavedChatProof? {
+    let data: Data
+    let response: HTTPURLResponse
+    do {
+      (data, response) = try await sendResponse(
+        "GET",
+        "cloud/chats/\(segment(machineKey))/\(segment(chatId))/proof/\(segment(artifactId))",
+        timeout: 30
+      )
+    } catch Failure.noAccess {
+      return nil
+    }
+    guard cloudSavedChatProofIsPicture(data) else { return nil }
+    let source = response.value(forHTTPHeaderField: "X-ADE-Proof-Source") == "video" ? CloudSavedChatProof.Source.video : .image
+    return CloudSavedChatProof(data: data, source: source)
   }
 
   func account() async throws -> CloudPhoneAccount {
@@ -737,6 +770,22 @@ struct CloudServerClient {
     timeout: TimeInterval = 12,
     resendOnLostConnection: Bool = false
   ) async throws -> Data {
+    try await sendResponse(
+      method, path, query: query, body: body, contentType: contentType,
+      timeout: timeout, resendOnLostConnection: resendOnLostConnection
+    ).0
+  }
+
+  /// `send`, with the answer's headers (a proof picture's source).
+  func sendResponse(
+    _ method: String,
+    _ path: String,
+    query: [URLQueryItem] = [],
+    body: Data? = nil,
+    contentType: String = "application/json",
+    timeout: TimeInterval = 12,
+    resendOnLostConnection: Bool = false
+  ) async throws -> (Data, HTTPURLResponse) {
     var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
     if !query.isEmpty { components?.queryItems = query }
     guard let url = components?.url else { throw Failure.transport }
@@ -776,9 +825,33 @@ struct CloudServerClient {
        let fresh = await refreshToken().flatMap({ nonEmptyTrimmed($0) }) {
       (data, http) = try await once(fresh)
     }
-    if (200..<300).contains(http.statusCode) { return data }
+    if (200..<300).contains(http.statusCode) { return (data, http) }
     throw cloudServerFailure(status: http.statusCode, body: data)
   }
+}
+
+/// A saved chat's proof picture as the account server keeps it.
+struct CloudSavedChatProof: Equatable {
+  enum Source: Equatable {
+    case image
+    /// A still of a video: the video plays only from the computer.
+    case video
+  }
+  let data: Data
+  let source: Source
+}
+
+/// Whether bytes are a WebP, PNG, JPEG or GIF by their first bytes (the server's own check).
+func cloudSavedChatProofIsPicture(_ data: Data) -> Bool {
+  let bytes = [UInt8](data.prefix(12))
+  func ascii(_ start: Int, _ text: String) -> Bool {
+    let expected = Array(text.utf8)
+    return bytes.count >= start + expected.count && Array(bytes[start..<(start + expected.count)]) == expected
+  }
+  if bytes.count >= 8 && bytes[0..<8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] { return true }
+  if bytes.count >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF { return true }
+  if ascii(0, "GIF87a") || ascii(0, "GIF89a") { return true }
+  return ascii(0, "RIFF") && ascii(8, "WEBP")
 }
 
 /// The failure for one error answer. A 403 or 402 with a refusal code is the

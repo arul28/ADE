@@ -34,6 +34,8 @@ import {
   snoozeSessionsForDuration,
   unsettleSessions,
   wakeSessions,
+  SESSION_PIN_TOOLTIP,
+  SESSION_UNPIN_TOOLTIP,
 } from "./sessionLifecycleActions";
 
 /** What the Lanes tab should do with the lanes behind a multi-selection. */
@@ -251,6 +253,7 @@ export function SessionBulkContextMenu({
             key: "pin",
             label: "Pin",
             icon: PushPin,
+            title: SESSION_PIN_TOOLTIP,
             hint: hint(unpinnedIds.length),
             onSelect: () => onSetPinned(unpinnedIds, true),
           }
@@ -259,6 +262,7 @@ export function SessionBulkContextMenu({
             key: "unpin",
             label: "Unpin",
             icon: PushPinSlash,
+            title: SESSION_UNPIN_TOOLTIP,
             onSelect: () => onSetPinned(sessions.map((session) => session.id), false),
           },
 

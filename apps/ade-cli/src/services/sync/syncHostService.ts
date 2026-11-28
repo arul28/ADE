@@ -323,9 +323,10 @@ import {
   commandErrorResult,
   createSyncRemoteCommandService,
   evaluateRemoteCommandPolicy,
+  isInteractiveControllerPeer,
   remoteCommandArgsFingerprint,
   stableJsonKey,
-  type SyncBrowserTabCloser,
+  type SyncBrowserTabControl,
   type SyncRemoteCommandService,
 } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
@@ -1277,8 +1278,8 @@ type SyncHostServiceArgs = {
    * optional action that is never advertised is one a phone can never adopt.
    */
   workToolsStateService?: WorkToolsStateService | null;
-  /** Threaded like `workToolsStateService`: backs `workTools.closeBrowserTab`. */
-  builtInBrowserService?: SyncBrowserTabCloser | null;
+  /** Threaded like `workToolsStateService`: backs `workTools.closeBrowserTab` and `workTools.openBrowserTab`. */
+  builtInBrowserService?: SyncBrowserTabControl | null;
   /**
    * The runtime's Mac Desktop service, when this host can hold a display.
    * Threaded for the same reason as `workToolsStateService`: the fallback
@@ -1416,6 +1417,12 @@ type SyncHostServiceArgs = {
   };
   /** A connected client just changed a file here (a save from the web or the phone). */
   onRemoteFileWrite?: () => void;
+  /**
+   * A connected client ran a command here, or typed into a terminal. The
+   * brain decides whether it is use that keeps an ADE Cloud computer awake
+   * (`cloudRemoteUseKind`), the same rule as a desktop's calls.
+   */
+  onRemoteUse?: (use: { action: string; args: unknown } | "terminal_input") => void;
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -7542,8 +7549,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
                 // Credits an update to the paired device, never the client's claim.
                 ...(payload.action.startsWith("machine.") ? { requester: peer.pairingRecord } : {}),
+                // The pairing decides, as the policy gate above did; never the wire.
+                ...(isInteractiveControllerPeer(peer) ? { controller: true } : {}),
               });
           if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
+          args.onRemoteUse?.({ action: payload.action, args: payload.args });
         } finally {
           stopTrackingCommand();
           const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
@@ -7801,6 +7811,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.projectId,
           hostProjectIdAliases,
         );
+        // Typed into a terminal: work that keeps a cloud computer awake, like a desktop's pty write.
+        args.onRemoteUse?.("terminal_input");
         await terminalStreams.handleInput(peer, envelope, terminalTargetFor(peer, envelope, projectScope));
       });
       peer.terminalInputQueue = work.catch((error) => {
@@ -8849,6 +8861,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const terminalTarget = terminalTargetFor(peer, envelope, projectScope);
       if (terminalTarget) {
         if (envelope.type === "terminal_input") {
+          args.onRemoteUse?.("terminal_input");
           await terminalStreams.handleInput(peer, envelope, terminalTarget);
         } else {
           await terminalStreams.handleEnvelope(peer, envelope, terminalTarget, lifecycleGeneration, signal);
@@ -9038,6 +9051,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "terminal_input": {
+        args.onRemoteUse?.("terminal_input");
         await terminalStreams.handleInput(peer, envelope, { kind: "hosted" });
         break;
       }

@@ -305,7 +305,8 @@ struct WorkChatMessageFold {
           itemId: itemId,
           textPhase: textPhase,
           // A merged message keeps its first fragment's key, as on desktop.
-          assistantReactionKey: envelope.assistantMessageReactionKey
+          assistantReactionKey: envelope.assistantMessageReactionKey,
+          threadCommentKey: envelope.threadCommentMessageKey
         ), metadataKey: metadataKey)
       }
       previousEnvelopeWasAssistantText = true
@@ -1217,6 +1218,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   envelope.userMessageReactionKey = entry.userMessageReactionKey
   if case .text(_, let messageId, let turnId, let itemId, let phase) = entry.event {
     envelope.assistantMessageReactionKey = workAssistantMessageReactionKey(messageId: messageId, itemId: itemId, turnId: turnId, phase: phase)
+    envelope.threadCommentMessageKey = workThreadCommentMessageKey(messageId: messageId, turnId: turnId, itemId: itemId)
   }
   envelope.omittedRowOffset = entry.omittedRowOffset
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
@@ -1588,6 +1590,7 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
     )
     // The reply's first fragment names it, as on desktop.
     merged.assistantMessageReactionKey = existing.assistantMessageReactionKey ?? incoming.assistantMessageReactionKey
+    merged.threadCommentMessageKey = existing.threadCommentMessageKey ?? incoming.threadCommentMessageKey
     return merged
   default:
     return incoming

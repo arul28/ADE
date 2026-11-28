@@ -141,11 +141,11 @@ export function StepCard({
             <Icon size={12} weight="fill" style={{ color: def.accent }} />
           </span>
           {!isCleanup ? (
-            <span className="text-[10px] font-semibold tracking-wider text-muted-fg/60">STEP {index + 1}</span>
+            <span className="text-[10px] font-medium text-muted-fg/60">Step {index + 1}</span>
           ) : null}
           <span className="text-[12px] font-semibold text-fg">{isCleanup ? "Cleanup" : def.label}</span>
           {step.alwaysRun ? (
-            <Chip className="border-amber-400/30 text-[8.5px] text-amber-200">Always runs</Chip>
+            <Chip className="border-amber-400/30 text-[10px] text-amber-200">Always runs</Chip>
           ) : null}
         </div>
         {!isCleanup ? (

@@ -330,13 +330,13 @@ const REQUESTS_PER_MINUTE = {
   integrations: CLOUD_INTEGRATION_REQUESTS_PER_MINUTE,
   /**
    * A computer's saved copies: shell and CLI copies, Git summaries, fork
-   * capsule parts and commits, lane backups; and the files of a launch or a
+   * capsule parts and commits, lane backups, saved chats' proof pictures; and the files of a launch or a
    * queued message (at most ten per send). A delete's save sends one capsule per chat,
    * four at a time, from every computer of the account; this stops a loop,
    * never a real save.
    */
   uploads: 1_200,
-  /** Agent limits, event-wake topics and the account lane index. */
+  /** Agent limits, event-wake topics, the account lane index and model favorites changes. */
   settings: 120,
   /** Sponsored cards and the Index (`gravity.ts`): a few per finished reply and open chat; this stops a loop. */
   sponsored: 30,

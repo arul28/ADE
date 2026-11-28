@@ -12,7 +12,7 @@ import { cn } from "../../ui/cn";
 import { Dialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { relativeWhen } from "../../../lib/format";
-import { eyebrowCls, OUTCOME_STYLES, panelCls, rowHoverCls, ruleCls, tagCls, toneTextCls } from "../webhookSurface";
+import { eyebrowCls, OUTCOME_STYLES, outcomeStyle, panelCls, rowHoverCls, ruleCls, tagCls, toneTextCls } from "../webhookSurface";
 import { plainErrorText } from "../../../lib/plainError";
 import { BRAND } from "../../../../shared/brand";
 
@@ -24,7 +24,7 @@ const VIA_LABELS: Record<AutomationWebhookDeliverySummary["via"], string> = {
 };
 
 function OutcomePill({ outcome }: { outcome: AutomationWebhookDeliveryOutcome }) {
-  const style = OUTCOME_STYLES[outcome] ?? OUTCOME_STYLES.error;
+  const style = outcomeStyle(outcome);
   return <span className={tagCls(style.tone)}>{style.label}</span>;
 }
 

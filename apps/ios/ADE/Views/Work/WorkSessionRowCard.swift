@@ -740,16 +740,16 @@ struct WorkSessionRow: View, Equatable {
         // Neutral, not amber. Archived is true but not actionable, and amber is
         // spent exclusively on "your move" — an amber chip here would compete
         // with the one status word that is allowed to claim a human.
-        Text("ARCHIVED")
-          .font(.caption2.monospaced().weight(.semibold))
+        Text("Archived")
+          .font(.caption2.monospaced().weight(.medium))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize()
           .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
       }
 
       if let exitCode = failedExitCode {
-        Text("EXIT \(exitCode)")
-          .font(.caption2.monospaced().weight(.semibold))
+        Text("Exit \(exitCode)")
+          .font(.caption2.monospaced().weight(.medium))
           .foregroundStyle(ADEColor.danger)
           .fixedSize()
       }

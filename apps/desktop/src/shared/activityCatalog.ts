@@ -1,9 +1,9 @@
 import type {
   AttentionDeliveryPolicy,
-  AttentionEventKind,
+  AttentionPolicyEventKind,
 } from "./types/attention";
 
-export type ActivityEventGroup = "agents" | "pull_requests";
+export type ActivityEventGroup = "agents" | "pull_requests" | "messages" | "ade";
 
 export type ActivityIconKey =
   | "working"
@@ -15,22 +15,37 @@ export type ActivityIconKey =
   | "changes"
   | "merge-ready"
   | "pull-request"
-  | "closed";
+  | "closed"
+  | "message"
+  | "goal"
+  | "service";
 
 export type ActivityEventDescriptor = {
-  kind: AttentionEventKind;
+  kind: AttentionPolicyEventKind;
   group: ActivityEventGroup;
   label: string;
   description: string;
   iconKey: ActivityIconKey;
   defaultPolicy: AttentionDeliveryPolicy;
+  /** It has an Activity row, so "Activity" (listed, no interruption) means something. */
   supportsAmbient: boolean;
+  /**
+   * Where it can notify. `computers`: only a computer shows it (the relay never
+   * pushes it to a phone), so a phone's settings leave it out.
+   */
+  reach: "everywhere" | "computers";
+  /**
+   * Project settings can change it. Notices about the computer itself have no project.
+   */
+  projectScoped: boolean;
   order: number;
 };
 
 export const ACTIVITY_EVENT_GROUPS = [
   { id: "agents", label: "Agents" },
   { id: "pull_requests", label: "Pull requests" },
+  { id: "messages", label: "Messages" },
+  { id: "ade", label: "ADE" },
 ] as const satisfies readonly { id: ActivityEventGroup; label: string }[];
 
 /**
@@ -52,6 +67,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "needs-you",
     defaultPolicy: "notify",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 0,
   },
   {
@@ -62,6 +79,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "failed",
     defaultPolicy: "notify",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 1,
   },
   {
@@ -72,6 +91,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "done",
     defaultPolicy: "ambient",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 2,
   },
   {
@@ -82,6 +103,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "working",
     defaultPolicy: "ambient",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 3,
   },
   {
@@ -92,6 +115,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "checks",
     defaultPolicy: "notify",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 4,
   },
   {
@@ -102,6 +127,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "review",
     defaultPolicy: "ambient",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 5,
   },
   {
@@ -112,6 +139,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "changes",
     defaultPolicy: "ambient",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 6,
   },
   {
@@ -122,6 +151,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "merge-ready",
     defaultPolicy: "ambient",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 7,
   },
   {
@@ -132,6 +163,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "done",
     defaultPolicy: "ambient",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 8,
   },
   {
@@ -142,6 +175,8 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "pull-request",
     defaultPolicy: "ambient",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 9,
   },
   {
@@ -152,10 +187,60 @@ export const ACTIVITY_EVENT_CATALOG = [
     iconKey: "closed",
     defaultPolicy: "ambient",
     supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
     order: 10,
+  },
+  {
+    kind: "agent_goal",
+    group: "agents",
+    label: "Agent reaches its goal",
+    description: "A run reached, or got stuck on, the goal you gave it.",
+    iconKey: "goal",
+    defaultPolicy: "notify",
+    supportsAmbient: false,
+    reach: "computers",
+    projectScoped: true,
+    order: 11,
+  },
+  {
+    kind: "agent_usage_limit_resumed",
+    group: "agents",
+    label: "Chat resumes after a usage limit",
+    description: "A chat continued after its usage limit reset.",
+    iconKey: "working",
+    defaultPolicy: "notify",
+    supportsAmbient: false,
+    reach: "computers",
+    projectScoped: true,
+    order: 12,
+  },
+  {
+    kind: "agent_message",
+    group: "messages",
+    label: "Messages from agents and automations",
+    description: "An agent or automation sent you a note (ade notify).",
+    iconKey: "message",
+    defaultPolicy: "notify",
+    supportsAmbient: true,
+    reach: "everywhere",
+    projectScoped: true,
+    order: 13,
+  },
+  {
+    kind: "ade_service",
+    group: "ade",
+    label: "Background service stops or recovers",
+    description: "ADE's background service on this computer went into fallback, or came back.",
+    iconKey: "service",
+    defaultPolicy: "notify",
+    supportsAmbient: false,
+    reach: "computers",
+    projectScoped: false,
+    order: 14,
   },
 ] as const satisfies readonly ActivityEventDescriptor[];
 
 export const ACTIVITY_EVENT_BY_KIND = Object.fromEntries(
   ACTIVITY_EVENT_CATALOG.map((descriptor) => [descriptor.kind, descriptor]),
-) as Readonly<Record<AttentionEventKind, ActivityEventDescriptor>>;
+) as Readonly<Record<AttentionPolicyEventKind, ActivityEventDescriptor>>;

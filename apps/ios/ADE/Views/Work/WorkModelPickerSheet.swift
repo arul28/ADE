@@ -23,10 +23,10 @@ enum WorkFreeModelsMachine {
 /// or a provider family), and the trailing pane shows the matching model
 /// rows with a search field on top.
 ///
-/// Favorites and recents are sourced from the cross-surface RPC contract
-/// (`modelPicker.getFavorites` / `getRecents` / `toggleFavorite` /
-/// `pushRecent`) so the same starred and recently-used models follow the user
-/// between the desktop and the iOS app.
+/// Favorites live on the ADE account (`/account/model-favorites`), so the same
+/// starred models follow the user across the desktop, the web and this app.
+/// Recents come from the connected machine (`modelPicker.getRecents` /
+/// `pushRecent`).
 struct WorkModelPickerSheet: View {
   @Environment(\.dismiss) private var dismiss
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
@@ -1757,7 +1757,7 @@ struct ModelPickerContentPane: View {
     }
     switch selection {
     case .favorites:
-      return "Tap the star on any model to pin it here. Favorites sync between desktop and mobile."
+      return "Tap the star on any model to pin it here. Favorites sync across your ADE account."
     case .recents:
       return "Models you pick here will appear in the recents list, on every paired surface."
     case .free:
@@ -2264,84 +2264,5 @@ struct ModelPickerCurrentModelBar: View {
     if fastModeEnabled { return "fast mode on" }
     if model?.supportsCodexFastMode == true { return "fast mode off" }
     return "fast mode unavailable"
-  }
-}
-
-// MARK: - Store
-
-/// Owns the favorites/recents lists for the picker UI. Optimistic local
-/// updates fire immediately so taps feel instant; the RPC sync runs in the
-/// background and reconciles when the server responds. Failures roll back to
-/// the last known-good list rather than letting the UI diverge silently.
-@MainActor
-final class ModelPickerStore: ObservableObject {
-  @Published private(set) var favorites: [String] = []
-  @Published private(set) var recents: [String] = []
-  @Published private(set) var isLoading: Bool = false
-
-  private var hasLoaded = false
-
-  func load(syncService: SyncService) {
-    guard !hasLoaded else { return }
-    hasLoaded = true
-    isLoading = true
-    Task { @MainActor [weak self] in
-      await self?.refresh(syncService: syncService)
-    }
-  }
-
-  func refresh(syncService: SyncService) async {
-    let directoryRevision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
-    async let favTask = try? await syncService.getModelFavorites()
-    async let recTask = try? await syncService.getModelRecents()
-    let fav = await favTask
-    let rec = await recTask
-    if let fav { favorites = fav }
-    if let rec {
-      recents = rec
-      // The `@` menu ranks by the same recents; only the host's answer is
-      // mirrored, so a stale local list never overwrites a newer `@` pick.
-      WorkModelMentionDirectory.shared.record(recents: rec, ifRevision: directoryRevision)
-    }
-    isLoading = false
-  }
-
-  func toggleFavorite(_ modelId: String, syncService: SyncService) {
-    let previous = favorites
-    if favorites.contains(modelId) {
-      favorites.removeAll { $0 == modelId }
-    } else {
-      favorites = [modelId] + favorites.filter { $0 != modelId }
-    }
-    Task { @MainActor [weak self] in
-      do {
-        let result = try await syncService.toggleModelFavorite(modelId)
-        self?.favorites = result.favorites
-      } catch {
-        self?.favorites = previous
-      }
-    }
-  }
-
-  func pushRecent(_ modelId: String, syncService: SyncService) {
-    let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    let previous = recents
-    // Optimistic update: dedupe + cap at server's MAX_RECENTS (10) so the UI
-    // doesn't briefly flash an over-long list before the server response
-    // settles.
-    var next = recents.filter { $0 != trimmed }
-    next.insert(trimmed, at: 0)
-    if next.count > 10 { next = Array(next.prefix(10)) }
-    recents = next
-    Task { @MainActor [weak self] in
-      do {
-        let updated = try await syncService.pushModelRecent(trimmed)
-        self?.recents = updated
-        WorkModelMentionDirectory.shared.record(recents: updated)
-      } catch {
-        self?.recents = previous
-      }
-    }
   }
 }

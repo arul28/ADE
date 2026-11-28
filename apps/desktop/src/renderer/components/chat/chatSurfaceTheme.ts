@@ -66,7 +66,7 @@ export function chatAccentForRenderedChat(args: {
 }
 
 const CHIP_TONE_STYLES: Record<ChatSurfaceChipTone, string> = {
-  accent: "border-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_88%,white_12%)]",
+  accent: "border-[color:color-mix(in_srgb,var(--chat-accent)_20%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_88%,white_12%)] [[data-theme=light]_&]:text-[color:color-mix(in_srgb,var(--chat-accent)_55%,var(--color-fg)_45%)]",
   success: "border-emerald-400/15 bg-emerald-500/6 text-emerald-300",
   warning: "border-amber-400/15 bg-amber-500/6 text-amber-300",
   danger: "border-red-400/15 bg-red-500/6 text-red-300",
@@ -126,9 +126,13 @@ function sharedSurfaceTokens(accent: string, m: number): CSSProperties {
     ["--chat-composer-bg" as string]: "#14121F",
     ["--chat-panel-border" as string]: "color-mix(in srgb, var(--color-border) 72%, transparent)",
     ["--chat-card-border" as string]: "color-mix(in srgb, var(--color-border) 82%, transparent)",
-    ["--chat-code-bg" as string]: "color-mix(in srgb, var(--color-surface-recessed) 88%, var(--color-bg) 12%)",
+    // Light themes set `--chat-code-bg-light` / `--chat-code-fg-light`
+    // (foundation.css): a paler box and full-strength text, so code reads at
+    // 4.5 : 1 on every light theme. `codeTheme.ts` lifts token colours
+    // against the same box.
+    ["--chat-code-bg" as string]: "var(--chat-code-bg-light, color-mix(in srgb, var(--color-surface-recessed) 88%, var(--color-bg) 12%))",
     ["--chat-code-border" as string]: "color-mix(in srgb, var(--color-border) 72%, transparent)",
-    ["--chat-code-fg" as string]: "color-mix(in srgb, var(--color-fg) 86%, var(--color-muted-fg) 14%)",
+    ["--chat-code-fg" as string]: "var(--chat-code-fg-light, color-mix(in srgb, var(--color-fg) 86%, var(--color-muted-fg) 14%))",
     ["--chat-notice-bg" as string]: "color-mix(in srgb, var(--color-surface-recessed) 84%, var(--color-card) 16%)",
     ["--chat-notice-border" as string]: "color-mix(in srgb, var(--color-border) 78%, transparent)",
   };

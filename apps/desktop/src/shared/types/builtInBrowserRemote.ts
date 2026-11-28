@@ -16,10 +16,16 @@ export const BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT = "built_in_browser_remote_re
 export type BuiltInBrowserRemoteRequest = {
   requestId: string;
   url: string;
+  /** The lane whose agent asked: the tab is leased to it (and grouped with it). */
   laneId: string | null;
   chatSessionId: string | null;
   openPanel: boolean;
   requestedAt: string;
+  /**
+   * The lane a person's own open (the phone's Open) groups the tab with,
+   * without a lease. An older desktop ignores it and opens the tab ungrouped.
+   */
+  groupLaneId?: string;
   /**
    * The desktop that sent the chat its last message. Only that desktop takes
    * the request; null means any desktop holding a pin on this machine does.
@@ -59,6 +65,20 @@ export type BuiltInBrowserRemoteRequestAck = {
   awaitingApproval?: boolean;
   /** Why it was refused (approval denied, no forward), when `accepted` is false. */
   reason?: string | null;
+};
+
+/**
+ * Routing-only fields on a browser call. The brain's remote-browser forwarder
+ * reads them and strips them before the local call.
+ */
+export type BuiltInBrowserForwardRouting = {
+  /**
+   * A quiet open (`openPanel: false`) that the person still wants to see: when
+   * the page goes to a desktop on another machine, that desktop brings its
+   * Browser pane up for it (it takes a quiet open only into a pane already
+   * showing). The phone's Open sets it.
+   */
+  revealWhenForwarded?: boolean;
 };
 
 /** What `built_in_browser.navigate` returns instead of a status on a headless box. */

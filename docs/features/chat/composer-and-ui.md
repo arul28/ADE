@@ -472,7 +472,8 @@ a handoff that sees no frames in 1.5 s gives up and restores the composer.
   off` with **Resume in …**, `paused after 2 tries` with **Try again**,
   `resuming…`, or the provider's name when it gave no reset. **Continue on
   <account>** copies the provider thread to another account with room and
-  resumes there; a thread that cannot move continues in a new chat in the
+  resumes there; a thread that cannot move continues, with its queued
+  messages, in a new chat in the
   same lane (a compaction-only turn reports the failure). Clock and provider
   text are in the tooltip.
 - **Quiet limits.** A turn that ended at a 429, or the live resume turn, shows
@@ -1183,7 +1184,8 @@ written, and ranks below the machine key.
 | `useRuntimeCatalogForFamily.ts` | One family's catalog for the Custom preset wizard; `enabled` gates it. Host-enumerated families (Cursor, OpenCode, Pi, ACP) get the cached → refresh-stale → force ladder. Every exit clears loading. |
 | `useProviderAuthStatus.ts` | `AuthStatus` (`ok` / `limited` / `unauthed` / `unknown`) per family from `aiDiscoveryCache`, plus `runtimeMissing` (`familiesWithoutRuntime`, shown dimmed). `runtimePin` probes the composer's machine, keyed on `pin.key`. For the tab's own machine it shares Settings' unpinned cache, and a same-root tab switch refetches it. A picker with no `providerAuthStatus` seeds from cache and reacts to cache events (`arePathsEqual`). |
 | `useAuthOnlyFilter.ts` | **Only models I can use**: off by default (signed-out models stay selectable with Sign in); stored in `ade.modelPicker.onlyUsable.v1`. |
-| `useModelFavorites.ts` / `useModelRecents.ts` | Per client (`localStorage`), not per machine. The old per-project lists (`model_picker_favorites`, `model_picker_recents` via `modelPicker.*`) are imported once and merged; a failed import retries next start; nothing writes back. |
+| `useModelFavorites.ts` | Per account: one list on the account server (`GET`/`PUT /account/model-favorites`, through the `modelFavorites` / `changeModelFavorites` account calls), shared by the desktop on every computer, the web client and iOS. `localStorage` holds a copy to show at once and the changes the account hasn't confirmed (sent at the next sync: opening the picker, at most every 15 s, or a star). A change is `{add, remove}` applied to the account's list, so two devices starring at once both land. The first sync adds this client's whole list to the account's; the old per-project machine list (`modelPicker.getFavorites`) is imported once before it. The copy and the queue belong to one account (`owner.v1`, the user id from `account.status`): another account starts from its own list, and a change carries `account`, so the server refuses (403 `account_changed`) one queued under another account. Signed out: no account call, the local list only; an older server: the local list only. iOS adds the connected machine's list once per account and machine (`ModelPickerStore`). |
+| `useModelRecents.ts` | Per client (`localStorage`), not per machine. The old per-project list (`model_picker_recents` via `modelPicker.*`) is imported once and merged; a failed import retries next start; nothing writes back. |
 | `useReasoningByFamily.ts` | Last effort per family. |
 
 - The rail is stable across auth and loading states, shows every provider

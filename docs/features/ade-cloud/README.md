@@ -252,6 +252,7 @@ are in
 | Lane backups: each lane's work not on GitHub (a patch to download) | `laneBackups.ts` |
 | One project's overview | `projectOverview.ts` |
 | The account lane index (name, branch, machine, PR; only for mentions) | `accountLanes/routes.ts` |
+| The model picker's favorites, one list per account (migration `0070`) | `accountModelFavorites/routes.ts` |
 | The CTO account copy | `ctoCopy.ts` |
 | Automations whose home is ADE Cloud | `automations.ts` |
 | Linear and Jira, with the account's sign-in | `integrations.ts` |
@@ -279,6 +280,28 @@ are in
   saved before this redaction is sent again once (its mark lacks
   `redacted-1`). A move between the person's own computers is not redacted:
   it goes from computer to computer, and the account server does not keep it.
+- **Proof in a saved chat.** The rest save also sends the proof each saved
+  chat cites (`cloudProofSave.ts`): every `ade-proof://<id>` and
+  ```` ```proof-compare ```` id in its answers. A picture goes as WebP, its
+  longest side at most 2,000 px, quality 80, so a screenshot's text stays
+  readable (about 93% smaller than the PNG). With no WebP encoder it goes as
+  JPEG; with no ffmpeg, as the original PNG, JPEG, WebP or GIF if it fits.
+  A video goes as one still, never the video. Each file goes once (its size
+  and time are the mark), at most 40 a save, and only while the save has
+  time and nobody uses the computer.
+- The server keeps it beside the chat
+  (`PUT`/`GET /cloud/chats/:machine/:chat/proof/:artifact`), sealed like a
+  part and under the copy's prefix, so deleting the chat deletes it. Only the
+  computer writes one, only for a chat it already saved. Pictures only, by
+  their first bytes (no SVG); at most 3 MB each and 60 per chat; the bytes
+  count against the account's saved-chat space. A read answers a fixed
+  picture type with `nosniff`. No new table: the bytes go in the copy row's
+  `bytes`, and the count is the bucket's list of the chat's proof.
+- The desktop, ADE Web and the phone show the saved picture in place of
+  "This proof is on ADE Cloud, which is asleep" while the computer rests or
+  after it is deleted. A video shows its still with **Wake to play**. They
+  read it from the account, by the chat's own saved copy, and never wake the
+  computer. Nothing saved: the notice stays.
 - A saved CLI or shell copy opens read-only. The person's own computers that
   are offline are hidden in Work, Lanes and the welcome page.
 
@@ -1425,6 +1448,15 @@ computer. The new computer runs its own launch. The routes are in
   - The kind is `chat` or `lane`. A CLI launch goes as `lane` with `cli` in
     `launch.kind`, so an older server or computer runs the lane alone.
   - `lane.autoName: true` lets the computer's brain give the AI name.
+  - `lane.color` (`#rrggbb`) is the new lane's color. The desktop, ADE Web
+    and the phone pick the first palette color that none of the project's
+    listed lanes uses, on any machine (`withCloudLaneColor`,
+    `LaneColorPalette.nextAvailableColor`). A lane that gets a new computer
+    keeps the color its saved chats carry. The server drops a color that is
+    not `#rrggbb` and never refuses for it. With no color, the computer picks
+    one from the lane id (`laneColorFromId`): a cloud computer holds only its
+    main checkout and one lane, so "first unused" would give every cloud lane
+    the same color.
   - An ADE app also sends its launch args (`launch`, at most 256 KB); the
     facts win where both say something.
   - A caller with no computer sends `project: { accountProjectId }` and may
@@ -2013,8 +2045,20 @@ One busy list, `decideCloudBusy` in
   children on gVisor.
 - Typing warms the chat's model (`chat.prewarmDraft`, and `chat.warmupModel`
   with `sdkOnly`). These are background writes, so typing never wakes a
-  sleeping computer, but an awake one counts it as use and stays awake. Any
-  other warmup (a viewed Cursor tile) is not use. A person's **Run doctor**
+  sleeping computer, but an awake one counts it as use and stays awake: it
+  sleeps three to four minutes after the last keystroke. The desktop (and ADE
+  Web) composer and the iPhone composer repeat `warmupModel` with `sdkOnly`
+  at most every 30 s while the draft changes in a chat on a cloud computer,
+  for every provider (`CLOUD_TYPING_PING_MS`, `SyncService.noteChatTyping`).
+  A chat left open sends nothing, and the iPhone sends only from a focused
+  field, so a restored draft is not typing. Typing counts only within 20
+  minutes of the computer's last real work (a turn, a command, a send:
+  `CLOUD_TYPING_KEEPS_AWAKE_MS`, `noteTyping`), so a client that never stops
+  can't hold a computer awake. Typing is use, not work: it doesn't count for
+  the idle cleanup's `reportUse`. `cloudRemoteUseKind` is the one rule for
+  the desktop's RPC calls and the phone's sync commands; on the sync channel,
+  terminal typing (`terminal_input`) counts as work, as `pty.write` does over
+  RPC. Any other warmup (a viewed Cursor tile) is not use. A person's **Run doctor**
   (`ai.runAcpProviderDoctor`) is use and wakes it; the page-open diagnostics
   are not.
 - Three minutes after the last work, the brain calls
@@ -2121,6 +2165,15 @@ One busy list, `decideCloudBusy` in
   pick a queued send carried shows until the computer saves a newer row. The
   phone shows the model, thinking level and Fast (`rosterChatSummary`) and
   still hides the access mode of a saved chat.
+- **The lane's color while it rests.** Each saved chat row and CLI or shell
+  copy carries its lane's color (`laneColor`, `#rrggbb`), read from the
+  computer's lane list. A recolored lane, or a copy saved before rows carried
+  it, sends its row again at the next rest save. The server seals the color
+  in the summary with the rest (anything that is not `#rrggbb` reads as
+  null) and returns it in `GET /cloud/chats`, `GET /cloud/sessions` and on
+  each overview lane. The desktop, ADE Web and the phone paint the resting
+  lane with it. Rows from an older computer carry none, and the lane shows
+  grey until that computer updates.
 - **The @ menu while it rests.** The menu never asks a resting or deleted
   computer, since a read must not wake it. It shows the account's machines
   (an account read, kept 15 s) and the computer's saved chats, lanes and open

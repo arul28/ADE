@@ -84,15 +84,15 @@ export function reasoningChipLabel(
   if (!effort) return null;
   const lower = effort.trim().toLowerCase();
   if (!lower) return null;
-  if (lower === "minimal") return "MIN";
-  if (lower === "low") return useCodex56Labels ? "LIGHT" : "LOW";
-  if (lower === "medium") return "MED";
-  if (lower === "high") return "HI";
-  if (lower === "xhigh") return "XH";
-  if (lower === "max") return "MAX";
-  if (lower === "ultra") return "ULTRA";
-  if (lower === "ultracode") return "ULTRA";
-  return lower.slice(0, 3).toUpperCase();
+  if (lower === "minimal") return "Min";
+  if (lower === "low") return useCodex56Labels ? "Light" : "Low";
+  if (lower === "medium") return "Med";
+  if (lower === "high") return "High";
+  if (lower === "xhigh") return "XHigh";
+  if (lower === "max") return "Max";
+  if (lower === "ultra") return "Ultra";
+  if (lower === "ultracode") return "Ultra";
+  return capitalizeWord(lower.slice(0, 3));
 }
 
 function tierLabel(tier: string, useCodex56Labels = false): string {
@@ -661,7 +661,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     );
   }
 
-  const shortLabel = reasoningChipLabel(savedEffortOffLadder ?? displayedEffort, useCodex56Labels) ?? "AUTO";
+  const shortLabel = reasoningChipLabel(savedEffortOffLadder ?? displayedEffort, useCodex56Labels) ?? "Auto";
 
   return (
     <Popover.Root

@@ -1037,13 +1037,13 @@ func ansiAttributedString(_ text: String) -> AttributedString {
 
 func ansiColor(_ color: WorkANSIColor?) -> Color {
   switch color {
-  case .red: return .red
-  case .green: return .green
-  case .yellow: return .yellow
-  case .blue: return .blue
-  case .magenta: return .purple
-  case .cyan: return .cyan
-  case .white: return .white
+  case .red: return ADEColor.outputRed
+  case .green: return ADEColor.syntaxString
+  case .yellow: return ADEColor.outputYellow
+  case .blue: return ADEColor.syntaxType
+  case .magenta: return ADEColor.syntaxKeyword
+  case .cyan: return ADEColor.outputCyan
+  case .white: return ADEColor.outputWhite
   case .black: return .black
   case .none: return ADEColor.textPrimary
   }

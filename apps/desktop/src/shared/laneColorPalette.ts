@@ -109,6 +109,29 @@ export function allocateLaneColor(usedColors: Iterable<string>): string {
 }
 
 /**
+ * A lane colour picked from the lane's id: the same id always lands on the
+ * same palette colour (never the reserved Primary purple), moving on to the
+ * next unused one when another open lane holds it. An ADE Cloud computer
+ * holds its main checkout and one lane, so "first unused" would give every
+ * cloud lane the same colour; the id spreads them over the palette.
+ */
+export function laneColorFromId(laneId: string, usedColors: Iterable<string> = []): string {
+  const used = new Set([...usedColors].map((color) => color.trim().toLowerCase()).filter(Boolean));
+  // FNV-1a over the id: stable across machines and runs.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < laneId.length; index += 1) {
+    hash ^= laneId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const start = (hash >>> 0) % ALLOCATABLE_LANE_COLORS.length;
+  for (let step = 0; step < ALLOCATABLE_LANE_COLORS.length; step += 1) {
+    const entry = ALLOCATABLE_LANE_COLORS[(start + step) % ALLOCATABLE_LANE_COLORS.length]!;
+    if (!used.has(entry.hex.toLowerCase())) return entry.hex;
+  }
+  return nextAvailableLaneColor(used);
+}
+
+/**
  * The accent a lane renders with. Primary is LOCKED to ADE purple regardless of
  * what its row stores: primaries created before the colour was reserved carry a
  * null colour, and the whole point of the reservation is that Primary looks the

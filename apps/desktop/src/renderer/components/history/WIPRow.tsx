@@ -16,7 +16,7 @@ export function WIPRow({ wipNodes }: WIPRowProps) {
       "bg-[var(--color-warning)]/5 backdrop-blur-xl"
     )}>
       <Spinner size={14} weight="bold" className="text-[var(--color-warning)] animate-spin" />
-      <span className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-[var(--color-warning)]">
+      <span className="font-sans text-[11px] font-medium text-[var(--color-warning)]">
         Running
       </span>
       <div className="flex gap-2">

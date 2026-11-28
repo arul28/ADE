@@ -6,7 +6,7 @@ import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineL
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { BranchIcon } from "../../ui/vcsIcons";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, fgTint } from "../laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, fgTint } from "../laneDesignTokens";
 import { Banner, InlineErrorNotice, noticeKindModel, type NoticeKind } from "../../ui/notice";
 import {
   formatBranchCheckoutError,
@@ -17,13 +17,18 @@ import {
 import { laneBranchLabel } from "../sidebar/laneSidebarModel";
 import { branchNameFromLaneRef } from "../../../../shared/laneBaseResolution";
 import { extractError } from "../../../lib/format";
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
+import { LaneActiveWorkDialog } from "./LaneActiveWorkDialog";
 
 type PendingBranchSwitch = {
+  scope: BranchSwitchScope;
   branchName: string;
   mode: "existing" | "create";
   startPoint?: string;
   activeWork: LaneBranchActiveWorkItem[];
 };
+
+type BranchSwitchScope = { laneId: string; pinKey: string };
 
 const fieldStyle: React.CSSProperties = {
   width: "100%",
@@ -95,6 +100,11 @@ export function LaneBranchSwitcher({
   // Read through a ref so a rebuilt pin with the same key changes nothing.
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  const scopeRef = useRef<BranchSwitchScope>({ laneId: lane.id, pinKey: pin.key });
+  if (scopeRef.current.laneId !== lane.id || scopeRef.current.pinKey !== pin.key) {
+    scopeRef.current = { laneId: lane.id, pinKey: pin.key };
+  }
+  const scope = scopeRef.current;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -109,7 +119,11 @@ export function LaneBranchSwitcher({
   // linger in lane B's dropdown until the new fetch resolves.
   useEffect(() => {
     setError(null);
-  }, [lane.id]);
+    setPendingSwitch(null);
+    setBusy(false);
+    inFlightSwitchRef.current = null;
+    setSwitchOperationId(null);
+  }, [scope]);
 
   useEffect(() => {
     setBranches([]);
@@ -175,8 +189,10 @@ export function LaneBranchSwitcher({
     startPoint?: string;
     acknowledgeActiveWork?: boolean;
   }) => {
+    if (scopeRef.current !== scope) return;
+    const switchPin = pinRef.current;
     if (lane.status.dirty) {
-      setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes. Commit, stash, or discard changes first.`, kind: "status" });
+      setError({ message: `Cannot switch branches while ${laneDisplayName(lane)} has uncommitted changes. Commit, stash, or discard changes first.`, kind: "status" });
       return;
     }
     const mode = request.mode ?? "existing";
@@ -192,17 +208,20 @@ export function LaneBranchSwitcher({
           branchName,
           mode,
           startPoint: request.startPoint,
-        }, pinRef.current);
+        }, switchPin);
+        if (scopeRef.current !== scope) return;
         if (preview.duplicateLaneId) {
           setError({ message: `Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`, kind: "status" });
           return;
         }
         if (preview.dirty) {
-          setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes.`, kind: "status" });
+          setError({ message: `Cannot switch branches while ${laneDisplayName(lane)} has uncommitted changes.`, kind: "status" });
           return;
         }
         if (preview.activeWork.length > 0) {
-          setPendingSwitch({ branchName, mode, startPoint: request.startPoint, activeWork: preview.activeWork });
+          // The dialog says what is running and asks; the menu steps aside.
+          setOpen(false);
+          setPendingSwitch({ scope, branchName, mode, startPoint: request.startPoint, activeWork: preview.activeWork });
           return;
         }
       }
@@ -210,7 +229,7 @@ export function LaneBranchSwitcher({
         // The menu closes first so the confirm is not drawn under it.
         setOpen(false);
         const go = await confirmSwitch({ from: laneBranchLabel(lane.branchRef), to: branchNameFromLaneRef(branchName) });
-        if (!go) return;
+        if (!go || scopeRef.current !== scope) return;
       }
       const operationId = crypto.randomUUID();
       inFlightSwitchRef.current = operationId;
@@ -223,29 +242,40 @@ export function LaneBranchSwitcher({
           startPoint: request.startPoint,
           acknowledgeActiveWork: request.acknowledgeActiveWork,
           operationId,
-        }, pinRef.current);
+        }, switchPin);
       } finally {
-        inFlightSwitchRef.current = null;
-        setSwitchOperationId(null);
+        if (inFlightSwitchRef.current === operationId) {
+          inFlightSwitchRef.current = null;
+          setSwitchOperationId(null);
+        }
       }
+      if (scopeRef.current !== scope) return;
       await refreshLanes();
       // Another machine has no change feed here; ask the shared union to re-read it.
-      if (pinRef.current && machineId) requestCrossMachineLanesForMachine(machineId);
-      setBranches(await window.ade.git.listBranches({ laneId: lane.id }, pinRef.current));
+      if (machineId) requestCrossMachineLanesForMachine(machineId);
+      if (scopeRef.current !== scope) return;
+      const latest = await window.ade.git.listBranches({ laneId: lane.id }, switchPin);
+      if (scopeRef.current !== scope) return;
+      setBranches(latest);
       setPendingSwitch(null);
       setNewBranchName("");
       succeeded = true;
       onSwitched?.(branchName);
     } catch (err) {
+      if (scopeRef.current !== scope) return;
       const raw = extractError(err);
-      const message = formatBranchCheckoutError(raw, lane.name);
+      const message = formatBranchCheckoutError(raw, laneDisplayName(lane));
       // The formatter only rewrites git's "commit or stash first" refusal.
       setError({ message, kind: message === raw.trim() ? "failure" : "status" });
+      // The error shows in the menu; reopen it when a dialog had closed it.
+      if (request.acknowledgeActiveWork) setOpen(true);
     } finally {
-      setBusy(false);
-      if (succeeded) setOpen(false);
+      if (scopeRef.current === scope) {
+        setBusy(false);
+        if (succeeded) setOpen(false);
+      }
     }
-  }, [confirmSwitch, lane, machineId, onSwitched, refreshLanes]);
+  }, [confirmSwitch, lane, machineId, onSwitched, refreshLanes, scope]);
 
   const stopSwitch = useCallback((operationId: string) => {
     setSwitchOperationId(null);
@@ -303,7 +333,7 @@ export function LaneBranchSwitcher({
         ref={triggerRef}
         onClick={toggleOpen}
         disabled={busy}
-        title={`Switch ${lane.name} to another branch`}
+        title={`Switch ${laneDisplayName(lane)} to another branch`}
       >
         <BranchIcon size={12} className="shrink-0 opacity-70" />
         <span className="truncate">{laneBranchLabel(lane.branchRef)}</span>
@@ -363,7 +393,7 @@ export function LaneBranchSwitcher({
             <div style={{ padding: "8px 10px", borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}` }}>
               <div style={{ display: "grid", gap: 8 }}>
                 <div className="flex items-center justify-between">
-                  <div style={fieldLabelStyle}>NEW BRANCH</div>
+                  <div style={fieldLabelStyle}>New branch</div>
                   <button
                     type="button"
                     onClick={() => { setNewBranchFormOpen(false); setNewBranchName(""); }}
@@ -389,7 +419,7 @@ export function LaneBranchSwitcher({
                   <div style={{ fontSize: 11, color: COLORS.danger }}>{nameValidation.reason}</div>
                 ) : null}
                 <label className="flex flex-col gap-1">
-                  <span style={fieldLabelStyle}>START FROM</span>
+                  <span style={fieldLabelStyle}>Start from</span>
                   <select
                     value={newBranchStartPoint || lane.branchRef}
                     onChange={(event) => setNewBranchStartPoint(event.target.value)}
@@ -444,48 +474,6 @@ export function LaneBranchSwitcher({
               <span>New branch…</span>
             </button>
           )}
-          {pendingSwitch ? (
-            <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-warning) 12%, transparent)" }}>
-              <div style={{ fontSize: 12, color: COLORS.textPrimary, fontWeight: 600 }}>This lane has active work.</div>
-              <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>Terminals stay attached and keep running on the new branch.</div>
-              <div style={{ marginTop: 6, display: "grid", gap: 2 }}>
-                {pendingSwitch.activeWork.slice(0, 3).map((item) => (
-                  <div key={`${item.kind}:${item.id}`} className="truncate" style={{ fontSize: 11, color: COLORS.textSecondary }}>
-                    Terminal: {item.title}
-                  </div>
-                ))}
-                {pendingSwitch.activeWork.length > 3 ? (
-                  <div style={{ fontSize: 11, color: COLORS.textDim }}>+ {pendingSwitch.activeWork.length - 3} more</div>
-                ) : null}
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  style={{
-                    fontSize: 11,
-                    padding: "4px 8px",
-                    height: 26,
-                    border: `1px solid ${COLORS.warning}`,
-                    borderRadius: 6,
-                    background: "color-mix(in srgb, var(--color-warning) 25%, transparent)",
-                    color: COLORS.warning,
-                    fontFamily: SANS_FONT,
-                    fontWeight: 600,
-                  }}
-                  onClick={() => { void checkout({ ...pendingSwitch, acknowledgeActiveWork: true }); }}
-                >
-                  Switch anyway
-                </button>
-                <button
-                  type="button"
-                  style={outlineButton({ fontSize: 11, padding: "4px 8px", height: 26 })}
-                  onClick={() => setPendingSwitch(null)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : null}
           <div className="flex-1 overflow-auto" style={{ padding: "2px 0" }}>
             {branchesLoading && branches.length === 0 ? (
               <div style={{ padding: "10px 12px", fontSize: 12, color: COLORS.textMuted }}>Loading branches…</div>
@@ -516,6 +504,22 @@ export function LaneBranchSwitcher({
             ) : null}
           </div>
       </AnchoredMenu>
+      {pendingSwitch?.scope === scope ? (
+        <LaneActiveWorkDialog
+          open
+          laneId={lane.id}
+          laneName={laneDisplayName(lane)}
+          pin={pin}
+          targetLabel={branchNameFromLaneRef(pendingSwitch.branchName)}
+          reportedWork={pendingSwitch.activeWork}
+          onCancel={() => setPendingSwitch(null)}
+          onContinue={() => {
+            const next = pendingSwitch;
+            setPendingSwitch(null);
+            void checkout({ branchName: next.branchName, mode: next.mode, startPoint: next.startPoint, acknowledgeActiveWork: true });
+          }}
+        />
+      ) : null}
     </div>
   );
 }

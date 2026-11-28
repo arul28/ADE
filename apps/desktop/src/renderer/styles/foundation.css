@@ -359,6 +359,12 @@
   --chat-block-bg: rgba(15, 23, 42, 0.04);
   --chat-block-border: rgba(15, 23, 42, 0.08);
   --chat-inline-code-bg: rgba(15, 23, 42, 0.06);
+  /* Chat code boxes (code blocks, tool output) on light pages: a paler box
+     than the recessed surface and full-strength text, so code reads at
+     4.5 : 1 on every light theme (ADE-290). Read by chatSurfaceTheme.ts;
+     codeTheme.ts repeats the 55% mix to lift code colours against it. */
+  --chat-code-bg-light: color-mix(in srgb, var(--color-surface-recessed) 55%, var(--color-card) 45%);
+  --chat-code-fg-light: var(--color-fg);
   --chat-table-bg: var(--chat-block-bg);
   --chat-table-border: rgba(15, 23, 42, 0.10);
   --chat-ink: var(--color-fg);
@@ -371,7 +377,7 @@
   --ade-dim-row-opacity: 0.85;
   --chat-copy-button-bg: rgba(15, 23, 42, 0.04);
   --chat-copy-button-border: rgba(15, 23, 42, 0.10);
-  --chat-copy-button-fg: rgba(26, 26, 30, 0.55);
+  --chat-copy-button-fg: rgba(26, 26, 30, 0.75);
   --chat-copy-button-hover-bg: rgba(15, 23, 42, 0.07);
   --chat-copy-button-hover-border: rgba(15, 23, 42, 0.18);
   --chat-copy-button-hover-fg: rgba(26, 26, 30, 0.80);

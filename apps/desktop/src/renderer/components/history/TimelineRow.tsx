@@ -82,7 +82,7 @@ export function TimelineRow({
 
       {/* Status badge */}
       <span className={cn(
-        "font-mono text-[9px] font-bold uppercase tracking-[0.5px] px-1.5 py-0.5 border rounded-md shrink-0",
+        "font-mono text-[9px] font-medium px-1.5 py-0.5 border rounded-md shrink-0",
         getStatusClasses(event.status),
       )}>
         {event.status === "running" ? "⏵" : event.status === "succeeded" ? "✓" : event.status === "failed" ? "✕" : "—"}

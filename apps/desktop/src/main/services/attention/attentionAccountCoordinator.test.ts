@@ -717,7 +717,7 @@ describe("AttentionAccountCoordinator", () => {
   });
 
   it("writes one machine preference scope through the account relay", async () => {
-    const putActivityMachinePreferences = vi.fn(async () => undefined);
+    const putActivityMachinePreferences = vi.fn(async () => null);
     const coordinator = new AttentionAccountCoordinator({
       getLogger: logger,
       getCurrentAccountOwnerId: () => "owner-a",

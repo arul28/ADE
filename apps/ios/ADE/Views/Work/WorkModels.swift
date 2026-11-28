@@ -201,6 +201,10 @@ struct WorkChatMessage: Identifiable, Equatable {
   /// The key a person's reaction names this assistant message by: its first
   /// fragment's `workAssistantMessageReactionKey`. Nil for user messages.
   var assistantReactionKey: String? = nil
+  /// The key desktop hangs a thread comment off (`workThreadCommentMessageKey`,
+  /// desktop `sceneRowIdentity`): its first fragment's. Nil for user messages
+  /// and for a reply that names no message or item.
+  var threadCommentKey: String? = nil
   /// The person's newest reaction on this assistant message (one of
   /// `chatReactionMeanings`). CTO only.
   var assistantReaction: String? = nil
@@ -2459,6 +2463,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// The key a person's reaction names this CTO `text` event by
   /// (`workAssistantMessageReactionKey`); nil for any other event.
   var assistantMessageReactionKey: String? = nil
+  /// The key a thread comment names this `text` event by
+  /// (`workThreadCommentMessageKey`); nil for any other event.
+  var threadCommentMessageKey: String? = nil
   /// Set on a `system_notice` whose `detail.kind` is `continuity_recovery`. The
   /// event keeps `detail` as text; this is the part the self-healed-failure fold
   /// and the quiet reconnect lines read.

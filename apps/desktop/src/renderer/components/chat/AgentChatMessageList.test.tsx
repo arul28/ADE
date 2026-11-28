@@ -1336,7 +1336,7 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     const divider = screen.getByTestId("model-handoff-event");
     expect(divider.getAttribute("aria-label")).toBe("Model handoff from Claude to Codex");
-    expect(divider.textContent).toContain("handoff");
+    expect(divider.textContent).toContain("Handoff");
     expect([...divider.querySelectorAll("[data-model-handoff-provider]")].map((node) => (
       node.getAttribute("data-model-handoff-provider")
     ))).toEqual(["claude", "codex"]);
@@ -1592,7 +1592,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     // The end-of-turn divider shows the model attribution (styled span) plus the
     // non-completed status for interrupted/failed turns.
     expect(screen.getAllByText(/Claude Sonnet 5/).length).toBeGreaterThan(0);
-    expect(screen.getByText("interrupted")).toBeTruthy();
+    expect(screen.getByText("Interrupted")).toBeTruthy();
   });
 
   it("measures ran duration from the last user prompt, not the first cloud turn", () => {
@@ -1684,8 +1684,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText("provider health")).toBeTruthy();
-    expect(screen.getByText("thread error")).toBeTruthy();
+    expect(screen.getByText("Provider health")).toBeTruthy();
+    expect(screen.getByText("Thread error")).toBeTruthy();
     expect(screen.getByText("Claude is taking longer than usual")).toBeTruthy();
     expect(screen.getByText("Codex session is missing thread id")).toBeTruthy();
     expect(screen.getAllByRole("button")).toHaveLength(2);
@@ -1724,7 +1724,7 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(rendered.container.textContent).toContain("Reconnecting to Claude · attempt 6 of 10 · retrying in 8s");
     expect(rendered.container.textContent).not.toContain("Claude API retry");
-    expect(rendered.container.textContent).not.toContain("provider health");
+    expect(rendered.container.textContent).not.toContain("Provider health");
   });
 
   it("keeps a replayed legacy retry label when older output precedes the notice", () => {
@@ -2345,7 +2345,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     ]);
 
     expect(screen.queryByTestId("compact-warning-notice")).toBeNull();
-    expect(screen.getByText("error")).toBeTruthy();
+    expect(screen.getByText("Error")).toBeTruthy();
   });
 
   it("renders Claude PreToolUse hook errors in the compact work-log disclosure", () => {
@@ -6220,7 +6220,7 @@ describe("usage-limit turn footer", () => {
     renderMessageList(usageEnvelopes({ terminalReason: "api_error", apiErrorStatus: 429 }));
 
     expect(screen.getByText(/^Paused · usage limit/)).toBeTruthy();
-    expect(screen.queryByText("failed")).toBeNull();
+    expect(screen.queryByText("Failed")).toBeNull();
   });
 
   it("moves the usage row behind the details toggle for that turn", () => {
@@ -6249,7 +6249,7 @@ describe("usage-limit turn footer", () => {
     });
 
     expect(screen.queryByText(/^Paused · usage limit/)).toBeNull();
-    expect(screen.getByText("failed")).toBeTruthy();
+    expect(screen.getByText("Failed")).toBeTruthy();
   });
 
   it("stands the quota card down while the composer pill owns the limit", () => {

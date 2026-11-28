@@ -629,9 +629,9 @@ func lanePrTagByLaneId(
 func formatLanePrBadgeLabel(_ tag: LanePrTag) -> String {
   let prefix: String
   switch tag.state {
-  case "merged": prefix = "MERGED"
-  case "closed": prefix = "CLOSED"
-  case "draft": prefix = "DRAFT"
+  case "merged": prefix = "Merged"
+  case "closed": prefix = "Closed"
+  case "draft": prefix = "Draft"
   default: prefix = "PR"
   }
   return "\(prefix) #\(tag.githubPrNumber)"

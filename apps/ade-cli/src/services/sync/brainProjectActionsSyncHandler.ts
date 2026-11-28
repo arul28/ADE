@@ -183,6 +183,8 @@ import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type BrainProjectActionsSyncHandlerArgs = {
   logger: Logger;
+  /** A phone typed into a terminal here: use that keeps an ADE Cloud computer awake. */
+  onRemoteUse?: (use: "terminal_input") => void;
   /**
    * Lane sharing: gives a guest's socket to an open project's host (the
    * shared listener's router). Absent: a guest is refused here, as before.
@@ -1470,6 +1472,7 @@ export function createBrainProjectActionsSyncHandler(
         break;
       }
       case "terminal_input": {
+        args.onRemoteUse?.("terminal_input");
         // A null target answers a missing project with a `project_mismatch` ack.
         await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope));
         break;
@@ -2262,6 +2265,8 @@ export function createBrainProjectActionsSyncHandler(
         : Promise.resolve();
       const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
         if (!isPeerCurrent(lifecycleGeneration) || !peer.authenticated) return;
+        // Typed into a terminal: work that keeps a cloud computer awake, like a desktop's pty write.
+        args.onRemoteUse?.("terminal_input");
         await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope));
       });
       peer.terminalInputQueue = work.catch((error) => {

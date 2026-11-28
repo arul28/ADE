@@ -1987,6 +1987,19 @@ export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
 export const BUILT_IN_BROWSER_NARROW_PAGE_WIDTH = 640;
 
 /**
+ * How the error a desktop throws when no window has the project open starts
+ * (the project root follows). Matched by the runtime across the desktop
+ * bridge, where only an error's message survives.
+ */
+export const BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE = `No ${BRAND.NAME} browser window is open for project`;
+
+/** Whether an error message is that one; a desktop from before the rename wrote "No ADE browser window…". */
+export function isBuiltInBrowserNoProjectWindowMessage(message: string): boolean {
+  return message.includes(BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE)
+    || message.includes(`No ${BRAND.FORMER_NAME} browser window is open for project`);
+}
+
+/**
  * The page size of a tab that is being recorded.
  *
  * A page lays out at its native view's size, so a recording made in a narrow
@@ -2055,6 +2068,28 @@ export type BuiltInBrowserRemoteTabFrame = {
   title: string | null;
   isLoading: boolean;
   frame: { dataUrl: string; width: number; height: number; capturedAt: string } | null;
+  /**
+   * Only when the read asked for a `viewport`: whether the page is laid out at
+   * it now. Absent from a desktop that predates phone-size watching.
+   */
+  viewportApplied?: boolean;
+  /**
+   * Why the desktop keeps the tab at its own size although a viewport was
+   * asked (the tab has its own device setting, is on screen there, records or
+   * has DevTools open). Null when it is applied or still being applied.
+   */
+  viewportNote?: string | null;
+};
+
+/**
+ * The picture a remote viewer (the phone) shows a tab in, in points, and its
+ * screen scale. Sent with `work_tools.readBrowserTabFrame` so the desktop lays
+ * the page out at that size for as long as the watch lasts.
+ */
+export type BuiltInBrowserRemoteViewport = {
+  width: number;
+  height: number;
+  deviceScaleFactor: number;
 };
 
 /**

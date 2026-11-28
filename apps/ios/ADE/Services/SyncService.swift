@@ -4740,6 +4740,12 @@ final class SyncService: ObservableObject {
   /// Last-known Linear connection status for the active project, refreshed by the
   /// Work top-bar button. `nil` until the first check. Gates the pane entry point.
   @Published private(set) var linearConnectionStatus: LinearConnectionStatus?
+  /// Which project's Linear team keys were last read, and when
+  /// (`refreshLinearWorkspaceTeamKeys`). Memory only.
+  private var linearWorkspaceTeamKeysRead: (scope: String, at: Date)?
+  /// Moves with every read that starts, so a read from before a connect,
+  /// switch or disconnect cannot land after the one that followed it.
+  private var linearWorkspaceTeamKeysGeneration = 0
   /// Last-known Cursor connection status for the active project. The Work
   /// toolbar and every mobile Cursor Cloud entry point fail closed until the
   /// host confirms that a Cursor API key/OAuth credential is available.
@@ -5331,6 +5337,9 @@ final class SyncService: ObservableObject {
   private(set) var supportsStackLayeredBypass = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
+  /// When this phone last told a cloud chat's computer someone is typing
+  /// (`noteChatTyping`), in system uptime: a clock change can't stop the pings.
+  var cloudTypingPingAtBySession: [String: TimeInterval] = [:]
   private var recentFullChatSnapshotRequestBySession: [
     String: (uptime: TimeInterval, connectionGeneration: UInt64)
   ] = [:]
@@ -12465,6 +12474,9 @@ final class SyncService: ObservableObject {
   /// desktop pane's lightweight visibility poll.
   @MainActor
   func refreshLinearConnection() async {
+    // The team keys follow the status, off this path: Work's entry-point
+    // checks run after this one and must not wait on a catalog read.
+    defer { Task { await refreshLinearWorkspaceTeamKeys() } }
     // No computer answers for the project: the account server reads Linear.
     if linearReadsThroughAccount {
       linearConnectionStatus = await accountLinearConnectionStatus()
@@ -12480,6 +12492,55 @@ final class SyncService: ObservableObject {
       // Older hosts, offline, or a queued command all mean "can't confirm a
       // connection right now" — treat as not connected without logging noise.
       linearConnectionStatus = LinearConnectionStatus(connected: false)
+    }
+  }
+
+  /// The connected Linear workspace's team keys, for the thread-entity
+  /// directory: with them a bare `ADE-123` in a PR text or an agent reply
+  /// opens the issue in the Linear pane, while `UTF-8` stays text. Read through
+  /// the same route as every other Linear read (the project's machine, or the
+  /// account when no machine answers), once per project and then at most hourly
+  /// when asked again; never polled. Not connected: no keys.
+  @MainActor
+  func refreshLinearWorkspaceTeamKeys(force: Bool = false) async {
+    let readsThroughAccount = linearReadsThroughAccount
+    guard linearConnectionStatus?.connected == true, readsThroughAccount || activeProjectId != nil else {
+      linearWorkspaceTeamKeysRead = nil
+      linearWorkspaceTeamKeysGeneration &+= 1
+      WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: [])
+      return
+    }
+    // Account projects have no `activeProjectId`; their own id keeps one
+    // project's teams from linking in another's.
+    let scope = readsThroughAccount
+      ? "account:\(activeProjectId ?? activeAccountProjectId ?? "")"
+      : "\(activeProjectId ?? ""):\(activeProjectHostIdentity ?? "")"
+    if let read = linearWorkspaceTeamKeysRead, read.scope == scope {
+      if !force && Date().timeIntervalSince(read.at) < 60 * 60 { return }
+    } else {
+      // Another project's keys must not link here while this one's load.
+      WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: [])
+    }
+    linearWorkspaceTeamKeysRead = (scope, Date())
+    linearWorkspaceTeamKeysGeneration &+= 1
+    let generation = linearWorkspaceTeamKeysGeneration
+    guard let catalog = try? await fetchLinearIssuePickerData() else {
+      // Unreadable now: keep what is known and try again next time.
+      if linearWorkspaceTeamKeysGeneration == generation { linearWorkspaceTeamKeysRead = nil }
+      return
+    }
+    guard linearWorkspaceTeamKeysGeneration == generation else { return }
+    WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: catalog.states.compactMap(\.teamKey))
+  }
+
+  /// For a screen that can open before Work has checked Linear (a PR opened
+  /// from a link): checks the connection once, else reuses the known keys.
+  @MainActor
+  func ensureLinearWorkspaceTeamKeys() async {
+    if linearConnectionStatus == nil {
+      await refreshLinearConnection()
+    } else {
+      await refreshLinearWorkspaceTeamKeys()
     }
   }
 
@@ -12809,6 +12870,7 @@ final class SyncService: ObservableObject {
       as: LinearConnectionStatus.self
     )
     linearConnectionStatus = status
+    Task { await refreshLinearWorkspaceTeamKeys(force: true) }
     return status
   }
 
@@ -12826,6 +12888,7 @@ final class SyncService: ObservableObject {
       as: LinearConnectionStatus.self
     )
     linearConnectionStatus = status
+    Task { await refreshLinearWorkspaceTeamKeys(force: true) }
     return status
   }
 
@@ -12840,6 +12903,7 @@ final class SyncService: ObservableObject {
       as: LinearConnectionStatus.self
     )
     linearConnectionStatus = status
+    Task { await refreshLinearWorkspaceTeamKeys(force: true) }
     return status
   }
 
@@ -16800,12 +16864,13 @@ final class SyncService: ObservableObject {
     ].joined(separator: "\u{1f}")
   }
 
-  // MARK: - Cross-surface model picker (favorites + recents)
+  // MARK: - Model picker lists on the connected machine (favorites + recents)
   //
-  // Mirrors the desktop `useModelFavorites` / `useModelRecents` hooks and the
-  // desktop implementation. Backed by the per-project cr-sqlite DB on the ade-cli
-  // host so favorites and recents converge across desktop and iOS via
-  // sync. Recents are capped at 10 server-side — the client should not pre-trim.
+  // Backed by the per-project cr-sqlite DB on the ade-cli host. Recents live
+  // here. Favorites live on the ADE account (`AccountModelFavoritesClient`);
+  // the machine's favorites are only the fallback for a phone that is signed
+  // out or talks to an account server from before that route. Recents are
+  // capped at 10 server-side — the client should not pre-trim.
 
   func getModelFavorites() async throws -> [String] {
     let payload = try await sendDecodableCommand(
@@ -17540,9 +17605,8 @@ final class SyncService: ObservableObject {
     if (attachments ?? []).isEmpty, !cloudFiles.isEmpty {
       throw CloudChatFilesNeedLiveLink()
     }
-    let response: Any
-    do {
-      response = try await sendCommand(
+    let sendDirect: () async throws -> Any = { [self] in
+      try await sendCommand(
         action: chatActionName("chat.send", sessionId: sessionId),
         args: args,
         // A chat timeout is ambiguous: the host may have started the turn without
@@ -17556,6 +17620,32 @@ final class SyncService: ObservableObject {
         targetProjectRootPath: targetProjectRootPath ?? scope.rootPath,
         attemptedLiveFailurePolicy: .preserveForManualRetry
       )
+    }
+    let response: Any
+    do {
+      // A chat on an ADE Cloud computer the phone still has a link to. The
+      // computer may have gone to sleep a moment ago with the link still
+      // reading connected: a send with no answer soon goes to the account's
+      // queue, which wakes the computer (the desktop's `sendToCloudComputer`).
+      if (attachments ?? []).isEmpty, !includeThreadComments, targetProjectId == nil, targetProjectRootPath == nil,
+         let key = chatThreadKey(for: sessionId),
+         isCloudFleetKey(key.machineKey),
+         !key.machineKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix),
+         let accountKey = cloudAccountMachineKey(fleetKey: key.machineKey) {
+        switch try await sendToCloudComputerOrQueue(
+          sendDirect,
+          accountKey: accountKey,
+          chatId: key.sessionId,
+          messageId: (args["clientSendId"] as? String) ?? UUID().uuidString,
+          text: text,
+          compactFirst: compactFirst
+        ) {
+        case .answered(let value): response = value
+        case .heldByServer: return .heldByServer
+        }
+      } else {
+        response = try await sendDirect()
+      }
     } catch where isSyncCloudMoveRefusal(error) && targetProjectId == nil && targetProjectRootPath == nil {
       // A move holds the chat's ADE Cloud computer: the account's queue takes
       // the message. A caller that named the project (a new chat's first
@@ -17575,6 +17665,102 @@ final class SyncService: ObservableObject {
     // phone mirrors that update rather than guessing (a slash command or a
     // dropped send leaves them pending there).
     return syncChatMessageDelivery(from: response)
+  }
+
+  /// A cloud chat's typing signal goes out at most this often (the desktop's
+  /// `CLOUD_TYPING_PING_MS`). The computer sleeps three minutes after the
+  /// last one, so this spacing survives five missed pings.
+  static let cloudTypingPingInterval: TimeInterval = 30
+
+  /// Someone typed in this chat's composer. For a chat on an ADE Cloud
+  /// computer the phone has a live link to, tell the computer at most every
+  /// `cloudTypingPingInterval`, so it sleeps three minutes after the last
+  /// keystroke instead of under the person. The signal is `chat.warmupModel`
+  /// with `sdkOnly` (the desktop's keystroke warmup): a background write, so
+  /// it never wakes a sleeping computer and never waits in this phone's
+  /// offline queue. The computer counts it only within 20 minutes of its last
+  /// real work (`cloudKeepAwake.noteTyping`).
+  func noteChatTyping(sessionId: String, modelId: String) {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          let key = chatThreadKey(for: trimmed),
+          isCloudFleetKey(key.machineKey),
+          savedCloudChatAccountKey(forThreadKey: key) == nil
+    else { return }
+    let now = ProcessInfo.processInfo.systemUptime
+    if let last = cloudTypingPingAtBySession[trimmed], now - last < Self.cloudTypingPingInterval { return }
+    cloudTypingPingAtBySession[trimmed] = now
+    let scope = chatCommandScope(for: trimmed)
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      _ = try? await self.sendCommand(
+        action: self.chatActionName("chat.warmupModel", sessionId: trimmed),
+        // The computer requires a model id; with `sdkOnly` an unknown one
+        // loads nothing and still counts as typing.
+        args: ["sessionId": trimmed, "modelId": modelId.isEmpty ? "unknown" : modelId, "sdkOnly": true],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: 10_000_000_000,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath,
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      )
+    }
+  }
+
+  enum CloudComputerSendResult {
+    case answered(Any)
+    case heldByServer
+  }
+
+  /// How long a send to an ADE Cloud computer waits for its answer before
+  /// the account's queue takes it (`CLOUD_SEND_ANSWER_WAIT_MS` on desktop).
+  static let cloudSendAnswerWaitNanoseconds: UInt64 = 10_000_000_000
+
+  /// A send over the live link to an ADE Cloud computer that may have just
+  /// gone to sleep. An answer within `cloudSendAnswerWaitNanoseconds` stands.
+  /// No answer, or a link that failed under it, sends the same message id to
+  /// the account's queue, which wakes the computer and delivers it once: the
+  /// computer answers a repeated id without sending again
+  /// (`chatClientSendLedger`), so a direct copy that did arrive never runs
+  /// twice. A refusal of the computer's own (a bad argument, a move) is
+  /// thrown as it is. Without a queue (an older server) the direct send's own
+  /// outcome stands, as before.
+  private func sendToCloudComputerOrQueue(
+    _ sendDirect: @escaping () async throws -> Any,
+    accountKey: String,
+    chatId: String,
+    messageId: String,
+    text: String,
+    compactFirst: Bool?
+  ) async throws -> CloudComputerSendResult {
+    let direct = Task { @MainActor in try await sendDirect() }
+    // Gives up the wait, not the send: the direct send keeps going while the queue takes it.
+    let first: Result<Any, Error>? = await workAwaitWithDeadline(timeoutNanoseconds: Self.cloudSendAnswerWaitNanoseconds) {
+      await direct.result
+    }
+    switch first {
+    case .success(let value)?:
+      return .answered(value)
+    case .failure(let error)? where isRemoteCommandApplicationError(error) || (error as? CloudChatFilesNeedLiveLink) != nil:
+      // The computer answered with a refusal of its own: the queue changes nothing.
+      throw error
+    default:
+      break
+    }
+    syncChatLog.notice(
+      "cloud_send_fallback session=\(chatId, privacy: .public) reason=\(first == nil ? "no_answer" : "link_failed", privacy: .public)"
+    )
+    switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: chatId, messageId: messageId, text: text, compactFirst: compactFirst, using: self) {
+    case .queued:
+      return .heldByServer
+    case .refused(let message), .failed(let message):
+      // The queue refused it (hours, a block) or could not be asked. A direct
+      // send still out may yet be answered, and then its answer stands.
+      if case .success(let value) = await direct.result { return .answered(value) }
+      throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
+    case .routeMissing:
+      return .answered(try await direct.value)
+    }
   }
 
   /// A send the chat's ADE Cloud computer refused because a move to a new
@@ -18976,10 +19162,15 @@ final class SyncService: ObservableObject {
   /// desktop's short watch on the tab, so the caller polls while it is looking
   /// and simply stops when it is not. `frame` is nil for the first poll or two
   /// while the desktop starts capturing. Never queued: a stale frame is useless.
+  ///
+  /// `viewport` (the picture's size in points) asks the desktop to lay the page
+  /// out at that size while the phone watches; nil asks for the desktop's own
+  /// size. An older desktop ignores it and sends the normal frame.
   func readWorkToolsBrowserTabFrame(
     tabId: String,
     laneId: String,
-    maxWidth: Int? = nil
+    maxWidth: Int? = nil,
+    viewport: WorkToolsBrowserViewport? = nil
   ) async throws -> WorkToolsBrowserTabFrame? {
     let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     let tab = tabId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -18989,6 +19180,7 @@ final class SyncService: ObservableObject {
     guard !lane.isEmpty, !tab.isEmpty else { return nil }
     var args: [String: Any] = ["tabId": tab, "laneId": lane]
     if let maxWidth, maxWidth > 0 { args["maxWidth"] = maxWidth }
+    if let viewport { args["viewport"] = viewport.payload }
     let result = try await sendCommand(
       action: "workTools.readBrowserTabFrame",
       args: args,
@@ -19029,6 +19221,74 @@ final class SyncService: ObservableObject {
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
     return (result as? [String: Any])?["ok"] as? Bool ?? false
+  }
+
+  // MARK: - Work tools: dev servers
+
+  /// Whether the lane's machine lists its dev servers to the phone. Optional on
+  /// the host, so an older brain simply shows no Dev servers list.
+  func supportsWorkToolsDevServers(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.listDevServers", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// The dev servers the lane runs on its own machine (port and address).
+  func listWorkToolsDevServers(laneId: String) async throws -> [WorkToolsDevServer] {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard supportsWorkToolsDevServers(laneId: lane) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Dev servers aren't listed by this machine's version of ADE.", "ADEErrorCode": "unsupported_action"])
+    }
+    guard !lane.isEmpty else { return [] }
+    let result = try await sendCommand(
+      action: "workTools.listDevServers",
+      args: ["laneId": lane],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+    )
+    guard result is [String: Any] else { return [] }
+    // An answer this build cannot read is a failed read, not "no servers".
+    return try decode(result, as: WorkToolsDevServerList.self).servers
+  }
+
+  /// Whether this phone may open a dev server in the desktop browser.
+  /// Controller only on the host, so a read-only viewer never sees Open.
+  func canOpenWorkToolsBrowserTab(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.openBrowserTab", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// Opens one of the lane's dev servers in a background tab of the desktop
+  /// browser, on the lane's own machine (`sendCommand` routes a namespaced lane
+  /// id there). The host refuses any address that is not one of the lane's dev
+  /// servers on its localhost. Never queued: an open replayed later would put
+  /// up a page nobody is waiting for. Waits longer than a read: the desktop
+  /// loads the page first, and with no desktop on the lane's machine it asks
+  /// one on another computer.
+  func openWorkToolsBrowserTab(laneId: String, url: String) async throws -> WorkToolsOpenedBrowserTab {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let address = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard canOpenWorkToolsBrowserTab(laneId: lane) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Opening pages from the phone needs a newer ADE on this lane's machine.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    guard !lane.isEmpty, !address.isEmpty else {
+      throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "No dev server was selected."])
+    }
+    let result = try await sendCommand(
+      action: "workTools.openBrowserTab",
+      args: ["laneId": lane, "url": address],
+      disconnectOnTimeout: false,
+      timeoutMessage: "The desktop didn't answer in time. The page may still open there.",
+      timeoutNanoseconds: 20_000_000_000,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    let opened = try decode(result, as: WorkToolsOpenedBrowserTab.self)
+    ProductAnalytics.shared.captureFeature(.devServerOpen, outcome: .completed)
+    return opened
   }
 
   // MARK: - Mac Desktop live stream and takeover
@@ -29893,6 +30153,20 @@ extension SyncService: ChatThreadTransport {
       return nil
     }
     return cloudAccountMachineKey(fleetKey: key.machineKey)
+  }
+
+  /// A proof picture this chat's computer saved before it rested (a still
+  /// for a video). Nil for a chat with a live link: only a chat read through
+  /// the account asks, so the read never wakes the computer.
+  func savedCloudChatProof(sessionId: String, artifactId: String) async -> CloudSavedChatProof? {
+    guard let key = chatThreadKey(for: sessionId), let accountKey = savedCloudChatAccountKey(forThreadKey: key) else { return nil }
+    return await AccountCloudStore.shared.savedProof(accountMachineKey: accountKey, chatId: key.sessionId, artifactId: artifactId, using: self)
+  }
+
+  /// Wakes the chat's own computer (a saved video's "Wake to play").
+  func wakeSavedCloudChatComputer(sessionId: String) async {
+    guard let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil else { return }
+    await wakeSavedCloudChatComputer(key)
   }
 
   /// A send to a cloud chat with no live link that can't go through the

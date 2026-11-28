@@ -6540,10 +6540,10 @@ func formattedDuration(milliseconds: Int) -> String {
 
 func diffLineColor(for line: String) -> Color {
   if line.hasPrefix("+") && !line.hasPrefix("+++") {
-    return ADEColor.success
+    return ADEColor.successText
   }
   if line.hasPrefix("-") && !line.hasPrefix("---") {
-    return ADEColor.danger
+    return ADEColor.dangerText
   }
   return ADEColor.textPrimary
 }

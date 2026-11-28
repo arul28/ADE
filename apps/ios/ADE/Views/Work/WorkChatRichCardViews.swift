@@ -1701,9 +1701,8 @@ struct WorkEventCardView: View, Equatable {
     return HStack(alignment: .center, spacing: 8) {
       Image(systemName: isFailure ? "xmark.circle.fill" : "pause.circle.fill")
         .font(.system(size: 11, weight: .bold))
-      Text(normalized.isEmpty ? ribbonText.uppercased() : normalized.uppercased())
-        .font(.caption2.monospaced().weight(.semibold))
-        .tracking(0.8)
+      Text(normalized.isEmpty ? ribbonText.adeSentenceCased : normalized.adeSentenceCased)
+        .font(.caption2.monospaced().weight(.medium))
       if let body = card.body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
         Text(body)
           .font(.caption2)
@@ -2481,9 +2480,8 @@ struct WorkResolvedApprovalChip: View {
       Image(systemName: isResolved ? pendingInputResolutionIcon(for: resolutionKey) : "checkmark.shield")
         .font(.system(size: 11, weight: .bold))
         .foregroundStyle(statusTint)
-      Text(statusLabel.uppercased())
-        .font(.caption2.monospaced().weight(.semibold))
-        .tracking(0.6)
+      Text(statusLabel)
+        .font(.caption2.monospaced().weight(.medium))
         .foregroundStyle(statusTint)
       if let description = card.body, !description.isEmpty {
         Text(description)

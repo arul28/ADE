@@ -396,7 +396,7 @@ function DeviceCard({
             <PaneTooltip label={`On hold by ${appleOwnerLaneLabel(owner)}`} side="bottom">
               <span
                 data-apple-owner-lane={owner.laneId}
-                className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-warning"
+                className="shrink-0 font-sans text-[10px] font-medium text-warning"
               >
                 Taken
               </span>
@@ -440,7 +440,7 @@ function DeviceCard({
               {simulator.name}
             </span>
             {pending ? <Spinner /> : mine ? (
-              <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-accent">
+              <span className="shrink-0 font-sans text-[10px] font-medium text-accent">
                 Yours
               </span>
             ) : ownership?.ownership === "ade-orphan" && ownership.deletesAfter ? (
@@ -449,7 +449,7 @@ function DeviceCard({
               <PaneTooltip label={`${BRAND.NAME} made this device, and it was released and kept as a free simulator. ${BRAND.NAME} does not delete it; start it to give it to this lane, or delete it from its menu.`} side="bottom">
                 <span
                   data-apple-device-kept=""
-                  className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg"
+                  className="shrink-0 font-sans text-[10px] font-medium text-muted-fg"
                 >
                   Kept
                 </span>
@@ -458,20 +458,20 @@ function DeviceCard({
               <PaneTooltip label={`${BRAND.NAME} made this device and no lane holds it. Clean up deletes it.`} side="bottom">
                 <span
                   data-apple-device-leftover=""
-                  className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-warning"
+                  className="shrink-0 font-sans text-[10px] font-medium text-warning"
                 >
                   Leftover
                 </span>
               </PaneTooltip>
             ) : booted ? (
-              <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-success">
+              <span className="shrink-0 font-sans text-[10px] font-medium text-success">
                 Running
               </span>
             ) : ownership?.looksLikeAde ? (
               <PaneTooltip label={`Named like a ${BRAND.NAME} device, but made before ${BRAND.NAME} marked its devices. Delete it here if you do not use it.`} side="bottom">
                 <span
                   data-apple-device-unmarked=""
-                  className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg"
+                  className="shrink-0 font-sans text-[10px] font-medium text-muted-fg"
                 >
                   Old {BRAND.NAME}?
                 </span>
@@ -513,7 +513,7 @@ function ReleasedDeviceTag({ deletesAfter }: { deletesAfter: string }) {
     >
       <span
         data-apple-device-pending-delete={deletesAfter}
-        className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-warning"
+        className="shrink-0 font-sans text-[10px] font-medium text-warning"
       >
         {`Deletes ${when}`}
       </span>

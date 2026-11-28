@@ -35,7 +35,7 @@ function ChatOutputContextQuoteCard({ quote }: { quote: string }) {
       <div className="min-w-0 flex-1">
         <div
           className={cn(
-            "whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*12.5/14)] italic leading-[1.55] text-white/70",
+            "whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*12.5/14)] italic leading-[1.55] text-white/85",
             long && !expanded && "line-clamp-4",
           )}
         >
@@ -116,7 +116,7 @@ export function ThreadReviewSentCard({ comments }: { comments: ParsedThreadRevie
           <li key={comment.n} className="flex min-w-0 gap-2">
             <span aria-hidden className="w-[3px] shrink-0 self-stretch rounded-full bg-[var(--chat-accent)] opacity-60" />
             <div className="min-w-0 flex-1">
-              <div className="line-clamp-2 text-[length:calc(var(--chat-font-size)*11.5/14)] italic leading-[1.5] text-white/55" title={comment.quote}>
+              <div className="line-clamp-2 text-[length:calc(var(--chat-font-size)*11.5/14)] italic leading-[1.5] text-white/85" title={comment.quote}>
                 {comment.quote}
               </div>
               <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.55] text-white/90">

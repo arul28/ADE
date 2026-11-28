@@ -2137,7 +2137,7 @@ func workDisplayHasEdgeRail(_ proxy: GeometryProxy) -> Bool {
   guard !proxy.isLandscapeIgnoringKeyboard else { return false }
   // Upright, only that display reserves a column on the trailing side.
   if proxy.safeAreaInsets.trailing > 40 { return true }
-  #if compiler(>=6.4)
+  #if compiler(>=6.4) && !ADE_IOS_SDK_27_0
   guard #available(iOS 27.1, *) else { return false }
   return proxy.reservedRegions(kind: .occlusion, options: .includeInactive).contains { region in
     let frame = region.frame

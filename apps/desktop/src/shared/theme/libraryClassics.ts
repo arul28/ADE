@@ -135,7 +135,7 @@ export const CLASSIC_FAMILIES: readonly AdeThemeFamily[] = [
       palette: {
         bg: "#e1e2e7",
         canvas: "#e1e2e7",
-        fg: "#3760bf",
+        fg: "#2f50af", // darker than the scheme's #3760bf so text and code reach WCAG AA (ADE-290)
         surface: "#e9e9ed",
         surfaceRaised: "#f2f2f6",
         surfaceRecessed: "#d6d8e0",
@@ -219,8 +219,8 @@ export const CLASSIC_FAMILIES: readonly AdeThemeFamily[] = [
         surfaceRecessed: "#f2e9e1",
         card: "#fffdf8",
         secondary: "#f2e9e1",
-        secondaryFg: "#6e6a86",
-        mutedFg: "#6e6a86",
+        secondaryFg: "#65617c",
+        mutedFg: "#65617c", // darker than #6e6a86 for WCAG AA on the page (ADE-290)
         border: "#dfdad9",
         popover: "#fffdf8",
         composer: "#fffdf8",
@@ -454,7 +454,7 @@ export const CLASSIC_FAMILIES: readonly AdeThemeFamily[] = [
         card: "#fffaf0",
         secondary: "#e6dfc8",
         secondaryFg: "#586e75",
-        mutedFg: "#5c7279",
+        mutedFg: "#546a71", // darker than #5c7279 for WCAG AA on the page (ADE-290)
         border: "#ddd6bf",
         popover: "#fffaf0",
         composer: "#fffaf0",

@@ -206,6 +206,8 @@ export function createBuiltInBrowserIpcArgParsers(args: {
   const parseBuiltInBrowserClaimArgs = (record: Record<string, unknown>, channel: string): BuiltInBrowserClaimArgs => {
     const tabId = optionalBuiltInBrowserString(record, "tabId", channel, 128);
     const laneId = optionalBuiltInBrowserString(record, "laneId", channel, 128);
+    // The lane a person's open groups the tab with (sticky, never a lease).
+    const groupLaneId = optionalBuiltInBrowserString(record, "groupLaneId", channel, 128);
     const chatSessionId = optionalBuiltInBrowserString(record, "chatSessionId", channel, 128);
     const force = optionalBoolean(record.force);
     const leaseTtlMs = optionalBuiltInBrowserNumber(record, "leaseTtlMs", channel, {
@@ -216,6 +218,7 @@ export function createBuiltInBrowserIpcArgParsers(args: {
       ...parseBuiltInBrowserProjectScopeArgs(record, channel),
       ...(tabId ? { tabId } : {}),
       ...(laneId ? { laneId } : {}),
+      ...(groupLaneId ? { groupLaneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
       ...(force !== undefined ? { force } : {}),
       ...(leaseTtlMs !== undefined ? { leaseTtlMs } : {}),

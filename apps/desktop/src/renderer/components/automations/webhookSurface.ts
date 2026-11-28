@@ -8,6 +8,7 @@
 
 import type { AutomationWebhookDeliveryOutcome } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { sentenceCase } from "../../lib/format";
 
 export type SurfaceTone = "neutral" | "ok" | "warn" | "crit" | "info";
 
@@ -34,7 +35,7 @@ const TAG_TONES: Record<SurfaceTone, string> = {
 
 /** Small mono tag for status words ("Ran", "Skipped", "Public"). */
 export function tagCls(tone: SurfaceTone): string {
-  return cn("inline-flex h-[18px] shrink-0 items-center rounded-[4px] px-1.5 font-mono text-[10px] tracking-[0.06em]", TAG_TONES[tone]);
+  return cn("inline-flex h-[18px] shrink-0 items-center rounded-[4px] px-1.5 font-mono text-[10px]", TAG_TONES[tone]);
 }
 
 const DOT_TONES: Record<SurfaceTone, string> = {
@@ -72,15 +73,20 @@ export type OutcomeStyle = { label: string; tone: SurfaceTone };
 
 /** Green: it ran. Neutral: skipped on purpose. Amber/red: something to fix. */
 export const OUTCOME_STYLES: Record<AutomationWebhookDeliveryOutcome, OutcomeStyle> = {
-  ran: { label: "RAN", tone: "ok" },
-  no_rule: { label: "NOT SAVED YET", tone: "info" },
-  disabled: { label: "PAUSED", tone: "neutral" },
-  filtered: { label: "SKIPPED", tone: "neutral" },
-  duplicate: { label: "DUPLICATE", tone: "neutral" },
-  expired: { label: "TOO OLD", tone: "warn" },
-  bad_signature: { label: "BAD SIGNATURE", tone: "crit" },
-  missing_signature: { label: "NO SIGNATURE", tone: "crit" },
-  rate_limited: { label: "RATE LIMITED", tone: "warn" },
-  too_large: { label: "TOO LARGE", tone: "warn" },
-  error: { label: "RUN FAILED", tone: "crit" },
+  ran: { label: "Ran", tone: "ok" },
+  no_rule: { label: "Not saved yet", tone: "info" },
+  disabled: { label: "Paused", tone: "neutral" },
+  filtered: { label: "Skipped", tone: "neutral" },
+  duplicate: { label: "Duplicate", tone: "neutral" },
+  expired: { label: "Too old", tone: "warn" },
+  bad_signature: { label: "Bad signature", tone: "crit" },
+  missing_signature: { label: "No signature", tone: "crit" },
+  rate_limited: { label: "Rate limited", tone: "warn" },
+  too_large: { label: "Too large", tone: "warn" },
+  error: { label: "Run failed", tone: "crit" },
 };
+
+/** The style for a delivery outcome; one a newer host sends that this build does not know reads as itself, neutral. */
+export function outcomeStyle(outcome: string): OutcomeStyle {
+  return OUTCOME_STYLES[outcome as AutomationWebhookDeliveryOutcome] ?? { label: sentenceCase(outcome), tone: "neutral" };
+}

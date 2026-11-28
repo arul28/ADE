@@ -1606,6 +1606,71 @@ describe("account Attention contract", () => {
     }
   });
 
+  it("merges a project's event choice over the account's per event, and a null patch inherits again", async () => {
+    const database = new SqliteD1Database();
+    const device = {
+      device_id: "phone-project-scope",
+      apns_token: "ef".repeat(32),
+      push_to_start_token: null,
+      bundle_id: "com.ade.ios",
+      aps_environment: "sandbox",
+      preferences_json: "{}",
+      generation: "generation",
+    };
+    const item = (settingsKey: string) => {
+      const parsed = attentionTestInternals.parseAttentionItem({
+        ...validAgentItem(),
+        project: { ...(validAgentItem().project as Record<string, unknown>), settingsKey },
+      }, MACHINE_KEY);
+      if (!parsed) throw new Error("project item did not parse");
+      return parsed;
+    };
+    const stored = () => JSON.parse(row<{ payload_json: string }>(database, `
+      select payload_json from attention_preferences where user_id = 'account-a'
+    `)?.payload_json ?? "{}") as Record<string, unknown>;
+    const policiesFor = (settingsKey: string) =>
+      attentionTestInternals.resolveActivityDeliveryPreferences(device, item(settingsKey), stored()).eventPolicies;
+    const patchProject = (eventPolicies: Record<string, unknown>) => accountRoute(
+      database,
+      "account-a",
+      "PATCH",
+      `/attention/account/preferences/projects/${encodeURIComponent("github.com/acme/ade")}`,
+      { eventPolicies },
+    );
+    try {
+      const read = await (await accountRoute(database, "account-a", "GET", "/attention/account/preferences")).json() as {
+        features?: string[];
+      };
+      // Settings only offers per-scope events to a relay that says it merges them.
+      expect(read.features).toContain("scope-event-policies");
+      expect((await accountRoute(database, "account-a", "PUT", "/attention/account/preferences", {
+        account: { eventPolicyDefaultsVersion: 3, eventPolicies: { agent_needs_you: "off", pr_merged: "notify" } },
+      })).status).toBe(200);
+      expect((await patchProject({ agent_needs_you: "notify" })).status).toBe(200);
+
+      // One project event changes; the account's other choices still hold there.
+      expect(policiesFor("github.com/acme/ade")).toMatchObject({ agent_needs_you: "notify", pr_merged: "notify" });
+      expect(policiesFor("github.com/acme/other")).toMatchObject({ agent_needs_you: "off", pr_merged: "notify" });
+
+      // An older client re-saving the whole document cannot overwrite the project's scope.
+      expect((await accountRoute(database, "account-a", "PUT", "/attention/account/preferences", {
+        account: { eventPolicyDefaultsVersion: 3, eventPolicies: { agent_needs_you: "off", pr_merged: "notify" } },
+        projects: {},
+      })).status).toBe(200);
+      expect(policiesFor("github.com/acme/ade")).toMatchObject({ agent_needs_you: "notify" });
+
+      expect((await patchProject({ agent_not_an_event: "notify" })).status).toBe(400);
+      expect((await patchProject({ agent_needs_you: "loud" })).status).toBe(400);
+
+      // Clearing the only override drops the scope; the project follows the account again.
+      expect((await patchProject({ agent_needs_you: null })).status).toBe(200);
+      expect(stored().projects).toEqual({});
+      expect(policiesFor("github.com/acme/ade")).toMatchObject({ agent_needs_you: "off", pr_merged: "notify" });
+    } finally {
+      database.close();
+    }
+  });
+
   it("keeps durable alert history across prune and same-id device re-registration", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));

@@ -87,7 +87,7 @@ extension View {
   /// cost the grid, the filters and the composer that width.
   @ViewBuilder
   func hubHeaderStaysOnTop() -> some View {
-    #if compiler(>=6.4)
+    #if compiler(>=6.4) && !ADE_IOS_SDK_27_0
     if #available(iOS 27.1, *) {
       toolbarVerticalBehavior(.disabled)
     } else {

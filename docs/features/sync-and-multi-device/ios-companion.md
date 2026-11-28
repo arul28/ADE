@@ -1080,7 +1080,10 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   (`PUT /cloud/launches/:launch/files/:file`, from the bytes on the phone),
   then starts a server launch that names them (`AccountCloudLaunchStore.start`,
   `POST /cloud/launches`); a failed upload is the launch's start error, and
-  Retry sends the rest. Only a start that never reached the server (no
+  Retry sends the rest. A new lane carries `lane.color`: the first palette
+  color no lane the phone lists for that project uses, on any machine
+  (`SyncService.listedLanes(forOrigin:)`). "New computer" for a kept lane
+  sends the color its saved chats carry. Only a start that never reached the server (no
   client, a failed upload, a clear refusal) gives the draft back; any other
   start opens the launch's page.
 - **The launch's page.** A started launch lists in Work as a row
@@ -1109,6 +1112,24 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   pages them like a `chatLogV2` host. A saved subagent chat nests
   under its parent. A computer that left the account still lists its saved
   chats under the key `cloud-saved:<accountMachineKey>`.
+  Each saved row and CLI or shell copy carries its lane's color (`laneColor`,
+  `#rrggbb`; nil from an older server or computer). The roster lane takes it
+  (`cloudSavedRosterProjects`), so Work rows, the lane header and Lanes show
+  a resting cloud lane in its own color, not grey.
+  While the read is out the thread shows its loading skeleton, not the
+  "Reconnect" empty state (`savedCloudCopyAccountKey` counts as reachable in
+  `transcriptLoadState`). A read that fails, or that can't start because the
+  phone is signed out, marks the thread failed with Retry
+  (`markSnapshotStalled`). When the phone learns only after the chat opened
+  that its computer has no live link (the account's computers still loading,
+  a link that just dropped), the thread reads the saved copy then.
+- **Proof in a saved chat.** A cited proof the phone can't load from a resting
+  or deleted cloud computer shows the picture the computer saved before it
+  rested (`CloudServerClient.savedChatProof`, through
+  `AccountCloudStore.savedProof`). Only a chat read through the account asks
+  (`savedCloudChatAccountKey`), so it never wakes the computer. A video shows
+  its still with **Wake to play**, which wakes the chat's own computer.
+  Nothing saved: the citation's notice stays.
 - **The queue.** A send to a cloud chat with no live link goes to
   `POST /cloud/chats/:machine/:chat/messages` with the `clientSendId` as the
   message id (`SyncService.sendChatMessage`). The server holds it, wakes the
@@ -1116,6 +1137,16 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   on a new computer in the same chat row. A send with attachments wakes the
   computer and sends over the live link. An older server (404) falls back to
   wake, connect and send.
+- **A computer that just fell asleep.** The link to a cloud computer can read
+  connected for a while after the computer slept. A text send over a live
+  link to a cloud chat waits 10 s for its answer
+  (`SyncService.sendToCloudComputerOrQueue`, the desktop's
+  `CLOUD_SEND_ANSWER_WAIT_MS`). With no answer, or a link that failed under
+  it, the same message id goes to the account's queue, which wakes the
+  computer. The computer drops a repeated id (`chatClientSendLedger`), so a
+  direct copy that did arrive never runs twice. A refusal of the computer's
+  own is shown as it is; with no queue (older server) the direct send's own
+  outcome stands.
 - **Held messages.** A send to an asleep chat looks like any send, as on
   desktop: the thread draws each held message as the person's own bubble at
   its end (`CloudHeldMessageRow`, `WorkCloudHeldThread` in
@@ -2184,6 +2215,29 @@ actions and personal action names.
   `chat.createDraft`, Schedule send hides.
 - Context usage is on the latest turn-end marker, not the composer.
 
+### Select, copy and comment on a reply
+
+Long replies are split into one transcript cell per markdown block, so a
+long-press lifts one block. The menu (`WorkMessageTextMenuItems` in
+`WorkMessageTextSelection.swift`) offers **Copy message** (the whole reply),
+**Copy this part** (the held block, laid out as the sheet lays it out),
+**Select text**, and **Comment on this part** (Comment… on a whole-reply row)
+when the chat's host takes `chat.createThreadComment`. The person's own
+messages offer Select text too.
+
+Select text opens one sheet per chat (`WorkMessageTextSelectionModel`, presented
+by the session view) with the reply in a read-only `UITextView`, because SwiftUI
+`Text` cannot select a range. The held block starts selected. A floating glass
+pill offers Copy and Comment for the selection, and the edit menu has Comment
+first. On a wide screen the text keeps a readable column. Comment shows a small
+card with the quote and a note field; Add sends `chat.createThreadComment` with
+a text anchor built by `WorkMessageSelectableDocument.swift` (the twin of
+desktop `captureTextAnchor`), the message key desktop uses
+(`workThreadCommentMessageKey`, the twin of `sceneRowIdentity`), and one
+`clientId` per draft, so a retry after a lost answer returns the same comment.
+A still-streaming reply, or one with no shared key, says why it can't take a
+comment. Fixture: `-adePreviewScreen chat-comments`.
+
 ### Importing sessions
 
 Work imports CLI sessions from the 11 import providers (Claude, Codex, Cursor,
@@ -2537,6 +2591,32 @@ display that is off.
   close goes to the lane's machine. Closing the sheet sends pending closes. A
   failure restores the row with an alert. Fixtures: `tools-close`,
   `tools-close-pending`.
+- **Dev servers.** With `workTools.listDevServers`, the browser sheet shows a
+  **Dev servers** card under the tabs: each server's `:port` and address, and
+  **Open** (**Watch** when a lane tab is already on that port). The sheet asks
+  for a fresh list when it opens and on pull to refresh, and otherwise takes
+  the `devServers` the lane state carries. Open sends `workTools.openBrowserTab`
+  (controller-only, not queued, 20 s) to the lane's machine; the page opens in
+  a background desktop tab and the live picture switches to the returned
+  `tabId`. When a desktop on another computer took it (no desktop on the lane's
+  machine), the card says where it opened instead. Without the action there is
+  no Open, and a host without `listDevServers` shows no card. The Browser chip
+  also shows ("Browser") for a lane with a known dev server when the phone may
+  open it. Fixtures `tools-live` and `tools-close` show the card.
+- **Phone size.** The live card has a **Phone size / Desktop size** switch
+  (default Phone size, kept in `ade.workTools.browserPhoneSize`). With Phone
+  size each frame read sends `viewport`: the card's width in points, most of
+  the visible height, and the screen scale. The desktop lays the page out at
+  that size while the phone watches (see
+  [Chat › Tabs on other machines](../chat/README.md#built-in-browser-chrome-identity-tab-ownership-cleanup-and-other-machines));
+  when it keeps its own size the card shows its `viewportNote`. The scale is
+  capped at 2x (the desktop renders the page at it for a frame near 1,000 px
+  wide). A frame answer to a phone-size read that lacks `viewportApplied`
+  (an older desktop or brain, or a read-only viewer pairing, whose `viewport`
+  the host drops) hides the switch until the sheet changes lane. Input stays
+  frame fractions, so Take control works at either size. The Dev servers card
+  is `WorkToolsDevServersCard.swift`; a failed fresh read says it couldn't load
+  the list instead of "no dev servers".
 
 #### macOS card and viewer
 

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { DotsThree } from "@phosphor-icons/react";
 import { Banner } from "../ui/notice";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import type { ChatReadFailure } from "./chatMachinePin";
 import { canonicalInputFromSummary, sessionCanonicalUiState, sessionStatusDisplay } from "../../lib/terminalAttention";
 import { sessionElapsedAnchor } from "../../../shared/sessionStatusPresentation";
 import { focusWorkSession, openWorkSessionMenu } from "../../lib/workSessionRequests";
@@ -22,42 +23,20 @@ export const SHELLS_ACTIVE_CAP = 6;
  * `workSessionRequests`); a status line comes from the same pipeline the Work
  * sidebar rows use, so a shell never invents its own vocabulary.
  *
- * A read failure is stated with a retry rather than shown as "no shells"
- * (notices.md: never a false empty state).
+ * A failed read is not drawn here: `ChatTerminalsReadNotice` states it once
+ * for shells and watches together.
  */
 export function ChatShellsSection({
   shells,
   pin = null,
-  loadError = false,
-  onRetry,
 }: {
   shells: TerminalSessionSummary[];
   /** The chat's machine; a shell there must open and act there, not here. */
   pin?: OpenProjectBinding | null;
-  loadError?: boolean;
-  onRetry?: () => void;
 }) {
   const [showAll, setShowAll] = useState(false);
   const visible = showAll ? shells : shells.slice(0, SHELLS_ACTIVE_CAP);
 
-  if (loadError) {
-    // The shared inline notice, not a hand-styled line: a failed read is a state
-    // of this section, and the error tone renders it with role="alert".
-    return (
-      <div className="px-2 pb-1">
-        <Banner
-          layout="inline"
-          testId="chat-shells-error"
-          model={{
-            id: "chat-shells-load",
-            tone: "error",
-            title: "Couldn’t load this chat’s shells.",
-            actions: onRetry ? [{ label: "Retry", onClick: onRetry }] : undefined,
-          }}
-        />
-      </div>
-    );
-  }
   return (
     <>
       <div className="space-y-px px-2 pb-1">
@@ -75,6 +54,76 @@ export function ChatShellsSection({
         </button>
       ) : null}
     </>
+  );
+}
+
+/**
+ * The one notice for a chat's shells and terminal watches that could not be
+ * read, instead of a red box per section (notices.md: never a false empty
+ * state, and never two alarms for one cause).
+ *
+ * Both reads go to the chat's computer, so they usually fail together and for
+ * the same reason. When that reason is only that the computer is out of reach
+ * (not connected yet, the link dropped, an ADE Cloud computer asleep), it is a
+ * quiet info line with no Report; ADE reads again by itself when a dropped
+ * link comes back, and Retry reads now. Any other failure is an error whose
+ * raw text sits in the notice's details fold and goes with its report.
+ */
+export function ChatTerminalsReadNotice({
+  shellsFailure,
+  watchesFailure,
+  onRetry,
+}: {
+  shellsFailure: ChatReadFailure | null;
+  watchesFailure: ChatReadFailure | null;
+  onRetry?: () => void;
+}) {
+  if (!shellsFailure && !watchesFailure) return null;
+  const actions = onRetry ? [{ label: "Retry", onClick: onRetry }] : undefined;
+  // The read that really failed, if any; the shells read speaks first.
+  const failure = [shellsFailure, watchesFailure].find((entry) => entry != null && !entry.unreachable) ?? null;
+  if (!failure) {
+    return (
+      <div className="px-2 pb-3">
+        <Banner
+          layout="inline"
+          testId="chat-terminals-unreachable"
+          announce={false}
+          model={{
+            id: "chat-terminals-unreachable",
+            tone: "info",
+            title: "Can’t reach this chat’s computer right now.",
+            detail: "Its shells and terminal watches can’t be read until it answers.",
+            actions,
+          }}
+        />
+      </div>
+    );
+  }
+  const what = [shellsFailure && "shells", watchesFailure && "terminal watches"].filter(Boolean).join(" and ");
+  // Both reads really failed: keep both raw errors, each with its read's name.
+  const watchesReal = watchesFailure && !watchesFailure.unreachable && watchesFailure !== failure ? watchesFailure : null;
+  const detail = watchesReal
+    ? [`Shells: ${failure.detail}`, `Terminal watches: ${watchesReal.detail}`].join("\n")
+    : failure.detail;
+  return (
+    <div className="px-2 pb-3">
+      <Banner
+        layout="inline"
+        testId="chat-terminals-error"
+        model={{
+          id: "chat-terminals-load",
+          tone: "error",
+          title: `Couldn’t load this chat’s ${what}.`,
+          report: {
+            surface: "chat_terminals_read",
+            code: failure === shellsFailure ? "chat_shells_read_failed" : "chat_terminal_watches_read_failed",
+            technicalDetail: detail || null,
+          },
+          actions,
+        }}
+      />
+    </div>
   );
 }
 

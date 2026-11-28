@@ -154,7 +154,7 @@ struct DuoChatRail: ViewModifier {
     if retired {
       titled
     } else {
-      #if compiler(>=6.4)
+      #if compiler(>=6.4) && !ADE_IOS_SDK_27_0
       if #available(iOS 27.1, *) {
         titled.backgroundPreferenceValue(DuoPaneHeaderActionsKey.self) { paneActions in
           Color.clear.toolbar { rail27(paneActions: paneActions) }
@@ -197,7 +197,7 @@ struct DuoChatRail: ViewModifier {
   /// changes: the edge bar does not take back an item that was removed and
   /// declared again (a pane closing left the rail without the chat's
   /// buttons). The groups' contents may change; the groups never go away.
-  #if compiler(>=6.4)
+  #if compiler(>=6.4) && !ADE_IOS_SDK_27_0
   @available(iOS 27.1, *)
   @ToolbarContentBuilder
   private func rail27(paneActions: DuoPaneHeaderActions?) -> some ToolbarContent {
@@ -556,7 +556,7 @@ struct DuoChatPrHeaderLabel: View {
 
   private var tint: Color { lanePullRequestTint(badge.state) }
 
-  /// "#1871" out of the badge's "MERGED #1871": the state is its own word.
+  /// "#1871" out of the badge's "Merged #1871": the state is its own word.
   private var number: String {
     if let range = badge.label.range(of: #"#\d+"#, options: .regularExpression) {
       return String(badge.label[range])

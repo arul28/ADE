@@ -103,6 +103,10 @@ When unsure, pick the least alarming tone that is still true.
   (lane, PR, chat).
 - `busy: true` replaces the glyph with a spinner. Do not add your own spinner.
 
+## App banner placement
+
+With a project open, docked and floating app banners sit above the active project content, to the right of the sidebar. On screens without a project column, they use the full shell width.
+
 ## Priority bands (app banners)
 
 Lower numbers sort first. Pick the band that matches **what the banner blocks**.

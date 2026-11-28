@@ -5,6 +5,7 @@ import { MONO_FONT, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { ChatAttachmentTray } from "../chat/ChatAttachmentTray";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { isImeComposing } from "../../lib/imeComposition";
+import { sentenceCase } from "../../lib/format";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
 
@@ -239,10 +240,10 @@ export function MentionInput({
             </span>
             {participant.role ? (
               <span
-                className="ml-auto shrink-0 text-[9px] uppercase tracking-wider"
+                className="ml-auto shrink-0 text-[10px] font-medium"
                 style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", fontFamily: SANS_FONT }}
               >
-                {participant.role}
+                {sentenceCase(participant.role)}
               </span>
             ) : null}
           </button>

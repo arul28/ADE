@@ -184,10 +184,8 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
             <span
               style={inlineBadge(COLORS.textMuted, {
                 padding: "1px 5px",
-                fontSize: 9,
-                fontWeight: 600,
-                letterSpacing: 0.3,
-                textTransform: "uppercase",
+                fontSize: 10,
+                fontWeight: 500,
                 flexShrink: 0,
               })}
             >
@@ -199,8 +197,7 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
                 style={inlineBadge(SEVERITY_COLORS[sev], {
                   padding: "1px 6px",
                   fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: 0.2,
+                  fontWeight: 500,
                 })}
               >
                 {sev}
