@@ -6,10 +6,10 @@
  *
  * Every failure a retry may fix (no connection, a timeout, an answer without
  * JSON) is retried with a growing wait until the window is used up; then the
- * error names what happened and how long Daex kept trying. Its two prefixes
- * ("Daex account device service timed out" / "could not be reached") are
+ * error names what happened and how long DAEX kept trying. Its two prefixes
+ * ("DAEX account device service timed out" / "could not be reached") are
  * stable: the desktop maps them (`accountBridge.ts`), and the cloud setup card
- * reads "Daex kept trying" (or an older CLI's "ADE kept trying") as this retry
+ * reads "DAEX kept trying" (or an older CLI's "ADE kept trying") as this retry
  * having run (`cloudBoxSignInStart.ts`).
  */
 

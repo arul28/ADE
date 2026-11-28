@@ -16,7 +16,7 @@ import modeConfig from "./brainExecutableMode.json";
  *   bundle id is `<app id>.helper`, so macOS privacy grants (TCC) made to the
  *   app do not cover it.
  * - `brain-copy`: a copy of the app's executable in the same folder
- *   (`Contents/MacOS/Daex Brain`), which the packaging step creates and signs
+ *   (`Contents/MacOS/DAEX Brain`), which the packaging step creates and signs
  *   with the app's own identifier and team (`scripts/mac-brain-copy.cjs`).
  *   macOS names the background item after it ("Background Items Added",
  *   Login Items). Builds before the rename called it `ADE Brain`; the bundle
@@ -44,17 +44,17 @@ export const BRAIN_EXECUTABLE_ENV = "ADE_BRAIN_EXECUTABLE";
 export const BRAIN_COPY_SUFFIX = " Brain";
 
 // The brain copy shows the product name, while the app's executable keeps the
-// frozen one: `ADE` -> `Daex Brain`, `ADE Alpha` -> `Daex Alpha Brain`. Builds
+// frozen one: `ADE` -> `DAEX Brain`, `ADE Alpha` -> `DAEX Alpha Brain`. Builds
 // before the rename named it `<executable> Brain` (`ADE Brain`). File names,
 // not display text: they must not follow BRAND if it changes again.
 const FROZEN_EXECUTABLE_PREFIX = "ADE";
-const BRAIN_COPY_PREFIX = "Daex";
+const BRAIN_COPY_PREFIX = "DAEX";
 
 function swapPrefix(name: string, from: string, to: string): string | null {
   return name === from || name.startsWith(`${from} `) ? `${to}${name.slice(from.length)}` : null;
 }
 
-/** `ADE` -> `Daex Brain`; any other executable (a dev `Electron`) -> `<name> Brain`. */
+/** `ADE` -> `DAEX Brain`; any other executable (a dev `Electron`) -> `<name> Brain`. */
 function brainCopyFileName(executableName: string): string {
   return `${swapPrefix(executableName, FROZEN_EXECUTABLE_PREFIX, BRAIN_COPY_PREFIX) ?? executableName}${BRAIN_COPY_SUFFIX}`;
 }
@@ -81,7 +81,7 @@ export type ElectronMacExecutables = {
   main: string;
   /** `<bundle>.app/Contents/Frameworks/<name> Helper.app/Contents/MacOS/<name> Helper`. */
   helper: string;
-  /** `<bundle>.app/Contents/MacOS/Daex Brain` (`brainCopyFileName`). */
+  /** `<bundle>.app/Contents/MacOS/DAEX Brain` (`brainCopyFileName`). */
   brainCopy: string;
   /** `<bundle>.app/Contents/MacOS/ADE Brain`: the copy's name before the rename. */
   legacyBrainCopy: string;
@@ -102,8 +102,8 @@ function executablesFor(bundle: string, name: string): ElectronMacExecutables {
 /**
  * The app, helper and brain-copy executables for a path that is any of them,
  * or null. The names follow electron-builder (`ADE` / `ADE Helper`,
- * `ADE Alpha` / `ADE Alpha Helper`), the brain copy (`Daex Brain`,
- * `Daex Alpha Brain`, and the older `ADE Brain`, `ADE Alpha Brain`) and a
+ * `ADE Alpha` / `ADE Alpha Helper`), the brain copy (`DAEX Brain`,
+ * `DAEX Alpha Brain`, and the older `ADE Brain`, `ADE Alpha Brain`) and a
  * development Electron (`Electron` / `Electron Helper`). The GPU, Renderer and
  * Plugin helpers are not the plain helper: their paths give executables that
  * do not exist, and callers check for that.
@@ -135,7 +135,7 @@ function isExecutableFile(filePath: string): boolean {
  * on the helper or the copy (either name) gets the same answer as the app, so
  * every process agrees on one command and the installed plist does not flip
  * between them. A plist an older build wrote with `ADE Brain` differs from
- * this command, so the next install rewrites it to `Daex Brain`.
+ * this command, so the next install rewrites it to `DAEX Brain`.
  */
 export function resolveBrainNodeExecutable(
   execPath: string = process.execPath,

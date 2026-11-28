@@ -281,7 +281,7 @@ describe("buildDiagnosticReport", () => {
     const report = build();
 
     for (const heading of [
-      "# Daex diagnostic report",
+      "# DAEX diagnostic report",
       "## What happened",
       "## Install",
       "## Technical detail",

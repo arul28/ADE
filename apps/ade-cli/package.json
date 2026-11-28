@@ -1,7 +1,7 @@
 {
   "name": "ade-cli",
   "version": "0.0.0",
-  "description": "Agent-focused command-line interface for Daex",
+  "description": "Agent-focused command-line interface for DAEX",
   "type": "module",
   "bin": {
     "daex": "dist/cli.cjs",

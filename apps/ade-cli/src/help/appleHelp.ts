@@ -933,7 +933,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --runtime <id|name>          Runtime, e.g. "iOS 26.3".
     --device-type, --model <id|name>  Device type, e.g. "iPhone 17 Pro".
     --from, --simulator <id>     Copy this installed simulator's model and runtime (not its data).
-    --name <name>                Device name; defaults to "Daex · <lane>".
+    --name <name>                Device name; defaults to "DAEX · <lane>".
     --lane, --lane-id <id>       Lane that will own the device.
 `,
   "device-cleanup": `${ADE_BANNER}
@@ -1078,7 +1078,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --force, -f            Detach a device another chat is driving as well.
     --ignore-ownership     Detach without the owner check. Ask first.
-    --keep                 A Daex-made device stays as a free simulator (the user asked).
+    --keep                 A DAEX-made device stays as a free simulator (the user asked).
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
     --lane, --lane-id <id> Lane whose device to detach.
 `,

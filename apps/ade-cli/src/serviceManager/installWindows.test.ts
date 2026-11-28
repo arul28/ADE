@@ -664,7 +664,7 @@ describe("Windows background service helpers", () => {
       serviceName,
       action: "install",
       path: taskName,
-      message: "Daex per-user startup entry installed and channel brain is ready.",
+      message: "DAEX per-user startup entry installed and channel brain is ready.",
     });
     expect(fs.existsSync(launcherPath)).toBe(true);
     expect(readinessProbe).toHaveBeenCalledWith(expect.objectContaining({
@@ -1258,7 +1258,7 @@ describe("Windows background service helpers", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.message).toBe("Daex per-user startup entry was installed, but the background service failed to start: ERROR: access is denied");
+    expect(result.message).toBe("DAEX per-user startup entry was installed, but the background service failed to start: ERROR: access is denied");
     const scheduledCommand = headlessConsoleCommand({
       command: windowsPowerShellCommand(),
       args: [
@@ -1350,7 +1350,7 @@ describe("Windows background service helpers", () => {
       serviceName,
       action: "uninstall",
       path: taskName,
-      message: "Daex background service startup entry removed.",
+      message: "DAEX background service startup entry removed.",
     });
     // Everything is read before anything is removed.
     expect(calls.slice(0, 3)).toEqual([
@@ -1744,9 +1744,9 @@ describe("Windows background service helpers", () => {
       path: taskName,
     });
     expect(status.message).toBe(
-      "Daex background service startup entry is not installed for this channel. A legacy ADE "
-      + "Runtime scheduled task belongs to a different Daex install and was left running. Run "
-      + "`daex brain start` to install this channel's startup entry, and uninstall the other Daex "
+      "DAEX background service startup entry is not installed for this channel. A legacy ADE "
+      + "Runtime scheduled task belongs to a different DAEX install and was left running. Run "
+      + "`daex brain start` to install this channel's startup entry, and uninstall the other DAEX "
       + "to clear its legacy task.",
     );
     expect(calls.at(-1)?.args).toEqual(buildWindowsQueryTaskActionArgs("ADE Runtime"));
@@ -1784,7 +1784,7 @@ describe("Windows background service helpers", () => {
     });
 
     expect(status).toMatchObject({ ok: true, installed: false, running: false });
-    expect(status.message).toBe("Daex background service startup entry is not installed.");
+    expect(status.message).toBe("DAEX background service startup entry is not installed.");
     expect(calls).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
@@ -1815,7 +1815,7 @@ describe("Windows background service helpers", () => {
     });
 
     expect(absent).toMatchObject({ ok: true, installed: false, running: false });
-    expect(absent.message).toBe("Daex background service startup entry is not installed.");
+    expect(absent.message).toBe("DAEX background service startup entry is not installed.");
     // The failing query short-circuits before the supplementary legacy probe.
     expect(failedCalls).toHaveLength(2);
     expect(failed).toMatchObject({ ok: false, installed: null, running: null });
@@ -2077,7 +2077,7 @@ describe("Windows runtime supervisor", () => {
           spawnSync("taskkill.exe", ["/PID", String(second.pid), "/T", "/F"], { encoding: "utf8", windowsHide: true });
         }
         expect(secondExit).toBe(0);
-        expect(supervisorLog()).toContain("another Daex supervisor already owns");
+        expect(supervisorLog()).toContain("another DAEX supervisor already owns");
         expect(fs.readFileSync(brainMarker, "utf8").trim().split("\n")).toEqual([String(brainPid)]);
         expect(readWindowsServicePidRecord({ pidPath })?.supervisorPid).toBe(owner.pid);
       } finally {

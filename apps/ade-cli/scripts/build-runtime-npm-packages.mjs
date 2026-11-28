@@ -272,7 +272,7 @@ export function runtimePackageManifest({ target, os: osName, cpu, version }) {
   return {
     name: runtimePackageName(target),
     version,
-    description: `The Daex runtime binary and its native modules for ${target}.`,
+    description: `The DAEX runtime binary and its native modules for ${target}.`,
     license: "AGPL-3.0-only",
     repository: {
       type: "git",
@@ -318,7 +318,7 @@ export function metaPackageManifest({ version }) {
     name: META_PACKAGE_NAME,
     version,
     description:
-      "Installs the Daex runtime binary for the current platform, for embedders bundling @daex-dev/sdk.",
+      "Installs the DAEX runtime binary for the current platform, for embedders bundling @daex-dev/sdk.",
     license: "AGPL-3.0-only",
     repository: {
       type: "git",
@@ -344,7 +344,7 @@ export function metaPackageManifest({ version }) {
 function runtimePackageReadme(target) {
   return `# ${runtimePackageName(target)}
 
-The Daex embedded runtime binary for \`${target}\`, plus the native modules the SDK profile dlopens.
+The DAEX embedded runtime binary for \`${target}\`, plus the native modules the SDK profile dlopens.
 
 You do not import this package. \`@daex-dev/sdk\` finds it automatically through
 \`resolveBundledRuntime()\`, which is step 2 of its runtime resolution order.
@@ -383,7 +383,7 @@ https://ade-app.dev/docs/sdk/license
 function metaPackageReadme(version) {
   return `# ${META_PACKAGE_NAME}
 
-Installs the Daex runtime for the current platform.
+Installs the DAEX runtime for the current platform.
 
     npm install @ade-dev/runtime@${version}
 

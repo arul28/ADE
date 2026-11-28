@@ -175,7 +175,7 @@ describe("syncHostRecovery", () => {
       holdsLease: () => false,
     });
     expect(snapshot.state).toBe("conflict");
-    expect(snapshot.headline).toBe("Another Daex is blocking this machine");
+    expect(snapshot.headline).toBe("Another DAEX is blocking this machine");
     expect(snapshot.body).toContain("development runtime");
     expect(snapshot.body).not.toContain("19621");
     expect(snapshot.conflict?.ownerLabel).toBe("Development runtime");
@@ -215,7 +215,7 @@ describe("syncHostRecovery", () => {
     expect(redacted.recoveryEligible).toBe(false);
     expect(redacted.conflict).toMatchObject({
       ownerKind: "unknown",
-      ownerLabel: "Another Daex runtime",
+      ownerLabel: "Another DAEX runtime",
       projectLabel: null,
       impact: null,
       recoveryEligible: false,

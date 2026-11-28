@@ -269,7 +269,7 @@ describe("lane backups", () => {
 
     const made = await prepareLaneBranchFromBackup({ api: server.api, machineKey: "key-new", laneId: LANE, branchRef: "ade/never-on-github", projectRoot: project, logger });
 
-    expect(made).toEqual({ created: true, branch: "ade/never-on-github", note: "ade/never-on-github wasn't on GitHub, so Daex started it again from main." });
+    expect(made).toEqual({ created: true, branch: "ade/never-on-github", note: "ade/never-on-github wasn't on GitHub, so DAEX started it again from main." });
     expect(git(project, "rev-parse", "refs/heads/ade/never-on-github")).toBe(git(project, "rev-parse", "refs/remotes/origin/main"));
     // A retry finds the branch it made: still not published.
     expect(await prepareLaneBranchFromBackup({ api: server.api, machineKey: "key-new", laneId: LANE, branchRef: "ade/never-on-github", projectRoot: project, logger })).toEqual(made);

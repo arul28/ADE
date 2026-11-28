@@ -89,7 +89,7 @@ function render(): void {
   const res: ToolResult = state.result ?? {};
   const sc = res.structuredContent;
   const tool = currentTool(sc);
-  const title = (tool && TITLES[tool]) || "Daex";
+  const title = (tool && TITLES[tool]) || "DAEX";
   try {
     if (res.isError) mount(viewText(title, resultText(res) || "That did not work.", true, isObj(sc) ? scopeOf(sc) : NO_SCOPE));
     else if (!isObj(sc)) mount(viewText(title, resultText(res), false, NO_SCOPE));
@@ -98,13 +98,13 @@ function render(): void {
     else if (Array.isArray(sc.machines) && !("result" in sc)) mount(viewFanOut(tool, sc));
     else mount(viewEnvelope(tool, sc));
   } catch (e) {
-    mount(viewText("Daex", resultText(res) || String(e instanceof Error ? e.message : e), false, NO_SCOPE));
+    mount(viewText("DAEX", resultText(res) || String(e instanceof Error ? e.message : e), false, NO_SCOPE));
   }
 }
 function renderLoading(): void {
   const t = ctx.toolInfo?.tool?.name;
   const label = typeof t === "string" ? TITLES[t] : undefined;
-  mount(h("section", { cls: "card" }, h("div", { cls: "muted-load" }, (label ? label + ": " : "") + "Asking Daex…")));
+  mount(h("section", { cls: "card" }, h("div", { cls: "muted-load" }, (label ? label + ": " : "") + "Asking DAEX…")));
 }
 
 

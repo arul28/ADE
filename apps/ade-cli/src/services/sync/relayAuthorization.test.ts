@@ -168,7 +168,7 @@ describe("Relay authorization lifecycle", () => {
       ok: false,
       error: { code: "relay_account_changed", retryable: false },
     });
-    expect(wrongHost.close).toHaveBeenCalledWith("Daex account session changed");
+    expect(wrongHost.close).toHaveBeenCalledWith("DAEX account session changed");
 
     const wrongTokenOwner = createHarness({
       verify: async () => ({ userId: "different-token-user", expiresAtMs: NOW_MS + 60_000 }),
@@ -182,7 +182,7 @@ describe("Relay authorization lifecycle", () => {
       ok: false,
       error: { code: "relay_account_changed" },
     });
-    expect(wrongTokenOwner.close).toHaveBeenCalledWith("Daex account session changed");
+    expect(wrongTokenOwner.close).toHaveBeenCalledWith("DAEX account session changed");
   });
 
   it("closes a terminal account change even when sending the result throws", async () => {
@@ -197,7 +197,7 @@ describe("Relay authorization lifecycle", () => {
       lease: harness.lifecycle.metadata()!,
       token: "token-2",
     }), "throwing-send")).rejects.toThrow("socket send failed");
-    expect(harness.close).toHaveBeenCalledWith("Daex account session changed");
+    expect(harness.close).toHaveBeenCalledWith("DAEX account session changed");
   });
 
   it("replays the exact successful result after a lost ACK but rejects nonce reuse with changed input", async () => {
@@ -250,12 +250,12 @@ describe("Relay authorization lifecycle", () => {
     await vi.advanceTimersByTimeAsync(10_099);
     expect(transient.close).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(transient.close).toHaveBeenCalledWith("Daex Relay account proof expired");
+    expect(transient.close).toHaveBeenCalledWith("DAEX Relay account proof expired");
 
     const legacy = createHarness({ capable: false, expiresAtMs: Date.now() + 100 });
     expect(legacy.lifecycle.metadata()).toBeNull();
     await vi.advanceTimersByTimeAsync(100);
-    expect(legacy.close).toHaveBeenCalledWith("Daex Relay account proof expired");
+    expect(legacy.close).toHaveBeenCalledWith("DAEX Relay account proof expired");
   });
 
   it("preserves the lease and challenge when a project host adopts the socket", () => {

@@ -172,7 +172,7 @@ try_install_service() {
     return 0
   fi
 
-  printf 'ade install: warning: runtime service install failed with exit status %s; Daex was installed but the login service was not registered.\n' "$status" >&2
+  printf 'ade install: warning: runtime service install failed with exit status %s; DAEX was installed but the login service was not registered.\n' "$status" >&2
   if [ -s "$service_log" ]; then
     while IFS= read -r line; do
       printf 'ade install: service: %s\n' "$line" >&2
@@ -451,11 +451,11 @@ mkdir -p "$dest_dir" "$runtime_dir" "$ade_home/bin"
 
 install_started_at="$(date +%s)"
 print_banner
-printf '  Installing Daex to %s\n\n' "$ade_home" >&2
+printf '  Installing DAEX to %s\n\n' "$ade_home" >&2
 
-if ! download_with_progress "$(asset_url "$binary_name")" "$tmp_dir/ade" "Daex runtime"; then
-  [ "$version" = "latest" ] && die "could not download the Daex runtime."
-  die "could not download Daex $version. Check that it is a published release: https://github.com/$repo/releases"
+if ! download_with_progress "$(asset_url "$binary_name")" "$tmp_dir/ade" "DAEX runtime"; then
+  [ "$version" = "latest" ] && die "could not download the DAEX runtime."
+  die "could not download DAEX $version. Check that it is a published release: https://github.com/$repo/releases"
 fi
 download_with_progress "$(asset_url "$archive_name")" "$tmp_dir/native.tar.gz" \
   "Native dependencies"
@@ -616,18 +616,18 @@ install_stage="staged"
 die_runtime_unusable() {
   if [ "$install_stage" = "staged" ]; then
     if [ -e "$dest_dir/ade" ]; then
-      printf 'ade install: your existing Daex at %s was not touched.\n' "$dest_dir/ade" >&2
+      printf 'ade install: your existing DAEX at %s was not touched.\n' "$dest_dir/ade" >&2
     else
       printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
     fi
   elif [ "$have_backup_binary" -eq 1 ]; then
-    printf 'ade install: the Daex you already had was put back, so nothing is broken.\n' >&2
+    printf 'ade install: the DAEX you already had was put back, so nothing is broken.\n' >&2
   elif [ -e "$dest_dir/ade" ]; then
     # The rollback is best effort, so the disk is the only thing worth
     # believing here: if it could not remove the binary that just failed, the
     # broken one is still what runs, and saying "nothing was left installed"
     # sends the user looking in the wrong place.
-    printf 'ade install: the Daex at %s is the one that just failed to start.\n' "$dest_dir/ade" >&2
+    printf 'ade install: the DAEX at %s is the one that just failed to start.\n' "$dest_dir/ade" >&2
   else
     printf 'ade install: nothing was left installed at %s.\n' "$dest_dir/ade" >&2
   fi
@@ -661,7 +661,7 @@ chmod 755 "$pending_binary"
 set_runtime_env "$staged_runtime_dir"
 if ! version_check "$pending_binary" "staged"; then
   rm -f "$pending_binary"
-  die_runtime_unusable "the Daex runtime that was just downloaded could not start"
+  die_runtime_unusable "the DAEX runtime that was just downloaded could not start"
 fi
 
 if [ -e "$runtime_dir" ]; then
@@ -675,7 +675,7 @@ else
     rm -rf "$runtime_dir"
     mv "$backup_runtime_dir" "$runtime_dir"
   fi
-  die "failed to install Daex native runtime dependencies"
+  die "failed to install DAEX native runtime dependencies"
 fi
 
 # Promote the binary last, and only by rename -- of the very copy the preflight
@@ -687,7 +687,7 @@ if [ -e "$dest_dir/ade" ]; then
     have_backup_binary=1
   else
     rm -f "$pending_binary"
-    die "could not back up the existing Daex runtime at $dest_dir/ade"
+    die "could not back up the existing DAEX runtime at $dest_dir/ade"
   fi
 fi
 mv "$pending_binary" "$dest_dir/ade"
@@ -697,7 +697,7 @@ install_stage="installed"
 
 if ! version_check "$dest_dir/ade" "installed"; then
   restore_previous_install
-  die_runtime_unusable "the newly installed Daex runtime could not start"
+  die_runtime_unusable "the newly installed DAEX runtime could not start"
 fi
 # The new binary has now proved it runs, so the cleanup handlers must stop
 # treating $dest_dir/ade as unverified and rolling the backup back over it.
@@ -739,9 +739,9 @@ elif [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 if [ -L "$dest_dir/daex" ] && [ "$(readlink "$dest_dir/daex" 2>/dev/null)" = "ade" ]; then
-  print_step "+" "Daex runtime" "$dest_dir/daex -> ade"
+  print_step "+" "DAEX runtime" "$dest_dir/daex -> ade"
 else
-  print_step "+" "Daex runtime" "$dest_dir/ade"
+  print_step "+" "DAEX runtime" "$dest_dir/ade"
 fi
 print_step "+" "Native dependencies" "$runtime_dir"
 # The recovery commands in the closing summary are printed by `ade setup`, which

@@ -188,7 +188,7 @@ function packagedSafeAccountDirectoryOverride(
  */
 function notSignedInMessage(
   readState: AccountSessionReadState | undefined,
-  action: "remove a machine from your Daex account" | "rename a machine",
+  action: "remove a machine from your DAEX account" | "rename a machine",
   sessionState?: AccountSessionState,
 ): string {
   if (readState === "unreadable" || sessionState === "unreadable") {
@@ -274,7 +274,7 @@ export class AccountMachineDirectoryService {
     if (!status.signedIn && status.source !== "env-token") {
       throw new Error(notSignedInMessage(
         this.account.getSessionReadState?.(),
-        "remove a machine from your Daex account",
+        "remove a machine from your DAEX account",
         status.sessionState ?? this.account.getSessionState?.(),
       ));
     }

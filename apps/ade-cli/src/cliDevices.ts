@@ -215,7 +215,7 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<{ parsed:
   } catch (error) {
     const reason = errorText(error);
     // No choice can exist: an older brain, a session that is no ADE chat here.
-    if (isOlderBrainAnswer(reason) || /device choice is kept for (?:ADE|Daex) chats|sessionId is required|was not found|is not an agent chat session/i.test(reason)) {
+    if (isOlderBrainAnswer(reason) || /device choice is kept for (?:ADE|DAEX) chats|sessionId is required|was not found|is not an agent chat session/i.test(reason)) {
       return asTyped;
     }
     // Not "devices use …@here": that would undo the person's choice for a

@@ -157,7 +157,7 @@ describe("doctor row evaluation", () => {
     expect(result.syncStatus).toBeNull();
     expect(result.account).toMatchObject({
       signedIn: null,
-      error: "Daex brain health reads timed out.",
+      error: "DAEX brain health reads timed out.",
     });
   });
 
@@ -257,7 +257,7 @@ describe("doctor row evaluation", () => {
     };
     const lockedRow = evaluateDoctorRows(lockedOut).find((row) => row.key === "credentials");
     expect(lockedRow?.status).toBe("fail");
-    expect(lockedRow?.detail).toContain("open the Daex app");
+    expect(lockedRow?.detail).toContain("open the DAEX app");
 
     const corrupt = healthyInput();
     corrupt.credentials = {
@@ -283,7 +283,7 @@ describe("doctor row evaluation", () => {
     };
     const quarantinedRow = evaluateDoctorRows(quarantined).find((row) => row.key === "credentials");
     expect(quarantinedRow?.status).toBe("warn");
-    expect(quarantinedRow?.detail).toContain("open the Daex app");
+    expect(quarantinedRow?.detail).toContain("open the DAEX app");
   });
 
   it("warns for a recent wedge and alternate port with diagnosed holders", () => {
@@ -392,8 +392,8 @@ describe("doctor row evaluation", () => {
     const publish = evaluateDoctorRows(input).find((row) => row.key === "publish");
 
     expect(publish?.status).toBe("fail");
-    expect(publish?.detail).toContain("This computer was removed from your Daex account on 2026-07-17.");
-    expect(publish?.detail).toContain("Daex stopped trying to reconnect it on its own.");
+    expect(publish?.detail).toContain("This computer was removed from your DAEX account on 2026-07-17.");
+    expect(publish?.detail).toContain("DAEX stopped trying to reconnect it on its own.");
     expect(publish?.detail).toContain("daex machines reconnect");
   });
 
@@ -672,7 +672,7 @@ describe("doctor row evaluation", () => {
         {},
         "linux",
       );
-      expect(environment?.roots.map((root) => root.label)).toEqual(["Daex home", "Project"]);
+      expect(environment?.roots.map((root) => root.label)).toEqual(["DAEX home", "Project"]);
       // Both roots were really walked, and neither reported a path.
       expect(environment?.roots[1]?.sampledFiles).toBeGreaterThan(0);
       expect(JSON.stringify(environment)).not.toContain(project);

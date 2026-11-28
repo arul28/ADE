@@ -69,7 +69,7 @@ const CSI = `${String.fromCharCode(27)}[`;
 /** Carriage return + erase-whole-line: what rewrites the animated line in place. */
 const CLEAR_LINE = `\r${CSI}2K`;
 
-/** The same Daex art as the top of every help page. */
+/** The same DAEX art as the top of every help page. */
 const BANNER = ADE_BANNER;
 
 export function detectTerminalCapabilities(

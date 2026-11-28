@@ -2139,7 +2139,7 @@ export function parseNativeLanDiscoveryProcessList(stdout: string): NativeLanDis
     if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
     if (!/\bdns-sd\b/.test(command)) continue;
     // A brain before the rename announced "ADE Sync …"; its orphans count too.
-    if (!/\s-R\s+(?:Daex|ADE) Sync\b/.test(command)) continue;
+    if (!/\s-R\s+(?:DAEX|ADE) Sync\b/.test(command)) continue;
     if (!/\b_ade-sync\._tcp\b/.test(command)) continue;
     out.push({ pid, ppid, command });
   }

@@ -662,7 +662,7 @@ describe("explicit proof capture", () => {
 
   it("words the refusal for the host it runs on", () => {
     expect(describeLaneDisplayProofRefusal("screenshot", "darwin")).toMatch(
-      /^refused: this lane has no Mac Desktop display, and Daex does not capture your real screen by default\. Use `daex screen proof`.*pass --real-screen/,
+      /^refused: this lane has no Mac Desktop display, and DAEX does not capture your real screen by default\. Use `daex screen proof`.*pass --real-screen/,
     );
     // Off macOS no lane can have a display and --real-screen cannot help.
     const windows = describeLaneDisplayProofRefusal("video_recording", "win32");

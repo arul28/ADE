@@ -1523,12 +1523,12 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
     try {
       fs.accessSync(normalizedParent, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK);
     } catch {
-      blockingErrors.push(`Daex cannot write to destination folder: ${normalizedParent}`);
+      blockingErrors.push(`DAEX cannot write to destination folder: ${normalizedParent}`);
     }
   }
   const targetExists = fs.existsSync(targetPath);
   if (targetExists) {
-    blockingErrors.push(`A file or folder already exists at ${targetPath}. Add that repository to Daex or choose another destination.`);
+    blockingErrors.push(`A file or folder already exists at ${targetPath}. Add that repository to DAEX or choose another destination.`);
   }
   const requiredBytes = 1_073_741_824;
   let freeBytes = 0;
@@ -1537,7 +1537,7 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
       const stats = fs.statfsSync(normalizedParent, { bigint: true });
       freeBytes = Number(stats.bavail * stats.bsize);
     } catch (error) {
-      warnings.push(`Daex could not read free disk space: ${error instanceof Error ? error.message : String(error)}`);
+      warnings.push(`DAEX could not read free disk space: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   const hasEnoughSpace = freeBytes >= requiredBytes;
@@ -2367,7 +2367,7 @@ export function createMultiProjectRpcRequestHandler(
     if (scopeRegistry.isOpenBlocked(record.projectId)) {
       return {
         status: "unavailable",
-        entry: `${record.displayName} (its folder is too slow for Daex to open; \`daex projects retry\` opens it again)`,
+        entry: `${record.displayName} (its folder is too slow for DAEX to open; \`daex projects retry\` opens it again)`,
       };
     }
     if (!fs.existsSync(record.rootPath)) {
@@ -2383,7 +2383,7 @@ export function createMultiProjectRpcRequestHandler(
     if (indexed.status === "unusable") {
       return {
         status: "unavailable",
-        entry: `${record.displayName} (its search index is from another Daex version or unreadable; open this project in Daex once to rebuild it)`,
+        entry: `${record.displayName} (its search index is from another DAEX version or unreadable; open this project in DAEX once to rebuild it)`,
       };
     }
     if (indexed.status === "busy") {
@@ -3326,7 +3326,7 @@ export function createMultiProjectRpcRequestHandler(
         if (!chatService) {
           throw new JsonRpcError(
             JsonRpcErrorCode.policyDenied,
-            "account.deleteMachine is not available to agents, and this Daex does not hold your chat to ask the person in. Ask the person to remove the computer on the Account page.",
+            "account.deleteMachine is not available to agents, and this DAEX does not hold your chat to ask the person in. Ask the person to remove the computer on the Account page.",
           );
         }
         reconcileAccountOwnership(currentAccountOwnerUserId());
@@ -3462,7 +3462,7 @@ export function createMultiProjectRpcRequestHandler(
         if (!options.startSyncHost) {
           throw new JsonRpcError(
             JsonRpcErrorCode.invalidRequest,
-            "This Daex brain cannot host sync.",
+            "This DAEX brain cannot host sync.",
           );
         }
         const result = await options.startSyncHost();
@@ -3659,8 +3659,8 @@ export function createMultiProjectRpcRequestHandler(
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
           method === "machine.updateAndRestart"
-            ? "This Daex runtime cannot update itself."
-            : "This Daex runtime cannot change its update track.",
+            ? "This DAEX runtime cannot update itself."
+            : "This DAEX runtime cannot change its update track.",
         );
       }
       // Who asked, for the logs and the next start's continue message. It
@@ -3737,12 +3737,12 @@ export function createMultiProjectRpcRequestHandler(
       if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "Daex MCP is managed by the person: run `daex mcp` in your own terminal, or use Settings → Daex MCP.",
+          "DAEX MCP is managed by the person: run `daex mcp` in your own terminal, or use Settings → DAEX MCP.",
         );
       }
       const action = typeof params.action === "string" ? params.action.trim() : "";
       if (!isRemoteMcpAction(action)) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown Daex MCP action "${action}".`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unknown DAEX MCP action "${action}".`);
       }
       const [{ getSharedRemoteMcpService }, { remoteMcpActionHandlers }] = await Promise.all([
         import("./services/remoteMcp/remoteMcpShared"),
@@ -3887,7 +3887,7 @@ export function createMultiProjectRpcRequestHandler(
       if (!runtime || !publisher) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "Notifications are unavailable until the Daex brain has a project open.",
+          "Notifications are unavailable until the DAEX brain has a project open.",
         );
       }
       // Run inside a chat (`ADE_CHAT_SESSION_ID`, or `--session`), the push is
@@ -3960,7 +3960,7 @@ export function createMultiProjectRpcRequestHandler(
         // state the caller retries, not a defect.
         throw markExpected(new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "Account Activity is unavailable until the Daex brain is ready.",
+          "Account Activity is unavailable until the DAEX brain is ready.",
         ), "environment");
       }
       if (action === "getSnapshot") {
@@ -4062,7 +4062,7 @@ export function createMultiProjectRpcRequestHandler(
         if (!accountOwnerId || currentAccountOwnerUserId() !== accountOwnerId) {
           throw new JsonRpcError(
             JsonRpcErrorCode.invalidRequest,
-            "The Daex account changed before Activity preferences could be read.",
+            "The DAEX account changed before Activity preferences could be read.",
           );
         }
         return await publisher.getAttentionPreferences(accountOwnerId);
@@ -4077,7 +4077,7 @@ export function createMultiProjectRpcRequestHandler(
         ) {
           throw new JsonRpcError(
             JsonRpcErrorCode.invalidRequest,
-            "The Daex account changed before Activity preferences could be saved.",
+            "The DAEX account changed before Activity preferences could be saved.",
           );
         }
         await publisher.putAttentionPreferences(
@@ -4229,12 +4229,12 @@ export function createMultiProjectRpcRequestHandler(
       if (!isAgentRemoteClientName(callerClientName()) || !options.peerDeviceId) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "Only another machine's Daex delivers a child's report here.",
+          "Only another machine's DAEX delivers a child's report here.",
         );
       }
       const service = options.crossScopeChats;
       if (!service) {
-        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This Daex runtime can't take reports from other machines.");
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This DAEX runtime can't take reports from other machines.");
       }
       // Validated there: an unknown child, a wrong token or a malformed wake
       // is answered "refused", which the sender stops retrying.
@@ -4246,7 +4246,7 @@ export function createMultiProjectRpcRequestHandler(
       if (!bridge) {
         throw new JsonRpcError(
           JsonRpcErrorCode.methodNotFound,
-          "This Daex runtime can't reach other machines.",
+          "This DAEX runtime can't reach other machines.",
         );
       }
       const clientName = callerClientName();
@@ -4562,7 +4562,7 @@ export function createMultiProjectRpcRequestHandler(
       if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "Removing a project is up to the person: use Remove project in Daex.",
+          "Removing a project is up to the person: use Remove project in DAEX.",
         );
       }
       const projectId = readProjectId(params);
@@ -4589,7 +4589,7 @@ export function createMultiProjectRpcRequestHandler(
       if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "Choosing the folder for new lanes is up to the person: use Location in Daex.",
+          "Choosing the folder for new lanes is up to the person: use Location in DAEX.",
         );
       }
       const checkoutId = readProjectId(params) ?? readOptionalString(params.checkoutId);

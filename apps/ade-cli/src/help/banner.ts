@@ -1,4 +1,4 @@
-/** The banner at the top of every help page: the product name, Daex. */
+/** The banner at the top of every help page: the product name, DAEX. */
 export const ADE_BANNER = [
   "",
   "  ____",

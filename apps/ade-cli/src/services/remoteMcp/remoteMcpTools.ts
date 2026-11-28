@@ -86,7 +86,7 @@ export type TypedTool = {
 };
 
 const LANE = { type: "string", description: "Lane id from lanes_list, not its name." };
-const PR = { type: "string", description: "PR number, URL or Daex id." };
+const PR = { type: "string", description: "PR number, URL or DAEX id." };
 const SESSION = { type: "string", description: "A chat's id, from chat_list or inbox." };
 const RELATIVE_PATH = { type: "string", description: "Path in the lane's worktree." };
 const LIMIT = (max: number, fallback: number) => ({
@@ -372,7 +372,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "lanes_create",
     title: "Create a lane",
     description: "Creates a lane (a git worktree on a new branch) on this machine, as `daex lanes create` does. "
-      + "A lane on Daex Cloud: the `daex` tool with `lanes create --machine cloud`.",
+      + "A lane on DAEX Cloud: the `daex` tool with `lanes create --machine cloud`.",
     write: true,
     explicitTarget: true,
     properties: {
@@ -829,7 +829,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     },
     next: (result) => {
       if (!isRecord(result)) return null;
-      const watch = typeof result.link === "string" ? ` The person watches it in Daex: ${result.link}` : "";
+      const watch = typeof result.link === "string" ? ` The person watches it in DAEX: ${result.link}` : "";
       if (result.media !== "video") {
         const page = typeof result.page === "number" ? result.page : null;
         const pages = typeof result.pages === "number" ? result.pages : null;
@@ -896,9 +896,9 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       const asks = items.some((item) => item.kind === "ask");
       const signIns = items.filter((item) => isRecord(item.signIn));
       const signInNote = signIns.length
-        ? ` A \`signIn\` item is the person's to answer in Daex (open its link); never ask them for the password here.`
+        ? ` A \`signIn\` item is the person's to answer in DAEX (open its link); never ask them for the password here.`
         : "";
-      if (signIns.length === items.length) return `Waiting on the person to sign in, in Daex.${signInNote}`;
+      if (signIns.length === items.length) return `Waiting on the person to sign in, in DAEX.${signInNote}`;
       return signInNote.trim() + (signInNote ? " " : "") + "Answer with chat_respond (session, request_id, and the item's project when it has one)"
         + (asks ? "; an `ask` has no request: answer it with chat_send" : "")
         + ". Approve or deny as the person says.";
@@ -1157,7 +1157,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       if (record.dryRun === true) return "Nothing started. Call again without dry_run to start it.";
       if (record.phase === "running") return "The agent is working on it. chat_wait returns when it is done; give the person the link.";
       if (record.phase === "failed" || record.phase === "cancelled") return null;
-      return "Daex is still setting up its lane; the agent starts after. Call chat_wait in a minute.";
+      return "DAEX is still setting up its lane; the agent starts after. Call chat_wait in a minute.";
     },
   },
 ];
@@ -1305,11 +1305,11 @@ export async function readToolImage(
   if (!allowed.some((dir) => pathIsWithinRoot(dir, real))) return { error: "The picture is outside the project's proof folders." };
   // The type comes from the file read, not from a link's name.
   const mimeType = IMAGE_MIME_TYPES[path.extname(real).toLowerCase()];
-  if (!mimeType) return { error: "The file is not a picture Daex MCP sends." };
+  if (!mimeType) return { error: "The file is not a picture DAEX MCP sends." };
   const stat = await fs.promises.stat(real).catch(() => null);
   if (!stat?.isFile()) return { error: "The picture is no longer on this machine." };
   if (stat.size > MAX_TOOL_IMAGE_BYTES) {
-    return { error: `The picture is ${(stat.size / 1_000_000).toFixed(1)} MB, more than Daex MCP sends (${MAX_TOOL_IMAGE_BYTES / 1_000_000} MB).` };
+    return { error: `The picture is ${(stat.size / 1_000_000).toFixed(1)} MB, more than DAEX MCP sends (${MAX_TOOL_IMAGE_BYTES / 1_000_000} MB).` };
   }
   return { type: "image", data: (await fs.promises.readFile(real)).toString("base64"), mimeType };
 }

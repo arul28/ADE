@@ -30,18 +30,18 @@ const MAX_REMOTE_ARG_CHARS = 8_000;
 
 /** Never runnable remotely, at any scope. */
 const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
-  ["mcp", "Daex MCP is managed on the machine itself, not by a connected app."],
+  ["mcp", "DAEX MCP is managed on the machine itself, not by a connected app."],
   ["login", "Signing this machine in or out is done on the machine itself."],
   ["logout", "Signing this machine in or out is done on the machine itself."],
   ["connect", "Linking this machine to an account is done on the machine itself."],
   ["setup", "Setup is interactive and runs on the machine itself."],
-  ["reset", "Resetting Daex is done on the machine itself."],
-  ["brain", "Starting or stopping Daex's brain would cut this connection."],
-  ["serve", "Starting or stopping Daex's brain would cut this connection."],
-  ["runtime", "Running another Daex runtime is not available remotely."],
+  ["reset", "Resetting DAEX is done on the machine itself."],
+  ["brain", "Starting or stopping DAEX's brain would cut this connection."],
+  ["serve", "Starting or stopping DAEX's brain would cut this connection."],
+  ["runtime", "Running another DAEX runtime is not available remotely."],
   ["rpc", "The raw RPC stream is not available remotely."],
   ["desktop", "Opening the desktop app is done on the machine itself."],
-  ["account", "Account tokens outlive Daex MCP, so they are created on the machine itself."],
+  ["account", "Account tokens outlive DAEX MCP, so they are created on the machine itself."],
 ]);
 
 /**
@@ -205,7 +205,7 @@ export function checkRemoteAdeCommand(
   if (!FULL_ACCESS_COMMANDS.has(args[0]!)) {
     return {
       ok: false,
-      reason: `\`daex ${args[0]}\` isn't enabled for Daex MCP. Run \`daex help\` for the commands it can use.`,
+      reason: `\`daex ${args[0]}\` isn't enabled for DAEX MCP. Run \`daex help\` for the commands it can use.`,
     };
   }
   const words = positionalWords(args);
@@ -220,8 +220,8 @@ export function checkRemoteAdeCommand(
     return {
       ok: false,
       reason: movesChat
-        ? "Moving a chat to another machine (`--to`) is not available through Daex MCP. Use the tool's `machine` input to work on another machine."
-        : "Use the tool's `machine` input to run on another machine (machines_list names them), not --machine. Only a new Daex Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
+        ? "Moving a chat to another machine (`--to`) is not available through DAEX MCP. Use the tool's `machine` input to work on another machine."
+        : "Use the tool's `machine` input to run on another machine (machines_list names them), not --machine. Only a new DAEX Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
     };
   }
   const devicesVerdict = checkDevicesCommand(command, args);
@@ -242,14 +242,14 @@ export function checkRemoteAdeCommand(
   // Only ADE's server runs these, over exec on a cloud computer: they stop
   // its work, push every lane, save it for rest, or send its queued messages.
   if (command === "cloud" && SERVER_ONLY_CLOUD_COMMANDS.has(words[0] ?? "")) {
-    return { ok: false, reason: `\`daex cloud ${words[0]}\` is not available remotely. Only Daex's server runs it, on Daex Cloud.` };
+    return { ok: false, reason: `\`daex cloud ${words[0]}\` is not available remotely. Only DAEX's server runs it, on DAEX Cloud.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
     return {
       ok: false,
-      reason: `\`daex machines ${words[0]}\` is not available remotely. Change the machines on your Daex account in Daex on that machine.`,
+      reason: `\`daex machines ${words[0]}\` is not available remotely. Change the machines on your DAEX account in DAEX on that machine.`,
     };
   }
   if (command === "android") {
@@ -271,7 +271,7 @@ export function checkRemoteAdeCommand(
     && args.some((word) => /^--(?:window|foreground|open-simulator)(?:=|$)/.test(word))) {
     return {
       ok: false,
-      reason: "Opening Simulator.app is not available through Daex MCP: the simulator runs inside Daex. "
+      reason: "Opening Simulator.app is not available through DAEX MCP: the simulator runs inside DAEX. "
         + "Drop --window, --foreground and --open-simulator; `daex apple screenshot --lane <lane>` shows the screen.",
     };
   }
@@ -314,7 +314,7 @@ function checkDevicesCommand(command: string, args: readonly string[]): RemoteCo
   if (sub === "use") {
     return {
       ok: false,
-      reason: "`daex devices use` picks a device for a chat, and a Daex MCP app has no chat there. "
+      reason: "`daex devices use` picks a device for a chat, and a DAEX MCP app has no chat there. "
         + "Pick the machine with the tool's `machine` input, then pass --lane <lane there> to the device commands.",
     };
   }
@@ -368,7 +368,7 @@ function isCloudLaneMachineUse(command: string, args: readonly string[]): boolea
   return named;
 }
 const SERVICE_SIGN_IN_REASON =
-  "Signing this machine in or out of a service (GitHub, Linear, Jira, an AI provider) outlives Daex MCP, so it is done on the machine itself.";
+  "Signing this machine in or out of a service (GitHub, Linear, Jira, an AI provider) outlives DAEX MCP, so it is done on the machine itself.";
 /** `ade github` groups that manage the machine's GitHub App authorization. */
 const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
 /** Spellings of `ade github app-auth login` and `clear`. */
@@ -441,13 +441,13 @@ const SIMULATOR_WINDOW_ACTION_ARGS: ReadonlyMap<string, { key: string; value: bo
 ]);
 
 const SIMULATOR_WINDOW_REASON =
-  "Opening Simulator.app is not available through Daex MCP: the simulator runs inside Daex, in Daex's stream.";
+  "Opening Simulator.app is not available through DAEX MCP: the simulator runs inside DAEX, in DAEX's stream.";
 
 /** A restart of the machine's adb server cuts every other device and tool on it, so only the person decides it. */
 const ANDROID_RESTART_ADB_REASON =
   "Only the person restarts adb: Restart adb and start in the Android pane, or `daex android start --restart-adb` in a terminal on that machine.";
 const ANDROID_SDK_REASON =
-  "Only the user installs the Android SDK and accepts Google's licences, in the Daex desktop app on that machine: "
+  "Only the user installs the Android SDK and accepts Google's licences, in the DAEX desktop app on that machine: "
   + "the setup card in the Android tool, or Settings › Android devices. System images: the device picker's System images.";
 /**
  * Service credential actions, by domain; `true` means every action. The CLI
@@ -475,7 +475,7 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
  * The whole `account_vault` domain, at every scope: it holds the account's
  * credentials, ADE MCP's own token hashes and its account secret.
  */
-const ACCOUNT_VAULT_REASON = "The account vault holds your Daex account's credentials, so it is used on the machine itself.";
+const ACCOUNT_VAULT_REASON = "The account vault holds your DAEX account's credentials, so it is used on the machine itself.";
 
 /** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
 const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);
@@ -634,7 +634,7 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
     ok: false,
     reason: `This connection is read-only, and \`daex ${args.slice(0, 3).filter((word) => !word.startsWith("-")).join(" ")}\` isn't one of the commands it can run. `
       + "Read-only connections can run: " + describeReadOnlyCommands() + ". "
-      + "Ask the person to give this app full access in Daex Settings → Daex MCP if it needs more.",
+      + "Ask the person to give this app full access in DAEX Settings → DAEX MCP if it needs more.",
   });
   const command = args[0]!;
   if (asksForHelp(args)) return { ok: true, args };
@@ -913,7 +913,7 @@ export function remoteCommandAvailability(
       command,
       allowed: false,
       subcommands: null,
-      reason: "This command is not enabled for Daex MCP.",
+      reason: "This command is not enabled for DAEX MCP.",
     };
   }
   const group = words[1] ? `${command} ${words[1]}` : null;

@@ -450,7 +450,7 @@ describe("collectMachineDiagnosticSources — project logs with no project open"
     expect(sources.logs.find((log) => log.label === "Desktop main (project)")?.text).toContain(
       "ade_cli.auto_install",
     );
-    expect(sources.logs.find((log) => log.label === "Daex CLI")?.text).toContain("cli.started");
+    expect(sources.logs.find((log) => log.label === "DAEX CLI")?.text).toContain("cli.started");
     // An absence the reader was never told about is worse than no fallback.
     expect(sources.notes.join("\n")).toContain("no project was open");
   });
@@ -643,7 +643,7 @@ describe("the new sources go through redaction", () => {
       const sources = collect({ home, projectRoot: root });
 
       expect(sources.storageEnvironment.roots.map((entry) => entry.label))
-        .toEqual(["Daex home", "Project"]);
+        .toEqual(["DAEX home", "Project"]);
       for (const entry of sources.storageEnvironment.roots) {
         expect(entry.location).toBe("local");
         expect(entry.datalessFiles).toBe(0);

@@ -57,7 +57,7 @@ describe("systemd service rendering", () => {
       },
     });
 
-    expect(unit).toContain("Description=Daex runtime service");
+    expect(unit).toContain("Description=DAEX runtime service");
     expect(unit).toContain("Type=simple");
     expect(unit).toContain("ExecStart='/opt/ADE CLI/node' '/opt/ade/cli.cjs' 'serve'");
     expect(unit).toContain("Restart=always");

@@ -685,7 +685,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
 
     expect(callback.status).toBe(200);
     expect(onSignedIn).toHaveBeenCalledTimes(1);
-    expect(html).toContain("You can close this tab — signed in to Daex");
+    expect(html).toContain("You can close this tab — signed in to DAEX");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     const [tokenUrl, init] = fetchImpl.mock.calls[0]!;
     expect(tokenUrl).toBe("https://clerk.example.test/oauth/token");
@@ -965,7 +965,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
     const callback = await fetch(`${redirectUri}?code=stolen-code&state=wrong-state`);
 
     expect(callback.status).toBe(400);
-    expect(await callback.text()).toContain("Daex sign-in failed");
+    expect(await callback.text()).toContain("DAEX sign-in failed");
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
     await expect(service.pollLogin(start.sessionId)).resolves.toMatchObject({
@@ -1691,7 +1691,7 @@ describe("AccountAuthService device authorization", () => {
     const start = await service.startDeviceLogin();
     await expect(service.pollDeviceLogin(start.sessionId)).resolves.toMatchObject({
       status: "error",
-      message: "Daex account device token response included invalid OAuth context.",
+      message: "DAEX account device token response included invalid OAuth context.",
       authStatus: { signedIn: false },
     });
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
@@ -3221,7 +3221,7 @@ describe("AccountAuthService refresh and sign-out", () => {
     });
     activeServices.push(service);
 
-    await expect(service.getAccessToken()).rejects.toThrow("Daex is not signed in");
+    await expect(service.getAccessToken()).rejects.toThrow("DAEX is not signed in");
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
   });
 
@@ -3298,7 +3298,7 @@ describe("AccountAuthService refresh and sign-out", () => {
       expires_in: 3600,
     }));
 
-    await expect(refresh).rejects.toThrow("Daex is not signed in");
+    await expect(refresh).rejects.toThrow("DAEX is not signed in");
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
   });
 

@@ -161,7 +161,7 @@ describe("runMachineUpdateAndRestart", () => {
     expect(result.ok).toBe(false);
     expect(result.updateApplied).toBe(true);
     expect(result.message).toBe(
-      "Updated Daex, but the background service didn't restart — click Repair.",
+      "Updated DAEX, but the background service didn't restart — click Repair.",
     );
   });
 

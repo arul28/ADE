@@ -696,11 +696,11 @@ describe("multi-project RPC server", () => {
       ["an agent lists machines", agent, null, "cloud.call", "list", null],
       ["an account off the list lists machines", desktop, null, "cloud.call", "list", /unavailable in this runtime/],
       ["a costly verb stays with a project", desktop, null, "cloud.call", "create", /runs in a project/],
-      ["a terminal saves a cloud sign-in", terminal, null, "cloud.call", "cloud_sign_in_save_key", /limited to the Daex desktop app on this computer/],
+      ["a terminal saves a cloud sign-in", terminal, null, "cloud.call", "cloud_sign_in_save_key", /limited to the DAEX desktop app on this computer/],
       ["an agent saves a cloud sign-in", agent, null, "cloud.call", "cloud_sign_in_save_key", /Only the user can change this setting .*ade:\/\/settings\//],
-      ["a terminal reads the vault", terminal, null, "accountVault.call", "get", /only for the Daex desktop app on this computer/],
+      ["a terminal reads the vault", terminal, null, "accountVault.call", "get", /only for the DAEX desktop app on this computer/],
       ["an agent reads the vault", agent, null, "accountVault.call", "get", /requires elevated role/],
-      ["another machine's desktop reads the vault", remoteDesktop, null, "accountVault.call", "get", /only for the Daex desktop app on this computer/],
+      ["another machine's desktop reads the vault", remoteDesktop, null, "accountVault.call", "get", /only for the DAEX desktop app on this computer/],
       ["a paired device lists machines", desktop, "peer-device-1", "cloud.call", "list", /only this computer's own connections/],
       ["a paired device reads the vault", desktop, "peer-device-1", "accountVault.call", "get", /only this computer's own connections/],
       // Settings › MCP servers in a window with no project on this computer.
@@ -731,13 +731,13 @@ describe("multi-project RPC server", () => {
 
     it.each([
       // The server holds the provider's key now: no brain reaches that item any more.
-      ["the old provider credential", "get", ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the Daex Cloud items/],
+      ["the old provider credential", "get", ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the DAEX Cloud items/],
       ["the agent limits", "set", ["all", "integration", "cloud-budget", "{\"capUsd\":5}"], null],
       ["a saved cloud sign-in", "get", ["all", "integration", "cloud-claude-token"], null],
-      ["a write to a cloud sign-in", "set", ["all", "integration", "cloud-claude-token", "stolen"], /reaches only the Daex Cloud items/],
-      ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the Daex Cloud items/],
-      ["the credential in a project's scope", "get", ["project:abc", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the Daex Cloud items/],
-      ["the credential under another kind", "remove", ["all", "secret", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the Daex Cloud items/],
+      ["a write to a cloud sign-in", "set", ["all", "integration", "cloud-claude-token", "stolen"], /reaches only the DAEX Cloud items/],
+      ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the DAEX Cloud items/],
+      ["the credential in a project's scope", "get", ["project:abc", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the DAEX Cloud items/],
+      ["the credential under another kind", "remove", ["all", "secret", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the DAEX Cloud items/],
       ["every row", "list", [], /Choose the account scope/],
     ] as const)("the vault with no project opens only ADE Cloud's items: %s", async (_label, action, argsList, refused) => {
       const rows = new Map<string, string>([

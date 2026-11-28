@@ -42,7 +42,7 @@ function buildHtml(): string {
   const data = JSON.stringify(bootData()).replace(/</g, "\\u003c");
   return "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-    + "<meta name=\"color-scheme\" content=\"light dark\"><title>Daex</title>"
+    + "<meta name=\"color-scheme\" content=\"light dark\"><title>DAEX</title>"
     + `<style>${APP_CSS}</style></head><body><div id="app"></div>`
     + `<script type="application/json" id="ade-app-data">${data}</script>`
     + `<script>${APP_JS}</script></body></html>`;
@@ -65,7 +65,7 @@ let appResourceUri: string | null = null;
  * The resource URI carries a hash of the HTML: hosts may cache a UI resource,
  * so a new ADE version names a new resource rather than serving a stale view.
  * `resources/read` answers any `ui://ade/app…html`, so a host holding an older
- * tool list still gets today's view. The `ade` in it stays through the Daex
+ * tool list still gets today's view. The `ade` in it stays through the DAEX
  * rename: every tool with a view repeats it in `tools/list`
  * (remoteMcpContextBudget.json), and no person reads it.
  */
@@ -88,8 +88,8 @@ export function adeAppResourceListing() {
   return {
     uri: adeAppResourceUri(),
     name: "daex-app",
-    title: "Daex",
-    description: "Daex's view for chats, questions and approvals, pull requests, lanes, diffs, usage and machines.",
+    title: "DAEX",
+    description: "DAEX's view for chats, questions and approvals, pull requests, lanes, diffs, usage and machines.",
     mimeType: MCP_APP_MIME_TYPE,
     _meta: { ui: RESOURCE_UI_META },
   };

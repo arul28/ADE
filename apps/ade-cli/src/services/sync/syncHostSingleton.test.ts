@@ -96,7 +96,7 @@ describe("sync host singleton", () => {
       },
     });
     expect(formatSyncHostSingletonConflictMessage(conflict!)).toContain(
-      "Another Daex brain is already hosting mobile sync on port 8801.",
+      "Another DAEX brain is already hosting mobile sync on port 8801.",
     );
     expect(formatSyncHostSingletonConflictMessage(conflict!)).toContain(
       "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text",
@@ -557,7 +557,7 @@ describe("Windows sync-host listener scan", () => {
 });
 
 // macOS reads listeners from `lsof`, whose COMMAND column holds the process
-// name. The brain runs as `Daex Brain` (`brainExecutable.ts`, mode `brain-copy`;
+// name. The brain runs as `DAEX Brain` (`brainExecutable.ts`, mode `brain-copy`;
 // `ADE Brain` before the rename, still running on a Mac mid-update): a name with
 // a space, which a `(\S+)` token split drops.
 describe("macOS sync-host listener scan", () => {
@@ -572,7 +572,7 @@ describe("macOS sync-host listener scan", () => {
     else process.env.ADE_SYNC_HOST_LEGACY_SCAN = beforeEachEnv;
   });
 
-  it.each(["Daex Brain", "ADE Brain"])("finds the brain running as its own signed program (%s)", async (brainName) => {
+  it.each(["DAEX Brain", "ADE Brain"])("finds the brain running as its own signed program (%s)", async (brainName) => {
     const conflict = await detectSyncHostSingletonConflictAsync(
       { platform: "darwin", lockPath: tempLockPath(), pidAlive: () => true },
       {

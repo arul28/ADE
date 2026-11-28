@@ -432,7 +432,7 @@ describe("ade mac-desktop text output", () => {
       { text: true } as never,
       "mac-desktop-status",
     );
-    expect(text).toContain("Daex Mac Desktop");
+    expect(text).toContain("DAEX Mac Desktop");
     expect(text).toContain("2560x1440");
     expect(text).toContain("accessibility");
     expect(text).toContain("denied");
@@ -501,7 +501,7 @@ describe("ade mac-desktop text output", () => {
       "mac-desktop-windows",
     );
     expect(windows).toContain("[admin] wsl.exe");
-    expect(windows).toContain("Daex cannot click, type into, focus past or minimize it");
+    expect(windows).toContain("DAEX cannot click, type into, focus past or minimize it");
   });
 
   it("prints stop's quit apps and left-open sentences in full", () => {
@@ -623,7 +623,7 @@ describe("ade mac-desktop text output", () => {
       { text: true } as never,
       "mac-desktop-action",
     );
-    expect(text).toContain("Daex Mac Desktop action");
+    expect(text).toContain("DAEX Mac Desktop action");
     expect(text.split("\n").slice(0, 2)).toEqual([
       'hit: AXButton "Sign in" (obs-a1:e:3)',
       "effect: unconfirmed — nothing on screen changed; observe again before you continue",

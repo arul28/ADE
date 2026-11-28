@@ -544,7 +544,7 @@ describe("createSyncTunnelClientService", () => {
       expect(service.getStatus()).toMatchObject({
         connected: false,
         activeTunnels: 0,
-        lastError: "Sign in to Daex to use Daex Relay.",
+        lastError: "Sign in to DAEX to use DAEX Relay.",
       });
 
       signedIn = true;
@@ -568,7 +568,7 @@ describe("createSyncTunnelClientService", () => {
           connected: false,
           activeTunnels: 0,
           relayTurnedOff: true,
-          lastError: "Daex Relay is turned off on this computer.",
+          lastError: "DAEX Relay is turned off on this computer.",
         });
       }, { timeout: 1_000 });
       expect(connections).toBe(1);
@@ -587,7 +587,7 @@ describe("createSyncTunnelClientService", () => {
         expect(service.getStatus()).toMatchObject({
           connected: false,
           activeTunnels: 0,
-          lastError: "Sign in to Daex to use Daex Relay.",
+          lastError: "Sign in to DAEX to use DAEX Relay.",
         });
       }, { timeout: 3_000 });
     } finally {
@@ -623,7 +623,7 @@ describe("createSyncTunnelClientService", () => {
       await starting;
       await vi.waitFor(() => {
         expect(service.getStatus().connected).toBe(false);
-        expect(service.getStatus().lastError).toBe("Sign in to Daex to use Daex Relay.");
+        expect(service.getStatus().lastError).toBe("Sign in to DAEX to use DAEX Relay.");
       });
     } finally {
       await service.dispose();
@@ -2301,7 +2301,7 @@ describe("createSyncTunnelClientService", () => {
         accountLeaseValid: false,
         activeTunnels: 0,
         relayBridgeValidated: false,
-        lastError: "Sign in to Daex to use Daex Relay.",
+        lastError: "Sign in to DAEX to use DAEX Relay.",
       });
     } finally {
       await service.dispose();
