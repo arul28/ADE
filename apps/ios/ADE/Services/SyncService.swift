@@ -30064,18 +30064,24 @@ extension SyncService {
             connection.supportsAction("personalChats.modelCatalog") else {
         throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not connected or cannot list chat models."])
       }
-      return try decode(
+      let catalog = try decode(
         await connection.sendCommand(action: "personalChats.modelCatalog", args: args, projectId: nil, projectRootPath: nil),
         as: AgentChatModelCatalog.self
       )
+      WorkModelCatalogRevision.shared.notePersonalCatalog(catalog, machineKey: machineKey)
+      return catalog
     }
     try requireInvokableRemoteAction("personalChats.modelCatalog")
-    return try await sendDecodableCommand(
+    let catalog = try await sendDecodableCommand(
       action: "personalChats.modelCatalog",
       args: args,
       fallbackToActiveProjectScope: false,
       as: AgentChatModelCatalog.self
     )
+    // This list has no cache: the newer-version suggestion hears of it only
+    // when what it lists changed.
+    WorkModelCatalogRevision.shared.notePersonalCatalog(catalog, machineKey: focusedMachineKey ?? "")
+    return catalog
   }
 
   func removePersonalChatFromCache(sessionId: String) {

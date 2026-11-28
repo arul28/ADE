@@ -85,22 +85,25 @@ function wireIdIndex(id: string, token: string): number {
 
 type Twin = {
   predecessor: ModelDescriptor;
-  /** The id with the successor's wire id in place of the predecessor's. */
-  swap: (successor: ModelDescriptor) => string;
+  /**
+   * The id with the successor's wire id in place of the predecessor's, once
+   * per spelling that matched: `claude-opus-5` reads the same dashed and
+   * dotted, and its newer version may be listed as `-5-5` or `.5.5`.
+   */
+  swaps: Array<(successor: ModelDescriptor) => string>;
 };
 
 /** The registry row `id` is a twin of, through another harness, or null. */
 function findTwin(id: string): Twin | null {
   for (const predecessor of rowsWithSuccessor()) {
+    const swaps: Twin["swaps"] = [];
     for (const spell of SPELLINGS) {
       const token = spell(predecessor.providerModelId);
       const at = wireIdIndex(id, token);
       if (at < 0) continue;
-      return {
-        predecessor,
-        swap: (successor) => `${id.slice(0, at)}${spell(successor.providerModelId)}${id.slice(at + token.length)}`,
-      };
+      swaps.push((successor) => `${id.slice(0, at)}${spell(successor.providerModelId)}${id.slice(at + token.length)}`);
     }
+    if (swaps.length) return { predecessor, swaps };
   }
   return null;
 }
@@ -134,8 +137,10 @@ export function findModelUpgrade(modelId: string, available: readonly string[]):
   if (!twin) return null;
   const chain = successorChain(twin.predecessor);
   for (let index = chain.length - 1; index >= 0; index--) {
-    const candidate = twin.swap(chain[index]!);
-    if (candidate !== id && listed.has(candidate)) return { fromModelId: id, toModelId: candidate };
+    for (const swap of twin.swaps) {
+      const candidate = swap(chain[index]!);
+      if (candidate !== id && listed.has(candidate)) return { fromModelId: id, toModelId: candidate };
+    }
   }
   return null;
 }

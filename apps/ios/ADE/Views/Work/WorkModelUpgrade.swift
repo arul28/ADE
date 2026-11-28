@@ -205,10 +205,16 @@ func workFindModelUpgrade(modelId: String, available: [String]) -> WorkModelUpgr
   // A twin through another harness: swap the wire id inside the longer id.
   let listed = Set(available)
   for predecessor in workModelVersionPredecessors {
-    for spell in workWireIdSpellings {
-      guard let range = workWireIdRange(in: id, token: spell(predecessor.wireId)) else { continue }
-      for successor in workModelSuccessorChain(predecessor).reversed() {
-        let candidate = id.replacingCharacters(in: range, with: spell(successor.wireId))
+    // Every spelling that finds the old version. `claude-opus-5` has no
+    // separator to respell, so as written and dotted both match, and the
+    // harness may list the newer one either way (`claude-opus-5-5`, `-5.5`).
+    let matches = workWireIdSpellings.compactMap { spell -> (spell: (String) -> String, range: Range<String.Index>)? in
+      workWireIdRange(in: id, token: spell(predecessor.wireId)).map { (spell, $0) }
+    }
+    guard !matches.isEmpty else { continue }
+    for successor in workModelSuccessorChain(predecessor).reversed() {
+      for match in matches {
+        let candidate = id.replacingCharacters(in: match.range, with: match.spell(successor.wireId))
         if candidate != id && listed.contains(candidate) {
           return WorkModelUpgrade(
             fromModelId: id,
@@ -219,8 +225,8 @@ func workFindModelUpgrade(modelId: String, available: [String]) -> WorkModelUpgr
           )
         }
       }
-      return nil
     }
+    return nil
   }
   return nil
 }
@@ -309,8 +315,19 @@ enum WorkModelUpgradeMemory {
 final class WorkModelCatalogRevision: ObservableObject {
   static let shared = WorkModelCatalogRevision()
   @Published private(set) var value = 0
+  /// The available ids each machine's personal-chat list last held. That list
+  /// has no cache, so the suggestion's own re-read must not bump: only a list
+  /// whose models changed does (a provider refreshed in the picker).
+  private var personalListByMachine: [String: [String]] = [:]
 
   func bump() { value &+= 1 }
+
+  func notePersonalCatalog(_ catalog: AgentChatModelCatalog, machineKey: String) {
+    let ids = workAvailableCatalogModelIds(catalog).sorted()
+    guard personalListByMachine[machineKey] != ids else { return }
+    personalListByMachine[machineKey] = ids
+    bump()
+  }
 }
 
 /// Runs the suggestion's refresh when its key changes and when a model list
