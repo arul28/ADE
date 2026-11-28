@@ -287,7 +287,9 @@ function PlanFinder() {
   // Free's Small with no ads uses credits there, and only there.
   const freeSmallHours = view.v3 && size.rate === 0 ? computers * hoursEach * view.freeSmallStoredRate : 0;
   const rivals = rivalBills(computers * hoursEach, size);
-  const suggestion = suggestPlan(needed, computers, { freeExtraHours: freeSmallHours });
+  // A Mac in use takes one of the plan's cloud computers too.
+  const slots = computers + (mac && macMinutes > 0 ? 1 : 0);
+  const suggestion = suggestPlan(needed, slots, { freeExtraHours: freeSmallHours });
   const best = suggestion?.pick;
   const other = suggestion?.other ?? null;
   const onFreeSmall = freeSmallHours > 0 && best?.plan.priceUsd === 0;
@@ -436,7 +438,11 @@ function PlanFinder() {
                   </div>
                 ) : null}
               </>
-            ) : null}
+            ) : (
+              <p className="mt-3 text-[15px] leading-[1.6] text-white/70">
+                With the Mac, that is more than {cloudComputersPhrase(MOST_COMPUTERS)}, the most a plan has.
+              </p>
+            )}
           </div>
           {best ? (
             <PlanButton
