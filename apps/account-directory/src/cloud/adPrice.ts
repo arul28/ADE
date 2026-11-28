@@ -152,7 +152,9 @@ export function decidePrice(
   const live = until > now;
   // Ads off and no Free Models chat holding it: nothing else matters.
   if (!live && !(ctx.adsOn && ctx.adsReach)) return { now: "full", reason: "ads_off", adUntil: null };
-  const work = target?.full_work_at != null && awakeSince != null && target.full_work_at >= awakeSince ? readFullPriceWork(target.full_work) : [];
+  // The brain's last report, while the computer is awake: it reports again after every wake, and the
+  // computer's sleep clears it (`statusChangeStatements`). Not the stretch, which every rate move restarts.
+  const work = awakeSince != null ? readFullPriceWork(target?.full_work ?? null) : [];
   if (work.length) return { now: "full", reason: work[0]!, adUntil: null };
   // An outside agent's message through the account server, until the brain says it is idle again.
   if (target?.outside_at != null && awakeSince != null && now - target.outside_at < OUTSIDE_AGENT_HOLD_MS) return { now: "full", reason: "outside_agent", adUntil: null };
@@ -538,9 +540,8 @@ export async function noteFullPriceWork(env: GravityEnv, computer: ComputerRow, 
       : await env.DB.prepare(`
       insert into cloud_ad_targets (target, user_id, full_work, full_work_at, updated_at) values (?, ?, ?, ?, ?)
       on conflict (target) do update set full_work = excluded.full_work, full_work_at = excluded.full_work_at, updated_at = excluded.updated_at
-        where coalesce(cloud_ad_targets.full_work, '[]') <> excluded.full_work or cloud_ad_targets.full_work_at is null
-          or cloud_ad_targets.full_work_at < ?
-    `).bind(computer.instance_id, computer.user_id, JSON.stringify(work), now, now, computer.awake_since ?? now).run();
+        where coalesce(cloud_ad_targets.full_work, '[]') <> excluded.full_work
+    `).bind(computer.instance_id, computer.user_id, JSON.stringify(work), now, now).run();
     if (!saved.meta?.changes) return;
     const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(computer.user_id).first<AccountRow>();
     if (account) await syncAccountPrices(env, account, now, { instanceIds: [computer.instance_id] });
@@ -691,8 +692,9 @@ export type AdPriceProductReport = {
   /** Credits the ad price took off (thousandths), and their worth at the extra-credit price (micros). */
   discountMilli: number;
   discountMicros: number;
-  /** Hours a computer ran at the ad price (computers only). */
+  /** Hours computers ran at the ad price, and at the full price (computers only). */
   adHours: number | null;
+  fullHours: number | null;
   /** The ad income attributed by its share of the replies' ad requests (micros), or null when the partner's report can't be read. */
   incomeMicros: number | null;
 };
@@ -706,18 +708,21 @@ export type AdPriceProductReport = {
  */
 export async function adPriceReport(env: GravityEnv, now: number, days: number) {
   const since = utcDay(now - (days - 1) * 24 * 60 * 60_000);
+  const until = utcDay(now);
   const sinceMs = Date.parse(`${since}T00:00:00Z`);
+  const untilMs = Date.parse(`${until}T00:00:00Z`) + 24 * 60 * 60_000;
   const [counts, computers, phones, settings] = await Promise.all([
-    env.DB.prepare("select kind, sum(count) as total from cloud_sponsored_days where user_id = '*' and day >= ? and (kind like 'proof:%' or kind like 'sent:%') group by kind")
-      .bind(since).all<{ kind: string; total: number }>(),
-    env.DB.prepare("select coalesce(sum(ad_discount_milli), 0) as discount, coalesce(sum(ad_ms), 0) as ms from cloud_computer_days where day >= ?")
-      .bind(since).first<{ discount: number; ms: number }>(),
-    env.DB.prepare("select coalesce(sum(ad_saved_milli), 0) as discount from cloud_phones where created_at >= ?")
-      .bind(sinceMs).first<{ discount: number }>(),
+    env.DB.prepare("select kind, sum(count) as total from cloud_sponsored_days where user_id = '*' and day >= ? and day <= ? and (kind like 'proof:%' or kind like 'sent:%') group by kind")
+      .bind(since, until).all<{ kind: string; total: number }>(),
+    env.DB.prepare("select coalesce(sum(ad_discount_milli), 0) as discount, coalesce(sum(ad_ms), 0) as ms, coalesce(sum(metered_ms), 0) as metered from cloud_computer_days where day >= ? and day <= ?")
+      .bind(since, until).first<{ discount: number; ms: number; metered: number }>(),
+    env.DB.prepare("select coalesce(sum(ad_saved_milli), 0) as discount from cloud_phones where created_at >= ? and created_at < ?")
+      .bind(sinceMs, untilMs).first<{ discount: number }>(),
     readCloudSettings(env),
   ]);
   const count = new Map((counts.results ?? []).map((row) => [row.kind, row.total]));
-  const income = await gravityIncomeMicros(env, since, utcDay(now));
+  const income = await gravityIncomeMicros(env, since, until);
+  const hours = (ms: number) => Math.round((ms / 3_600_000) * 10) / 10;
   const products = ["linux", "phone", "free_model"];
   const replies = products.reduce((sum, product) => sum + (count.get(`proof:${product}`) ?? 0), 0);
   const rows: AdPriceProductReport[] = products.map((product) => {
@@ -729,7 +734,8 @@ export async function adPriceReport(env: GravityEnv, now: number, days: number) 
       messages: count.get(`sent:${product}`) ?? 0,
       discountMilli,
       discountMicros: Math.round(discountMilli * MICROS_PER_MILLI),
-      adHours: product === "linux" ? Math.round(((computers?.ms ?? 0) / 3_600_000) * 10) / 10 : null,
+      adHours: product === "linux" ? hours(computers?.ms ?? 0) : null,
+      fullHours: product === "linux" ? hours(Math.max(0, (computers?.metered ?? 0) - (computers?.ms ?? 0))) : null,
       incomeMicros: income == null ? null : Math.round(income * share),
     };
   });
@@ -757,6 +763,6 @@ export async function adPriceReportLines(env: GravityEnv, day: string): Promise<
   if (report.mode === "off" && !any) return [];
   const money = (micros: number | null) => (micros == null ? "unknown" : `$${(micros / 1_000_000).toFixed(2)}`);
   const parts = report.products.filter((row) => row.replies + row.messages + row.discountMilli > 0)
-    .map((row) => `${row.product} ${row.replies} replies + ${row.messages} messages, discount ${money(row.discountMicros)}${row.adHours != null ? ` over ${row.adHours} h` : ""}, ad income ${money(row.incomeMicros)}`);
+    .map((row) => `${row.product} ${row.replies} replies + ${row.messages} messages, discount ${money(row.discountMicros)}${row.adHours != null ? ` over ${row.adHours} h (${row.fullHours} h at the full price)` : ""}, ad income ${money(row.incomeMicros)}`);
   return [`Ad price (${report.mode}, ${report.discountPct}% off, ${report.windowMinutes} min): ${parts.length ? parts.join("; ") : "nothing counted"}.`];
 }

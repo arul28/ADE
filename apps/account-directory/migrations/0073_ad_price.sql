@@ -6,7 +6,8 @@
 alter table cloud_sponsored_consent add column notice_seen_at integer;
 
 -- Each proof that a person uses a chat (a message sent, a finished reply's ad
--- request), counted once per (account, chat, turn or message). Pruned after a day.
+-- request), counted once per (account, chat, turn or message). Pruned after two
+-- days (`pruneSponsored`), and with the account.
 create table if not exists cloud_ad_proofs (
   user_id text not null,
   chat_id text not null,

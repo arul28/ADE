@@ -224,6 +224,7 @@ switch (command) {
       replies: row.replies,
       messages: row.messages,
       "ad hours": row.adHours ?? "-",
+      "full hours": row.fullHours ?? "-",
       "credits off": row.discountMilli / 100,
       "discount worth": money(row.discountMicros),
       "ad income (share)": money(row.incomeMicros),

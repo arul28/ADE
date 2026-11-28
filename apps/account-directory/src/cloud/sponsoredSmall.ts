@@ -16,7 +16,8 @@ import { boughtPlanIdOf, logCloud, reportCloudFailure, restartStretchStatements,
 // otherwise they run at `SMALL_NO_CARDS_RATE_MILLI`. A yes by itself, an open
 // chat with no reply, or a terminal is no look. `gravity.ts` saves the answers
 // and the looks; this module decides the rate, puts computers on it and tells
-// the clients.
+// the clients. Where Pricing v3 reaches the account, the ad price owns Small's
+// rate instead (`adPrice.ts`) and this rule writes nothing.
 //
 // The tripwire: a look comes from the person's app, but a script on
 // their own ADE Cloud computer (a US datacenter, signed in to the account)
@@ -76,7 +77,8 @@ export function smallStateOf(account: AccountRow, consent: ConsentRow | null, wh
   return {
     // Cards keep (or would keep) Small free: a no has it use credits.
     smallNeedsCards: true,
-    // A yes whose looks lapsed: Small uses credits until the next ADE Cloud chat opened here.
+    // A yes whose looks lapsed: Small uses credits until the next look (a card asked for under a reply
+    // in one of its cloud chats, from the US); opening a chat or a terminal is not one.
     ...(!free && consent?.consent === "granted" ? { smallNeedsLook: true } : {}),
   };
 }

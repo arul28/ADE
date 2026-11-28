@@ -13,6 +13,8 @@ import { adPriceReportLines } from "./adPrice";
 
 /** How long a chat ADE Free Models served is kept: its cards need a day; its token totals stay a week. */
 const FREE_MODEL_CHAT_KEEP_MS = 7 * 24 * 60 * 60_000;
+/** Pricing v3's proofs and price rows: two days, past the longest window (`ad_window_minutes`, a day at most). */
+const AD_PROOF_KEEP_MS = 2 * 24 * 60 * 60_000;
 
 /**
  * The clean-up, twice an hour (minutes 23 and 53, every account, whatever the
@@ -31,6 +33,13 @@ export async function pruneSponsored(env: GravityEnv, scheduledTime: number): Pr
     // ADE Free Models (`freeModels.ts`): where a person watched a chat from, after a day; a chat served, after a week.
     env.DB.prepare("delete from cloud_free_model_viewers where seen_at < ?").bind(now - TURN_TTL_MS),
     env.DB.prepare("delete from cloud_free_model_chats where last_at < ?").bind(now - FREE_MODEL_CHAT_KEEP_MS),
+    // Pricing v3 (`adPrice.ts`): a proof after two days (past any window; only its dedupe used it), and a
+    // computer's or phone's row two days after its last change, unless it holds the work of a computer awake now.
+    env.DB.prepare("delete from cloud_ad_proofs where at < ?").bind(now - AD_PROOF_KEEP_MS),
+    env.DB.prepare(`
+      delete from cloud_ad_targets where updated_at < ? and (coalesce(full_work, '[]') = '[]'
+        or not exists (select 1 from cloud_computers c where c.instance_id = cloud_ad_targets.target and c.deleted_at is null and c.awake_since is not null))
+    `).bind(now - AD_PROOF_KEEP_MS),
   ]);
 }
 

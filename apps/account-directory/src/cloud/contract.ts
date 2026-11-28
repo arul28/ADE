@@ -266,7 +266,7 @@ export const CLOUD_PATHS = {
    * (`gravity.ts`). `PUT /consent` `CloudSponsoredConsentRequest` records
    * the account's answer, or the notice that cards are on, and answers
    * `CloudSponsoredState` (409 for a notice where cards don't start on); `POST /seen` `CloudSponsoredSeenRequest` says a
-   * person has one of the account's cloud chats open (for the Index only); `POST /ad`
+   * person has one of the account's cloud chats or terminals open (for the Index only); `POST /ad`
    * `CloudSponsoredAdRequest` answers `CloudSponsoredAdAnswer`; `POST /index`
    * `CloudSponsoredIndexRequest` answers `CloudSponsoredIndexAnswer`.
    */
