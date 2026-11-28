@@ -36,6 +36,14 @@ export type AccountCloudLaunchEntry = {
   messages: CloudLaunchMessage[];
   /** The start failed before the server kept anything: the message is not sent. */
   startError: string | null;
+  /**
+   * The start's answer never came (no answer, or a server error such as a
+   * gateway timeout), with its error. The server may have kept the start and
+   * goes on without this tab, so the launch is read by id until it moves; only
+   * a read that finds no launch, or finds it back as a draft, shows this error,
+   * with Retry.
+   */
+  answerLost?: string | null;
   /** What the launch was started with, for a retry of a start that failed. */
   request: CloudLaunchStartRequest | null;
   /** This tab started it (a fresh check animation plays only for these). */
@@ -226,17 +234,24 @@ async function readInProgress(): Promise<boolean> {
   if (!api) return false;
   let changed = false;
   for (const entry of snapshot.entries.filter(launchNeedsRead)) {
-    // A start still on its way has nothing to read yet.
-    if ((entry.startedHere && !entry.record) || startsInFlight.has(entry.launchId)) continue;
+    // A start still on its way has nothing to read yet (one whose answer was lost is read by id).
+    if ((entry.startedHere && !entry.record && !entry.answerLost) || startsInFlight.has(entry.launchId)) continue;
     let read = "status";
     try {
       if (launchInProgress(entry)) {
         const record = await api.status(entry.launchId);
+        // A start refused with a 5xx (the owner's pause is a 503) puts a launch
+        // with files back to `draft`: that start ended, so its error and Retry.
+        if (entry.answerLost && !entry.record && record.state === "draft") {
+          changed = true;
+          patchEntry(entry.launchId, { startError: entry.answerLost, answerLost: null });
+          continue;
+        }
         // A Retry that answered while this read was out has the newer record.
         const current = snapshot.entries.find((candidate) => candidate.launchId === entry.launchId);
         if (current?.record === entry.record && !startsInFlight.has(entry.launchId) && signatureOf(record) !== signatureOf(entry.record)) {
           changed = true;
-          patchEntry(entry.launchId, { record });
+          patchEntry(entry.launchId, { record, answerLost: null });
         }
       }
       // Queued messages move to `delivered` once the chat exists; read them while any wait.
@@ -252,6 +267,12 @@ async function readInProgress(): Promise<boolean> {
         }
       }
     } catch (error) {
+      // A start whose answer was lost and that the server doesn't have never landed: its error and Retry.
+      if (read === "status" && entry.answerLost && !entry.record && statusOf(error) === 404) {
+        changed = true;
+        patchEntry(entry.launchId, { startError: entry.answerLost, answerLost: null });
+        continue;
+      }
       // A failed read keeps the last record; the next tick tries again.
       noteReadFailed(read, error);
     }
@@ -469,6 +490,12 @@ export async function startAccountCloudChat(input: StartAccountCloudChat): Promi
   return launchId;
 }
 
+/** The HTTP status a cloud API error carries (0 for no answer), or null for any other error. */
+function statusOf(error: unknown): number | null {
+  const status = error && typeof error === "object" ? (error as { status?: unknown }).status : undefined;
+  return typeof status === "number" ? status : null;
+}
+
 async function runStart(launchId: string, request: CloudLaunchStartRequest, retry = false): Promise<void> {
   const api = bridge();
   if (!api) return;
@@ -476,10 +503,19 @@ async function runStart(launchId: string, request: CloudLaunchStartRequest, retr
   try {
     const record = await api.start(retry ? { ...request, retry: true } : request);
     startsInFlight.delete(launchId);
-    patchEntry(launchId, { record, startError: null });
+    patchEntry(launchId, { record, startError: null, answerLost: null });
   } catch (error) {
     startsInFlight.delete(launchId);
-    patchEntry(launchId, { startError: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.message : String(error);
+    // No answer, or a server error (a tab that went away, a gateway timeout): the
+    // server may have kept the start and makes the computer without this tab.
+    // The card stays in progress and the poll reads the launch by id.
+    const status = statusOf(error);
+    if (status !== null && (status === 0 || status >= 500)) {
+      patchEntry(launchId, { answerLost: message, startError: null });
+    } else {
+      patchEntry(launchId, { startError: message, answerLost: null });
+    }
   }
 }
 
@@ -488,7 +524,7 @@ export async function retryAccountCloudLaunch(launchId: string): Promise<void> {
   const entry = snapshot.entries.find((candidate) => candidate.launchId === launchId);
   const request = entry?.request ?? entry?.record?.request ?? null;
   if (!entry || !request) return;
-  patchEntry(launchId, { startError: null, record: entry.record ? { ...entry.record, state: "making", error: null } : null });
+  patchEntry(launchId, { startError: null, answerLost: null, record: entry.record ? { ...entry.record, state: "making", error: null } : null });
   const ready = await withSentFiles(launchId, request);
   if (ready) await runStart(launchId, ready, entry.record != null);
 }

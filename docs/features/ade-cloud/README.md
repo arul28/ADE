@@ -424,11 +424,37 @@ A blocked account (`POST /cloud/owner/block`) is read-only: GET routes in
 
 ### Metadata, request ids and launch records
 
-Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
-`ade_lane_id`, `ade_lane_name`, …). A create or copy repeating a request id gets
-the computer it made (409 `create_in_progress` while reserving; released after
-15 minutes). Launch records live in `<userData>/cloud-lane-launches/` (desktop)
-or `<machine .ade>/cloud-lane-launches/` (brain).
+- Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
+  `ade_made_by_chat`, `ade_disk_full`, `ade_disk_full_reason`, and the lane
+  keys `ade_lane_id`, `ade_lane_name`, `ade_project_origin` in
+  `cloudLaneLaunch.ts`), plus `created_by: ade`. A copy drops `ade_ready*`.
+- A create or copy that repeats a request id of this account gets the
+  computer that request made (200), before any check. A reservation with no
+  computer yet answers 409 `create_in_progress`; one older than 15 minutes is
+  released. The reserve insert allows one live row per account and request id.
+- The server writes `ade_env` (its `CLOUD_ENVIRONMENT`: `production` or
+  `development`) on every create, copy and metadata write, over any value a
+  client sent. The matches by request tag (the minute tick, a repeated create,
+  the computer list) adopt only a computer of their own server, and an
+  untagged one counts as production's. So two servers can share one provider
+  key: each reads the other's computers in the list but never takes them. Only
+  production sends the owner the provider wallet's alerts, and the awake-limit
+  alert counts its own server's computers.
+- A server launch (`POST /cloud/launches`) whose create answer was lost (the
+  client went away, the provider timed out) stays `making` while the provider
+  makes the computer. Whichever adoption takes that computer (the minute tick,
+  the list, a repeated start) links the launch to it in the same batch
+  (`lostStartLinkStatement` in `store.ts`): the launch is `joining`, and the
+  computer joins and runs the first message with no client. A start cancelled
+  meanwhile is linked too, and the cron deletes that computer unless it
+  checked in or its join code was used. A start that made nothing (no computer
+  and no reservation of its request, 20 minutes after it) is failed, so its
+  card offers Retry. The web app follows a start whose answer was lost (no
+  answer or a 5xx) by its id, and shows the error with Retry only when the
+  server has no such launch (404).
+- The desktop keeps one record per lane launch in
+  `<userData>/cloud-lane-launches/<launchId>.json` until its cleanup is done;
+  a brain keeps its own in `<machine .ade folder>/cloud-lane-launches/`.
 
 ## From the CLI and agents
 
