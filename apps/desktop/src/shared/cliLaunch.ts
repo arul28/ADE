@@ -1914,8 +1914,10 @@ export function piSdkToolPolicyForPermissionMode(
   // Plan mode is a review posture: reading is enough, and nothing to approve.
   // `readOnly` is stated rather than inferred from the tool list, because
   // callers gate real capabilities on it and adding a future read-only tool
-  // must not silently flip them. No MCP: its tools can change anything.
-  if (mode === "plan") return { tools: [...PI_READ_ONLY_TOOLS], approvalTools: [], readOnly: true, mcp: "off" };
+  // must not silently flip them. The shells come along, but in a read-only
+  // session the worker runs only commands that read (`git log`, `ade linear
+  // issue`) and refuses the rest. No MCP: its tools can change anything.
+  if (mode === "plan") return { tools: [...PI_READ_ONLY_TOOLS, ...shells], approvalTools: [], readOnly: true, mcp: "off" };
   // default, auto, and config-toml all land here. Anything that changes the
   // workspace is offered rather than silently allowed or silently withheld.
   return {

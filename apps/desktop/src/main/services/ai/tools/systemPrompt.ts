@@ -135,6 +135,9 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
   }
 }
 
+/** Plan mode still reads: a model told "no bash" would not even read its issue. */
+const PLAN_MODE_READ_COMMANDS = "Commands that only read are fine in plan mode: `git log`, `git diff`, `rg`, and ADE reads such as `ade linear issue <id> --text`, `ade prs show <n>` or `ade help`.";
+
 function describePermissionMode(mode: HarnessPermissionMode): string {
   switch (mode) {
     case "plan":
@@ -226,9 +229,12 @@ export function buildCodingAgentSystemPrompt(args: {
               ? "Native Codex Plan Mode controls planning and approval. Preserve that built-in flow: stay read-only, use request_user_input for important clarifications when needed, and publish the final plan through Codex's proposed-plan mechanism."
               : "Native Codex Plan Mode controls planning and approval. Preserve that built-in flow: stay read-only, make the safest reasonable assumptions when clarification would otherwise be needed, and publish the final plan through Codex's proposed-plan mechanism.",
             "Do not use TodoWrite, update_plan, or exitPlanMode as the plan-approval path in native Codex Plan Mode.",
+            PLAN_MODE_READ_COMMANDS,
+            "If an `ade` command cannot reach ADE from the sandbox (EPERM, or it cannot open the project data store), rerun it with escalated permissions; ADE approves commands that only read.",
           ]
         : [
-            "Plan mode is read-only. Do not attempt editFile, writeFile, bash, or other mutating actions.",
+            "Plan mode is read-only. Do not edit or write files, and do not run commands that change anything.",
+            PLAN_MODE_READ_COMMANDS,
             "Inspect only the concrete files needed to form a plan. Do not keep broad-searching once you have enough context.",
             "When the plan is clear, write or update a short TodoWrite plan, ask one clarifying question if needed, then use exitPlanMode to request implementation approval.",
           ]

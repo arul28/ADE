@@ -1121,7 +1121,32 @@ read-only and proposes changes through `ExitPlanMode`.
   plan-mode list (read-only built-ins, `NotebookRead`, `Agent`/`Task`,
   `Skill`, task bookkeeping, `AskUserQuestion`) plus ADE's plan-flow and
   question tools. It is a literal allowlist, so unknown and MCP tools are
-  refused. A refusal logs `agent_chat.plan_mode_tool_denied`.
+  refused. A refusal logs `agent_chat.plan_mode_tool_denied`. A `Bash` or
+  `PowerShell` call passes when its command only reads
+  (`claudeToolCallAllowedInPlanMode`).
+- **Plan still reads, on every provider.** One check, `shellCommandIsReadOnly`
+  (`readOnlyShellCommand.ts`), decides whether a shell command only reads:
+  known readers, git and `gh` reads, and ADE's own reads (`ade linear issue`,
+  `ade prs show`, `ade help`, any `--help`), joined by pipes or `&&`, with
+  output only to the null device. Anything else is refused, so a wrong answer
+  refuses a read rather than letting a write through. Each provider applies it
+  where its plan mode would stop a read:
+
+  | Provider | Where |
+  |---|---|
+  | Claude | the `canUseTool` fence above |
+  | Codex | the plan guard on `item/commandExecution/requestApproval` accepts a read once. On Windows the sandbox user cannot open the brain's pipe (`connect EPERM`), so every `ade` command must leave the sandbox. |
+  | Cursor | plan/ask gets `shell`, `webSearch`, `webFetch`, `semSearch` and `readLints`; the read-only hook allows a shell command that reads |
+  | Pi | plan gets `bash` (and `powershell` on Windows) behind `withPiReadOnlyShell`, which refuses any other command without a card |
+  | OpenCode | a plan's `permission.asked` for shell is answered `once` when every parsed command reads; web search and skills are no longer denied |
+  | Copilot | a plan's shell permission request is approved once when it reads |
+  | Grok, Kimi, Qwen, Devin, Antigravity | an `execute` permission request in plan or a side chat is allowed once when it reads |
+  | Droid, Muse | left to the provider's own read-only mode (`spec`, `denyUnmatched`); not changed |
+
+  On Windows, where a Cursor or OpenCode shell may be PowerShell or a POSIX
+  shell, a command must read under both (`shellCommandIsReadOnlyOnPlatform`).
+  The plan-mode system prompt says reads are allowed; it used to list `bash`
+  as a mutating action.
 - **Approval.** An approved `ExitPlanMode` returns `{ behavior: "allow",
   updatedInput: input }`, so the SDK's handler restores `prePlanMode` and
   answers the model. ADE also calls `setPermissionMode` so both agree.

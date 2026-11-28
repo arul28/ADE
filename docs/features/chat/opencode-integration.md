@@ -202,8 +202,9 @@ zstd on their own.
 
 - Rules are ordered and the last match wins, after OpenCode's base policy
   (`* allow`, asks for external directories and `.env` reads). `ade-full-auto`
-  is `* allow`; `ade-plan` denies edits, web search, and skills and
-  asks for shell; `ade-edit` asks for edits and shell; `ade-helper` denies all
+  is `* allow`; `ade-plan` denies edits and asks for shell, and the chat
+  service answers a shell ask `once` when every parsed command only reads
+  (`shellCommandIsReadOnlyOnPlatform`); `ade-edit` asks for edits and shell; `ade-helper` denies all
   side effects.
 - Agent rules stop at the agent: a child runs under its own agent (`general`
   allows edits). So ADE also puts the mode's rules on the session itself

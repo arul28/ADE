@@ -14,7 +14,7 @@ export const PI_SDK_PROTOCOL_VERSION = 2 as const;
 export const PI_SDK_MIN_NODE = "22.19.0" as const;
 
 /** What a `readOnly` session runs with; see `shared/piTools.ts`. */
-export { PI_READ_ONLY_TOOLS } from "../../../shared/piTools";
+export { PI_READ_ONLY_TOOLS, PI_SHELL_TOOLS } from "../../../shared/piTools";
 
 // The one list of Pi thinking levels, shared with `piThinkingLevel`.
 export { PI_THINKING_LEVELS } from "../../../shared/piThinkingLevels";
@@ -94,11 +94,13 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
   /**
    * Run the session with tools that cannot change the workspace: Pi's
    * read-only built-ins (`read`, `grep`, `find`, `ls`, see
-   * `PI_READ_ONLY_TOOLS`) plus `ask_user` when asked for. `tools` may narrow
-   * that set but not widen it, `approvalTools` must be empty, and extensions
-   * stay off because their tools can write. Pi's `tools` allowlist is the
-   * gate: an unlisted tool is never registered, so a forked transcript that
-   * once declared `bash` cannot call it.
+   * `PI_READ_ONLY_TOOLS`) plus `ask_user` when asked for, and the shells
+   * (`PI_SHELL_TOOLS`) when `tools` names them, which then run only commands
+   * that read (`shellCommandIsReadOnly`) and refuse the rest. `tools` may
+   * narrow that set but not widen it, `approvalTools` must be empty, and
+   * extensions stay off because their tools can write. Pi's `tools` allowlist
+   * is the gate: an unlisted tool is never registered, so a forked transcript
+   * that once declared `bash` cannot call it.
    */
   readOnly?: boolean;
   /**

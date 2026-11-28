@@ -15,7 +15,7 @@ import {
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 
 const LANE = "/tmp/ade-lane";
-const READONLY_TOOLS = ["read", "grep", "glob", "ls"];
+const READONLY_TOOLS = ["read", "grep", "glob", "ls", "semSearch", "readLints", "webSearch", "webFetch", "shell"];
 
 type HookContext = Omit<Parameters<typeof evaluateCursorSdkHook>[0], "request" | "policy" | "laneRoot"> & {
   laneRoot?: string;
@@ -115,6 +115,12 @@ describe("Cursor SDK policy", () => {
     ["plan", "write", { path: "src/app.ts", content: "x" }, "deny", null],
     ["plan", "TodoWrite", { todos: [{ content: "Inspect wiring", status: "in_progress" }] }, "deny", null],
     ["plan", "mcp", { serverName: "stale-planning-tools", toolName: "update_plan", arguments: { steps: [] } }, "deny", null],
+    // A plan still reads: a command that only reads runs, any other is refused.
+    ["plan", "shell", { command: "ade linear issue ADE-296 --text" }, "allow", null],
+    ["ask", "shell", { command: "git log --oneline -5" }, "allow", null],
+    ["plan", "shell", { command: "ade linear comment ADE-296 done" }, "deny", "read-only"],
+    ["plan", "shell", { command: "git log && rm -rf src" }, "deny", "read-only"],
+    ["plan", "webFetch", { url: "https://example.com" }, "allow", null],
   ] as const)("%s mode: %s %j -> %s", (modeId, toolName, toolInput, expected, reason) => {
     const result = decide(modeId, toolName, toolInput);
     expect(result.decision).toBe(expected);
