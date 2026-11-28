@@ -177,40 +177,67 @@ export function claudeToolNameToNeutral(name: string): string {
 }
 
 /**
- * MCP server names that are one server. DAEX's CTO tool server was named
- * `ade-cto` before the DAEX rename and is `daex-cto` now; a policy written
- * for the old name keeps matching the new one, and above all a deny rule never
- * silently stops matching. `ade-cto` is deprecated: write `daex-cto`.
+ * Renamed MCP servers, old name → new name. DAEX's CTO tool server was named
+ * `ade-cto` before the DAEX rename and is `daex-cto` now. `ade-cto` is
+ * deprecated: write `daex-cto`.
+ *
+ * The two directions differ on purpose. A deny rule matches both names, so it
+ * never silently stops matching. An allow rule (`allowedTools`,
+ * `autoApproveMcpServers`) maps old → new only: a rule written for `ade-cto`
+ * still covers `daex-cto`, but a rule for `daex-cto` does not cover some other
+ * server that calls itself `ade-cto`.
  */
-const MCP_SERVER_ALIAS_GROUPS: readonly (readonly string[])[] = [["daex-cto", "ade-cto"]];
+const MCP_SERVER_RENAMES: Readonly<Record<string, string>> = { "ade-cto": "daex-cto" };
 
-/** `server` and every other name of the same server, `server` first. */
+/**
+ * `server` and every other name of the same server, `server` first: what a
+ * DENY rule for `server` matches.
+ */
 export function mcpServerNameAliases(server: string): string[] {
   const trimmed = server.trim();
   const folded = trimmed.toLowerCase();
-  const group = MCP_SERVER_ALIAS_GROUPS.find((names) => names.includes(folded));
-  return group ? [trimmed, ...group.filter((name) => name !== folded)] : [trimmed];
+  const names = [trimmed];
+  const renamed = MCP_SERVER_RENAMES[folded];
+  if (renamed) names.push(renamed);
+  for (const [oldName, newName] of Object.entries(MCP_SERVER_RENAMES)) {
+    if (newName === folded) names.push(oldName);
+  }
+  return names;
 }
 
-/** Whether two names name one MCP server: equal ignoring case, or aliases. */
-function sameMcpServer(a: string, b: string): boolean {
-  const wanted = b.trim().toLowerCase();
-  return mcpServerNameAliases(a).some((name) => name.toLowerCase() === wanted);
+/**
+ * `server` and, for an old name, its new name, `server` first: what an ALLOW
+ * rule for `server` covers.
+ */
+function mcpServerAllowAliases(server: string): string[] {
+  const trimmed = server.trim();
+  const renamed = MCP_SERVER_RENAMES[trimmed.toLowerCase()];
+  return renamed ? [trimmed, renamed] : [trimmed];
+}
+
+/** Whether an allow rule for `ruleServer` covers MCP server `server`. */
+function allowRuleCoversServer(ruleServer: string, server: string): boolean {
+  const wanted = server.trim().toLowerCase();
+  return mcpServerAllowAliases(ruleServer).some((name) => name.toLowerCase() === wanted);
 }
 
 /**
  * Claude-list entries (`mcp__<server>` or `mcp__<server>__<tool>`) plus the
- * same entry under each alias of its server, so a list written with one name
- * also covers the server under the other.
+ * same entry under each other name `aliasesFor` gives its server
+ * (`mcpServerNameAliases` for a deny list, `mcpServerAllowAliases` for an
+ * allow list).
  */
-function withClaudeServerAliases(entries: readonly string[]): string[] {
+function withClaudeServerAliases(
+  entries: readonly string[],
+  aliasesFor: (server: string) => string[],
+): string[] {
   const out = [...entries];
   for (const entry of entries) {
     if (!entry.toLowerCase().startsWith("mcp__")) continue;
     const parsed = parseMcpToolName(entry);
     const server = parsed?.server ?? entry.slice("mcp__".length);
     if (!server || server.includes("__")) continue;
-    for (const alias of mcpServerNameAliases(server).slice(1)) {
+    for (const alias of aliasesFor(server).slice(1)) {
       const aliased = parsed ? `mcp__${alias}__${parsed.tool}` : `mcp__${alias}`;
       if (!out.includes(aliased)) out.push(aliased);
     }
@@ -234,9 +261,9 @@ export function toolNameMatchesPattern(toolName: string, pattern: string): boole
 
 /**
  * Both spellings of one tool name, so a pattern written either way matches,
- * and both again under each alias of its server (`mcpServerNameAliases`).
+ * and both again under each other name `serverAliases` gives its server.
  */
-function toolNameAliases(toolName: string): string[] {
+function toolNameAliases(toolName: string, serverAliases: (server: string) => string[]): string[] {
   const trimmed = toolName.trim();
   const aliases = [trimmed];
   const neutral = claudeToolNameToNeutral(trimmed);
@@ -245,7 +272,7 @@ function toolNameAliases(toolName: string): string[] {
   if (claude !== trimmed && !aliases.includes(claude)) aliases.push(claude);
   const parsed = parseMcpToolName(trimmed);
   if (parsed) {
-    for (const server of mcpServerNameAliases(parsed.server).slice(1)) {
+    for (const server of serverAliases(parsed.server).slice(1)) {
       for (const alias of [`mcp:${server}:${parsed.tool}`, `mcp__${server}__${parsed.tool}`]) {
         if (!aliases.includes(alias)) aliases.push(alias);
       }
@@ -254,11 +281,23 @@ function toolNameAliases(toolName: string): string[] {
   return aliases;
 }
 
-function matchesAnyPattern(toolName: string, patterns: readonly string[] | undefined): boolean {
+const sameNameOnly = (server: string): string[] => [server];
+
+/**
+ * Whether a deny (`mode: "deny"`) or allow (`mode: "allow"`) list names the
+ * tool. A deny pattern matches the tool under every name of its server; an
+ * allow pattern covers it only under the pattern's own server name or, for an
+ * old name, the new one (`MCP_SERVER_RENAMES`).
+ */
+function matchesAnyPattern(
+  toolName: string,
+  patterns: readonly string[] | undefined,
+  mode: "deny" | "allow",
+): boolean {
   if (!patterns || patterns.length === 0) return false;
-  const aliases = toolNameAliases(toolName);
+  const aliases = toolNameAliases(toolName, mode === "deny" ? mcpServerNameAliases : sameNameOnly);
   for (const pattern of patterns) {
-    const patternAliases = toolNameAliases(pattern);
+    const patternAliases = toolNameAliases(pattern, mode === "deny" ? mcpServerNameAliases : mcpServerAllowAliases);
     for (const alias of aliases) {
       for (const patternAlias of patternAliases) {
         if (toolNameMatchesPattern(alias, patternAlias)) return true;
@@ -289,13 +328,13 @@ export function evaluatePermissionPolicy(
   input: EvaluatePermissionPolicyInput,
 ): PermissionPolicyDecision {
   const toolName = input.toolName.trim();
-  if (matchesAnyPattern(toolName, policy.deniedTools)) return "deny";
-  if (matchesAnyPattern(toolName, policy.allowedTools)) return "allow";
+  if (matchesAnyPattern(toolName, policy.deniedTools, "deny")) return "deny";
+  if (matchesAnyPattern(toolName, policy.allowedTools, "allow")) return "allow";
 
   const server = serverOfToolName(toolName);
   if (server && policy.autoApproveMcpServers?.length) {
     for (const entry of policy.autoApproveMcpServers) {
-      if (sameMcpServer(server, entry)) return "allow";
+      if (allowRuleCoversServer(entry, server)) return "allow";
     }
   }
 
@@ -390,7 +429,7 @@ export function policyToClaudeToolLists(
     const entry = `mcp__${trimmed}`;
     if (!allowedTools.includes(entry)) allowedTools.push(entry);
   }
-  const disallowedTools = withClaudeServerAliases(translateForClaude(policy.deniedTools));
+  const disallowedTools = withClaudeServerAliases(translateForClaude(policy.deniedTools), mcpServerNameAliases);
   // Under `fallback: "deny"` the two lists are the primary enforcement. The
   // Agent SDK removes a disallowed tool from the model's catalog outright,
   // which holds whether or not the SDK calls back into `canUseTool`. On Agent
@@ -407,11 +446,11 @@ export function policyToClaudeToolLists(
   // be worse.
   if (policy.fallback === "deny") {
     for (const tool of CLAUDE_MUTATING_BUILTIN_TOOLS) {
-      if (matchesAnyPattern(tool, policy.allowedTools)) continue;
+      if (matchesAnyPattern(tool, policy.allowedTools, "allow")) continue;
       if (!disallowedTools.includes(tool)) disallowedTools.push(tool);
     }
   }
-  return { allowedTools: withClaudeServerAliases(allowedTools), disallowedTools };
+  return { allowedTools: withClaudeServerAliases(allowedTools, mcpServerAllowAliases), disallowedTools };
 }
 
 /**
@@ -461,7 +500,7 @@ export function policyToolLevelMcpServers(policy: AgentChatPermissionPolicy): st
   const wholeServer = new Set<string>();
   const addWholeServer = (server: string | null | undefined): void => {
     if (!server?.trim()) return;
-    for (const name of mcpServerNameAliases(server)) wholeServer.add(name.toLowerCase());
+    for (const name of mcpServerAllowAliases(server)) wholeServer.add(name.toLowerCase());
   };
   for (const server of policy.autoApproveMcpServers ?? []) addWholeServer(server);
   for (const entry of policy.allowedTools ?? []) {
@@ -499,7 +538,7 @@ export function policyAllowedMcpServers(policy: AgentChatPermissionPolicy): stri
   const push = (name: string | null): void => {
     const trimmed = name?.trim();
     if (!trimmed) return;
-    for (const alias of mcpServerNameAliases(trimmed)) {
+    for (const alias of mcpServerAllowAliases(trimmed)) {
       if (servers.some((existing) => existing.toLowerCase() === alias.toLowerCase())) continue;
       servers.push(alias);
     }
