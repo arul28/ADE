@@ -1,6 +1,6 @@
 # Remote Runtime
 
-The desktop app connects to an ADE runtime (`ade serve`) running on another
+The desktop app connects to a DAEX runtime (`daex serve`) running on another
 machine. The remote project lives on that machine; lanes, PTYs, git, agent
 chat, and PR actions all run there. The local desktop is the controller — it
 spawns no project services of its own for a remote binding.
@@ -8,24 +8,22 @@ spawns no project services of its own for a remote binding.
 The recommended transport is **paired**: sign in on both desktops for PIN-less
 account-directory adoption, or pair a Nearby machine with its six-digit PIN.
 Both paths create device-bound DPoP credentials, then carry the full runtime
-JSON-RPC over the machine sync WebSocket. ADE tries direct LAN routes, then
+JSON-RPC over the machine sync WebSocket. DAEX tries direct LAN routes, then
 tailnet routes, then the cloud relay when both machines are signed in to the
-same ADE account. **SSH** remains the Advanced path and a fallback only for paired
+same DAEX account. **SSH** remains the Advanced path and a fallback only for paired
 targets that came from an explicitly configured SSH route. It
-runs the same JSON-RPC over an SSH `exec` channel using `ade rpc --stdio` and
+runs the same JSON-RPC over an SSH `exec` channel using `daex rpc --stdio` and
 can upload or start the remote runtime when needed. The relay is a
-trusted-operator plaintext path, not an end-to-end encrypted tunnel; adding
-relay payload E2E encryption is planned security work. See the trust boundary in
-[Internal architecture](internal-architecture.md).
+trusted-operator plaintext path, not an end-to-end encrypted tunnel.
 
 ## Source file map
 
-ADE Cloud:
+DAEX Cloud:
 
-- `apps/desktop/src/main/services/adeCloud/` — the provider seam, New ADE
-  Cloud machine and half-made box cleanup; see [ADE Cloud](../ade-cloud/README.md).
-- `apps/ade-cli/src/services/cloudChats/` — the brain's side of ADE Cloud with
-  no computer awake (see [On an ADE Cloud computer](#on-an-ade-cloud-computer)):
+- `apps/desktop/src/main/services/adeCloud/` — the provider seam, New DAEX
+  Cloud machine and half-made box cleanup; see [DAEX Cloud](../ade-cloud/README.md).
+- `apps/ade-cli/src/services/cloudChats/` — the brain's side of DAEX Cloud with
+  no computer awake (see [On a DAEX Cloud computer](#on-an-ade-cloud-computer)):
   `cloudChatUploader.ts` (saved chat parts and subagent copies),
   `cloudRestSave.ts` (copies, Git summaries, capsules and event wakes before a
   rest), `cloudChatMessageQueue.ts` and `chatIdleWait.ts` (the queue drain),
@@ -43,7 +41,7 @@ ADE Cloud:
 Connections and links:
 
 - `apps/desktop/src/main/services/remoteRuntime/remoteBrainStart.ts` — who asked
-  for a connect (`user` or `background`), the `ade brain start` command for a
+  for a connect (`user` or `background`), the `daex brain start` command for a
   POSIX or Windows remote, the start-then-retry loop, and the plain messages
   for a stopped brain and an SSH server that refuses a command.
 - `apps/desktop/src/main/services/remoteRuntime/remoteEventSetup.ts` — the
@@ -76,13 +74,13 @@ Connections and links:
 - `apps/ade-cli/src/connectionLinkSummary.ts` — `rpc.link_summary` every five
   minutes per remote connection, and `rpc.link_closed`.
 - `apps/desktop/src/main/services/remoteRuntime/remoteTerminalUpdate.ts` —
-  `ade brain update` typed into a terminal, for a connected Windows machine
+  `daex brain update` typed into a terminal, for a connected Windows machine
   whose build cannot install itself.
 - `apps/desktop/src/shared/crossMachineHandoff.ts` — `pickLiveCheckout`: a
   project's checkout on a machine (folder exists, then user-opened, then
   `lastOpenedAt`). `projects.list` returns `exists` per project (async stats,
   250 ms budget, cached 10 s); every cross-machine picker uses it, and
-  `ade projects` labels "folder missing".
+  `daex projects` labels "folder missing".
 - `apps/ade-cli/src/services/account/machineBridge.ts`,
   `agentMachineBridge.ts` — brain-to-brain connection pools (CTO, agents) and
   `machines.call` forwarding. The host binds an `ade-agent-remote` caller's
@@ -115,7 +113,7 @@ Connections and links:
 - `apps/desktop/src/main/services/remoteRuntime/remoteSidecarCache.ts` — the
   release download of an `ade-<target>` sidecar a target-only package lacks:
   version-pinned, `SHA256SUMS`-checked, published atomically to
-  `<ADE home>/runtime-sidecars/<tag>/<target>/`. Only
+  `<ade home>/runtime-sidecars/<tag>/<target>/`. Only
   `resolveBootstrapRuntimeSidecars` calls it.
 - `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — the runtime IPC
   boundary: targets, connect, projects, project open, action / sync / event
@@ -130,7 +128,7 @@ Connections and links:
     `services/account/localMachineIdentity.ts` (no Electron).
   - Event reads and subscribe acks: 30 s, one retry after a reconnect.
   - Automatic reconnects back off from 30 s to 5 min, forever. Implicit calls
-    fail fast during the backoff (`Remote ADE service connection failed
+    fail fast during the backoff (`Remote DAEX service connection failed
     recently (…)`); calls that share one failed dial count it once.
   - An SSH target that failed with `ssh_auth` or `host_key` is not retried
     until Try again, an edit, or a host-key trust. Paired machines are never
@@ -172,14 +170,14 @@ Connections and links:
 - `apps/ade-cli/src/services/sync/syncHostService.ts` — the host end: paired
   hello authentication (`sync_host.paired_device_rejected`,
   `sync_host.paired_account_owner_mismatch`) and tailnet publication, which
-  retires ADE's own leftover `tailscale serve` entries
+  retires DAEX's own leftover `tailscale serve` entries
   (`reclaimStaleTailnetServes`).
 - `apps/ade-cli/src/commands/doctor.ts` — the `Sync port` row names a drifted
   port and its base-port holders, and says that a root-owned holder (such as
   `tailscaled`) is invisible to this probe.
 - `apps/ade-cli/src/services/account/pairedRemoteConnector.ts` and
   `apps/ade-cli/src/lib/remoteLaunchBudget.ts` — paired route, auth and health
-  policy and bounded cancellation for `ade machines connect`.
+  policy and bounded cancellation for `daex machines connect`.
 
 The local brain and its service:
 
@@ -190,7 +188,7 @@ The local brain and its service:
     `protocolVersion`. A desktop whose `RUNTIME_COMPAT_LEVEL` is inside that
     window connects to a newer brain; otherwise the brain stays and the old
     desktop falls back to an isolated no-sync runtime.
-  - It spawns `ade serve` for non-primary sockets, tracks the login service,
+  - It spawns `daex serve` for non-primary sockets, tracks the login service,
     and gives project registration, file actions and event polls short
     per-call timeouts.
   - `LocalRuntimeStatus` carries the brain's `pid`, `syncPort`,
@@ -240,7 +238,7 @@ The local brain and its service:
   brain-down **Fix it**. Both use `restartServiceAndWait()` (install, wait up
   to 90 s for the endpoint, `ping`), which names the stage that failed. A
   forced restart treats a skipped install as a failure ("A newer version of
-  ADE is already running. Restart ADE to switch to it."). `restartBrain()`
+  DAEX is already running. Restart DAEX to switch to it."). `restartBrain()`
   refuses ("Recovery is already running.") while `repair()` runs, because
   repair does exclusive database work.
 - **A slow brain is not a broken brain.** The brain binds `ade.sock` before it
@@ -265,7 +263,7 @@ The local brain and its service:
     trusted (a disabled job prints an error, exits 0 and registers nothing).
     An unregistered job fails with `failureStep: "launchd_register"`; the
     diagnostic report reads `launchctl print-disabled`, and
-    `ade reset --all` re-enables every ADE label.
+    `daex reset --all` re-enables every DAEX label.
   - `installLaunchd.ts` runs `launchctl kickstart` (no `-k`) when launchd has
     not started the job, because a domain in on-demand-only mode ignores
     `RunAtLoad` and `KeepAlive`. The watchdog kickstarts after it kills a
@@ -297,7 +295,7 @@ The Machines panel:
   the project picker and the This-computer publish indicator.
   - `blockingHostKeyTrust` returns `needs_trust` / `changed` as its own
     outcome, not as an error.
-  - Failures carry **Report this error to ADE…**.
+  - Failures carry **Report this error to DAEX…**.
   - `remoteMachineModel.describePublishHealth`: `published` is healthy;
     `sync_disabled`, `sync_not_started`, `not_host`, `account_signed_out`,
     `machine_key_unavailable` and the like read "none"; any other state alarms
@@ -343,7 +341,7 @@ Tabs, machines and routing:
   `shared/projectIdentity.ts` owns the binding-key format. `TopBar.tsx` shows a
   machine name only when it is ambiguous, and the menu offers **Connect
   another machine…**.
-- `apps/desktop/src/shared/machineIdentity.ts` — "the machine ADE runs on":
+- `apps/desktop/src/shared/machineIdentity.ts` — "the machine DAEX runs on":
   `THIS_MACHINE_ID` (`"this-mac"`), `THIS_MACHINE_NAME` (`"This computer"`),
   `isThisMachineId`, `machineDisplayName`. Every machine-id user imports it,
   because the push guard compares ids. Machines have absolute names; "remote"
@@ -363,7 +361,7 @@ Tabs, machines and routing:
     Each read is a pinned `lanes.list`, `sessions.list` or `prs.listAll`; a
     window without them logs `work.machine_read_bridge_missing`.
   - Hidden, not deleted: a machine that drops leaves the list and comes back
-    with its rows. An asleep ADE Cloud computer is not offline. A drop counts
+    with its rows. An asleep DAEX Cloud computer is not offline. A drop counts
     after a failed reconnect attempt plus a 45 s floor (120 s ceiling). An
     `idle` target, or a connected machine that cannot prove the repository,
     counts on the floor alone and keeps its rows in the store.
@@ -389,8 +387,8 @@ Tabs, machines and routing:
   after 60 s, at most five times, and on focus.
 - `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — opening a remote
   project (`remoteRuntime.openProject`, an Activity item, a link) never wakes
-  an ADE Cloud computer: one that is asleep refuses the open with
-  `CloudComputerAsleepError`, and the repository opens on its ADE Cloud tab
+  a DAEX Cloud computer: one that is asleep refuses the open with
+  `CloudComputerAsleepError`, and the repository opens on its DAEX Cloud tab
   instead. The top bar does this for a tab click and the tab in front at
   launch; main does it for an Activity item or a link (`main.ts`
   `openAsleepCopyOnAdeCloud`, `adeCloudNavigationForCopy`). Connect, a send
@@ -447,7 +445,7 @@ Tabs, machines and routing:
     string is typed once), and the cross-machine handoff calls.
   - `iosSimulator.onEvent` and `appControl.onEvent` follow the pin to that
     runtime's stream. `builtInBrowser.onEvent` never does: the browser is this
-    desktop's (`isLocalBrowserRoutingPin` decides).
+    desktop's.
   - Read caches are keyed by binding (`boundReadCacheKey()`); a pinned
     simulator status or device read skips the cache.
   - The bridge is declared `satisfies Window["ade"]`, so a preload signature
@@ -468,7 +466,7 @@ Tabs, machines and routing:
     available` / `Register a project first` through main; a remote-bound
     failure never falls back to the local machine.
   - The browser across machines is described in
-    [The ADE browser for a remote chat](#the-ade-browser-for-a-remote-chat).
+    [The DAEX browser for a remote chat](#the-ade-browser-for-a-remote-chat).
 - `apps/desktop/src/main/services/projects/windowTabRootAuthorization.ts` — what
   a window's set-open-tabs call may change. `resolveWindowTabRoots` splits the
   list into `tabRoots` (display only) and `authorizedLocalRoots` (local runtime
@@ -505,7 +503,7 @@ Tabs, machines and routing:
     refuses when it no longer matches the `stateToken` (HEADs, status, branch
     tips, stashes, sizes and times of changed and secret files; over 5,000
     paths never match). It then checks the folder is exactly a registered
-    root with no home, ADE home, other project or running ADE inside, stops
+    root with no home, DAEX home, other project or running DAEX inside, stops
     the project, renames the folder aside and deletes it. The desktop's own
     computer sends `folderMode: "caller"` and uses the Trash. Older hosts lack
     `machineProjects.removeCopy` and get entry removal only.
@@ -518,14 +516,14 @@ Tabs, machines and routing:
 Brain liveness and lifecycle:
 
 - `apps/ade-cli/src/services/runtime/brainHeartbeat.ts` —
-  `<ADE home>/runtime/heartbeat.json` (`{pid, ts, seq, startedAt}`), written
+  `<ade home>/runtime/heartbeat.json` (`{pid, ts, seq, startedAt}`), written
   every 15 s even when idle. A beat late by more than 60 s logs
   `brain.suspend_gap` (the machine slept). `evaluateBrainHeartbeat` and
   `brainWatcherSuspendFloorMs` are shared by both platforms.
 - `apps/ade-cli/src/services/runtime/brainWatchdogCheck.ts` —
-  `ade runtime watchdog-check`: reads the heartbeat and kills at most one pid.
+  `daex runtime watchdog-check`: reads the heartbeat and kills at most one pid.
   It never opens the socket (a wedged brain hangs connects). Its own record,
-  `<ADE home>/runtime/watchdog-check.json`, is written before the verdict; an
+  `<ade home>/runtime/watchdog-check.json`, is written before the verdict; an
   unwritable directory means it stops killing.
 - `apps/ade-cli/src/serviceManager/installLaunchdWatchdog.ts` — the
   `com.ade.watchdog` agent (`.alpha` for Alpha, every 60 s), best effort.
@@ -537,7 +535,7 @@ Brain liveness and lifecycle:
 - `apps/ade-cli/src/serviceManager/serviceHandover.ts` — the shared handover
   (see above).
 - `apps/ade-cli/src/services/runtime/awaitRuntimeServiceEndpoint.ts` — the
-  install-then-wait of `ade setup`; a failed install marked `starting` keeps
+  install-then-wait of `daex setup`; a failed install marked `starting` keeps
   dialling.
 - `apps/ade-cli/src/services/runtime/brainStartupState.ts` —
   `readBrainStartupState`, the CLI's `brain_starting` answer for a brain that
@@ -566,18 +564,51 @@ Build and install:
 - `apps/ade-cli/scripts/build-static.mjs` — the static `ade-<platform-arch>`
   SEA binary and its `.native.tar.gz`, with the version check.
 - `apps/ade-cli/scripts/install-runtime.sh` and `install-runtime.ps1` —
-  download, verify, PATH and `ade brain start`; the rest is `ade setup`.
+  download, verify, PATH and `daex brain start`; the rest is `daex setup`.
 - `apps/desktop/scripts/materialize-runtime-resources.mjs` and
   `validate-runtime-resources.mjs` — `apps/desktop/resources/runtime/` for
   packaging.
 
+## Gotchas / fragile areas
+
+- **Every action goes to the item's own machine.** A call about a chat,
+  session, lane, terminal or sign-in passes that item's pin
+  (`pin?: OpenProjectBinding | null`) and routes through
+  `callPinnedRuntimeAction` or `callPinnedOrBoundRuntimeActionOr` in the
+  preload. A call with no pin goes to the machine the project tab is bound to:
+  it works in local testing and fails with errors like "Chat session '…' was
+  not found" when the item is elsewhere. `null` is only for this computer's
+  machine-global calls in Settings.
+- **Where to read the pin:** in a chat subtree `useChatRuntimeScope().pin`
+  (and `.isActiveBinding`); on the Work page the row's `foreignRow.binding` or
+  `useWorkSessions().resolveSessionRuntimePin`; on Lanes the lane router's
+  `LaneMachine.pin`; in Settings `useSettingsMachineScope().pin`. UI that
+  means "another machine" reads `isActiveBinding` or `usePinTargetsTab`,
+  never a null pin. A pin naming the tab's own copy costs what no pin costs.
+- **Keep the pin for the whole flow.** A start, its stop and its status reads
+  go to the same machine. Key effects on `pin?.key`, not the pin object: a pin
+  can be rebuilt with the same key, and an effect keyed on the object restarts
+  a login shell or a voice call for nothing.
+- **A new action must be reachable remotely.** Give it an action domain and
+  an `actionPolicy` entry, or the remote brain refuses it. Something that can
+  only run on this computer says so with a clear message instead of
+  misrouting.
+- **Mutations are never replayed after a dropped link.** Only actions
+  `isReplaySafeAdeAction` marks replay automatically; the rest report that the
+  result is unknown (see Troubleshooting).
+- **The relay is not end-to-end encrypted.** It is a trusted-operator path;
+  see the trust boundary in [Internal architecture](internal-architecture.md).
+- **An account-answered pin never dials.** A DAEX Cloud lane at rest is read
+  from the account server; only doing wakes its computer (see
+  [DAEX Cloud](../ade-cloud/README.md#daex-cloud-with-no-computer-of-your-own)).
+
 ## User model
 
-A **remote target** is another ADE machine reachable through a paired sync
+A **remote target** is another DAEX machine reachable through a paired sync
 route, SSH, or both. A paired target stores the machine identity and paired
 credentials separately from the saved target; the target may also retain SSH
 user, port, key, and route information for fallback. A **remote project** is a
-path on that machine that has been registered with its ADE runtime (via
+path on that machine that has been registered with its DAEX runtime (via
 `projects.add`). Opening a remote project does not copy local files or move a
 local lane by default. Normal project opening still expects Git to move code
 between clones; the explicit **Continue on another machine** flow adds a guarded clean-lane
@@ -589,16 +620,16 @@ Direct remote targets are account-independent. Trust created through Nearby +
 PIN or SSH lives on this desktop and continues to connect after sign-out.
 Account-directory adoption is deliberately account-owned instead:
 the target and paired DPoP credentials are tagged with the Clerk user id and
-removed when that user signs out or switches accounts, so a shared ADE install
+removed when that user signs out or switches accounts, so a shared DAEX install
 cannot expose another person's machines. Signing in never converts an existing
 direct pairing into account-owned trust.
 Changing an SSH host key always requires explicit trust again. Changing the
 remote host's stable pairing identity, or losing its stored pairing grant,
-invalidates the saved paired credential and requires re-pairing; ADE does not
+invalidates the saved paired credential and requires re-pairing; DAEX does not
 silently attach old credentials to a different host identity.
 
 Opening a project on another machine asks nothing: a repository is one tab.
-ADE warns about two checkouts that differ only at push time, when another
+DAEX warns about two checkouts that differ only at push time, when another
 machine holds the same branch with unpushed commits
 (`apps/desktop/src/shared/laneDivergence.ts`).
 
@@ -657,16 +688,16 @@ run a local repair against data owned by the remote machine. See
 
 ## Connect flow
 
-1. Open **Connections > Machines**. When signed in, ADE loads the other computers on
+1. Open **Connections > Machines**. When signed in, DAEX loads the other computers on
    the same account. It also combines Bonjour and Tailscale discovery,
    removes this machine's own Bonjour advertisement, and merges routes that
-   identify the same machine. Discovered paired-capable ADE desktops appear in
+   identify the same machine. Discovered paired-capable DAEX desktops appear in
    Available; offline or unsupported machines remain visible in Unavailable.
    The same discovery also runs in the main process at launch (after the first
    autoconnects start) and on wake or unlock, so a demoted LAN address that
    answers the network again is ranked first at the next connect without a dial.
    A connect never waits on it.
-2. Select a same-account computer for the primary PIN-less flow. ADE dials the
+2. Select a same-account computer for the primary PIN-less flow. DAEX dials the
    directory-verified Relay first; when the target publishes an ed25519
    identity key in its directory row (`pubkey`), adoption can also fall back
    to Tailscale and LAN routes using the sealed `ade-adopt-v1` handshake —
@@ -710,15 +741,15 @@ run a local repair against data owned by the remote machine. See
    There is no desktop pairing-link paste/scan or manual address + PIN path.
    A discovered machine with an existing pairing is upgraded to a paired target
    automatically.
-3. Connect. ADE dials paired routes in LAN → tailnet → relay order, preferring a
+3. Connect. DAEX dials paired routes in LAN → tailnet → relay order, preferring a
    recently successful endpoint within each class. After authenticated
    `hello_ok`, it requires `features.rpcChannel === true`, opens the runtime
    JSON-RPC channel, and uses the paired port-forward channel for remote preview
    URLs. The connected status reports the winning route and latency. A relay
-   route is tried only while this ADE client is signed in. The client attaches
+   route is tried only while this DAEX client is signed in. The client attaches
    a short-lived account proof to that relay hello, and the host accepts it only
    when the proof belongs to the Clerk user currently signed in on the host.
-   A missing or different account reports **Sign in to ADE** without consuming
+   A missing or different account reports **Sign in to DAEX** without consuming
    the transport's automatic-reconnect backoff. Relay remains a trusted-operator
    plaintext-readable path, not a confidential channel; end-to-end payload
    encryption remains planned. A signed-out host does not advertise or hold a
@@ -726,30 +757,30 @@ run a local repair against data owned by the remote machine. See
    bootstrap tokens are rejected over Relay even when
    they remain valid for an eligible direct reconnect.
 4. If paired dialing fails, or the remote runtime does not support the paired
-   RPC channel, ADE silently falls back to SSH only when that paired target has
+   RPC channel, DAEX silently falls back to SSH only when that paired target has
    a route originally configured through Advanced SSH. Nearby/discovery routes
    are never reinterpreted as SSH fallback. SSH host-key trust is requested only
    after fallback is actually needed; it is never pre-trusted or prompted
    before the paired attempt.
 5. Use **SSH** under Advanced to configure or connect directly: enter a display
    name, hostname, SSH user, port, and optional private key path. With no key
-   path, ADE uses the local ssh-agent when `SSH_AUTH_SOCK` is available and
+   path, DAEX uses the local ssh-agent when `SSH_AUTH_SOCK` is available and
    matching `HostName` / `IdentityFile` entries from `~/.ssh/config`. An unknown
    host key is shown with its fingerprint and requires explicit **Trust &
    connect** approval before it is recorded in `known_hosts`.
-6. On an SSH connection, ADE detects the remote platform with `uname -sm` and
-   starts `ade rpc --stdio`. If the bundled runtime is present locally and the
-   remote binary is missing, stale, or hash-mismatched, ADE uploads the binary,
+6. On an SSH connection, DAEX detects the remote platform with `uname -sm` and
+   starts `daex rpc --stdio`. If the bundled runtime is present locally and the
+   remote binary is missing, stale, or hash-mismatched, DAEX uploads the binary,
    native dependencies, PTY worker, and bundled agent skills into the matching
-   ADE channel home, then verifies the runtime. Uploads prefer SFTP and fall
-   back to bounded SSH chunk uploads / OpenSSH. Without a bundled binary, ADE
+   DAEX channel home, then verifies the runtime. Uploads prefer SFTP and fall
+   back to bounded SSH chunk uploads / OpenSSH. Without a bundled binary, DAEX
    probes alternate channel homes for a compatible installed runtime and
    reports the selected fallback as a compatibility warning.
    Windows clients require the built-in OpenSSH Client for the bounded fallback
-   upload path. If `ssh.exe` is unavailable, ADE reports the missing Windows
+   upload path. If `ssh.exe` is unavailable, DAEX reports the missing Windows
    Optional Feature and the `Add-WindowsCapability` repair command instead of a
    raw process-spawn error.
-7. Once SSH RPC succeeds, ADE asks that exact runtime to authorize this desktop
+7. Once SSH RPC succeeds, DAEX asks that exact runtime to authorize this desktop
    as a paired DPoP device using a bounded JSON request on stdin. The resulting
    secret, private key, host identity, and endpoints are stored locally, and
    the target is upgraded to paired-first while retaining the verified SSH
@@ -760,12 +791,12 @@ run a local repair against data owned by the remote machine. See
    If the same window starts multiple remote opens concurrently, both preload
    and the main IPC bridge keep only the latest open as the durable binding.
 
-`ade machines connect` consumes that same saved target registry and paired credential
+`daex machines connect` consumes that same saved target registry and paired credential
 store. Before opening a credentialless routed SSH record, it compares the saved
 name and all saved hosts with the signed-in account directory. An exact, unique
 legacy account-machine match is adopted into the paired store and the obsolete
 SSH-shaped record is removed. If the directory cannot be verified, the machine
-is offline, or adoption fails, that account-created target fails closed; ADE
+is offline, or adoption fails, that account-created target fails closed; DAEX
 does not silently retry it as SSH. Targets with an explicit SSH user or private
 key remain true SSH targets and bypass this migration. Paired connections dial LAN → tailnet → relay by default and
 never fall back to SSH. The CLI prints the selected path without showing temporary socket
@@ -782,11 +813,11 @@ WebSocket/auth wait is capped by the remaining budget and observes cancellation;
 authentication failure stops redundant channel-home probes for that route, and
 the final error aggregates the routes/runtimes that were actually attempted.
 
-After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures — except for failures no redial can fix: a machine that rejects this device's pairing or identity, or an account that will not vouch for it, stops the 30 s maintenance redials until the person acts (Connect, Pair again, an edit) or, for a sign-in failure, until the signed-in account changes. Such a failure shows the error and its action, not "Reconnecting". Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication. A target also persists this computer's `slowLinkMode` (`"on"`/`"off"`, absent for Automatic), which saving the machine's address again keeps; see [A slow or dropping link](#a-slow-or-dropping-link). An unpackaged (development) desktop runs with `explicitConnectOnly`: it never reconnects saved targets at launch, after wake, or for implicit use, and connects only when the person presses Connect in it. A paired host keeps one connection per device and every ADE on a computer shares that device pairing, so a dev app reconnecting on its own took machines from the installed app (which then shows the superseded error and waits). `ADE_DEV_REMOTE_AUTOCONNECT=1` turns auto-connect back on for a dev app.
+After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures — except for failures no redial can fix: a machine that rejects this device's pairing or identity, or an account that will not vouch for it, stops the 30 s maintenance redials until the person acts (Connect, Pair again, an edit) or, for a sign-in failure, until the signed-in account changes. Such a failure shows the error and its action, not "Reconnecting". Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication. A target also persists this computer's `slowLinkMode` (`"on"`/`"off"`, absent for Automatic), which saving the machine's address again keeps; see [A slow or dropping link](#a-slow-or-dropping-link). An unpackaged (development) desktop runs with `explicitConnectOnly`: it never reconnects saved targets at launch, after wake, or for implicit use, and connects only when the person presses Connect in it. A paired host keeps one connection per device and every DAEX on a computer shares that device pairing, so a dev app reconnecting on its own took machines from the installed app (which then shows the superseded error and waits). `ADE_DEV_REMOTE_AUTOCONNECT=1` turns auto-connect back on for a dev app.
 
-Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha` upload to `~/.ade-alpha/` instead of `~/.ade/` so a remote machine can host stable and alpha runtimes side by side. Beta is an update track of the normal install and uses `~/.ade/`. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
+Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha` upload to `~/.ade-alpha/` instead of `~/.ade/` so a remote machine can host stable and alpha runtimes side by side. Beta is an update track of the normal install and uses `~/.ade/`. Runtime binaries, native deps, PTY workers, and bundled DAEX agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
 
-A packaged Alpha upload that cannot initialize is not terminal by itself. ADE
+A packaged Alpha upload that cannot initialize is not terminal by itself. DAEX
 still probes the isolated Stable and other channel homes and accepts the first
 runtime whose initialization and machine-project capabilities are compatible;
 the selected home is then used consistently for follow-up commands such as the
@@ -794,7 +825,7 @@ SSH-to-paired upgrade.
 
 ### A remote machine whose brain is not running
 
-The SSH relay on a POSIX remote runs `ade --socket ... rpc --stdio`, and an
+The SSH relay on a POSIX remote runs `daex --socket ... rpc --stdio`, and an
 explicit `--socket` turns off the CLI's own spawn and service repair, so a
 machine with no brain answers with `ENOENT` or `ECONNREFUSED` on its socket.
 Who asked for the connect decides what happens next
@@ -802,7 +833,7 @@ Who asked for the connect decides what happens next
 
 - A connect the person asked for (`"user"`: Add machine, Test, Connect, Try
   again, opening or switching to a project on that machine) runs
-  `ade brain start --text` over SSH, which installs the login service (or ADE's
+  `daex brain start --text` over SSH, which installs the login service (or DAEX's
   own supervised process where no service manager answers) and waits for the
   handover, then dials again every 2 seconds for up to 90 seconds
   (`REMOTE_BRAIN_SOCKET_WAIT_MS`). Disconnecting or removing the target
@@ -823,7 +854,7 @@ Windows remote already starts a brain from the relay (no `--socket`), so the
 desktop never runs a start there; the message shows the PowerShell command
 (`$env:ADE_HOME = ...; & '<binary>' brain start`). An SSH server that opened
 the connection but refuses to run a command ("Unable to exec", often
-`MaxSessions` or a forced command) gets a plain message naming the step ADE was
+`MaxSessions` or a forced command) gets a plain message naming the step DAEX was
 on and the check to run (`ssh <user>@<host> true`).
 
 Each step of a connect has its own time limit, and an event read or
@@ -843,7 +874,7 @@ poll to join, and the pump polls again two seconds later. The IPC budget for
 `ade.remoteRuntime.streamEvents` is 2.5 minutes, just above the ceiling, so
 main always answers with the step before the generic IPC deadline fires.
 
-When the brain's socket drops under an `ade rpc --stdio` relay, the relay
+When the brain's socket drops under an `daex rpc --stdio` relay, the relay
 passes the brain's own typed errors through unchanged and answers calls in
 flight with `brain_connection_lost`. Its `data` is structured only: brain state
 (`alive`, `exited`, `exited_and_replaced`, `unknown`), heartbeat age, the
@@ -902,7 +933,7 @@ surface:
   and, on the relay, the same account proof a real connect carries
   (`resolveAccountRelayProof`). A host keeps one connection per device and
   closes the older one ("Superseded by a newer connection for this device"),
-  which the client then reads as another ADE using the pairing and stops
+  which the client then reads as another DAEX using the pairing and stops
   reconnecting. So a host that advertises `features.connectionProbe` answers a
   probe hello and closes it before arbitration, and while this app has a paired
   connection open or opening to a host that has not advertised it
@@ -927,7 +958,7 @@ surface:
   `sync.checkReachability` over that machine's own connection
   (`callMachineMethod`, 30 s, no retry) and rewrites "this computer" to the
   machine's name (`describeReportForMachine`). A machine that is not
-  connected has no section; one running an older ADE answers "can't check
+  connected has no section; one running an older DAEX answers "can't check
   itself" with the fix to update it.
 
 **A frozen host says so.** While a machine is frozen, its clients cannot tell
@@ -940,9 +971,9 @@ of a timestamp, so clients need no clock sync. The desktop keeps it on the
 machine's connection status (`hostStall`, a note under the row for 10
 minutes) and shows one toast per freeze; the web client toasts it from its
 hello; iOS shows it on the Connection card. "Its CPU is overloaded (load 21 on
-8 cores)" when load exceeds the cores, otherwise "ADE there was too busy to
+8 cores)" when load exceeds the cores, otherwise "DAEX there was too busy to
 answer". A restart that ended a wait on a file call names the folder
-(`lastStall.blockedPath`): "ADE there waited 42s to read /Volumes/Dev/… and
+(`lastStall.blockedPath`): "DAEX there waited 42s to read /Volumes/Dev/… and
 restarted itself. macOS may have been asking for permission on its screen."
 
 While a project folder there is not answering (see
@@ -956,7 +987,7 @@ connects while that folder waits may not get through. The desktop keeps it on
 the machine's connection status (`hostStorageWait`, a note under the row while
 connected) and toasts it once; the web client toasts it; iOS shows it on the
 Connection card. "Studio is waiting for permission. macOS is asking on Studio's
-screen whether ADE may use /Volumes/Dev/Projects/ADE. Click Allow there."
+screen whether DAEX may use /Volumes/Dev/Projects/ADE. Click Allow there."
 (`describeHostStorageWait`). The host's own self-check lists it as a "Project
 folders" row. Older clients ignore the envelope. The web client's close
 messages name the cause too: 4501 says the computer is not connected to the
@@ -970,13 +1001,13 @@ Version skew and capability skew do not fail the connect. The bootstrap performs
 - Runtime version mismatch, shown as the machine row's version chip (`X → Y`) rather than a sentence; the older machine is the one to update.
 - Remote package channel mismatch (e.g. desktop is `alpha`, remote runtime advertises `stable`).
 - Missing `machineProjects` capabilities — `browseDirectories`, `getDetail`, `getWorkSummary`, `getDefaultParentDir`, `create`, `clone`, `listMyGitHubRepos`. These map to the `projects.*` RPCs the renderer uses for the project picker / new-project / clone flows. Missing capabilities do not block connect, but the connection pool refuses the matching call with a self-describing error when the renderer attempts it (e.g. `Remote ADE service 0.7.2 does not support cloning remote projects.`).
-- The bootstrap fell back to a different ADE home (`Using remote runtime home .ade-alpha because .ade did not contain an ADE service for darwin-arm64.`).
+- The bootstrap fell back to a different DAEX home (`Using remote runtime home .ade-alpha because .ade did not contain a DAEX service for darwin-arm64.`).
 
 ## Runtime artifact layout
 
 A desktop package carries **only its own build target's** `ade-<platform-arch>`
 binary and matching `.native.tar.gz` archive in `apps/desktop/resources/runtime/`,
-plus the packaged ADE CLI resources that include `ptyHostWorker.cjs` for remote
+plus the packaged DAEX CLI resources that include `ptyHostWorker.cjs` for remote
 terminal hosting. A foreign-platform payload fails the build: all five targets
 would push the macOS update ZIP past the 1 GiB Squirrel.Mac limit (see
 [desktop-auto-update.md](../onboarding-and-settings/desktop-auto-update.md)).
@@ -1003,8 +1034,8 @@ might need to upload — see "Sidecar fetch fallback" below.
 for its own local brain.
 
 Desktop distributable builds also package `apps/desktop/resources/agent-skills/`.
-Remote bootstrap copies that directory into the selected remote ADE home as
-`agent-skills/`; the CLI then re-seeds ADE-managed skills into runtime-native
+Remote bootstrap copies that directory into the selected remote DAEX home as
+`agent-skills/`; the CLI then re-seeds DAEX-managed skills into runtime-native
 home skill directories on launch.
 
 `apps/desktop/scripts/validate-runtime-resources.mjs` is the preflight that fails the package step when artifacts are missing. Release builds populate the resource directory from the runtime-binary CI workflow's artifacts via `materialize-runtime-resources.mjs`. For local same-platform packaging, build into the resource directory directly:
@@ -1034,7 +1065,7 @@ or behind the desktop that installed it. A version that is not a release tag
 
 | Step | Behavior |
 | --- | --- |
-| Cache location | `<machine ADE dir>/runtime-sidecars/<tag>/<target>/` — channel-scoped like the rest of the ADE home, since an Alpha desktop uploads Alpha bytes. Overridable via `RemoteSidecarDeps.cacheRoot` in tests. |
+| Cache location | `<machine .ade dir>/runtime-sidecars/<tag>/<target>/` — channel-scoped like the rest of the DAEX home, since an Alpha desktop uploads Alpha bytes. Overridable via `RemoteSidecarDeps.cacheRoot` in tests. |
 | Download | `ade-<target>[.exe]`, `ade-<target>.native.tar.gz`, and that release's `SHA256SUMS`, into a `.staging-<target>-XXXXXX` dir inside the version dir. |
 | Verify | Every asset is checked against the release's own `SHA256SUMS`. A missing entry is as fatal as a mismatch. |
 | Publish | `rename(staging, cacheDir)` — same volume by construction. Losing the race to a concurrent bootstrap adopts its (equally verified) copy; a half-written directory from an interrupted run is removed and re-published rather than wedging every future fetch. |
@@ -1057,7 +1088,7 @@ starts.
 
 ## Standalone runtime install
 
-For headless machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Windows 10 22H2 and Windows 11 x64 machines can install the standalone brain locally or be bootstrapped through Windows OpenSSH Server. Release publishing includes `install.sh`, `install.ps1`, `SHA256SUMS`, the `ade-<platform-arch>` binaries (with `.exe` for Windows), and matching native dependency archives. Desktop bootstrap uploads bundled runtime artifacts on first connect, verifies size and SHA-256 through native platform tools, and launches `ade rpc --stdio` with the channel-specific ADE home. Windows SSH bootstrap requires PowerShell 5.1 or newer and `tar.exe`; WSL, ARM64, and Windows Server are not supported in Windows v1.
+For headless machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Windows 10 22H2 and Windows 11 x64 machines can install the standalone brain locally or be bootstrapped through Windows OpenSSH Server. Release publishing includes `install.sh`, `install.ps1`, `SHA256SUMS`, the `ade-<platform-arch>` binaries (with `.exe` for Windows), and matching native dependency archives. Desktop bootstrap uploads bundled runtime artifacts on first connect, verifies size and SHA-256 through native platform tools, and launches `daex rpc --stdio` with the channel-specific DAEX home. Windows SSH bootstrap requires PowerShell 5.1 or newer and `tar.exe`; WSL, ARM64, and Windows Server are not supported in Windows v1.
 
 ```bash
 curl -fsSL https://ade-app.dev/install.sh | sh
@@ -1076,9 +1107,9 @@ These are the promoted URLs; `apps/web/api/install.ts` serves them by proxying t
 - verifies downloaded runtime assets against `SHA256SUMS`,
 - installs the binary to `$ADE_INSTALL_DIR` (default `$ADE_HOME/bin`),
 - extracts the native modules to `$ADE_HOME/runtime/<platform-arch>/`,
-- verifies with `ade --version`,
-- best-effort registers the per-user login service via `ade brain start` on macOS and systemd Linux — not `serve --install-service`, which inherits an unset `ADE_DEFAULT_ROLE`, registers the brain at role `agent`, and makes `ade connect` fail on every clean install.
-- hands off to `ade setup` for everything after that: pinned agent CLIs, account, desktop app, end-to-end verification, and a closing summary. The same command re-runs the flow at any time.
+- verifies with `daex --version`,
+- best-effort registers the per-user login service via `daex brain start` on macOS and systemd Linux — not `serve --install-service`, which inherits an unset `ADE_DEFAULT_ROLE`, registers the brain at role `agent`, and makes `daex connect` fail on every clean install.
+- hands off to `daex setup` for everything after that: pinned agent CLIs, account, desktop app, end-to-end verification, and a closing summary. The same command re-runs the flow at any time.
 
 Environment overrides:
 
@@ -1087,18 +1118,18 @@ Environment overrides:
 - `ADE_RELEASE_REPO=owner/repo` — fetch from a fork.
 - `ADE_HOME=/path/to/.ade` — alternate per-machine state root.
 
-After install, the headless machine can already serve clients. Desktop ADE on a developer laptop adds it as a remote target; the `ade` CLI works on the headless machine itself.
+After install, the headless machine can already serve clients. Desktop DAEX on a developer laptop adds it as a remote target; the `ade` CLI works on the headless machine itself.
 
 There are two ways to make that machine reachable, and they are independent:
 
 - **SSH remote target** — the desktop bootstraps and tunnels to it. No account involved. Covered by the rest of this document.
-- **Account-published machine** — run `ade connect` (or `ade connect --headless` over SSH, where no browser is available) on the box itself. It signs in, installs the per-user login service, and waits for the machine's row to reach the account directory, after which desktop, the web client, and iOS can all reach it without SSH. The install scripts run this for you as `ade setup`'s account step. No project is required: a headless box with an empty `~/.ade/projects.json` publishes itself and dials the relay as soon as its brain holds the machine sync-host lease. See `apps/ade-cli/README.md` §"ADE account auth" for the three-step contract and why the brain must stay running for the machine to stay published.
+- **Account-published machine** — run `daex connect` (or `daex connect --headless` over SSH, where no browser is available) on the box itself. It signs in, installs the per-user login service, and waits for the machine's row to reach the account directory, after which desktop, the web client, and iOS can all reach it without SSH. The install scripts run this for you as `daex setup`'s account step. No project is required: a headless box with an empty `~/.ade/projects.json` publishes itself and dials the relay as soon as its brain holds the machine sync-host lease. See `apps/ade-cli/README.md` §"DAEX account auth" for the three-step contract and why the brain must stay running for the machine to stay published.
 
 Headless hosts update through the same binary, without requiring the desktop app:
 
 ```bash
-ade brain update --text
-ade brain update status --text
+daex brain update --text
+daex brain update status --text
 ```
 
 The update command stages the next release under `$ADE_HOME/runtime/updates/`, verifies the staged binary with the staged native deps, promotes the binary/native deps into place, and restarts the per-user brain service. A connected mobile or desktop controller should expect the sync/RPC connection to drop briefly while the brain restarts.
@@ -1111,14 +1142,14 @@ A standalone brain (`$ADE_HOME/bin/ade serve`, a Node SEA) has no app
 - **Native helpers** (`nativeHelperPaths.ts`, `simHelperClient.ts`). After the
   usual places (beside its own binary in `bin/resources/native`, where SSH
   bootstrap uploads them), it looks in its runtime archive
-  (`$ADE_RUNTIME_ROOT/native/`), then in the installed ADE app's
+  (`$ADE_RUNTIME_ROOT/native/`), then in the installed DAEX app's
   `Contents/Resources/native` (Windows: `resources\native`). The app is the one
   the desktop recorded in `$ADE_HOME/runtime/desktop-app.json`, then the
   channel's app (`ADE`, `ADE Alpha`, or `ADE_DESKTOP_APP_NAME`) in
   `/Applications` and `~/Applications`, skipping a bundle whose id is another
   channel's, and last the app Spotlight finds by the channel's bundle id (a miss is asked again after five minutes).
   A Spotlight hit counts only when `codesign --verify --strict` passes and its
-  team is the installed app's (ADE's own team when none is installed), so a
+  team is the installed app's (DAEX's own team when none is installed), so a
   copy in a disk image, the Trash or Downloads is never run. Unsigned dev
   builds keep their explicit paths. The
   darwin runtime archive ships `ade-sim-helper` and `ade-media`, so the brain
@@ -1155,19 +1186,19 @@ screen of the person talking to the chat, not on both.
   sent without a stamp (the phone, the CLI, another agent) resets it to
   unknown. Only a user client may supply a stamp; the runtime strips one from
   an agent's call.
-- **Requests carry `targetClientId`.** `ade ui show` and the agent-driven
+- **Requests carry `targetClientId`.** `daex ui show` and the agent-driven
   floating offers (`work_tool_show_request`), forwarded browser opens
   (`built_in_browser_remote_request`) and Apple drawer reveals
   (`drawer-open-requested`) name the sending desktop. A desktop acts on a
   request only when the target is empty or is its own id
-  (`renderer/lib/desktopClient.ts`). An `ade ui show` that the target does not
+  (`renderer/lib/desktopClient.ts`). An `daex ui show` that the target does not
   answer within 4 s goes out again with no target. It keeps the same request
   id, so the target ignores the repeat if it was only slow.
 - **Unacknowledged requests only follow a recent sender.** Automatic float
   offers and Apple drawer reveals have no answer to fall back on, so they are
   addressed to the sender only while its last message is under 10 minutes old
   (`RECENT_INPUT_ORIGIN_MS`), and to every desktop after that. When the
-  addressed desktop answers `held`, `ade ui show` asks every desktop at once
+  addressed desktop answers `held`, `daex ui show` asks every desktop at once
   and waits 3.5 s for one of them to show it.
 - **Unknown means everywhere.** After a runtime restart, or for a chat nobody
   has messaged from a desktop, requests carry no target and every desktop
@@ -1181,14 +1212,14 @@ Browser status, and the launchpad chips. The Studio's runtime finds the
 server (terminal output, agent shell output, a listener scan that never
 polls; see `docs/features/chat/README.md`), publishes `dev_server_event`, and
 answers `work_tools.listDevServers` and `work_tools.probePort`. Nothing opens
-by itself. Clicking opens the page in the MacBook's ADE browser through the
+by itself. Clicking opens the page in the MacBook's DAEX browser through the
 tunnel.
 
-Local project bindings use the local ADE runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, native GitHub stacks, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
+Local project bindings use the local DAEX runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, native GitHub stacks, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 
 Removing or disconnecting a machine never closes a project that exists elsewhere. A project tab is the repo, so its remote binding is only a default: when the machine goes away, the tab falls back to another checkout of the same repo — the local checkout first, then another connected machine — and only a repo that lives nowhere else closes. A disconnect keeps the tab and its view state, with the disconnected machine's lanes, chats, and terminals simply gone from the project; a remove does the same but also forgets the machine's saved details and remembered route. The Connections confirmation names which open tabs stay and which close.
 
-## The ADE browser for a remote chat
+## The DAEX browser for a remote chat
 
 The built-in browser belongs to a desktop (its main process owns the
 `WebContentsView`). A brain only proxies calls to it over the desktop bridge
@@ -1207,8 +1238,8 @@ socket. So a pin never moves the browser's event stream; it changes where
   simulator and App Control on `isRemoteProject`. A chat on a remote tab's own
   runtime has no pin; `ChatBuiltInBrowserPanel` falls back to
   `projectBinding`, so it still tunnels.
-- **A brain with no browser.** `ade browser open <url>` on a machine that runs
-  only `ade serve` emits `built_in_browser_remote_request` and returns
+- **A brain with no browser.** `daex browser open <url>` on a machine that runs
+  only `daex serve` emits `built_in_browser_remote_request` and returns
   `{ status: "forwarded_to_desktop", requestId }`. A desktop that holds a pin
   for that lane runs it through the same approval and forward path and answers
   with `built_in_browser.acknowledgeRemoteRequest` ("Opened on <desktop> via
@@ -1221,7 +1252,7 @@ socket. So a pin never moves the browser's event stream; it changes where
   for one machine. `main/services/builtInBrowser/remoteRequestClaims.ts` grants
   the first claim per id and refuses the rest (ids kept 60 s, at most 500). A
   request with no id is let through.
-- **The browser where the user sits.** An agent's `ade browser` commands run
+- **The browser where the user sits.** An agent's `daex browser` commands run
   in the browser of the desktop that sent its chat the last message (see
   [Which desktop shows it](#which-desktop-shows-it)), when that desktop is not
   the agent's machine. The user watches it in their pane, with their sign-ins.
@@ -1253,7 +1284,7 @@ socket. So a pin never moves the browser's event stream; it changes where
     everywhere before it fails, and the error lists the machines asked. A
     holder that does not answer is an error, never a run elsewhere.
   - Broadcasts (`remoteBrowserBroadcast.ts`) reach every desktop with a pin on
-    this machine: `listTabsForAgent` (`ade browser status`), `releaseLaneTabs`
+    this machine: `listTabsForAgent` (`daex browser status`), `releaseLaneTabs`
     on a lane delete or archive, and `chatBrowserLifecycle` as a chat starts,
     finishes or ends. A tab list waits for the desktops that answered last
     time (or 1.2 s); after an unanswered list, lists stop for two minutes or
@@ -1269,7 +1300,7 @@ socket. So a pin never moves the browser's event stream; it changes where
     phone or the CLI; `--here`. `upload`, `har` and `record` are refused with a
     pointer to `--here` unless the tab is local.
   - Every result names where it ran (`browserHost`), every error the machine
-    that refused (`builtInBrowserErrorOnMachine`). `ade browser status`
+    that refused (`builtInBrowserErrorOnMachine`). `daex browser status`
     prints the route and every machine's tabs.
   - Known limits: a tunnelled tab reports its forward port to the agent; a
     remote personal chat is served only after its pane was shown here; a
@@ -1285,7 +1316,7 @@ socket. So a pin never moves the browser's event stream; it changes where
   chat's pin (`openLinkFromUi(url, event, { runtimePin })`); with no pin,
   `withLocalizedBrowserUrl` uses the window's binding. A mounted Browser panel
   takes the click; otherwise the link waits in `pendingBrowserLinkOpens` (3 s
-  fallback). Another machine's `localhost` always opens in the ADE browser.
+  fallback). Another machine's `localhost` always opens in the DAEX browser.
 
 ## A slow or dropping link
 
@@ -1298,7 +1329,7 @@ of the last three round trips are 400 ms or more, or two connections dropped
 within five minutes. It turns off only after five round trips under 250 ms with
 no drop in five minutes, so a link near the line does not flicker. The samples
 are the dial's latency and the 30 s maintenance ping; the drops are connection
-evictions that are not a hand-over to another ADE. A ping that a freeze of the
+evictions that are not a hand-over to another DAEX. A ping that a freeze of the
 machine's brain delayed is not a sample: the brain's reply then carries
 `hostFrozenMs` (`brainPingReply`, `RuntimePingReply`), because that round trip
 measured the freeze, not the network. The result rides the
@@ -1401,11 +1432,11 @@ minutes (round trip percentiles, drops, bytes, route, mode), plus a switch line
 iOS uses SSH only as an optional one-time pairing bootstrap. Routine mobile
 traffic always uses the paired sync WebSocket advertised on the LAN, through a
 Tailscale tailnet, or through the relay. Install Tailscale on the phone and the
-ADE machine for a direct route when they are not on the same local network.
+DAEX machine for a direct route when they are not on the same local network.
 
 On desktop, the **This computer** card and **Connections > Phone**/**Web** tabs
 are runtime controls that always describe the **physical computer running this
-ADE desktop**, even while the window is bound to a remote project. Most
+DAEX desktop**, even while the window is bound to a remote project. Most
 `window.ade.sync.*` calls follow the active binding and would report the remote
 machine, so the Connections panel reads its identity, pairing code, and local
 device lists through `window.ade.sync.getLocalStatus(...)`, which deliberately
@@ -1427,32 +1458,32 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 ## Troubleshooting
 
 - `Remote target was not found` — the saved target was removed or the UI has a stale selection. Refresh the target list.
-- `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; ADE will not implicitly reconnect or restore it until Connect is pressed.
-- `Not connected · you disconnected it on <date>` — the row's line for a manual disconnect. The same rule applies: ADE waits for Connect.
-- `Not connected · Reconnect automatically is off` — the machine has connected before, but its **Reconnect automatically** checkbox (Edit) is off, so ADE does not reconnect it when the app opens. Connect makes a one-off connection and leaves the checkbox as it is. A machine that has never connected shows `Never connected` instead.
+- `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; DAEX will not implicitly reconnect or restore it until Connect is pressed.
+- `Not connected · you disconnected it on <date>` — the row's line for a manual disconnect. The same rule applies: DAEX waits for Connect.
+- `Not connected · Reconnect automatically is off` — the machine has connected before, but its **Reconnect automatically** checkbox (Edit) is off, so DAEX does not reconnect it when the app opens. Connect makes a one-off connection and leaves the checkbox as it is. A machine that has never connected shows `Never connected` instead.
 - `Slow connection to <machine> · <rtt> ms` in a chat's composer — slow-connection mode is on for that machine (its X hides it until the link recovers), so pictures wait for a click and a plain-shell terminal types ahead. **Slow connection mode** in the machine's **Edit** panel turns it off or forces it on. See [A slow or dropping link](#a-slow-or-dropping-link).
-- `Remote ADE service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
-- `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy. An sshd that saw many refused sign-ins from this computer also does this for a while (OpenSSH source penalties).
-- `SSH authentication failed for user(s) … ADE won't retry on its own. Fix this, then press Try again.` — the server refused every key. ADE stops retrying so it does not repeat the refusal on a timer; fix the user or key, then press Try again or edit the machine.
-- `The SSH host key of <host:port> is not the one ADE trusts for this machine.` — the key does not match `known_hosts`. ADE stops retrying until the key is trusted again or Try again is pressed.
+- `Remote DAEX service connection failed.` — the target is currently unreachable or its route failed. Automatic reconnects continue with bounded backoff; press Connect to bypass the current backoff when you want an immediate retry.
+- `SSH server at <host:port> closed the connection before DAEX could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy. An sshd that saw many refused sign-ins from this computer also does this for a while (OpenSSH source penalties).
+- `SSH authentication failed for user(s) … DAEX won't retry on its own. Fix this, then press Try again.` — the server refused every key. DAEX stops retrying so it does not repeat the refusal on a timer; fix the user or key, then press Try again or edit the machine.
+- `The SSH host key of <host:port> is not the one DAEX trusts for this machine.` — the key does not match `known_hosts`. DAEX stops retrying until the key is trusted again or Try again is pressed.
 - `Nothing is accepting SSH connections at <host:port>.` (kind `unreachable`) — the port refused the connection (for `localhost`, on both IPv4 and IPv6). The machine is off, sshd is not running, or a port forward is missing. Automatic reconnects continue with backoff.
-- `ADE service is not installed ... no bundled ADE service is available` — install or build `ade` on the remote, or use a release build that includes runtime resources for the remote architecture.
-- `Uploaded ADE service version mismatch: expected X, got Y` — the uploaded binary did not report the expected runtime version. Rebuild the static runtime artifacts for the current desktop version.
-- `Remote ADE service does not support multi-project mode` — the remote is running an older ADE before multi-project RPC. Re-bootstrap from a current desktop build.
-- `ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.` — ADE could not initialize any compatible installed service. Expand technical details to see each channel home and the launch, initialization, or capability-negotiation failure.
-- `Remote ADE service <version> does not support <capability>.` — the remote runtime connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update ADE on that machine.
-- `Remote ADE service method <method> failed (code N): <message> Details: ...` — a remote handler failed; the JSON-RPC `code`, `message` and `data` are shown together.
-- `Remote ADE service connection was interrupted before ADE could confirm the action result. ADE reconnected …` — the link dropped while a call that must not run twice was in flight. The machine is reachable, so the connection status stays healthy; only that call's result is unknown. Idempotent writes the desktop sends on its own (`work_tools.setActiveTool`, `pr.reconcileOnFocus`, `session.clearWokeMarker`) are replay-safe and run again instead.
-- `Remote ADE service timed out waiting for method ...` — only that request expired. The shared runtime connection and event subscriptions remain live; retry explicitly if the operation is still needed, because ADE does not replay timed-out mutations automatically.
-- A cross-machine handoff warning that ADE lost confirmation — destination
+- `DAEX service is not installed ... no bundled DAEX service is available` — install or build `daex` on the remote, or use a release build that includes runtime resources for the remote architecture.
+- `Uploaded DAEX service version mismatch: expected X, got Y` — the uploaded binary did not report the expected runtime version. Rebuild the static runtime artifacts for the current desktop version.
+- `Remote DAEX service does not support multi-project mode` — the remote is running an older DAEX before multi-project RPC. Re-bootstrap from a current desktop build.
+- `DAEX couldn't connect to this machine. Check that DAEX is open there, then press Try again.` — DAEX could not initialize any compatible installed service. Expand technical details to see each channel home and the launch, initialization, or capability-negotiation failure.
+- `Remote DAEX service <version> does not support <capability>.` — the remote runtime connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update DAEX on that machine.
+- `Remote DAEX service method <method> failed (code N): <message> Details: ...` — a remote handler failed; the JSON-RPC `code`, `message` and `data` are shown together.
+- `Remote DAEX service connection was interrupted before DAEX could confirm the action result. DAEX reconnected …` — the link dropped while a call that must not run twice was in flight. The machine is reachable, so the connection status stays healthy; only that call's result is unknown. Idempotent writes the desktop sends on its own (`work_tools.setActiveTool`, `pr.reconcileOnFocus`, `session.clearWokeMarker`) are replay-safe and run again instead.
+- `Remote DAEX service timed out waiting for method ...` — only that request expired. The shared runtime connection and event subscriptions remain live; retry explicitly if the operation is still needed, because DAEX does not replay timed-out mutations automatically.
+- A cross-machine handoff warning that DAEX lost confirmation — destination
   acceptance was already dispatched, but its request timed out or the runtime
   connection closed. The destination may still finish. Check that machine
   before retrying; the handoff ID makes an explicit retry reconcile the same
   destination lane/chat rather than automatically replaying the mutation.
 - "Couldn't look for computers on this Wi-Fi" warning on the Connections pane — the one discovery diagnostic, from a failed Bonjour scan. Account computers are still listed. Tailscale discovery never reports a problem here; Tailscale's status lives in Account → Private network.
-- "Repair" next to the This Mac / route-publish failure — this Mac's brain cannot read the stored account session, so it never publishes to the account directory even though the app is signed in. The button restarts `com.ade.runtime` and waits for the replacement to answer; the new process re-reads the keychain from scratch. If it reports "Repair failed — quit and reopen ADE", a newer runtime is usually already running and must not be forced down.
+- "Repair" next to the This Mac / route-publish failure — this Mac's brain cannot read the stored account session, so it never publishes to the account directory even though the app is signed in. The button restarts `com.ade.runtime` and waits for the replacement to answer; the new process re-reads the keychain from scratch. If it reports "Repair failed — quit and reopen DAEX", a newer runtime is usually already running and must not be forced down.
 - Agent provider missing or signed out — the inline `AgentCliAuthCard` downloads it, and the composer's sign-in card signs it in, on the chat's machine.
-- "<Machine> says this device's pairing is out of date — pair it again." — the paired host was reached and it *rejected* this desktop, so the other routes' `timed out`/`no answer` entries under **Details** are noise. A host names itself in `hello_error.host`; when that is not the saved host (another ADE now answers at the address), the attempt is `identity`, never `pairing` (`PairedRuntimeHostMismatchError`, telemetry code `host_mismatch`), and the address is forgotten. A host too old to name itself is still read as the paired host. When the machine is also on this ADE account the error card carries a **Pair again** button, which re-runs account-directory adoption (`account.pairMachine`) for that machine. Nothing re-pairs on its own.
+- "<Machine> says this device's pairing is out of date — pair it again." — the paired host was reached and it *rejected* this desktop, so the other routes' `timed out`/`no answer` entries under **Details** are noise. A host names itself in `hello_error.host`; when that is not the saved host (another DAEX now answers at the address), the attempt is `identity`, never `pairing` (`PairedRuntimeHostMismatchError`, telemetry code `host_mismatch`), and the address is forgotten. A host too old to name itself is still read as the paired host. When the machine is also on this DAEX account the error card carries a **Pair again** button, which re-runs account-directory adoption (`account.pairMachine`) for that machine. Nothing re-pairs on its own.
 - The headline never lists routes. It is one sentence derived from the dominant attempt failure; every host, port, duration and the diagnostic ID stay in the collapsed **Details** list built from `RemoteRuntimeConnectErrorInfo.attempts`.
 - Attempt failures are classified from the host's structured `hello_error.code`, never from its message text — see [When the connect fails, the user reads one sentence](#when-the-connect-fails-the-user-reads-one-sentence) for the code table. Both `repair_required` and `auth_failed` mean the same thing to a paired client, so iOS treats them identically when deciding whether a saved pairing may be dropped — and only ever when the rejecting host's identity matches the saved pairing.
 - `wrong machine answered` in **Details** — the address answered as a different host. That endpoint is *forgotten* rather than demoted: the endpoint list is otherwise append-only (recording a failure re-adds the address, and a demoted address is still dialled, last, until it answers or mDNS sees it again), so a neighbour's tailnet name that once landed in the record would be dialled on every connect.
@@ -1492,7 +1523,7 @@ Three logs make a lost pairing diagnosable:
   including every authentication failure — logs `sync_host.peer_closed` at
   info.
 - Desktop: `account.local_machines_removed`, written at **warn** to the
-  machine-scoped `<machine ade dir>/runtime/account-trust.jsonl` (and mirrored
+  machine-scoped `<machine daex dir>/runtime/account-trust.jsonl` (and mirrored
   at info to the project logger). The machine-scoped sink is the load-bearing
   one: dropping a paired secret is a machine-level credential mutation, and the
   project logger follows the active project, which on a remote-bound project
@@ -1523,7 +1554,7 @@ one host control socket per `machineKey` and evicts the previous holder with
 close code `4505`, so two brains that both dial it would evict each other in a
 loop. A `4505` close therefore suppresses redialing (bounded
 re-attempts on a 60 s floor, then a stop with a 10-minute re-arm) and surfaces
-as `routeHealth.relay.relayControlSuppressed` in `ade doctor` and in the
+as `routeHealth.relay.relayControlSuppressed` in `daex doctor` and in the
 desktop relay banner, rather than being retried as if it were a network fault.
 The gate rides out the momentary authority gap of an in-process project switch
 with a 5 s grace and re-attaches the host listener on every start, because
@@ -1531,21 +1562,21 @@ with a 5 s grace and re-attaches the host listener on every start, because
 control socket with no bridge, rejecting every phone connect with "host sync
 listener unavailable".
 
-ADE advertises its sync port with `tailscale serve --bg --tcp=<port>`. That
+DAEX advertises its sync port with `tailscale serve --bg --tcp=<port>`. That
 outlives the process that registered it, so the served port is reclaimed after
 each successful publish (`staleAdeTailnetServePorts` +
 `reclaimStaleTailnetServes`). Without it every restart — and every force-kill
-that skips teardown — leaves an entry that Tailscale keeps bound, and ADE's next
+that skips teardown — leaves an entry that Tailscale keeps bound, and DAEX's next
 bind fails `EADDRINUSE` and walks one port higher, again and again.
 
-Only ADE's exact signature is reclaimed — a port inside ADE's sync range
+Only DAEX's exact signature is reclaimed — a port inside DAEX's sync range
 forwarding to `127.0.0.1` on the **same** port — so a hand-rolled
 `tailscale serve` is left alone, and the live port is re-checked inside the loop
 because reclaiming frees exactly the low ports a restarting host prefers.
 
-Beside the TCP entry, ADE publishes a secure route for browsers:
+Beside the TCP entry, DAEX publishes a secure route for browsers:
 `tailscale serve --bg --https=<sync port + 10000> http://127.0.0.1:<sync port>`
-(`publishTailnetHttps`), advertised to the account directory as a `tailnet`
+(`createTailnetHttpsServe`), advertised to the account directory as a `tailnet`
 endpoint with `url: wss://<name>.ts.net:<port>`. It needs MagicDNS and HTTPS
 certificates on the tailnet; `tailscale status --json` (`CertDomains`, read by
 `tailscaleLocalStatus.ts` with a one-minute cache) says which is missing, and
@@ -1568,7 +1599,7 @@ Windows supervisor react only to an **exit**, so three layers cover a hang:
 - **In-process.** `brainLoopWatchdog` runs a worker thread that SIGKILLs the
   brain when the event loop stalls past its threshold. It cannot help when the
   worker never starts or dies with the process.
-- **External.** The brain writes `<ADE home>/runtime/heartbeat.json`
+- **External.** The brain writes `<ade home>/runtime/heartbeat.json`
   (`{pid, ts, seq, startedAt}`) every 15 s from a timer that ticks while idle
   (`services/runtime/brainHeartbeat.ts`). A watcher kills a brain whose beat is
   older than 90 s **and** whose pid is alive. An absent or unreadable heartbeat
@@ -1590,7 +1621,7 @@ Windows supervisor react only to an **exit**, so three layers cover a hang:
   `ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s (a positive integer wins,
   never below 30 s), and the suspend floor rescales with it.
   - *macOS*: a separate launch agent, `com.ade.watchdog` (`.alpha` for Alpha),
-    `StartInterval` 60 s, runs `ade runtime watchdog-check` from the brain's
+    `StartInterval` 60 s, runs `daex runtime watchdog-check` from the brain's
     binary. It is installed and removed with the brain's agent, best effort.
     Each check is a fresh process, so it reads the variable each time.
   - *Windows*: the PowerShell supervisor's restart loop waits in 15 s slices and
@@ -1618,7 +1649,7 @@ writes, so the next start promotes it to `last-wedge.json`, logs
 A machine that is stuck, or runs old code because no local desktop noticed,
 must be fixable from wherever the user is. The projectless method
 `machine.updateAndRestart` needs the `cto` role and the authenticated runtime
-RPC endpoint. A paired phone or ADE Web asks for the same run over the sync
+RPC endpoint. A paired phone or DAEX Web asks for the same run over the sync
 commands `machine.updateImpact` and `machine.updateAndRestart`
 (`apps/ade-cli/src/services/sync/machineUpdateRemoteCommands.ts`): any paired
 controller may run them, and a viewer or lane-share guest is refused. One run
@@ -1654,13 +1685,13 @@ standalone runtime installed under it is replaced within milliseconds.
   channel builds) or `failed`. The app's post-update step restarts the brain.
   The same on macOS and Windows.
 - With no app, an app too old for the method, or `unsupported`, the standalone
-  `ade brain update` runs. The reply's `route` (`desktop_app` or `standalone`)
+  `daex brain update` runs. The reply's `route` (`desktop_app` or `standalone`)
   says which, and `pendingVersion` names the version to come back on.
 - A connected Windows machine whose build cannot self-install
   (`isWindowsSelfInstallBlocked`, `shared/updateVersions.ts`) gets no
   `app_update.install`. `runtimeBridge` uses `updateViaRemoteTerminal`
   (`remoteTerminalUpdate.ts`): a remote PTY in the primary lane of that
-  machine's live project runs `ade brain update [--version X]`, and the client
+  machine's live project runs `daex brain update [--version X]`, and the client
   polls `session.get`. Exit 0 or a dropped connection is installing (route
   `terminal`); a refused read while connected is retried, then failed; a
   non-zero exit is failed with a manual hint. It gives up after
@@ -1669,7 +1700,7 @@ standalone runtime installed under it is replaced within milliseconds.
   preflight first, so `failed` carries the reason. See
   [Desktop auto-update](../onboarding-and-settings/desktop-auto-update.md).
 - A brain update this app did not start writes
-  `<ADE home>/runtime/update-status.json`. While it says `staged` (2 min),
+  `<ade home>/runtime/update-status.json`. While it says `staged` (2 min),
   `applying` or `restarting` (5 min), or `succeeded` (60 s), the desktop
   connection pool does not repair the service, so an open app cannot put its
   older runtime back.
@@ -1697,7 +1728,7 @@ sessions and terminals (a restart closes each).
   machines are behind", naming the target) offers **Update all**: one
   confirmation with a block per machine, then the updates in parallel.
 
-**Where it is offered.** General's ADE card has an update row per machine
+**Where it is offered.** General's DAEX card has an update row per machine
 (`components/settings/general/MachineUpdateRows.tsx`), and **Update other
 machines** (`components/settings/OtherMachinesUpdateSection.tsx`) is under Your
 computers on the Account page. Each lists machines with version and track,
@@ -1723,12 +1754,12 @@ The relay control socket authenticates with machine credentials rather than the
 account token, so this costs nothing in reachability terms. Direct LAN and
 tailnet routes to a paired device never consulted account state at all.
 
-## On an ADE Cloud computer
+## On a DAEX Cloud computer
 
-An ADE Cloud computer runs the same brain. On it the brain also keeps the
+A DAEX Cloud computer runs the same brain. On it the brain also keeps the
 account server up to date, so a person reads the lane with no computer awake.
 The server routes and caps are in
-[ADE Cloud with no computer of your own](../ade-cloud/README.md#daex-cloud-with-no-computer-of-your-own).
+[DAEX Cloud with no computer of your own](../ade-cloud/README.md#daex-cloud-with-no-computer-of-your-own).
 Each part below runs only when `isAdeCloudComputer()` is true, except the
 account lane index, which every brain sends.
 
@@ -1768,21 +1799,21 @@ The save runs at three points:
 | When | Budget |
 |---|---|
 | The idle step, before the computer sleeps (`cloudKeepAwake.ts`) | 90 s |
-| `ade cloud prepare-stop`, in the time left after the chats | what is left |
-| `ade cloud save-for-rest [--capsules]`, which the server's idle cleanup runs between push-work and the check | 200 s |
+| `daex cloud prepare-stop`, in the time left after the chats | what is left |
+| `daex cloud save-for-rest [--capsules]`, which the server's idle cleanup runs between push-work and the check | 200 s |
 
 Each one makes capsules. `--capsules` only names the cleanup in the log.
 
-What the save already sent is kept in `<ADE home>/cloud/rest-save.json`. A
+What the save already sent is kept in `<ade home>/cloud/rest-save.json`. A
 disk copy under a new machine key saves everything again.
 
 ### Messages that waited while it slept
 
 The queue drain (`cloudChatMessageQueue.ts`) runs 15 s after the brain starts,
 when the brain signs in, when the computer wakes, and when the server runs
-`ade cloud messages drain`. For each message it claims the
+`daex cloud messages drain`. For each message it claims the
 message, sends it, and reports `delivered` or `failed`. A journal in
-`<ADE home>/cloud/chat-messages.json` makes sure a crash between the send and
+`<ade home>/cloud/chat-messages.json` makes sure a crash between the send and
 the report never sends a message twice. The messages of one chat go in order:
 a message that waits stops the rest of its chat.
 
@@ -1797,7 +1828,7 @@ a message that waits stops the rest of its chat.
   quiet) for every other CLI. A busy CLI tries again at the next drain.
   Attached files go into the text as a list of paths.
 - **A CLI that is gone** (the computer restarted) gets `failed` with "This CLI
-  isn't running on its computer any more (the computer restarted), so ADE
+  isn't running on its computer any more (the computer restarted), so DAEX
   couldn't type the message. Open the CLI and send the message again."
 
 ### A chat or CLI whose computer was deleted
@@ -1806,7 +1837,7 @@ The server starts a continue launch on a new computer. The new brain makes the
 lane, then restores the chat or CLI with the same id
 (`cloudChatRestore.ts`). The restore reuses the cross-machine move
 destination; see
-[Continue on a new ADE Cloud computer](../sync-and-multi-device/cross-machine-session-handoff.md#continue-on-a-new-ade-cloud-computer).
+[Continue on a new DAEX Cloud computer](../sync-and-multi-device/cross-machine-session-handoff.md#continue-on-a-new-ade-cloud-computer).
 The brain holds the chat's uploads while it restores, then goes on from the
 server's last part.
 
@@ -1816,24 +1847,24 @@ server's last part.
   project's lanes (name, branch, machine, PR number) to `/account/lanes`. A
   lane or PR change makes one write 30 s later, so a burst makes one write. The
   same set makes no write. The
-  last sent set is in `<ADE home>/account-lanes.json`. Every brain publishes,
+  last sent set is in `<ade home>/account-lanes.json`. Every brain publishes,
   not only cloud computers.
 - **Git identity.** `cloudGitIdentity.ts` sets `user.name` and `user.email` on
   a cloud computer to the account's GitHub noreply identity, else
-  `ADE Cloud <cloud@users.noreply.ade-app.dev>`. It never writes over a value
-  a person set. Its record is `<ADE home>/cloud/git-identity.json`.
+  `DAEX Cloud <cloud@users.noreply.ade-app.dev>`. It never writes over a value
+  a person set. Its record is `<ade home>/cloud/git-identity.json`.
 - **Being deleted.** Once the server says the computer is being deleted, the
-  brain refuses new work with "This ADE Cloud computer is being deleted, so it
+  brain refuses new work with "This DAEX Cloud computer is being deleted, so it
   can't take new work. Its lane is saved; continue it on another computer."
 - **Provider logins.** The cloud computer gets the account's sign-ins, and
   access-only copies of the logins in the subscription proxy
-  (`<ADE home>/proxy/auth`, without refresh tokens, `providerLoginCarry.ts`).
+  (`<ade home>/proxy/auth`, without refresh tokens, `providerLoginCarry.ts`).
   The proxy on the person's own computer stays their one owner.
 
 ## Related docs
 
 - [Internal architecture](./internal-architecture.md) — protocol shape, bootstrap sequence, sync command scoping.
-- [ADE Cloud](../ade-cloud/README.md): Linux machines ADE runs for the person, and the provider seam behind them.
-- [ADE CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout, and legacy compatibility command names.
+- [DAEX Cloud](../ade-cloud/README.md): Linux machines DAEX runs for the person, and the provider seam behind them.
+- [DAEX CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout, and legacy compatibility command names.
 - [Sync and Multi-Device](../sync-and-multi-device/README.md) — phone pairing and multi-device sync (hosted by the same runtime).
 - [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md) — route, repository, Git, capsule, and retry contract for continuing a Work chat on another connected machine.

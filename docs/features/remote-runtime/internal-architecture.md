@@ -1,12 +1,12 @@
 # Remote Runtime Internal Architecture
 
-Remote runtime support is built on the same JSON-RPC runtime the local ADE runtime answers. The desktop chooses a runtime binding for each window; the renderer APIs stay stable while preload decides whether to call the local machine runtime or a remote SSH-backed runtime. Both bindings speak the same wire protocol.
+Remote runtime support is built on the same JSON-RPC runtime the local DAEX runtime answers. The desktop chooses a runtime binding for each window; the renderer APIs stay stable while preload decides whether to call the local machine runtime or a remote SSH-backed runtime. Both bindings speak the same wire protocol.
 
 ## Runtime bindings
 
 `OpenProjectBinding` records the active runtime for a window:
 
-- `kind: "local"` — actions go through `LocalRuntimeConnectionPool`, which connects to the machine socket (`~/.ade/sock/ade.sock`) and spawns `ade serve` if it is not running.
+- `kind: "local"` — actions go through `LocalRuntimeConnectionPool`, which connects to the machine socket (`~/.ade/sock/ade.sock`) and spawns `daex serve` if it is not running.
 - `kind: "remote"` — actions go through `RemoteConnectionPool` keyed by `{ targetId, projectId }`.
 
 The binding is established when a project is opened. Local bindings are created from the current desktop project (the desktop calls `LocalRuntimeConnectionPool.ensureProject(rootPath)` to register the project with the daemon and capture its `projectId`). Remote bindings are created by `remoteRuntimeOpenProject` after the selected target is connected and the remote project record is confirmed. Remote opens are generation-guarded twice: preload only remembers the newest `ade.remoteRuntime.openProject` result, and `runtimeBridge.ts` only calls `bindRemoteProject` for the newest in-flight open request from that window/webContents. A slow earlier open can still return its binding to its caller, but it cannot overwrite the window session or `lastRemoteProjectBinding`.
@@ -45,7 +45,7 @@ A window runs one pump for its active binding (`preload.ts`) plus, for every bin
 
 Each `stream_events` response carries a per-runtime `eventEpoch` UUID minted when the daemon's `eventBuffer` is constructed. The pump compares it against the last seen epoch for its binding; if it changes (daemon restart, ssh reconnect to a fresh process) the cursor and dedup set reset and the next poll starts from `cursor=0`. Responses can also include `gap: true` with `oldestCursor` when the requested cursor is older than the bounded replay buffer; preload clears the dedupe set and notifies the project-binding refresh callbacks so renderer projections re-hydrate from authoritative reads instead of assuming no events were missed. Transient events (App Control screencast frames) are delivered live but never retained for replay, so runtime-event ids are not contiguous and `gap` is judged against the newest id lost to eviction rather than the oldest retained id. The `startedAtMs` "drop events older than the pump start" filter is only applied to **local** bindings — remote pumps rely on the epoch reset instead, so older events backfilled after a reconnect are still delivered.
 
-The remote event buffer categories are intentionally narrow: `orchestrator`, `dag_mutation`, `runtime`, and `pty`. Preload dispatches `runtime` events by their payload `type` so domain-specific updates such as agent chat, terminal, lane, PR, file-watch, process, test, project-state, usage, automation, conflict, GitHub, Linear, feedback, Computer Use, iOS Simulator, and App Control changes still reach their dedicated remote subscribers without expanding the wire-level category enum. ade-cli wires these source-tagged payloads into the runtime event buffer in `bootstrap.ts` so a remote-bound window sees the same event fanout as the local host. Headless runtimes attach the shared machine usage tracker (`attachSharedUsageTrackingScope`) during `createAdeRuntime()` after the ADE action registry is bound, so the usage poller and threshold events run only once the runtime can answer the matching usage/budget actions, and every project scope in that process shares one poller.
+The remote event buffer categories are intentionally narrow: `orchestrator`, `dag_mutation`, `runtime`, and `pty`. Preload dispatches `runtime` events by their payload `type` so domain-specific updates such as agent chat, terminal, lane, PR, file-watch, process, test, project-state, usage, automation, conflict, GitHub, Linear, feedback, Computer Use, iOS Simulator, and App Control changes still reach their dedicated remote subscribers without expanding the wire-level category enum. ade-cli wires these source-tagged payloads into the runtime event buffer in `bootstrap.ts` so a remote-bound window sees the same event fanout as the local host. Headless runtimes attach the shared machine usage tracker (`attachSharedUsageTrackingScope`) during `createAdeRuntime()` after the DAEX action registry is bound, so the usage poller and threshold events run only once the runtime can answer the matching usage/budget actions, and every project scope in that process shares one poller.
 
 ## SSH transport
 
@@ -57,11 +57,11 @@ The remote event buffer categories are intentionally narrow: `orchestrator`, `da
 - `SSH_AUTH_SOCK` is passed through as `agent` when available.
 - every config carries a bounded `readyTimeout` (`ADE_REMOTE_SSH_CONNECT_TIMEOUT_MS`, default 10 s) and disables SSH-level keepalives; runtime RPC calls, exec probes, and artifact uploads carry their own timeouts so large channel writes are not interrupted by transport probes.
 
-The runtime transport itself is an SSH `exec` channel running `ade rpc --stdio` (with the channel-aware environment prefix from `buildRemoteRuntimeEnvironmentPrefix`). The channel implements the `RuntimeRpcTransport` interface used by `RuntimeRpcClient`, the same client `LocalRuntimeConnectionPool` uses against a Unix socket.
+The runtime transport itself is an SSH `exec` channel running `daex rpc --stdio` (with the channel-aware environment prefix from `buildRemoteRuntimeEnvironmentPrefix`). The channel implements the `RuntimeRpcTransport` interface used by `RuntimeRpcClient`, the same client `LocalRuntimeConnectionPool` uses against a Unix socket.
 
 Short SSH exec probes use `ADE_REMOTE_SSH_EXEC_TIMEOUT_MS` (default 30 s). Connect failures are normalized before surfacing to the renderer so handshake timeouts, connection resets before ready, and local TCP port exhaustion have actionable messages.
 
-The ADE CLI uses the system OpenSSH client rather than the desktop's
+The DAEX CLI uses the system OpenSSH client rather than the desktop's
 `ssh2` transport, but preserves the same config identity. The destination stays
 the saved target hostname (and therefore remains the `Host` pattern selector in
 `~/.ssh/config`); alternate LAN/tailnet addresses are supplied with
@@ -89,20 +89,20 @@ A remote target stores a primary `hostname` plus an optional `routes` array (`Re
 3. Read the preferred channel home's `bin/ade.version`, `bin/ade.sha256`, and `bin/ade --version` when present.
 4. Locate the bundled `ade-<platform-arch>` binary, `ade-<platform-arch>.native.tar.gz` archive, packaged `ptyHostWorker.cjs`, and bundled `agent-skills/` root in desktop resources.
 5. If the desktop has no bundled binary for that arch and no executable was found in the preferred home, probe the alternate channel homes (`~/.ade`, `~/.ade-alpha`) for a working `ade --version`. The first home that responds is adopted as the active layout and the reason is captured for the connection's `compatibilityWarnings` (`Using remote runtime home <home> because <preferred> did not contain an ADE service for <arch>`).
-6. If the local bundle is present and the selected installed version or SHA does not match the desktop bundle, upload the binary to `<layout>/bin/ade` (mode 700 dir, +x file, write `<layout>/bin/ade.version` and `<layout>/bin/ade.sha256`). Uploads prefer SFTP; when that cannot start safely, ADE writes bounded SSH chunks and can fall back to OpenSSH for chunks that did not enter the existing channel.
+6. If the local bundle is present and the selected installed version or SHA does not match the desktop bundle, upload the binary to `<layout>/bin/ade` (mode 700 dir, +x file, write `<layout>/bin/ade.version` and `<layout>/bin/ade.sha256`). Uploads prefer SFTP; when that cannot start safely, DAEX writes bounded SSH chunks and can fall back to OpenSSH for chunks that did not enter the existing channel.
 7. If the native deps archive is present and either the runtime was just uploaded or the remote `<layout>/runtime/<arch>/.ade-version` doesn't match, upload and extract it to `<layout>/runtime/<platform-arch>/`.
 8. If the PTY host worker is available locally and the remote worker hash is missing or stale, upload it to `<layout>/runtime/ptyHostWorker.cjs` with a sidecar `.sha256`. When the remote has `node`, the runtime environment points `ADE_PTY_HOST_WORKER_PATH` and `ADE_PTY_HOST_WORKER_NODE` at that worker; otherwise it points `ADE_PTY_HOST_WORKER_COMMAND` at the uploaded `ade` binary so the static runtime can run the internal worker entry.
-8a. On a macOS remote, if this desktop ships the Mac Desktop driver (`<resources>/native/ade-desktop-driver`, a universal binary) and the remote copy's hash is missing or stale, upload it to `<layout>/bin/resources/native/ade-desktop-driver` with a sidecar `.sha256`. That is where a brain at `<layout>/bin/ade` finds it: `resolveMacDesktopDriverBinary` walks up from its own binary to `resources/native`. The driver is uploaded only when its hash changed and is never re-signed, because macOS ties Screen Recording and Accessibility grants to the binary's code hash — a needless re-upload would take the remote Mac's grants away. A failed upload does not fail the connection; it becomes a `compatibilityWarnings` entry ("Mac Desktop is not available on this machine: ADE could not install its driver (…)").
+8a. On a macOS remote, if this desktop ships the Mac Desktop driver (`<resources>/native/ade-desktop-driver`, a universal binary) and the remote copy's hash is missing or stale, upload it to `<layout>/bin/resources/native/ade-desktop-driver` with a sidecar `.sha256`. That is where a brain at `<layout>/bin/ade` finds it: `resolveMacDesktopDriverBinary` walks up from its own binary to `resources/native`. The driver is uploaded only when its hash changed and is never re-signed, because macOS ties Screen Recording and Accessibility grants to the binary's code hash — a needless re-upload would take the remote Mac's grants away. A failed upload does not fail the connection; it becomes a `compatibilityWarnings` entry ("Mac Desktop is not available on this machine: DAEX could not install its driver (…)").
 9. Verify the uploaded runtime by running `<layout>/bin/ade --version` with the channel/arch/worker environment prefix; abort with `Uploaded ADE service version mismatch` if the reported version doesn't match.
-10. If bundled ADE agent skills are available locally, hash the directory and upload it to `<layout>/agent-skills` when `<layout>/agent-skills.sha256` is missing or stale. The remote CLI resolves that root from its own binary path and re-seeds ADE-managed skills into runtime-native home skill directories on launch.
-11. Start `ade rpc --stdio`, initialize the JSON-RPC client, normalize capabilities and version through `validateRemoteRuntimeInitializeResult`, and read `projects.list`. Version skew, channel skew, and missing capabilities become `compatibilityWarnings` rather than throws.
-12. If the preferred runtime fails validated initialize, walk the alternate channel homes again with `ade rpc --stdio` against each candidate even when this connection just uploaded a packaged Beta binary. The first home that completes initialize and capability negotiation wins; failed candidates are collected with their launch, initialization, or capability-negotiation phase so the final error remains actionable. The preferred home's failure is listed first and each fallback line starts with "Also tried", so a missing beta install is not read as the real failure. The remote CLI's stderr is reduced by `summarizeRemoteRuntimeStderr` to its error lines — stack frames, Node `ExperimentalWarning`/`DeprecationWarning` lines, and the `ade: Error:` prefix are dropped. The remote handshake check (`machineRuntimeMismatchReason`) runs every check — version, build hash, role — and names each failure plus the checks that passed, instead of stopping at the first. If a fallback wins, the chosen home and environment prefix are retained for every follow-up command and recorded as a compatibility warning.
-13. After SSH RPC and `projects.list` succeed, send a versioned device identity and DPoP public key to that selected runtime with `ade sync pair-device --json-stdin`. The request is bounded and never placed in argv. A valid response stores the paired secret and local DPoP private key, then upgrades the saved target to paired-first while retaining SSH as recovery. This step is best-effort for older compatible runtimes.
+10. If bundled DAEX agent skills are available locally, hash the directory and upload it to `<layout>/agent-skills` when `<layout>/agent-skills.sha256` is missing or stale. The remote CLI resolves that root from its own binary path and re-seeds ADE-managed skills into runtime-native home skill directories on launch.
+11. Start `daex rpc --stdio`, initialize the JSON-RPC client, normalize capabilities and version through `validateRemoteRuntimeInitializeResult`, and read `projects.list`. Version skew, channel skew, and missing capabilities become `compatibilityWarnings` rather than throws.
+12. If the preferred runtime fails validated initialize, walk the alternate channel homes again with `daex rpc --stdio` against each candidate even when this connection just uploaded a packaged Beta binary. The first home that completes initialize and capability negotiation wins; failed candidates are collected with their launch, initialization, or capability-negotiation phase so the final error remains actionable. The preferred home's failure is listed first and each fallback line starts with "Also tried", so a missing beta install is not read as the real failure. The remote CLI's stderr is reduced by `summarizeRemoteRuntimeStderr` to its error lines — stack frames, Node `ExperimentalWarning`/`DeprecationWarning` lines, and the `ade: Error:` prefix are dropped. The remote handshake check (`machineRuntimeMismatchReason`) runs every check — version, build hash, role — and names each failure plus the checks that passed, instead of stopping at the first. If a fallback wins, the chosen home and environment prefix are retained for every follow-up command and recorded as a compatibility warning.
+13. After SSH RPC and `projects.list` succeed, send a versioned device identity and DPoP public key to that selected runtime with `daex sync pair-device --json-stdin`. The request is bounded and never placed in argv. A valid response stores the paired secret and local DPoP private key, then upgrades the saved target to paired-first while retaining SSH as recovery. This step is best-effort for older compatible runtimes.
 14. Update the target registry with architecture, runtime version (preferring the value the daemon reported through `initialize`), last-connected timestamp, explicit `autoConnect: true`, and a refreshed `routes` array marking the successful route's `lastSucceededAt`.
 
 If no bundled runtime exists locally and no channel home on the remote can start a compatible RPC, bootstrap fails with an explicit install/build error rather than silently shipping the wrong version.
 
-Channel layout: `resolveRemoteRuntimeLayout` reads `ADE_PACKAGE_CHANNEL` for the preferred home; `resolveRemoteRuntimeLayoutCandidates` enumerates that preferred home plus the stable / alpha layouts (deduped by `homeDirName`) for the fallback walk. Stable uploads to `~/.ade/`; alpha to `~/.ade-alpha/`. Beta is an update track and uses `~/.ade/`. Runtime binaries, native deps, PTY worker artifacts, and bundled ADE agent skills all stay inside the selected home. Channel builds also pass `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` in the environment prefix so the channel binary doesn't fight a stable login service for the socket.
+Channel layout: `resolveRemoteRuntimeLayout` reads `ADE_PACKAGE_CHANNEL` for the preferred home; `resolveRemoteRuntimeLayoutCandidates` enumerates that preferred home plus the stable / alpha layouts (deduped by `homeDirName`) for the fallback walk. Stable uploads to `~/.ade/`; alpha to `~/.ade-alpha/`. Beta is an update track and uses `~/.ade/`. Runtime binaries, native deps, PTY worker artifacts, and bundled DAEX agent skills all stay inside the selected home. Channel builds also pass `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` in the environment prefix so the channel binary doesn't fight a stable login service for the socket.
 
 ### One-time machine trust reset
 
@@ -116,7 +116,7 @@ token, project registry/state, and SSH files. The migration first writes
 `.machine-trust-reset-v1.pending`; `main.ts` forces the background runtime
 service to restart and atomically renames that marker to
 `.machine-trust-reset-v1` only after installation/restart reports success. If
-ADE exits before confirmation, the next launch retries the restart without
+DAEX exits before confirmation, the next launch retries the restart without
 clearing any new pairings a second time. Source/dev launches never run it.
 
 SSH bootstrap and direct LAN/tailnet paired reconnect do not read account
@@ -135,7 +135,7 @@ identity.
 
 Opening a project on another machine is not gated by a confirmation. The git-origin comparison that used to power one now feeds tab grouping (`projectTabGrouping.ts`), and the risk it was really guarding against — two machines pushing the same branch from different commits — is caught at push time by `shared/laneDivergence.ts`.
 
-`detectPushDivergence` runs at click time on the push button, from lane state the renderer already holds (`LaneSummary.branchRef` + `LaneStatus.ahead/behind`, unioned across machines by `renderer/state/crossMachineLanes.ts`). No lane record in ADE carries a head sha, so the rule is grounded in `ahead` instead: another machine holding the same branch with unpushed commits would have them stranded when the upstream tip moves. Head shas are used only to silence the guard when two machines are proven to sit on the same commit — an unknown head never suppresses a warning, because the false-negative direction on a destructive push is the expensive one. Machine identity is compared by id (`shared/machineIdentity.ts`), never by name, so the guard cannot mistake This computer for another machine.
+`detectPushDivergence` runs at click time on the push button, from lane state the renderer already holds (`LaneSummary.branchRef` + `LaneStatus.ahead/behind`, unioned across machines by `renderer/state/crossMachineLanes.ts`). No lane record in DAEX carries a head sha, so the rule is grounded in `ahead` instead: another machine holding the same branch with unpushed commits would have them stranded when the upstream tip moves. Head shas are used only to silence the guard when two machines are proven to sit on the same commit — an unknown head never suppresses a warning, because the false-negative direction on a destructive push is the expensive one. Machine identity is compared by id (`shared/machineIdentity.ts`), never by name, so the guard cannot mistake This computer for another machine.
 
 ## Per-session runtime routing
 
@@ -180,7 +180,7 @@ expire after a short handoff window.
 
 ## Sync command scoping
 
-The sync WebSocket service is owned by the `ade serve` runtime in normal desktop operation. `ProjectScopeRegistry.ensureSyncHost` selects the most-recently-opened registered project as the active sync project and refreshes that selection when projects are added or removed.
+The sync WebSocket service is owned by the `daex serve` runtime in normal desktop operation. `ProjectScopeRegistry.ensureSyncHost` selects the most-recently-opened registered project as the active sync project and refreshes that selection when projects are added or removed.
 
 Desktop Connections controls first talk to the active runtime for status,
 discovery, device registry, and PIN operations. Local project windows use
@@ -195,7 +195,7 @@ errors and retries machine-level Mobile/Web status and controls through the
 main sync IPC. Remote-bound errors never take this local fallback, so a failed
 remote sync call cannot accidentally operate on the desktop's machine brain.
 
-The sync command registry labels descriptors as `runtime` or `project` scope. Project-bound runtimes reject project-scoped commands that arrive without a matching `projectId`, while runtime-scoped commands operate on the ADE runtime as a whole. This keeps mobile/controller commands explicit in the multi-project runtime.
+The sync command registry labels descriptors as `runtime` or `project` scope. Project-bound runtimes reject project-scoped commands that arrive without a matching `projectId`, while runtime-scoped commands operate on the DAEX runtime as a whole. This keeps mobile/controller commands explicit in the multi-project runtime.
 
 ## Paired transport & relay trust boundary
 
@@ -273,7 +273,7 @@ normal event stream stays far under the limit.
 **Relay trust boundary.** The sync WebSocket can reach the host over a direct
 LAN/tailnet route or through the cloud tunnel-relay. The relay is a plaintext
 byte pipe: TLS terminates *at* the relay and there is no end-to-end encryption
-between the two ADE machines. Over a relay route the relay operator can read all
+between the two DAEX machines. Over a relay route the relay operator can read all
 runtime RPC payloads and the paired `secret` that transits in the `hello`.
 Direct LAN/tailnet routes do not transit the relay and are not exposed to it.
 DPoP proves to the host that the connecting client possesses the private key
@@ -309,7 +309,7 @@ was lost without allowing a different account or key to take over the record.
 
 ### Saved-target resolution and launch budget
 
-The desktop Machines panel and `ade machines connect` share
+The desktop Machines panel and `daex machines connect` share
 `RemoteTargetRegistry` plus `DesktopPairedMachineStore`. Selecting an account
 directory machine asks `AccountMachineDirectoryService` to perform account
 adoption over the exact allowlisted WSS relay, persist the resulting paired
@@ -320,18 +320,11 @@ above. Manual pairings remain account-independent locally; signing both machines
 into the same account makes relay eligible without converting that manual record
 to account-owned provenance.
 
-Older desktop builds could save that account row as a credentialless routed SSH
-target even though the desktop's own SSH stack happened to find a working local
-identity. `resolveRemoteTargetForLaunch` recognizes only the high-confidence
-legacy shape: no saved SSH user/key, non-manual routes, an exact name match, and
-all saved hosts belonging to one account-directory machine. It adopts that
-machine into the paired store and removes the obsolete record. An unavailable
-directory, offline machine, or pairing failure is a terminal paired-transport
-error for that shape. ADE never downgrades an account-created target to SSH;
+DAEX never downgrades an account-created target to SSH;
 only a route with `source: "manual"` is eligible for SSH fallback; Bonjour and
 Tailscale discovery routes are never inferred as SSH configuration.
 
-`pairedRemoteConnector.ts` and `remoteLaunchBudget.ts` (`apps/ade-cli/src/services/account/`, `apps/ade-cli/src/lib/`) bound target resolution, account adoption, and paired route dials with one shared startup budget, so `ade machines connect` returns collected route diagnostics instead of polling indefinitely.
+`pairedRemoteConnector.ts` and `remoteLaunchBudget.ts` (`apps/ade-cli/src/services/account/`, `apps/ade-cli/src/lib/`) bound target resolution, account adoption, and paired route dials with one shared startup budget, so `daex machines connect` returns collected route diagnostics instead of polling indefinitely.
 
 ## Local runtime routing
 
@@ -367,26 +360,26 @@ Preload also guards two classes of API against remote bindings:
 
 `RemoteConnectionPool` keeps one paired- or SSH-backed `RuntimeRpcClient` per `targetId`:
 
-- `withEntryForTarget` is the single funnel for all RPCs. On a recognized connection error, it disposes the entry, reconnects (via the latest `registry.get(targetId)` so an updated `routes` array applies), and either replays the operation or reports the connection error to the caller. A method timeout is not a connection error: it propagates to the original caller without reconnecting or replaying any operation. `callProjectActionForTarget` only enables automatic replay after a genuine connection failure for actions `isReplaySafeAdeAction` (`apps/desktop/src/shared/adeActionAccess.ts`) accepts; the local runtime pool uses the same rule. `callProjectSyncForTarget` uses the same posture for sync: status/discovery/device/PIN reads, lane-presence announcements, and model-picker reads are retryable after a connection failure; mutating action and sync calls are never replayed automatically, because ADE cannot know whether the remote side effect completed before the connection was interrupted.
+- `withEntryForTarget` is the single funnel for all RPCs. On a recognized connection error, it disposes the entry, reconnects (via the latest `registry.get(targetId)` so an updated `routes` array applies), and either replays the operation or reports the connection error to the caller. A method timeout is not a connection error: it propagates to the original caller without reconnecting or replaying any operation. `callActionForTarget` only enables automatic replay after a genuine connection failure for actions `isReplaySafeAdeAction` (`apps/desktop/src/shared/adeActionAccess.ts`) accepts; the local runtime pool uses the same rule. `callSyncForTarget` uses the same posture for sync: status/discovery/device/PIN reads, lane-presence announcements, and model-picker reads are retryable after a connection failure; mutating action and sync calls are never replayed automatically, because DAEX cannot know whether the remote side effect completed before the connection was interrupted.
 - Connection startup failures are backoff-throttled per target so repeated implicit reconnect attempts do not saturate SSH. Explicit Connect bypasses that backoff, clears manual disconnect state, and resets the automatic reconnect failure count. Implicit retries continue with bounded exponential spacing from 30 s up to 5 minutes; there is no permanent ten-failure latch, so a laptop that sleeps or briefly loses a route can recover without requiring a desktop restart.
 - Reconnection intent is persisted as `target.autoConnect`, independent of account state. A successful explicit or implicit connection sets it to `true`; Disconnect sets it to `false`; an explicit failure preserves the previous value. Launch/wake probing considers only targets where it is enabled (with a one-time legacy coercion from old last-connected/manual-disconnect fields).
 - `ensureLocalPortForward` owns local TCP listeners keyed by `(targetId, remoteHost, remotePort)`. Each listener uses `ssh.forwardOut` into the active SSH session and is closed when the target disconnects.
-- `callMethodForTarget` is the runtime-scoped JSON-RPC entry point used by the command-palette project picker and clone flows. Before forwarding to the SSH transport it runs `assertMachineProjectCapability(entry, method)`, which checks the connection's `capabilities.machineProjects` map for the `projects.*` family. A missing capability fails the call with a self-describing message that names the action (e.g. `creating remote projects`) so the renderer can guide the user to update the remote runtime.
+- `callMachineForTarget` is the machine-scoped JSON-RPC entry point used by the command-palette project picker and clone flows. Before forwarding to the SSH transport it runs `assertMachineProjectCapability(entry, method)`, which checks the connection's `capabilities.machineProjects` map for the `projects.*` family. A missing capability fails the call with a self-describing message that names the action (e.g. `creating remote projects`) so the renderer can guide the user to update the remote runtime.
 - Optional remote actions can define compatibility fallbacks. Missing `file.refreshGitDecorations` returns an empty decoration set and marks `statusHints.optionalActionMissing`. The first not-callable response is memoized per target/project/action so old remote runtimes do not get hammered by unsupported optional calls.
 - `RuntimeRpcClient.call` expires each request independently: the timer atomically removes and rejects only that request ID, late responses for the expired ID are ignored, and unrelated calls plus runtime-event notifications continue on the same transport. Transport close/error and malformed JSON framing remain connection-fatal: they close the client, notify disconnect observers, and reject every pending request. Oversized response lines remain memory-bounded and reject only the matching request while the client discards the rest of that line. The client records the original `method` for every pending request and formats remote errors as `Remote ADE service method <method> failed (code N): <message> Details: ...` so JSON-RPC error `code` / `message` / `data` are all preserved instead of being collapsed into a generic string.
 - `onEntryEvicted(listener)` lets `RemoteConnectionService` flip a status to `error` when the paired/SSH transport or JSON-RPC client closes underneath it. `runtimeBridge.ts` subscribes `powerMonitor` `resume` and `unlock-screen` to `remoteConnectionService.probeSavedConnections()`, which pings every `connected` target with a short `pingTimeoutMs` (default 5 s); a recognized transport failure disconnects the entry so the next renderer call reconnects against the most-recently-successful route, while a request-local ping timeout leaves the healthy shared client in place.
 
 ## Per-target action registry
 
-The renderer's command palette needs to know which action domains a target supports. `ade.remoteRuntime.listActionRegistry { id, projectId }` IPC calls `RemoteConnectionPool.listActionRegistryForTarget`, which invokes `list_ade_actions` on the remote runtime and normalizes the result into `AdeActionRegistryEntry[]`. Preload's `ade.actions.listRegistry` checks the active binding: remote-bound windows query the remote runtime, local-bound windows query the local ADE runtime through `ade.localRuntime.listActionRegistry`, and the desktop in-process registry is only used when no project runtime is bound.
+The renderer's command palette needs to know which action domains a target supports. `ade.remoteRuntime.listActionRegistry { id, projectId }` IPC calls `RemoteConnectionPool.listActionRegistryForTarget`, which invokes `list_ade_actions` on the remote runtime and normalizes the result into `AdeActionRegistryEntry[]`. Preload's `ade.actions.listRegistry` checks the active binding: remote-bound windows query the remote runtime, local-bound windows query the local DAEX runtime through `ade.localRuntime.listActionRegistry`, and the desktop in-process registry is only used when no project runtime is bound.
 
 ## Local runtime connection lifecycle
 
 `LocalRuntimeConnectionPool` handles the desktop side of the local runtime binding:
 
-- `connect()` first tries an existing `~/.ade/sock/ade.sock`. If that socket is unavailable, it spawns `ade serve --socket <path>` with the bundled CLI from `process.resourcesPath/ade-cli/cli.cjs` or the dev path, waits for the socket, and reconnects.
+- `connect()` first tries an existing `~/.ade/sock/ade.sock`. If that socket is unavailable, it spawns `daex serve --socket <path>` with the bundled CLI from `process.resourcesPath/ade-cli/cli.cjs` or the dev path, waits for the socket, and reconnects.
 - `initialize` is called immediately after connect. The pool compares `runtimeInfo.version`, `runtimeInfo.buildHash`, and `runtimeInfo.defaultRole` with the expected desktop runtime. A mismatch closes only that client: the primary `ade.sock` daemon is preserved, and the desktop starts or reuses a deterministic isolated socket (`ade-cto-<version>-<build>.sock`) for its own runtime instead of terminating the user's existing daemon.
-- `installServiceBestEffort()` runs `ade serve --install-service` once per session to register the per-user login service; the result feeds `LocalRuntimeStatus.serviceInstall`.
+- `installServiceBestEffort()` runs `daex serve --install-service` once per session to register the per-user login service; the result feeds `LocalRuntimeStatus.serviceInstall`.
 - `getStatus()` periodically refreshes `serviceHealth` (`unsupported | not_installed | installed | running | error | unknown`) by calling `getRuntimeServiceStatus()` from the service manager.
 - The pool exposes typed entry points for action calls (`callActionForRoot`), sync calls (`callSyncForRoot`), event polling (`streamEventsForRoot`), and event subscription (`subscribeEventsForRoot`). All of them register the project with `projects.add` once and then carry `projectId` on every project-scoped request.
 - Project registration, file actions, and event polling pass per-call timeout overrides to `RuntimeRpcClient`; ordinary actions keep the client's default timeout. A timeout propagates only to that caller: the local pool does not reset the shared client or replay the request, so concurrent calls and event subscriptions continue normally. Both pools also keep a small `LONG_RUNNING_*_ACTION_TIMEOUTS` map keyed by `<domain>.<action>`; today it grants both the compatibility `chat.suggestLaneNameFromPrompt` action and the structured `chat.generateAutoLaneIdentity` action a 120 s budget instead of the default 30 s local / 25 s retryable-remote ceiling. Auto-lane naming still runs entirely after lane/session launch, so even an expired naming request cannot fail the launched work.
