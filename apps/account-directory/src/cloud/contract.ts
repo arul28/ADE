@@ -68,6 +68,7 @@
  *   DELETE /cloud/launches/:launch                      CloudLaunchRecord   (cancel; deletes the computer before the agent starts)
  *   POST   /cloud/launches/:launch/join                 CloudLaunchJoinResult   NO account token: the computer's join code (CloudLaunchJoinRequest)
  *   GET    /cloud/launches?active=1                     CloudLaunchList   (the caller's launches still in progress, and failures of the last day)
+ *   POST   /cloud/launches/:launch/free-model           CloudLaunchRecord   (the chat starts on DAEX Free Models instead of waiting for its sign-in; 409 `launch_not_waiting`, `free_models_unavailable`, `free_models_consent`)
  *   GET    /cloud/launches/:launch/messages             { messages: CloudLaunchMessage[] }
  *   POST   /cloud/launches/:launch/messages             CloudLaunchMessage   (CloudLaunchMessageRequest; 201 new, 200 the same id again; 409 `chat_ready` once the chat exists)
  *   POST   /cloud/launches/:launch/messages/:msg/claim  CloudLaunchMessage   (from the computer: { claimId }; 409 `message_taken`)
@@ -2992,6 +2993,15 @@ export type CloudRemoteSignInStatus = {
   userCode: string | null;
   needsPastedCode: boolean;
   reason: string | null;
+  /**
+   * The answer to a pasted code, read for a few seconds after it: `refused`
+   * (with `state: "failed"` and `CLOUD_SIGN_IN_CODE_REFUSED`), `accepted` (the
+   * provider took it; DAEX is finishing). Null or absent: no verdict yet (and
+   * from a computer whose DAEX predates it).
+   */
+  verdict?: "refused" | "accepted" | null;
+  /** In the computer only: a code was sent on the current link and has no verdict yet. */
+  codeSent?: boolean;
 };
 
 /* ---- The account's ADE Cloud sign-ins, from the web (`/cloud/sign-ins`) ---- */

@@ -32997,6 +32997,7 @@ async function runServe(
         start: (args) => runner.start(args),
         status: (loginId) => runner.status(loginId),
         submitCode: (loginId, code) => runner.submitCode(loginId, code),
+        cancel: (loginId) => runner.cancel(loginId),
       };
     },
     // Claude's pass (`claude setup-token`) through this machine's own cloud
@@ -33011,9 +33012,10 @@ async function runServe(
           return status?.claude ?? null;
         };
         return {
-          start: () => call("cloud_sign_in_start", {}),
+          start: (options?: { timeoutMs?: number }) => call("cloud_sign_in_start", options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
           status: () => call("cloud_sign_in_status"),
           submitCode: (code: string) => call("cloud_sign_in_code", { code }),
+          cancel: () => call("cloud_sign_in_cancel"),
         };
       })().catch((error: unknown) => {
         // A failed build is tried again on the next sign-in.
@@ -33059,9 +33061,27 @@ async function runServe(
   const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunch(layout.adeDir, headlessProjectLogger, process.env) : null;
   // A chat whose provider isn't signed in here waits for the person's sign-in
   // (a launch, and a message queued for an existing chat).
-  const cloudProviderReady = createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options));
+  const cloudProviderReady = createProviderReady(
+    async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options),
+    process.env,
+    // Each agent CLI's sign-in on disk, also before its first download, and Muse's own read.
+    async ({ force }) => {
+      const { detectCliAuthStatuses } = await import("../../desktop/src/main/services/ai/authDetector");
+      const { inspectMuseCredentials } = await import("../../desktop/src/main/services/ai/museAuth");
+      const statuses = await detectCliAuthStatuses({ force, skipAuthProbe: true });
+      const muse = inspectMuseCredentials();
+      return [
+        ...statuses.map((status) => ({ cli: status.cli, authenticated: status.authenticated, verified: status.verified })),
+        { cli: "muse", authenticated: muse.source != null, verified: false },
+      ];
+    },
+  );
   const cloudRemoteSignIn = remoteProviderSignIn
-    ? { start: (provider: string) => remoteProviderSignIn.start(provider), status: (jobId: string) => remoteProviderSignIn.status(jobId) }
+    ? {
+      start: (provider: string, options?: { timeoutMs?: number }) => remoteProviderSignIn.start(provider, options),
+      status: (jobId: string) => remoteProviderSignIn.status(jobId),
+      cancel: (jobId: string) => remoteProviderSignIn.cancel(jobId),
+    }
     : undefined;
   // Pulls the vault, then runs one sign-in pass on it, so a pass or key saved
   // on another screen is applied here now (the Claude pass reconcile hears the pass).

@@ -18,6 +18,7 @@
  */
 
 import {
+  CLOUD_SIGN_IN_CODE_REFUSED,
   cloudRemoteSignInRefusal,
   cloudRemoteSignInOf,
   cloudRemoteSignInRuns,
@@ -45,11 +46,13 @@ type RunnerStatus = {
 type Runner = {
   status: (loginId: string) => RunnerStatus;
   submitCode: (loginId: string, code: string) => RunnerStatus;
+  /** Stops a running sign-in. Left out: it runs to its own timeout. */
+  cancel?: (loginId: string) => unknown;
 };
 
 export type RemoteProviderSignInDeps = {
   /** Claude Code and Codex accounts: their account's id is needed (the default one). */
-  providerAccounts: () => Promise<Runner & { start: (instanceId: string, options: { deviceAuth: boolean }) => RunnerStatus }>;
+  providerAccounts: () => Promise<Runner & { start: (instanceId: string, options: { deviceAuth: boolean; timeoutMs?: number }) => RunnerStatus }>;
   defaultInstanceId: (provider: "codex") => Promise<string>;
   /** The agent CLIs with their own sign-in (Grok, Devin, Muse, Copilot, Droid, Kimi). */
   agentClis: () => Promise<Runner & { start: (args: AgentCliLoginStartArgs) => Promise<RunnerStatus> }>;
@@ -65,6 +68,15 @@ export type RemoteProviderSignInDeps = {
 /** How long a start waits for the CLI to print its link before it answers anyway (the status read shows it later). */
 const FIRST_LINK_WAIT_MS = 9_000;
 const FIRST_LINK_POLL_MS = 250;
+/**
+ * After a pasted code, how long the answer reads the sign-in for its verdict
+ * (Claude Code refuses a wrong code in about 5 s), and how often: inside the
+ * server's one short exec, so the person sees the verdict, not "sent".
+ */
+const VERDICT_WAIT_MS = 6_000;
+const VERDICT_POLL_MS = 500;
+/** The longest a remote start may ask its runner to live: a launch's whole sign-in wait. */
+const MAX_REMOTE_TIMEOUT_MS = 30 * 60_000;
 
 const PROVIDER_ACCOUNT = "p_";
 const AGENT_CLI = "c_";
@@ -73,9 +85,11 @@ const CLAUDE_PASS = "k_claudepass";
 
 /** The cloud Claude sign-in's actions; each answers its state, as `cloud_sign_in_status` reads it. */
 export type ClaudePassRunner = {
-  start: () => Promise<CloudSignInStatus["claude"]>;
+  /** `timeoutMs`: how long `claude setup-token` may wait for the code (10 minutes when left out). */
+  start: (options?: { timeoutMs?: number }) => Promise<CloudSignInStatus["claude"]>;
   status: () => Promise<CloudSignInStatus["claude"]>;
   submitCode: (code: string) => Promise<CloudSignInStatus["claude"]>;
+  cancel?: () => Promise<unknown>;
 };
 
 /** The pass sign-in's state as the phone and the web read it: saved (here or in the account) is done. */
@@ -116,8 +130,33 @@ function answerOf(jobId: string, status: RunnerStatus): CloudRemoteSignInStatus 
   };
 }
 
+/** Whether the provider took a pasted code: Claude's pass is being checked or saved, or a runner verifies its login. */
+function accepted(jobId: string, raw: CloudSignInStatus["claude"] | RunnerStatus | null): boolean {
+  if (!raw) return false;
+  if (jobId === CLAUDE_PASS) {
+    const state = (raw as NonNullable<CloudSignInStatus["claude"]>).state;
+    return state === "verifying" || state === "saving" || state === "mismatch";
+  }
+  return (raw as RunnerStatus).state === "verifying";
+}
+
 export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  // A code pasted on a job's current link, until that link changes or ends: the
+  // launch wait reads it so a refused code's restart says so (`codeSent`).
+  const codeSentOn = new Map<string, string | null>();
+  const withCodeSent = (answer: CloudRemoteSignInStatus): CloudRemoteSignInStatus => {
+    const sentOn = codeSentOn.get(answer.jobId);
+    if (sentOn === undefined) return answer;
+    // A new link (a restart) is a new page: the code was for the old one.
+    if (answer.state === "pending" && sentOn !== answer.url) {
+      codeSentOn.delete(answer.jobId);
+      return answer;
+    }
+    return { ...answer, codeSent: true };
+  };
+  const timeoutOf = (options?: { timeoutMs?: number }): number | undefined =>
+    typeof options?.timeoutMs === "number" && options.timeoutMs > 0 ? Math.min(MAX_REMOTE_TIMEOUT_MS, Math.round(options.timeoutMs)) : undefined;
 
   const claude = async (): Promise<ClaudePassRunner> => {
     if (!deps.claudePass) throw new Error(`${BRAND.NAME} on this computer can't run Claude's sign-in for another screen. Update it, then try again.`);
@@ -132,13 +171,15 @@ export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
   };
 
   return {
-    async start(provider: string): Promise<CloudRemoteSignInStatus> {
+    async start(provider: string, options?: { timeoutMs?: number }): Promise<CloudRemoteSignInStatus> {
       const row = cloudRemoteSignInOf(provider);
       if (!row) throw new Error(`${BRAND.NAME} doesn't know the provider "${provider}".`);
       if (!cloudRemoteSignInRuns(row)) throw new Error(cloudRemoteSignInRefusal(row));
+      const timeoutMs = timeoutOf(options);
       if (row.provider === "claude") {
+        codeSentOn.delete(CLAUDE_PASS);
         const runner = await claude();
-        let current = await runner.start();
+        let current = await runner.start(timeoutMs ? { timeoutMs } : undefined);
         // Answer within the server's short exec: once Claude Code printed its link.
         const until = Date.now() + FIRST_LINK_WAIT_MS;
         while (current?.state === "running" && !current.url && Date.now() < until) {
@@ -153,13 +194,13 @@ export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
       if (row.provider === "codex") {
         const accounts = await deps.providerAccounts();
         // The browser is on another screen: Codex signs in with a device code.
-        status = accounts.start(await deps.defaultInstanceId("codex"), { deviceAuth: true });
+        status = accounts.start(await deps.defaultInstanceId("codex"), { deviceAuth: true, ...(timeoutMs ? { timeoutMs } : {}) });
         runner = accounts;
         jobId = `${PROVIDER_ACCOUNT}${status.loginId}`;
       } else {
         if (!isAgentCliLoginProvider(row.provider)) throw new Error(`${BRAND.NAME} can't run ${row.label}'s sign-in for another screen.`);
         const clis = await deps.agentClis();
-        status = await clis.start({ provider: row.provider });
+        status = await clis.start({ provider: row.provider, ...(timeoutMs ? { timeoutMs } : {}) });
         runner = clis;
         jobId = `${AGENT_CLI}${status.loginId}`;
       }
@@ -173,17 +214,60 @@ export function createRemoteProviderSignIn(deps: RemoteProviderSignInDeps) {
     },
 
     async status(jobId: string): Promise<CloudRemoteSignInStatus> {
-      if (jobId.trim() === CLAUDE_PASS) return claudeAnswerOf(await (await claude()).status());
+      if (jobId.trim() === CLAUDE_PASS) return withCodeSent(claudeAnswerOf(await (await claude()).status()));
       const { runner, loginId } = await runnerOf(jobId);
-      return answerOf(jobId, runner.status(loginId));
+      return withCodeSent(answerOf(jobId, runner.status(loginId)));
     },
 
+    /**
+     * Passes the code on, then reads the sign-in for its verdict for up to
+     * `VERDICT_WAIT_MS`: refused (it failed, or its link changed: the launch
+     * wait already started a new one), accepted (the provider took it and DAEX
+     * finishes), done, or still pending.
+     */
     async submitCode(jobId: string, code: string): Promise<CloudRemoteSignInStatus> {
       const trimmed = code.trim();
       if (!trimmed) throw new Error("Paste the code the sign-in page showed.");
-      if (jobId.trim() === CLAUDE_PASS) return claudeAnswerOf(await (await claude()).submitCode(trimmed));
-      const { runner, loginId } = await runnerOf(jobId);
-      return answerOf(jobId, runner.submitCode(loginId, trimmed));
+      const id = jobId.trim();
+      const read = id === CLAUDE_PASS
+        ? async () => { const raw = await (await claude()).status(); return { raw, answer: claudeAnswerOf(raw) }; }
+        : async () => { const { runner, loginId } = await runnerOf(id); const raw = runner.status(loginId); return { raw, answer: answerOf(id, raw) }; };
+      const before = (await read()).answer;
+      let answer: CloudRemoteSignInStatus;
+      let raw: CloudSignInStatus["claude"] | RunnerStatus | null;
+      if (id === CLAUDE_PASS) {
+        raw = await (await claude()).submitCode(trimmed);
+        answer = claudeAnswerOf(raw);
+      } else {
+        const { runner, loginId } = await runnerOf(id);
+        raw = runner.submitCode(loginId, trimmed);
+        answer = answerOf(id, raw);
+      }
+      codeSentOn.set(id, before.url);
+      const until = Date.now() + VERDICT_WAIT_MS;
+      for (;;) {
+        if (answer.state === "done") return { ...answer, verdict: "accepted" };
+        // A refusal, or a new link the wait already started after one: the code didn't work.
+        if (answer.state === "failed" || (before.url && answer.url && answer.url !== before.url)) {
+          return { ...answer, state: "failed", reason: CLOUD_SIGN_IN_CODE_REFUSED, verdict: "refused", codeSent: true };
+        }
+        if (accepted(id, raw)) return { ...answer, verdict: "accepted", codeSent: true };
+        if (Date.now() >= until) return { ...answer, verdict: null, codeSent: true };
+        await sleep(VERDICT_POLL_MS);
+        ({ raw, answer } = await read());
+      }
+    },
+
+    /** Stops a sign-in a launch's wait started (the wait ended). */
+    async cancel(jobId: string): Promise<void> {
+      const id = jobId.trim();
+      codeSentOn.delete(id);
+      if (id === CLAUDE_PASS) {
+        await (await claude()).cancel?.();
+        return;
+      }
+      const { runner, loginId } = await runnerOf(id);
+      await runner.cancel?.(loginId);
     },
   };
 }

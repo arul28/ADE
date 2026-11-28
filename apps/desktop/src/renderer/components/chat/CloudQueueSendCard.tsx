@@ -4,6 +4,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { openExternalUrl } from "../../lib/openExternal";
 import { Banner } from "../ui/notice";
 import { CloudSignInCodeField } from "./launch/CloudSignInCodeField";
+import { cloudSignInStepWords } from "../../../shared/cloudSignInStep";
 import { BRAND } from "../../../shared/brand";
 
 /** A message this pane queued for an ADE Cloud chat whose computer was asleep, gone, or moving or changing size. */
@@ -133,13 +134,13 @@ export function CloudQueueSendCard({
           ? "Your message wasn't sent. Put it back in the box to send it again."
           : started
             ? null
-            : "Your message goes to the agent once the computer is up. You can leave this chat.",
+            : signInLine || "Your message goes to the agent once the computer is up. You can leave this chat.",
         report: failed ? false : undefined,
         actions,
         extra: signIn?.userCode
           ? <span className="ade-signin-code" aria-label="Sign-in code">{signIn.userCode}</span>
           : signIn?.jobId && (signIn.needsPastedCode || signIn.kind === "url_paste")
-            ? <CloudSignInCodeField jobId={signIn.jobId} instanceId={record?.instanceId ?? null} className="text-[12px]" onSent={read} />
+            ? <CloudSignInCodeField key={`${signIn.jobId}:${signIn.url ?? ""}`} jobId={signIn.jobId} instanceId={record?.instanceId ?? null} className="text-[12px]" onSent={read} />
             : undefined,
         dismiss: failed || started ? { onDismiss: onDone } : undefined,
       }}

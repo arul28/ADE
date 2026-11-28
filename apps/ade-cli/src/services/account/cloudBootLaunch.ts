@@ -51,6 +51,7 @@ import type {
 import {
   cloudChatMessageSettingsOf,
   cloudLaneColorOf,
+  cloudSignInWaitMsFor,
   CLOUD_AUTOMATION_RUN_STAGE,
   CLOUD_LAUNCH_ENV,
   CLOUD_LAUNCH_JOIN_FILE,
@@ -74,7 +75,7 @@ import type { ProjectRegistry } from "../projects/projectRegistry";
 import type { AccountAuthService, AccountAuthStatus } from "./accountAuthService";
 import type { HeadlessApprovalResult } from "./cloudHeadlessApproval";
 import { deliverQueuedMessagesWithRetry, isFinalRefusal } from "./cloudLaunchMessages";
-import { SIGN_IN_STAGE, SIGN_IN_WAIT_MS, waitForProviderSignIn, type ProviderReady } from "./cloudLaunchSignInWait";
+import { SIGN_IN_STAGE, waitForProviderSignIn, type ProviderReady } from "./cloudLaunchSignInWait";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type Logger = {
@@ -125,8 +126,11 @@ export type CloudBootLaunchDeps = {
   providerReady?: ProviderReady;
   /** The provider's own sign-in for a person on another screen (`ade providers sign-in --remote`). */
   remoteSignIn?: {
-    start: (provider: string) => Promise<CloudRemoteSignInStatus>;
+    /** `timeoutMs`: how long the provider's sign-in may run (the wait's own end), so its link holds for the whole wait. */
+    start: (provider: string, options?: { timeoutMs?: number }) => Promise<CloudRemoteSignInStatus>;
     status: (jobId: string) => Promise<CloudRemoteSignInStatus>;
+    /** Stops a sign-in the wait started, once the wait ends. Left out: it runs to its own timeout. */
+    cancel?: (jobId: string) => Promise<void>;
   };
   /** Pulls the account vault now, so a key or a pass saved on another screen is read. */
   refreshVault?: () => Promise<void>;
@@ -680,7 +684,11 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
           writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId, ...(landed ? {} : { unsent: update }) });
           return;
         }
-        if (waited.waited) startStages.push(doneStage(SIGN_IN_STAGE, request.chat.provider));
+        if (waited.kind === "switched") {
+          // The person moved the chat to a DAEX Free Model from the step: the same first message starts on it, here.
+          request.chat = { ...request.chat, provider: waited.provider, modelId: waited.model, effort: null, fast: false };
+          startStages.push(doneStage(SIGN_IN_STAGE, waited.provider));
+        } else if (waited.waited) startStages.push(doneStage(SIGN_IN_STAGE, request.chat.provider));
       }
       // Fork-continue: the launch makes the lane only; the chat is the restored one, not a new one.
       // `follow` restores it once the lane is ready, so the setup's stages are reported meanwhile.

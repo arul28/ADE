@@ -32,7 +32,7 @@ import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../.
 import { isCloudTierId } from "../../../shared/cloudTiers";
 import { isCloudPhoneProviderChoice, type CloudPhoneProviderChoiceAnswer } from "../../../shared/cloudPhone";
 import { CLOUD_CHAT_MESSAGE_MAX_CHARS, cloudChatMessageSettingsOf, isCloudRefusalCode, type CloudCarriedSignIns, type CloudLaneBackup, type CloudLaunchRecord, type CloudModelCatalog } from "../../../../../account-directory/src/cloud/contract";
-import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
+import { launchFreeModelVia, type CloudLaunchFreeModelResult, type CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
@@ -268,6 +268,17 @@ export function registerCloudIpc(args: {
     const baseUrl = directoryBaseUrl();
     if (!baseUrl) throw new Error(`${BRAND.NAME}'s account service isn't set up on this computer.`);
     return await createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() }).sendSignInCode(instanceId, jobId, code);
+  });
+  // "Start with a free model instead" on a launch waiting in its sign-in step:
+  // the account server moves the chat to DAEX Free Models and the launch's
+  // computer starts it. Account level, by the launch id: no pin.
+  ipcMain.handle(IPC.cloudLaunchFreeModel, async (event, arg?: { launchId?: unknown }): Promise<CloudLaunchFreeModelResult> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaunchFreeModel)) throw new Error(`${BRAND.NAME} can't do that from here.`);
+    const launchId = typeof arg?.launchId === "string" ? arg.launchId.trim() : "";
+    if (!launchId || launchId.length > 80) throw new Error(`${BRAND.NAME} doesn't know that start.`);
+    const baseUrl = directoryBaseUrl();
+    if (!baseUrl) throw new Error(`${BRAND.NAME}'s account service isn't set up on this computer.`);
+    return await launchFreeModelVia(createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() }), launchId);
   });
   // A message for an existing ADE Cloud chat whose computer is asleep or gone:
   // the account server queues it, wakes the computer (or starts a launch that

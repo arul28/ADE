@@ -1291,6 +1291,7 @@ export const IPC = {
   /** C4: can a new cloud computer clone this repository with the account's GitHub sign-in? Account-level, no pin. The launch runs the same check itself; no renderer surface calls this yet. */
   cloudGitPreflight: "ade.cloud.gitPreflight",
   cloudLaunchSignInCode: "ade.cloud.launchSignInCode",
+  cloudLaunchFreeModel: "ade.cloud.launchFreeModel",
   /** A message for an existing ADE Cloud chat, through the account's queue (`POST /cloud/chats/:m/:c/messages`). Account-level, no pin. */
   cloudChatMessageSend: "ade.cloud.chatMessageSend",
   /** One server launch's record (`GET /cloud/launches/:id`), for a launch the queue started. Account-level, no pin. */
