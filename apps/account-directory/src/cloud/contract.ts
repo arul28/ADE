@@ -1706,10 +1706,23 @@ export const CLOUD_REFUSAL_CODES = {
   mac_unsupported: 409,
   /** No DAEX Cloud Mac can start right now (the provider's line is full, or it refused). Try again later. */
   mac_busy: 503,
+  /**
+   * The computer exists but DAEX can't wake or use it now (a kind of computer
+   * the account can no longer use). Its lane, work and chats are kept; nothing
+   * was stored or started. The sentence is `CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`.
+   */
+  computer_unavailable: 409,
 } as const;
 export type CloudRefusalCode = keyof typeof CLOUD_REFUSAL_CODES;
 export const isCloudRefusalCode = (code: unknown): code is CloudRefusalCode =>
   typeof code === "string" && Object.hasOwn(CLOUD_REFUSAL_CODES, code);
+
+/**
+ * `computer_unavailable`: what every wake, start and send of such a computer
+ * answers, and its \`statusReason.message\` in a list (where it reads as
+ * \`stopped\`). Names no kind of computer.
+ */
+export const CLOUD_COMPUTER_UNAVAILABLE_SENTENCE = "This lane's computer isn't available right now, so DAEX can't wake it or send it messages. The lane, its work and its chats are kept.";
 
 /** `plan_past_due`: a paid plan whose last payment failed; its computers are suspended until the card works. */
 export const CLOUD_PLAN_PAST_DUE_SENTENCE = "DAEX Cloud suspended this machine because your last payment didn't go through, so DAEX can't wake it right now. Update your card in Manage billing.";
