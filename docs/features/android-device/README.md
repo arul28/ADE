@@ -1,20 +1,130 @@
 # Android device
 
-ADE drives a per-lane Android emulator from the Work tab's **Android
-Development** tool and from `ade android`. It makes a new AVD for the lane, or
+DAEX drives a per-lane Android emulator from the Work tab's **Android
+Development** tool and from `daex android`. It makes a new AVD for the lane, or
 attaches one the user names. It boots the AVD headless, streams the screen into
 the pane through a bundled scrcpy server, and sends touch, keys and text to it.
 
-This page describes phases P0, P1 and P2 as built. The plan, with the
-decisions and the later phases, is
+The original plan and its decisions are in
 [docs/plans/android-emulator.md](../../plans/android-emulator.md).
 
 Scope:
 
-- Emulators only. ADE does not drive physical phones, and no phase plans to.
+- Emulators only. DAEX does not drive physical phones, and no phase plans to.
 - Stock Android only. Every device runs the system image the SDK installed.
 - macOS, Windows and Linux. All of the backend is Node code in the brain, so
   one code path serves the three. There is no native helper.
+
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
+| `apps/desktop/src/main/services/android/androidEmulatorService.ts`, `androidEmulatorServiceDeps.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. Its inputs and its state for one lane are in `androidEmulatorServiceDeps.ts`. |
+| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`): the disk grow before a first start on a cloud computer, the memory guard's reservation, the owner record's launch, boot and forget, the stop reason, the mid-boot abort, and the boot timeout. One implementation (`slots`) serves the lane's device and its extras. |
+| `apps/desktop/src/main/services/android/androidMachinePreferences.ts`, `apps/desktop/src/shared/types/androidEmulatorRecording.ts` | The machine's Android settings file (`sdkPath` and `preferences`, atomic writes, a broken file refused), the machine preferences, and the recording types. |
+| `apps/desktop/src/main/services/android/androidAutoRecord.ts` | Auto-record: an agent's input starts a recording, the end of its turn stops it, and the opt-outs (`--no-record`, the lane switch, the person's own input). |
+| `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state files of the emulators DAEX started (the lanes' own and their extras'), and the stops that use them: on dispose, and when a project is removed after a hand-off. |
+| `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
+| `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration (the check's cache). |
+| `apps/desktop/src/main/services/android/androidSdkSetup.ts`, `androidSdkInstall.ts`, `androidSdkRepository.ts`, `androidZipExtract.ts`, `androidCli.ts` | The guided install: the plan, licence checks, the SDK setting, the installer job, Google's repository manifests, the zip reader, and the Android CLI. |
+| `apps/desktop/src/main/services/android/androidAvds.ts`, `androidHardwareProfiles.ts` | AVD list, create and delete, DAEX's marker, and the hardware profiles. |
+| `apps/desktop/src/shared/androidDeviceCatalog.ts`, `apps/desktop/src/main/services/android/androidCatalogProfiles.ts` | The brand grid's devices (names, sizes, colours, bodies, profiles), and the merge of DAEX's `ade_*` profiles into `devices.xml`. |
+| `apps/desktop/src/main/services/android/androidRender.ts` | The render broker for `daex android render`: the request event, the first window's ack, the filed paths, and the time limit. |
+| `apps/desktop/src/main/services/android/androidEmulatorProcess.ts` | Boot, discovery files, boot completed, and stop. |
+| `apps/desktop/src/main/services/android/androidLaneDeviceStore.ts`, `androidLaneRelease.ts` | The `lane_android_devices` and `lane_android_extra_devices` rows (a lane's AVD is held when either names it), and the release of a lane's AVD and its extras on disk (used by `laneService` with no service). |
+| `apps/desktop/src/main/services/android/androidLaneExtras.ts`, `apps/desktop/src/shared/types/androidEmulatorExtras.ts` | Extra devices: their status, start and stop (on each extra's own queue, through the lifecycle's shared boot), release, which device a `--device` names, and their types. |
+| `apps/desktop/src/main/services/android/androidDevicePromote.ts` | `devicePromote`, and what it must not cut through: the installs and launches in flight (which wait for a promote) and the test runs. |
+| `apps/desktop/src/main/services/android/androidLaneRows.ts` | How the cleanup pass reaches one row: the lane's own device or an extra. |
+| `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
+| `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
+| `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
+| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | the memory guard (the decision before each start: pressure, paging, the emulators' budget, available memory, and the boots in flight), and the crash-buffer reader behind the crash pin. |
+| `apps/desktop/src/main/services/machineStats/hostMemorySignals.ts` | The machine's memory signals per OS (pressure, available, swap, commit, PSI, the paging rate) and the real memory of chosen processes. Shared with the brain's resource-pressure sampling. |
+| `apps/desktop/src/main/services/android/androidEmulatorOwners.ts`, `androidEmulatorSweep.ts` | The machine's owner file (`~/.ade/android/emulator-owners.json`) and the sweep's decision for one record; the lifecycle of one brain (owner records, last used, the pin, the guard's cross-brain ledger, the sweep). |
+| `apps/desktop/src/main/services/android/androidEmulatorUse.ts` | One service as the lifecycle sees it: the calls that count as use, busy, the idle stop through the lane's queue (with the device's own input and other viewers), the pin, and emulators taken in from before the owner file. |
+| `apps/desktop/src/main/services/android/androidEmulatorImage.ts` | Which processes are emulators by image name (memory guard, process groups), and the Windows `tasklist` check before a kill. |
+| `apps/desktop/src/main/services/device/deviceMaintenance.ts` | The timers, idle limit and touch throttle that the Apple devices' upkeep and the Android sweep share. |
+| `apps/ade-cli/src/services/runtime/unmanagedBrainIdleExit.ts` | The idle exit of a brain a dev or test launcher marked, once its launcher is gone. |
+| `apps/desktop/src/shared/types/androidEmulatorControl.ts`, `apps/desktop/src/main/services/android/androidAppState.ts`, `androidInspect.ts`, `androidLaneMaintenance.ts`, `androidChromeSetup.ts` | Parity with `daex apple`: the key names and modifiers, intent extras, app state and the app in front, Inspect's packet and source search, the cleanup pass and the "powered off" record, and Chrome's first run. |
+| `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
+| `apps/desktop/src/main/services/android/androidSystemImages.ts`, `apps/desktop/src/shared/types/androidEmulatorImages.ts` | the system image list, install (on the guided install's job) and removal, and their types. |
+| `apps/desktop/src/main/services/android/androidInstrumentationTests.ts`, `apps/desktop/src/shared/types/androidEmulatorInstrumentation.ts` | `daex android test`: the Gradle run, the JUnit XML and Gradle-output readers, and their types. |
+| `apps/desktop/src/main/services/android/androidPosture.ts`, `apps/desktop/src/shared/types/androidEmulatorPosture.ts` | the hinge read and fold (the emulator console and `dumpsys device_state`), and their types. |
+| `apps/desktop/src/main/services/android/androidLaneQueue.ts` | one step at a time per lane, for folds and Compose preview runs. A failed step does not stop the next one. |
+| `apps/desktop/src/main/services/android/androidComposePreviews.ts`, `apps/desktop/src/shared/types/androidEmulatorPreviews.ts` | `daex android preview`: the Android CLI runs, the module check, the proof filing, and their types. |
+| `apps/desktop/src/main/services/android/androidUiSnapshot.ts`, `androidUiTree.ts` | The UI tree (the Android CLI, or uiautomator), its cache, and the element queries. |
+| `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts`, `androidDemoRecording.ts` | The lane's recording sessions (the slot is freed before the demo renders), the MP4 writer and store, and the demo video. |
+| `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes (accessibility too), the app in front, the orientation, location and Clear location, the status bar (demo mode), appearance and permissions. |
+| `apps/desktop/src/main/services/android/androidStoreShots.ts`, `androidWindows.ts`, `apps/desktop/src/shared/types/androidEmulatorDevice.ts`, `apps/ade-cli/src/cliAndroidDevice.ts` | Parity: Play Store screenshots, the window layout, their types, and the CLI verbs for accessibility, status bar, Clear location, Play Store screenshots and windows. |
+| `apps/desktop/src/main/services/android/androidDeviceShell.ts`, `androidProof.ts` | Device shell, adb and emulator console helpers, and the proof filer. |
+| `apps/desktop/src/main/services/android/adb.ts`, `androidEmulatorErrors.ts` | The adb runner and the coded errors. |
+| `apps/desktop/src/renderer/components/android/AndroidDevicePane.tsx` | The pane: picker, stage, rail, drawer, strips and live line. |
+| `apps/desktop/src/renderer/components/android/useAndroidPaneFloat.ts`, `useAndroidStorageActions.ts` | The pane's half of the floating player (the cache and "Float over chat"), and the picker's Storage actions. |
+| `apps/desktop/src/renderer/components/android/drawer/` | The Tools drawer: `AndroidToolsDrawer.tsx`, the four group sections, and `androidDrawerState.ts`. The open group, the one serialized change and the settings come from the shared `device/deviceDrawerState.ts`; the frame, the Location rows and the recording rows from `device/DeviceToolsDrawerShell.tsx`, `device/DeviceLocationRows.tsx` and `shared/RecordingRow.tsx`. |
+| `apps/desktop/src/renderer/components/android/useAndroidInspect.tsx`, `useAndroidRecording.ts` | Inspect (on the shared `device/useDeviceInspect.ts` and `device/DeviceInspectOverlay.tsx`) and the rail's Record. |
+| `apps/desktop/src/renderer/components/android/androidDeviceState.ts` | The pane state, stock profiles, menu rules and error sentences. The 3D-or-flat choice is kept by the shared `device/deviceViewMode.ts`. |
+| `apps/desktop/src/renderer/components/android/AndroidDevicePicker.tsx`, `AndroidSetupCard.tsx`, `AndroidLicenseDialog.tsx`, `useAndroidSdkSetup.ts` | The picker, the setup card, the licence dialog and the card's data. |
+| `apps/desktop/src/renderer/components/android/AndroidSystemImagesSection.tsx`, `useAndroidSystemImages.ts`, `drawer/AndroidInstrumentationTestsRow.tsx` | the picker's System images section and its data, and the App group's Run tests row. |
+| `apps/desktop/src/renderer/components/android/useAndroidPosture.ts`, `AndroidFoldDock.tsx`, `apps/desktop/src/renderer/components/device/proceduralFoldBody.ts`, `device/HingeSlider.tsx` | the pane's hinge state, the fold dock, and the two-panel body and hinge slider that the iPhone Duo shares. |
+| `apps/desktop/src/renderer/components/android/drawer/AndroidPreviewsSection.tsx` | the Tools drawer's Previews group. |
+| `apps/desktop/src/renderer/components/settings/AndroidDevicesSection.tsx`, `deviceSettingsCards.tsx`, `AndroidRecordingsWarning.tsx`, `apps/desktop/src/renderer/components/android/useAndroidMachinePreferences.ts` | Settings › Android devices: the setup card for the picked machine, the cards shared with Apple (Realistic body, recording overlays, Record agent input, the bitrate cap), the recordings storage warning, and the machine preferences read and write. |
+| `apps/desktop/src/renderer/components/android/AndroidToolCardMenu.tsx`, `AndroidRecordingReceipts.tsx`, `AndroidShutdownConfirm.tsx`, `LaneAndroidDeviceMarker.tsx`, `useLaneAndroidDevices.ts`, `apps/desktop/src/renderer/components/device/LaneDeviceMarker.tsx`, `device/useLaneDeviceMarks.ts` | Work tab and chat: the tool-card menu, the recording receipts, the confirm when a tab with a running emulator closes, and the lane device mark (shared with Apple). |
+| `apps/desktop/src/renderer/components/work/AndroidEmulatorRunningPill.tsx`, `DeviceRunningPill.tsx`, `apps/desktop/src/renderer/lib/askOnceStore.ts`, `useConfirmKeys.ts` | The chat's "Emulator running" pill on one status read per machine, and the ask-once and confirm-key helpers. |
+| `apps/desktop/src/renderer/components/android/useAndroidOrientation.ts`, `useAndroidScreenCaptures.ts`, `androidPickerRequests.ts`, `drawer/AndroidWindowsRow.tsx`, `apps/desktop/src/renderer/components/device/OrientationMenuItems.tsx` | The rotation (reverse rotations too), the screen captures, the picker's requests, and the drawer's split screen and free window row. |
+| `apps/desktop/src/shared/androidDevicePresentation.ts`, `computerUseAndroid.ts`, `computerUseCommandReaders.ts`, `apps/ios/ADE/Views/Work/WorkComputerUseSummaryAndroid.swift` | The device's readable name, and the chat summaries of `daex android` commands on the desktop and the phone. |
+| `apps/desktop/src/renderer/browserMockAndroid.ts`, `browserMockAndroidPreferences.ts`, `browserMockAndroidUtil.ts` | The browser mock's emulator, preferences and helpers. |
+| `apps/desktop/src/renderer/components/android/AndroidDeviceStage.tsx`, `AndroidDeviceRail.tsx`, `AndroidDeviceStatus.tsx` | The stage (on the shared `device/DeviceFlatView.tsx`), the rail (on `device/DeviceRail.tsx`), and the strips, cards and live line (on `device/DeviceStatusStrip.tsx` and `device/DeviceLoadingCard.tsx`). |
+| `apps/desktop/src/renderer/components/android/AndroidCatalogGrid.tsx`, `androidTileRenderer.ts` | The brand grid tiles and their details, and the one shared WebGL renderer for the tile stills and the hover turn. |
+| `apps/desktop/src/renderer/components/android/androidDeviceBody.ts`, `androidDeviceModels.ts`, `useAndroidBootScreen.ts` | The procedural device bodies (and any model file), and the boot screen drawn on the 3D model. |
+| `apps/desktop/src/renderer/components/android/AndroidRenderSheet.tsx`, `androidRender.ts`, `useAndroidRenderRequests.ts` | The Render sheet (on the shared `device/DeviceRenderSheet.tsx`), the drawing and filing of renders (on `device/deviceRenderProof.ts` and `device/deviceRenderPass.ts`), and the pane's answer to `daex android render`. |
+| `apps/desktop/src/renderer/components/android/useAndroidDeviceStream.ts`, `useAndroidDeviceInput.ts`, `androidStreamLease.ts` | The stream (on the shared `device/useStreamRecovery.ts` and `device/useGracefulStreamLease.ts`), input, and the per-lane stream lease (a `device/streamLease.ts` table of its own). |
+| `apps/desktop/src/renderer/components/terminals/workToolPanels.tsx` | The Android tool's targets (This lane, Android · `<machine>`). |
+| `apps/desktop/src/renderer/components/android/AndroidDeviceMiniPlayer.tsx`, `androidMiniPlayerStore.ts`, `apps/desktop/src/renderer/components/device/miniPlayerSurface.ts` | the floating player, which emulator floats, and the surface rules it shares with the Apple player. |
+| `apps/desktop/src/renderer/components/android/AndroidQuickChips.tsx`, `AndroidCrashPin.tsx`, `drawer/AndroidLogsSection.tsx`, `androidTextDraft.ts` | the quick chips, the crash pin, the Logs group, and the chat draft and copy they share. |
+| `apps/desktop/src/renderer/components/android/useAndroidLaneDeviceCard.ts` | the tools pane card's line. |
+| `apps/desktop/src/renderer/webclient/adapter/androidDevice.ts`, `streamTicket.ts` | the hosted web client's `androidEmulator` namespace, and the relay ticket helpers it shares with `appleDevice.ts` (one ticket for each stream URL). |
+| `apps/ios/ADE/Views/Work/AndroidDeviceViewer.swift`, `AndroidDeviceViewerModel.swift`, `apps/ios/ADE/Services/SyncService+AndroidDevice.swift` | the phone viewer, its control model, and the `android.*` commands it sends. The stream itself is `AppleStreamSession.swift`, and the touch rules are `LiveStageTouch` in `LiveStageChrome.swift`, both shared with the simulator viewer. |
+| `apps/desktop/src/renderer/components/terminals/useRemoteDeviceTabs.ts` | The tab that joins the open pane for a remote device use (iOS and Android). |
+| `apps/desktop/src/shared/androidFormat.ts` | `formatAndroidBytes`: decimal sizes (`2.8 GB`), shared by the desktop and the `daex android` CLI so a size reads the same in both. |
+| `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidSuite.ts`, `cliAndroidFormat.ts` | `daex android` plans and error hints (core verbs in `cliAndroid.ts`; agent-suite, test, preview, fold and `sdk` verbs in `cliAndroidSuite.ts`), and its text formatters. The help page is in `cli.ts`. |
+| `apps/ade-cli/src/services/sync/androidRemoteCommands.ts` | The `android.*` remote commands a phone or a web tab sends. |
+| `apps/desktop/resources/android/` | The scrcpy server jar, its licence and its README. |
+
+## Gotchas / fragile areas
+
+- **DAEX never deletes an AVD it did not make, and never stops an emulator it
+  did not start.** Ownership is the AVD's `config.ini` marker and the
+  started-emulators files (`<project>/.ade/android/started-emulators.json`,
+  `started-extra-emulators.json`) plus the machine owner file
+  (`~/.ade/android/emulator-owners.json`). An older brain never reads the
+  extras file, so it cannot stop a running extra as an orphan.
+- **One encode per emulator.** The emulator has only a software encoder;
+  `androidLaneStreams.ts` shares one scrcpy stream between the local viewer,
+  a recording, the relay and a remote desktop. scrcpy cannot change a running
+  encoder's rate, so a rate change restarts the session on the same transport
+  (`AndroidStreamHub.recap`, ~0.5–1 s gap).
+- **Local picture and recordings are never capped**; only remote-only holders
+  get the remote bitrate cap and relay pacing (`appleStreamPacing.ts`).
+- **Viewer-only actions.** `ANDROID_USER_ONLY_ACTIONS` (stream start/stop,
+  live touch, …) are refused for session-bound agents, and
+  `getStreamStatus` always returns `transport: null` so a token never reaches a
+  transcript. Agents cannot restart adb (`restartAdb` is refused with a policy
+  error).
+- **adb `unauthorized`.** An adb server started before `~/.android/adbkey`
+  changed never re-reads it. DAEX restarts the server only when no other
+  device uses it; otherwise the person confirms **Restart adb and start**.
+- **The memory guard runs before every start** (pressure, paging, the
+  emulators' budget, free memory, boots in flight, other brains' ledger). The
+  first emulator is never refused by the budget rule alone; `--force` boots
+  past it. Its refusal is an expected error, not a Sentry issue.
+- **Idle stop.** An emulator nobody used for 20 minutes, or whose brain is
+  gone, is stopped unless **Keep running** is on. Use counts the device's own
+  input and other viewers, not only DAEX calls.
+- **Ports.** Each emulator gets its own even console port in 5554–5682; an AVD
+  boots once at a time.
+- **No native helper.** All of it is Node code in the brain, one path for
+  macOS, Windows and Linux.
 
 ## Requirements
 
@@ -22,8 +132,8 @@ The emulator runs on the machine that runs the lane's brain. That machine
 needs:
 
 - **The Android SDK.** The setup card installs it, and so do Android Studio
-  and Google's command-line tools. ADE looks for it on every use, not once at
-  start-up, so an SDK installed while ADE runs is seen on the next call. The
+  and Google's command-line tools. DAEX looks for it on every use, not once at
+  start-up, so an SDK installed while DAEX runs is seen on the next call. The
   order is the machine's SDK setting ("Use mine…" or the setup card's
   folder), then `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the platform default:
   `~/Library/Android/sdk` (macOS), `%LOCALAPPDATA%\Android\Sdk` (Windows),
@@ -31,7 +141,7 @@ needs:
   `/usr/lib/android-sdk`, so a system-wide install is found even when the
   brain's service has no `ANDROID_HOME`.
 - **`platform-tools`** (`adb`) and **`emulator`**.
-- **`cmdline-tools`, to make devices.** ADE writes the AVD files itself and
+- **`cmdline-tools`, to make devices.** DAEX writes the AVD files itself and
   needs no JDK, but it reads the hardware profiles (`medium_phone`, the
   Pixels) from the Command-line Tools' `sdklib` jar, or from Android
   Studio's. An SDK with neither can boot and attach an existing AVD, but
@@ -40,16 +150,16 @@ needs:
 - **One system image for the host ABI.** Apple Silicon runs only `arm64-v8a`
   images; Intel and AMD hosts run `x86_64` images.
 - **Hardware acceleration.** macOS uses Hypervisor.framework (HVF), Windows
-  uses WHPX (or AEHD), and Linux uses KVM (`/dev/kvm`). ADE reads
+  uses WHPX (or AEHD), and Linux uses KVM (`/dev/kvm`). DAEX reads
   `emulator -accel-check`. WSL2 has no acceleration. A VM has it only when
   its host passes nested virtualization through (`/dev/kvm` in the VM).
-  ADE caches the check per emulator binary. A usable answer, and a definite
+  DAEX caches the check per emulator binary. A usable answer, and a definite
   "not usable", hold for 10 minutes. A check that never answered (a timeout,
-  or a missing tool) is tried again after 30 s. An emulator step off ADE Cloud
+  or a missing tool) is tried again after 30 s. An emulator step off DAEX Cloud
   checks a "not usable" answer again at most every 30 s, so a fixed `/dev/kvm`
   works at once.
 
-`ade android status` and the pane report each part. A host that is not macOS,
+`daex android status` and the pane report each part. A host that is not macOS,
 Windows or Linux reports `platformSupported: false`. A missing SDK is not
 "unsupported": the pane shows the setup card.
 
@@ -80,10 +190,10 @@ The buttons:
 
 - **Review licences & install** opens one dialog with each licence that a
   missing part uses, in full, each with its own box. The install starts only
-  when you tick every box. ADE never accepts a licence by itself. The brain
+  when you tick every box. DAEX never accepts a licence by itself. The brain
   refuses an install whose request does not name each licence
   (`ANDROID_SDK_LICENSE_NOT_ACCEPTED`).
-- **Use mine…** points ADE at an SDK that you already have. The folder must
+- **Use mine…** points DAEX at an SDK that you already have. The folder must
   hold `platform-tools`, `emulator` or `system-images`
   (`ANDROID_SDK_PATH_INVALID`).
 - **Check again** reads the SDK and the plan again.
@@ -96,17 +206,17 @@ only while an install runs.
 How the install works (`androidSdkInstall.ts`):
 
 - **The source.** Google's SDK repository (`repository2-3.xml` and the
-  `sys-img2-3.xml` manifests), stable channel only. ADE reads the manifests
-  for each plan and keeps them for 10 minutes. ADE needs no JDK and does not
+  `sys-img2-3.xml` manifests), stable channel only. DAEX reads the manifests
+  for each plan and keeps them for 10 minutes. DAEX needs no JDK and does not
   run `sdkmanager`.
-- **The image and the emulator agree.** ADE picks the newest image whose
+- **The image and the emulator agree.** DAEX picks the newest image whose
   emulator dependency the planned emulator meets. An emulator that is older
   than the image needs is planned as "Update from x".
 - **Downloads resume.** Each archive goes to `<sdk>/.ade-downloads/` with
   `Range` requests and up to four attempts. A cancelled or failed install
-  keeps the partial file, and the next install continues it. ADE checks the
+  keeps the partial file, and the next install continues it. DAEX checks the
   SHA-1 from the manifest before it unpacks.
-- **Unpack is atomic per part.** ADE unpacks into `<sdk>/.ade-staging/`,
+- **Unpack is atomic per part.** DAEX unpacks into `<sdk>/.ade-staging/`,
   moves an old copy aside, then renames the new folder into place, and writes
   `package.xml`. On Windows both renames retry while an antivirus holds a
   file; an old copy that stays held (a running emulator or adb) stops the
@@ -114,30 +224,30 @@ How the install works (`androidSdkInstall.ts`):
   absolute, has a drive letter or climbs with `..` stops the install, and so
   does a link that lands outside the folder or one that a file would be
   written through (each link is checked from the real folder it goes in).
-- **The licence record.** ADE appends the licence hashes to
+- **The licence record.** DAEX appends the licence hashes to
   `<sdk>/licenses/<id>`, the files that `sdkmanager` and Gradle read. It also
   writes `<sdk>/.ade/license-consents.json` with each licence id, the SHA-1 of
   the text you saw, the time, and where you accepted it (the setup card or
   Settings › Android devices).
 - **One install for each SDK folder.** `<sdk>/.ade-install.lock` holds the
-  pid. A second ADE process gets `ANDROID_SDK_INSTALL_BUSY` while that pid
+  pid. A second DAEX process gets `ANDROID_SDK_INSTALL_BUSY` while that pid
   lives. A lock older than 6 hours is stale.
 - **Space.** The plan adds the unpacked size of each missing part and the
   largest zip. With less free space, the install stops before it starts
   (`ANDROID_SDK_NO_SPACE`).
 - **The Android CLI** (optional) comes from
   `dl.google.com/android/cli/latest/<os>_<arch>/`, checked with its `.sha256`
-  file, into `<sdk>/android-cli/`. ADE always runs it with `--no-metrics`.
+  file, into `<sdk>/android-cli/`. DAEX always runs it with `--no-metrics`.
   Google publishes no build for Windows on Arm, so the row says "Not
   available for this computer" there.
   Its first run unpacks about 150 MB into `~/.android/cli`.
 - **Hosts.** macOS (arm64, x64), Windows x64 and Linux x64. Windows on Arm and
   Linux arm64 have no Google emulator: the card says so and installs nothing.
 
-The default install folder is the platform default above. A folder that ADE
+The default install folder is the platform default above. A folder that DAEX
 would not find by itself becomes the machine's SDK setting when the install
 starts, so a partial install is visible too. The setting lives in
-`<ADE home>/android/settings.json`, and ADE reads it before `ANDROID_HOME`.
+`<ADE home>/android/settings.json`, and DAEX reads it before `ANDROID_HOME`.
 
 ## Desktop surface
 
@@ -146,7 +256,7 @@ to Apple Development. Its tools card says "Open an Android device". The layout
 copies Apple Development: the same picker position, stage, rail and strips, so
 it is easy to move between the two tools.
 
-The web client does not offer the tool yet ("Android Development needs the ADE
+The web client does not offer the tool yet ("Android Development needs the DAEX
 desktop app for now.").
 
 ### The picker
@@ -165,13 +275,13 @@ The picker shows when the lane holds no device, or when the user picks
 2. **On this machine.** Every other AVD. A free AVD is a button that attaches
    it to the lane and boots it. Tags:
    - **Running** or **Off**.
-   - **In use**: an app other than ADE started this emulator. Stop it there to
+   - **In use**: an app other than DAEX started this emulator. Stop it there to
      use it here.
    - **Taken**: another lane holds it. It has no menu and does not respond.
 
    The ⋯ menu has **Release from this lane** (for the lane's own AVD) and
-   **Delete device…** (only for an AVD that ADE made, that no lane holds, that
-   is off, and that ADE did not make for a lane outside this project). Delete
+   **Delete device…** (only for an AVD that DAEX made, that no lane holds, that
+   is off, and that DAEX did not make for a lane outside this project). Delete
    asks again and says how much disk it frees.
 3. **New device.** The line "Stock Android on every device", then the brand
    grid: one tile per device in `shared/androidDeviceCatalog.ts` (Pixel,
@@ -184,16 +294,16 @@ The picker shows when the lane holds no device, or when the user picks
    **More…** lists every profile the SDK has, grouped by form factor. A new
    AVD is deleted with the lane.
 4. **Storage.** A toggle that measures each AVD on the disk when it opens
-   ("ADE made" or "Yours", in use or running, size). **Clean up** asks again
+   ("DAEX made" or "Yours", in use or running, size). **Clean up** asks again
    ("Delete N — frees X") and deletes only the AVDs that the ⋯ menu could
    delete.
-5. **System images** (P3). A toggle that lists the images on the lane's
-   machine and the ones to add (see [System images](#system-images-p3)).
+5. **System images**. A toggle that lists the images on the lane's
+   machine and the ones to add (see [System images](#system-images)).
 
-Pixel tiles use the SDK's own hardware profiles. The other brands use ADE
-profiles (`ade_*` ids) that ADE merges into `<android user home>/devices.xml`
+Pixel tiles use the SDK's own hardware profiles. The other brands use DAEX
+profiles (`ade_*` ids) that DAEX merges into `<android user home>/devices.xml`
 (`~/.android/devices.xml`) on the first create. The merge keeps every
-profile that is not ADE's, writes the file atomically, and uses the density
+profile that is not DAEX's, writes the file atomically, and uses the density
 values the SDK schema allows.
 
 The tile stills come from one shared WebGL renderer. Each still is drawn
@@ -201,14 +311,14 @@ once, then kept in memory and in `localStorage` (WebP). Hover turns the body
 slowly on the same renderer, one tile at a time; the renderer is freed after
 20 s with no use. Reduced motion stops the turn.
 
-### System images (P3)
+### System images
 
 The picker's last section, in the place the Apple picker has **Runtimes**
 (`AndroidSystemImagesSection.tsx`, data in `useAndroidSystemImages.ts`, the
 service in `androidSystemImages.ts`). It reads only while it is open.
 
 - **Installed.** Each image in `<sdk>/system-images` with its API level, tag
-  and ABI, its size on disk, and the AVDs that boot from it. ADE finds an
+  and ABI, its size on disk, and the AVDs that boot from it. DAEX finds an
   AVD's image from `image.sysdir.1` in its `config.ini`, else from its API
   level, tag and ABI. **newest** marks the image a brand tile uses when no
   image is named.
@@ -221,11 +331,11 @@ service in `androidSystemImages.ts`). It reads only while it is open.
   in full; the install starts only when the person ticks it. The install
   runs on the machine's one SDK install job (`androidSdkInstall.ts`): it
   checks the free space (the unpacked size and the zip), checks the SHA-1,
-  writes the licence file and the consent record ("ADE device picker ›
+  writes the licence file and the consent record ("DAEX device picker ›
   System images"), shows progress, and **Cancel** stops it. An update is
   refused while an AVD on that image runs.
-- **Remove.** ADE asks first. When AVDs use the image, the question names
-  them: ADE keeps their files, but they cannot start until the image is
+- **Remove.** DAEX asks first. When AVDs use the image, the question names
+  them: DAEX keeps their files, but they cannot start until the image is
   installed again. The service refuses a removal while one of those AVDs
   runs, and refuses one with users that the person did not confirm
   (`ANDROID_SYSTEM_IMAGE_IN_USE`). It moves the folder out of
@@ -236,9 +346,9 @@ A finished install or removal sends `android.inventory.changed`, and the
 picker reads its list again. The device list reads the images from disk on
 each read, so a brand tile uses a new image with no restart.
 
-`ade android sdk images [--installed]` prints the same list. Install and
+`daex android sdk images [--installed]` prints the same list. Install and
 remove are the person's (`ANDROID_SDK_PERSON_ONLY_ACTIONS`): an agent, a
-terminal and ADE MCP are refused, and the CLI says to ask the user.
+terminal and DAEX MCP are refused, and the CLI says to ask the user.
 
 ### The stage
 
@@ -254,8 +364,8 @@ flat view and says why.
 The rail's **Render** button opens the Render sheet: angles (front, ¾ left,
 ¾ right, back, the current view), the background (transparent, studio,
 dusk), a shadow, a turntable video and a contact sheet. The renders are
-filed to the lane's proof (History). `ade android render` asks the open pane
-for the same renders, with the flags of `ade ios-sim render`.
+filed to the lane's proof (History). `daex android render` asks the open pane
+for the same renders, with the flags of `daex ios-sim render`.
 
 In the flat view the video arrives the right way up,
 because scrcpy turns it with the display. The screen box fits the pane and
@@ -266,7 +376,7 @@ a landscape screen never sits under the rail.
 Touch maps to device pixels. Keys typed while the screen has focus go to the
 device. Esc sends Back.
 
-### Fold (P3)
+### Fold
 
 A foldable AVD (a Pixel Fold or a Galaxy Z Fold profile) has a hinge. The
 pane reads it once when the emulator boots (`getPosture`), then follows the
@@ -332,7 +442,7 @@ shown text; 1.5 s and 4000 files at most). The chip is Apple's
 `ios_element` packet with `metadata.contextSurface: "android-emulator"`, so
 the composer, the saved crop and the prompt packet are the same code. Where
 no chip can go, it puts one line in the draft, with the
-`ade android tap-element --ref …` command. **Copy** copies that command. Inspect goes off when the device stops
+`daex android tap-element --ref …` command. **Copy** copies that command. Inspect goes off when the device stops
 being live. The overlay is the shared `device/DeviceInspectOverlay.tsx`, which
 the Apple pane also uses.
 
@@ -350,18 +460,18 @@ poll.
 
 **Device tools** opens the drawer. In a pane 700 px wide or more, it docks
 beside the picture. In a narrower pane, it covers the picture to the left of
-the rail, so the rail stays usable. One group is open at a time. ADE keeps
+the rail, so the rail stays usable. One group is open at a time. DAEX keeps
 the open group for each chat. A closed group is unmounted, so only the open
 group reads from the device.
 
 | Group | Controls |
 |---|---|
 | Device | Text size and Display size (Small, Default, Large, Largest or Larger), Animations off, Show taps, Show layout bounds. **Accessibility**: High contrast text, Bold text, Color inversion, Grayscale, Color correction and TalkBack, each read back from the device ("not on this image" when the image does not have it). **Status bar**: **9:41** (demo mode) and **Clear**. |
-| App | The app in front (read every 2 s while the group is open), **Build & run** (Gradle), **Relaunch**, **Stop**, **Uninstall**, **Start an app**, **Open** a link, **Install** an APK, **Run tests** (P3, instrumentation tests), **Windows** (Split, Swap sides, Free window, Full screen, Close; for the typed package or the app in front), and Permissions. |
+| App | The app in front (read every 2 s while the group is open), **Build & run** (Gradle), **Relaunch**, **Stop**, **Uninstall**, **Start an app**, **Open** a link, **Install** an APK, **Run tests** (instrumentation tests), **Windows** (Split, Swap sides, Free window, Full screen, Close; for the typed package or the app in front), and Permissions. |
 | Capture | The lane's recordings, newest first: **Open in proof**, and a ⋯ menu with Show in Finder (not for another machine's files) and Delete. A running recording shows as one line at the top. |
 | Emulator | Appearance, Location (presets or a typed point, and **Clear**), Battery level and Charging, Airplane mode, Wi-Fi, Mobile data. |
-| Logs | Logcat for the lane's app (P2): the newest package ADE installed for the lane, else the app in front, or **Whole device**. A level filter (All, Info, Warn, Error), a text filter, **Pause**, **Clear**, **Copy** and **Send to chat** (the newest 80 lines into the chat's draft). |
-| Previews | P3: Compose previews. A module box (`app` by default), **Find previews**, a check box for each `@Preview`, and **Render**. The images show as thumbnails; a click opens the proof row ([Compose previews](#compose-previews-p3)). |
+| Logs | Logcat for the lane's app: the newest package DAEX installed for the lane, else the app in front, or **Whole device**. A level filter (All, Info, Warn, Error), a text filter, **Pause**, **Clear**, **Copy** and **Send to chat** (the newest 80 lines into the chat's draft). |
+| Previews | Compose previews. A module box (`app` by default), **Find previews**, a check box for each `@Preview`, and **Render**. The images show as thumbnails; a click opens the proof row ([Compose previews](#compose-previews)). |
 
 Each change is one call to the lane's machine, and the drawer shows the value
 the device reports after the change. It never shows a value it has not read.
@@ -382,7 +492,7 @@ The settings come from `androidDeviceSettings.ts`, in one `sh -c` read
 - The app in front: the first `mFocusedApp` line of `dumpsys window`. The
   home app reads as "Home screen".
 
-### Logs, quick chips and the crash pin (P2)
+### Logs, quick chips and the crash pin
 
 The **Logs** group reads `readLog` (the same bounded read as `ade android
 log`) every 2 s with the last line's cursor, so each read carries only new
@@ -407,15 +517,15 @@ window until the next one. The source is the brain, not the pane
 - A crash is a Java `FATAL EXCEPTION` block (`AndroidRuntime`) or a native
   crash dump (`DEBUG`). The lines of one crash come from one writer; a quiet
   gap of 250 ms ends it.
-- Only the lane's app counts: the packages ADE installed for the lane, or,
+- Only the lane's app counts: the packages DAEX installed for the lane, or,
   when it installed none, any app outside `android`, `com.android.*` and
   `com.google.android.*`.
 - The brain emits `android.app.crashed` and puts the crash on the lane status
-  (`appCrash`), so every viewer on every machine sees it. `ade android status`
-  prints it with the next `ade android log` command. The pin ends when the
+  (`appCrash`), so every viewer on every machine sees it. `daex android status`
+  prints it with the next `daex android log` command. The pin ends when the
   emulator stops.
 
-### The memory guard (P2)
+### The memory guard
 
 Before a boot, the brain decides on what the machine has already committed,
 not on a free-memory snapshot (`androidMemoryGuard.ts`): a machine already
@@ -446,7 +556,7 @@ file's pid, measured as the OS counts real memory: macOS `phys_footprint`
 the private commit. One process listing per start.
 
 "This one" is the AVD's `hw.ramSize` (2 GB when it does not say) plus its
-overhead: the overhead last measured for that AVD (from one of ADE's
+overhead: the overhead last measured for that AVD (from one of DAEX's
 emulators that ran at least 5 minutes, kept in the owner file), else the
 largest one measured on the machine, else as much again as the guest plus
 1.5 GB. A 2 GB foldable measured 6.4 GB over its guest after a day of use.
@@ -455,10 +565,10 @@ Boots in flight are held in this process (two lanes that start together
 cannot both fit) and in the owner file for other brains. The refusal is one
 sentence under 140 characters that names the numbers and the way out, for
 example "Pixel 9 needs about 5.5 GB; emulators already use 14.0 GB of the
-18.0 GB ADE allows. Stop an emulator first." It is an expected answer
+18.0 GB DAEX allows. Stop an emulator first." It is an expected answer
 (`environment`), so it never reaches Sentry as an issue. The pane shows a
 warning strip with **Start anyway**, the floating player's Start becomes
-**Start anyway**, and the CLI takes `ade android start --force` (its hint
+**Start anyway**, and the CLI takes `daex android start --force` (its hint
 says to ask the user first). An emulator that already runs is never checked.
 
 ### States
@@ -495,17 +605,17 @@ A tap, key or swipe that fails shows one error toast per stall
 
 ### Where a device runs
 
-An ADE Cloud computer runs no Android emulator yet. For a chat on ADE Cloud
-the Android tool is not hidden: it says "Android comes to ADE Cloud later" and
+A DAEX Cloud computer runs no Android emulator yet. For a chat on DAEX Cloud
+the Android tool is not hidden: it says "Android comes to DAEX Cloud later" and
 offers the person's own machines (`workToolPanels.tsx`). The chat's cloud
-computer shows as "ADE Cloud", never by its own name, and no other cloud
+computer shows as "DAEX Cloud", never by its own name, and no other cloud
 computer is listed.
 
 The **Runs on** machine row of a device tool lists the chat's machine first,
 then this computer, then the rest by name. The order is the same each time the
 tool opens. One switch per device kind runs at a time: the chosen chip shows a
 spinner and the others wait. A failed switch shows one toast per chat, in plain
-words ("<machine> is restarting. Try again when it is back." for an ADE Cloud
+words ("<machine> is restarting. Try again when it is back." for a DAEX Cloud
 computer).
 
 ### Closing the tab
@@ -514,7 +624,7 @@ Closing the tab with ×, or moving to another tool, gives back the pane's hold
 on the stream. The last viewer of a lane stops the stream. The emulator keeps
 running.
 
-### The floating player (P2)
+### The floating player
 
 One Apple device and one Android emulator can float over the chat at the same
 time, each in its own player (`AndroidDeviceMiniPlayer.tsx`,
@@ -524,7 +634,7 @@ covering each other. The rules are Apple's:
 - **Float over chat** in the rail's More menu opens it. So does closing the
   tools pane (or switching tool) while the picture is live, unless the chat's
   "Show preview when minimized" is off.
-- `ade android show --floating` (or `ade ui show floating-android`) asks for
+- `daex android show --floating` (or `daex ui show floating-android`) asks for
   it. With the Android tool on screen, the answer is "shown" and nothing more
   opens.
 - An agent that drives the emulator (tap, key, type, launch, record) floats
@@ -547,39 +657,39 @@ A lane holds one Android device as its own (the lane device), and can hold
 extra devices beside it ([Extra devices](#extra-devices)). An AVD belongs to
 at most one lane. The Android device is separate from the Apple device, so a
 lane can hold one of each. An agent can drive both in one turn with
-`ade apple` and `ade android`.
+`daex apple` and `daex android`.
 
 The lane's row is in the local-only table `lane_android_devices`, and its
 extras are in `lane_android_extra_devices`. Neither syncs.
 
 ### Created and attached devices
 
-- **Created.** ADE made the AVD for the lane (`device-create`, or a New device
-  card). Its name is `ade_<lane>_<profile>`. ADE writes its marker into the
+- **Created.** DAEX made the AVD for the lane (`device-create`, or a New device
+  card). Its name is `ade_<lane>_<profile>`. DAEX writes its marker into the
   AVD's `config.ini`.
 - **Attached.** The lane uses an AVD that already existed (`device-attach`, or
   a free card under On this machine). It stays the user's.
 
 The rules:
 
-- ADE never deletes an AVD it did not make. An AVD whose `config.ini` lost
-  ADE's marker counts as the user's.
-- ADE never stops an emulator it did not start. It keeps the list of the
+- DAEX never deletes an AVD it did not make. An AVD whose `config.ini` lost
+  DAEX's marker counts as the user's.
+- DAEX never stops an emulator it did not start. It keeps the list of the
   emulators it started in `<project>/.ade/android/started-emulators.json`
   (the lanes' own devices) and `started-extra-emulators.json` (their extra
   devices), so the lists survive a restart, and an owner record of each in the machine's
   owner file (see [Emulator lifecycle](#emulator-lifecycle)). `ade android
   stop` on an emulator that another app started fails with
-  `ANDROID_AVD_RUNNING`. Emulators that ADE did not start are listed and count
+  `ANDROID_AVD_RUNNING`. Emulators that DAEX did not start are listed and count
   against the memory guard, and are never stopped.
-- An AVD that ADE made for a lane outside this project can be attached, but
+- An AVD that DAEX made for a lane outside this project can be attached, but
   this project never deletes it.
 - An AVD boots once at a time. Each emulator gets its own even console port in
   5554–5682.
 
 Boot is headless (no window, no audio, no boot animation). It is ready when
 `sys.boot_completed` reads 1. A first boot of a new AVD took 54 s on the
-Windows test machine, and a cold boot 24 s. ADE waits up to 180 s.
+Windows test machine, and a cold boot 24 s. DAEX waits up to 180 s.
 
 ### Extra devices
 
@@ -587,10 +697,10 @@ As an Apple lane holds extra simulators, an Android lane can hold extra AVDs
 beside its own device, for example a tablet beside a phone
 (`androidLaneExtras.ts`, `androidEmulatorExtras.ts`).
 
-- **Make one.** `ade android device-create --extra --catalog <id>` (or
-  `--profile <id>`). ADE makes the AVD for the lane, with ADE's marker, and
+- **Make one.** `daex android device-create --extra --catalog <id>` (or
+  `--profile <id>`). DAEX makes the AVD for the lane, with DAEX's marker, and
   boots it beside the lane device unless `--no-start`. A lane may hold 2
-  extras; `ADE_ANDROID_LANE_EXTRA_DEVICES` in ADE's environment raises the
+  extras; `ADE_ANDROID_LANE_EXTRA_DEVICES` in DAEX's environment raises the
   limit up to 8. One more is refused with `ANDROID_EXTRA_DEVICE_LIMIT`. A
   boot that fails leaves the extra made, and it still counts.
 - **The lane device stays the lane device.** It streams, records, runs the
@@ -603,7 +713,7 @@ beside its own device, for example a tablet beside a phone
   share (use the AVD name). An install or a launch on an extra that is
   off boots it first. Each extra starts and stops on its own queue, so its
   boot never holds up the lane device.
-- **An older ADE.** `--device` and `--extra` check first that the brain
+- **An older DAEX.** `--device` and `--extra` check first that the brain
   knows extra devices (its action list has `devicePromote`). An older brain
   (another machine's, with `--machine`) ignores those fields and would act
   on the lane's own device, so the command is refused before the call.
@@ -612,11 +722,11 @@ beside its own device, for example a tablet beside a phone
   `start --device <avd> --force` boots past it, after the user agrees. A
   start of an extra that adb refuses offers **Restart adb and start** in the
   pane's strip, as the lane device's does, and restarts adb for that extra.
-- **Promote.** `ade android device-promote --device <avd>` (or a click on the
+- **Promote.** `daex android device-promote --device <avd>` (or a click on the
   extra in the picker) makes the extra the lane's device. The old device is
-  kept: one ADE made becomes an extra in its place, and its emulator keeps
-  running; the user's own AVD is released to them (what ADE installed comes
-  off, ADE's emulator stops, nothing is deleted). A running extra becomes the
+  kept: one DAEX made becomes an extra in its place, and its emulator keeps
+  running; the user's own AVD is released to them (what DAEX installed comes
+  off, DAEX's emulator stops, nothing is deleted). A running extra becomes the
   lane's running device. The promote is refused with
   `ANDROID_LANE_DEVICE_BUSY` while the old device starts or stops, records,
   streams to a viewer (an open pane counts; the picker does not), runs tests,
@@ -631,7 +741,7 @@ beside its own device, for example a tablet beside a phone
 - **Attach.** `device-attach --avd <name>` naming one of the lane's extras is
   refused with `ANDROID_DEVICE_IS_EXTRA`: promote it instead. No other lane
   can take, stop or delete a lane's extra.
-- **Remove.** `ade android device-detach --device <avd>` stops the extra and
+- **Remove.** `daex android device-detach --device <avd>` stops the extra and
   deletes its AVD (`--keep` keeps it on disk as a free AVD). The lane keeps
   its device. `device-detach` with no `--device` releases the lane's device
   and keeps the extras.
@@ -641,34 +751,34 @@ The phone and the web viewers show only the lane device, as Apple's do.
 ### When a lane ends
 
 Archive and delete both end the lane's hold on its device. The lane service
-stops the lane's stream and the emulator ADE started for it, then releases the
+stops the lane's stream and the emulator DAEX started for it, then releases the
 AVD (`androidLaneRelease.ts`):
 
 - A created AVD is deleted with its data. On Windows the disks stay locked for
-  a moment after the emulator exits, so ADE tries the delete again a few
+  a moment after the emulator exits, so DAEX tries the delete again a few
   times.
-- An attached AVD is not deleted. ADE uninstalls only the packages it
-  installed (P0 installs none), and only while the AVD runs.
+- An attached AVD is not deleted. DAEX uninstalls only the packages it
+  installed( installs none), and only while the AVD runs.
 - When another lane holds the same AVD, the ending lane drops its row and
   leaves the AVD.
 - A created AVD that still runs keeps its row, so the start-up cleanup can
   finish the job.
 - The lane's extra devices stop, and each one is deleted the same way (only
-  while its `config.ini` carries ADE's marker). A running extra keeps its
+  while its `config.ini` carries DAEX's marker). A running extra keeps its
   row, and the cleanup pass ends it later.
 
-`ade android device-detach` does the same for a lane that stays. `--keep`
+`daex android device-detach` does the same for a lane that stays. `--keep`
 keeps a created AVD on disk.
 
 ### Brain restarts and the start-up cleanup
 
-- **Hand-off.** When a brain on the installed app's ADE home (`~/.ade`,
-  `~/.ade-alpha`) exits, ADE's emulators keep running and stay in the state
+- **Hand-off.** When a brain on the installed app's DAEX home (`~/.ade`,
+  `~/.ade-alpha`) exits, DAEX's emulators keep running and stay in the state
   file. The next brain adopts them again. A brain on any other home (a dev or
   test brain) has no next brain: it stops them. A boot that was in
   progress finishes by itself and reads as Starting until it is done. A
   service that the desktop runs in its own process does not hand off: when it
-  closes, it stops every emulator that ADE started for the project.
+  closes, it stops every emulator that DAEX started for the project.
 - **Removal.** A project removed from the brain's project list has no next
   brain to adopt its emulators, so they stop: the runtime's teardown carries
   the reason (`"exit"`, `"close"` or `"unregister"`, `RuntimeDisposeReason`)
@@ -680,7 +790,7 @@ keeps a created AVD on disk.
   each and 5 s in all, before its database closes.
 - **Start-up cleanup.** When the service starts, it releases the device of
   each lane that was archived or deleted while no brain ran. Then it stops
-  each emulator that ADE started and that no lane holds. Lanes that are still
+  each emulator that DAEX started and that no lane holds. Lanes that are still
   active keep their emulators.
 
 A desktop that does not run the project's runtime in its own process does not
@@ -693,11 +803,11 @@ An emulator runs only as long as something is going to use it
 There is one idle policy and one orphan policy, and both live here and in
 the service, not in the cleanup pass below.
 
-- **Owner records.** Every emulator ADE starts gets a record in one file for
+- **Owner records.** Every emulator DAEX starts gets a record in one file for
   the whole machine, `~/.ade/android/emulator-owners.json` (under the user's
   default home whatever `ADE_HOME` says, so the installed brain, a dev brain
   and a test brain on a scratch home all see it): the AVD and console port,
-  qemu's pid and its start time, the owning brain's pid, start time and ADE
+  qemu's pid and its start time, the owning brain's pid, start time and DAEX
   home, the lane, the project, the chat, the machine id, when it started and
   was last used, and the pin. Writes take a lock file and rename into place.
   Emulators that were already running when a brain first used this file are
@@ -709,24 +819,24 @@ the service, not in the cleanup pass below.
   and the cleanup pass (`ANDROID_NOT_USE_METHODS`), so a new method counts by
   default. While a stream someone holds (a viewer or a recording), a lease, a
   boot or one of those calls is in progress, the emulator is in use.
-- **Idle stop.** An emulator ADE started (made or attached AVD alike) that is
+- **Idle stop.** An emulator DAEX started (made or attached AVD alike) that is
   not pinned and that nobody used for 20 minutes is stopped
   (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`, or its other name
   `ADE_ANDROID_IDLE_STOP_MINUTES`; `0` turns it off). Just before the stop, on
-  the lane's queue, the device is asked for use ADE's calls cannot see: input
-  from outside ADE (`dumpsys power` `mLastUserActivityTime`, which adb and
+  the lane's queue, the device is asked for use DAEX's calls cannot see: input
+  from outside DAEX (`dumpsys power` `mLastUserActivityTime`, which adb and
   Android Studio move) inside the limit, or a scrcpy viewer that is not this
   brain's (another brain on the project, another tool). Either one restarts
   the clock instead (`android.idle_stop_skipped`). The lane keeps its device;
   `status` shows `poweredOff` (when, and the idle minutes) until the next
-  start, and `ade android start` boots it again.
+  start, and `daex android start` boots it again.
 - **Keep running.** The rail's More menu has **Keep running**, and agents have
-  `ade android keep-running on|off`. It pins the running emulator against the
+  `daex android keep-running on|off`. It pins the running emulator against the
   idle stop and `device-cleanup --power-off-idle`, on the emulator's machine (a pinned call through the
   `android_emulator` action domain, `setKeepRunning`). A stop ends the pin.
-  `status` shows `keep running: yes`, or `no (ADE stops it after 20 min
+  `status` shows `keep running: yes`, or `no (DAEX stops it after 20 min
   unused)`.
-- **Owner gone.** When the owning brain is gone, a live brain on the same ADE
+- **Owner gone.** When the owning brain is gone, a live brain on the same DAEX
   home adopts the emulator (a restart or an update), as the hand-off above
   does. A brain on a dev or test home does not hand off on exit: it stops its
   emulators, and nothing adopts them. One that crashed is stopped by any
@@ -753,7 +863,7 @@ the service, not in the cleanup pass below.
   logs `android.emulator_stopped` with its reason: `user`, `released`,
   `lane_released`, `idle`, `owner_gone`, `orphan`, `cleanup` or
   `project_closed`.
-- **Orphans.** An emulator ADE started for the project that no lane holds
+- **Orphans.** An emulator DAEX started for the project that no lane holds
   any more is stopped (`orphan`) by one stop, which the start-up cleanup
   above and the cleanup pass below both use. The pin does not keep one: with
   no lane, nothing could unpin it.
@@ -776,28 +886,28 @@ idle timer (the idle stop above is the only one):
   counts as use, and so does its boot). The stop runs on the extra's own
   queue; `status` shows the extra's `poweredOff` until its next start.
 - **Cleanup.** 60 s after the service starts, then every 15 min: release the
-  device of each ended lane, stop each emulator ADE started that no lane
+  device of each ended lane, stop each emulator DAEX started that no lane
   holds (the `orphan` stop above, by its process tree, so Windows too),
   forget each lane row whose AVD
-  is gone from disk, and list ADE-made AVDs that no lane holds (never deleted:
+  is gone from disk, and list DAEX-made AVDs that no lane holds (never deleted:
   the marker does not name the project). `deviceCleanup` (`ade android
   device-cleanup`) runs the same pass now; `--dry-run` reports and changes
-  nothing; `--power-off-idle` also powers off now each emulator ADE started
+  nothing; `--power-off-idle` also powers off now each emulator DAEX started
   that nothing uses and nobody pinned (`cleanup`), whatever its idle time. An
   agent's `--power-off-idle` reaches only its own lane (the RPC server sets
   `agentCaller`). The report's `idlePowerOffMinutes` is the idle stop's limit.
 - **Chrome's first run.** Before the first `open-url` whose `http(s)` URL
   opens in Chrome (`cmd package resolve-activity`), and before `launch
-  --package com.android.chrome`, ADE makes Chrome skip "Welcome to Chrome"
+  --package com.android.chrome`, DAEX makes Chrome skip "Welcome to Chrome"
   and the notifications prompt, with no root: `am set-debug-app
   --persistent`, the flags file `/data/local/tmp/chrome-command-line`
   (`--disable-fre --no-default-browser-check --no-first-run`), and `pm grant
   … POST_NOTIFICATIONS`. A first-run screen already up is force-stopped. Once
   per boot per lane, best effort (`androidChromeSetup.ts`).
 
-## Agents: `ade android`
+## Agents: `daex android`
 
-`ade android` uses the verb and flag names of `ade apple` where the job is
+`daex android` uses the verb and flag names of `daex apple` where the job is
 the same. There is one spelling for each job and no aliases. The CLI refuses
 any flag that a verb does not take.
 
@@ -809,9 +919,9 @@ any flag that a verb does not take.
 | `device-create --catalog <id> [--color <id>] [--image <package>] [--name <shown name>] [--no-start]` | Make an AVD of a brand-grid device (`pixel-10-pro`, `galaxy-s25`, …) in that colour, and boot it. |
 | `render [--angles <a,b>] [--lighting transparent\|studio\|dusk] [--no-shadow] [--video] [--sheet]` | 3D renders of the lane's live device, drawn by the open Android pane and filed as proof. It fails when no window shows the lane's device. |
 | `device-attach --avd <name> [--no-start]` | Hold an AVD that no other lane holds, and boot it. |
-| `start` | Boot the lane's AVD. It waits for boot completed. Refused with `ANDROID_LOW_MEMORY` by the [memory guard](#the-memory-guard-p2); `--force` boots anyway. |
+| `start` | Boot the lane's AVD. It waits for boot completed. Refused with `ANDROID_LOW_MEMORY` by the [memory guard](#the-memory-guard); `--force` boots anyway. |
 | `stop` | Stop the lane's emulator. The lane keeps its AVD. |
-| `keep-running on\|off` | Pin the lane's running emulator against ADE's 20-minute idle stop, or unpin it ([Emulator lifecycle](#emulator-lifecycle)). |
+| `keep-running on\|off` | Pin the lane's running emulator against DAEX's 20-minute idle stop, or unpin it ([Emulator lifecycle](#emulator-lifecycle)). |
 | `device-detach [--keep]` | Stop the emulator and release the AVD (see [When a lane ends](#when-a-lane-ends)). |
 | `device-create --extra (--catalog <id> \| --profile <id>) [--no-start]` | Make an extra AVD beside the lane's device and boot it ([Extra devices](#extra-devices)). |
 | `start --device <avd>`, `stop --device <avd>` | Boot or stop one of the lane's extras (the RAM guard applies; `--force` boots past it). |
@@ -824,45 +934,45 @@ any flag that a verb does not take.
 | `button <name>` (or `--name`) | `back`, `home`, `recents`, `power`, `volume-up`, `volume-down`. |
 | `rotate portrait\|portrait-upside-down\|landscape-left\|landscape-right` | Lock the display to that orientation (auto-rotate off, `user_rotation` 0 to 3, mapped for a tablet whose natural shape is landscape). `landscape` is `landscape-right`. An app that fixes its own orientation keeps it. Each rotate pushes `android.device.orientation`, so a viewer draws the device turned the right way. |
 | `type <text>` (or `--value`) | Type into the focused field, exactly as given. |
-| `show` | Show the emulator to the user in the tools pane (also `ade ui show android`). |
+| `show` | Show the emulator to the user in the tools pane (also `daex ui show android`). |
 | `actions` | List the `android_emulator` actions. |
 | `long-press <x> <y> [--duration-ms <ms>]`, `drag <x1> <y1> <x2> <y2> [--duration-ms <ms>]`, `scroll --direction up\|down\|left\|right [--amount <0..1>] [--anchor-x/-y]` | A held press (default 1000 ms), a slow press-move-lift (drag and drop), and a scroll. |
-| `apps` | The apps on the emulator, each with its launch activity and whether ADE installed it. |
+| `apps` | The apps on the emulator, each with its launch activity and whether DAEX installed it. |
 | `install --apk <path>` or `install --gradle [--module <m>] [--variant <v>]` | Install an APK inside the lane worktree, or build the lane's app with its Gradle wrapper (`install<Variant>`, `ANDROID_SERIAL` set to the lane's emulator). |
 | `launch --package <name> [--activity <a>]`, or `launch --gradle` / `--apk <path>` | Open an app; with an install flag, install it first and open the package the build made. |
-| `terminate --package <name>`, `uninstall --package <name>` | Stop or remove an app. On an attached AVD, only an app ADE installed (`ANDROID_PACKAGE_NOT_ADE_INSTALLED`). |
+| `terminate --package <name>`, `uninstall --package <name>` | Stop or remove an app. On an attached AVD, only an app DAEX installed (`ANDROID_PACKAGE_NOT_ADE_INSTALLED`). |
 | `open-url <url>` | Open a URL or a deep link with `am start -a VIEW`. |
 | `snapshot [--fresh]` | The screen's element tree: ref, role, name, center and what each element takes. |
-| `find-element`, `tap-element [--hold-ms]`, `fill-element --value <text> [--no-focus]`, `wait-for-element [--timeout-ms] [--gone]`, `assert-visible` | Element verbs. The query is `--ref`, `--identifier`, `--label`, `--text`, `--role`, `--index`, as in `ade apple`. |
+| `find-element`, `tap-element [--hold-ms]`, `fill-element --value <text> [--no-focus]`, `wait-for-element [--timeout-ms] [--gone]`, `assert-visible` | Element verbs. The query is `--ref`, `--identifier`, `--label`, `--text`, `--role`, `--index`, as in `daex apple`. |
 | `log [--package] [--level] [--since <cursor>] [--lines <n>]` | Logcat, for one app (by pid, else by uid) or all. |
 | `record-start [--label] [--max-seconds] [--plain\|--zoom]`, `record-stop [--discard\|--keep]`, `record-list`, `record-delete --id <id>`, `auto-record on\|off\|status` | Record the screen to MP4, from the stream the live view uses, and file it as a demo video. `--no-record` on an input verb starts no automatic recording. |
 | `settings`, or one of `--text-size`, `--display-size`, `--animations on\|off`, `--show-taps`, `--layout-bounds`, `--battery <0-100>` and `--charging on\|off`, `--wifi`, `--data`, `--airplane` | Read the emulator's settings, or change one. A change answers with a fresh read. |
 | `lease [--wait <s>] [--ttl <s>] [--holder <name>]`, `lease renew\|release --token <t>`, `lease status` | Take turns on the lane's emulator (the shared device lease). |
-| `location <lat> <lon>`, `location --clear`, `appearance light\|dark`, `permission grant\|revoke <permission> --package <name>` | Emulator controls (`adb emu geo fix`, `cmd uimode night`, `pm grant`). The emulator has no "no location", so `--clear` moves the GPS back to its default point (37.4219983, -122.084). ADE keeps the last location per lane and boot; `settings` reads it. |
+| `location <lat> <lon>`, `location --clear`, `appearance light\|dark`, `permission grant\|revoke <permission> --package <name>` | Emulator controls (`adb emu geo fix`, `cmd uimode night`, `pm grant`). The emulator has no "no location", so `--clear` moves the GPS back to its default point (37.4219983, -122.084). DAEX keeps the last location per lane and boot; `settings` reads it. |
 | `accessibility <option> on\|off` | `increase-contrast` (high contrast text), `bold-text` (`font_weight_adjustment`, API 31+), `invert-colors`, `grayscale` and `color-correction` (the daltonizer; one turns the other off), `talkback` (only on an image that has TalkBack; null otherwise). `settings` reads each back from the device. |
 | `status-bar [--time] [--data-network] [--wifi-bars] [--cellular-bars] [--battery-level] [--battery-state]`, `status-bar --clear` | SystemUI demo mode: a clean status bar for screenshots (default 9:41, full bars, full battery, no notification icons). `settings` reads `statusBarOverridden`. |
 | `play-store-shots [--no-proof]` | Google Play screenshots: each screen padded onto a black 9:16 or 16:9 canvas at Play's sizes (short side 1080 or more, long side 3840 or less). A foldable gives two: the cover screen shut (phone slot) and the inner screen open (large-screen slot), and its hinge goes back after. Filed as proof. |
-| `window status\|split\|left\|right\|top\|bottom\|swap\|freeform\|size\|move\|fill\|close [--package] [--with] [--size WxH] [--move X,Y]` | Split screen (WMShell), free windows (`enable_freeform_support`, `am task resize`), full screen and close, on a large screen. Android picks the direction (left and right on a landscape screen and, from Android 15, on any large screen such as a foldable open; top and bottom otherwise), and a side that does not fit is refused. A move ends a split first, because SystemUI restarts when a split task is moved again. Android 14 has no command to end a split, so there ADE goes to the home screen and opens the apps full screen again; it also cannot make an open free window full screen, and says so. Some apps (Chrome) come back in a new task after a mode change. The answer lists the windows; exits 1 when the change did not happen. |
+| `window status\|split\|left\|right\|top\|bottom\|swap\|freeform\|size\|move\|fill\|close [--package] [--with] [--size WxH] [--move X,Y]` | Split screen (WMShell), free windows (`enable_freeform_support`, `am task resize`), full screen and close, on a large screen. Android picks the direction (left and right on a landscape screen and, from Android 15, on any large screen such as a foldable open; top and bottom otherwise), and a side that does not fit is refused. A move ends a split first, because SystemUI restarts when a split task is moved again. Android 14 has no command to end a split, so there DAEX goes to the home screen and opens the apps full screen again; it also cannot make an open free window full screen, and says so. Some apps (Chrome) come back in a new task after a mode change. The answer lists the windows; exits 1 when the change did not happen. |
 | `proof-bundle [--out <dir>] [--caption] [--package] [--no-elements]` | A screenshot, the elements, a log tail and a meta file, filed as proof. |
-| `fold open\|half\|closed\|<angle>` (or `--angle <0-180>`), `posture` | P3: fold a foldable AVD and wait for the screen to swap, or read the hinge ([Fold](#fold-p3)). |
-| `preview list [--module <m>] [--all]`, `preview [--module <m>] [--fqn <name>]… [--no-proof]` | P3: list a module's Compose `@Preview` functions, or render them to PNG with no emulator ([Compose previews](#compose-previews-p3)). Exits 1 when a preview has no image. |
-| `test [--module <m>] [--variant <v>] [--class <fqcn>] [--method <name>]` | P3: run the lane app's instrumentation tests on the lane's emulator ([Instrumentation tests](#instrumentation-tests-p3)). Exits 1 when a test fails. |
-| `sdk images [--installed]` | P3: the installed system images (size, the AVDs that use each) and the ones to add ([System images](#system-images-p3)). `sdk install --image <id>` and `sdk remove --image <id>` are the user's and refuse a terminal. |
+| `fold open\|half\|closed\|<angle>` (or `--angle <0-180>`), `posture` | fold a foldable AVD and wait for the screen to swap, or read the hinge ([Fold](#fold)). |
+| `preview list [--module <m>] [--all]`, `preview [--module <m>] [--fqn <name>]… [--no-proof]` | list a module's Compose `@Preview` functions, or render them to PNG with no emulator ([Compose previews](#compose-previews)). Exits 1 when a preview has no image. |
+| `test [--module <m>] [--variant <v>] [--class <fqcn>] [--method <name>]` | run the lane app's instrumentation tests on the lane's emulator ([Instrumentation tests](#instrumentation-tests)). Exits 1 when a test fails. |
+| `sdk images [--installed]` | the installed system images (size, the AVDs that use each) and the ones to add ([System images](#system-images)). `sdk install --image <id>` and `sdk remove --image <id>` are the user's and refuse a terminal. |
 | `sdk status\|licenses` | The guided SDK install's plan and licences ([The setup card](#the-setup-card)). Installing, cancelling and picking the folder are the user's, in the desktop app; `sdk install\|use\|cancel` refuse a terminal. |
 
 Every verb also takes `--lane` and `--machine` (see
 [Another machine](#another-machine)).
 
-### The agent suite (P1)
+### The agent suite
 
-`androidAgentSuite.ts` holds the verbs above that P0 did not have, with the
+`androidAgentSuite.ts` holds the agent-suite verbs, with the
 UI tree in `androidUiSnapshot.ts`, the recordings in
 `androidRecordingSession.ts`, and the device controls (location, appearance,
 permissions) in `androidDeviceSettings.ts`.
 
 - **UI tree.** The Android CLI's `layout` when the SDK has it (about 1 s),
   else `uiautomator dump` (about 2-3 s). `layout` waits for the app to go
-  idle and, when it cannot, ADE asks again with `--no-idle`. A CLI that fails
+  idle and, when it cannot, DAEX asks again with `--no-idle`. A CLI that fails
   in another way is skipped for 10 minutes. A snapshot is kept for 5 s and is
   dropped after each input, and when the focused window changes. Each element
   gets a ref from the first name that no other element on screen shares
@@ -878,18 +988,18 @@ permissions) in `androidDeviceSettings.ts`.
   it did. When the screen turns, the size changes and the recorder starts a
   new part (`<id>-2.mp4`). The stop joins the parts into one video on a
   canvas that holds each part (system ffmpeg, else the Swift renderer on
-  macOS, else ADE's own ffmpeg), and moves the tap points onto it. A
+  macOS, else DAEX's own ffmpeg), and moves the tap points onto it. A
   recording stops at `--max-seconds` (default and most 300), after 2 minutes
   with no change, when the raw file gets too large or the disk too full,
   when the emulator stops, when the lane lets the device go, and when its
   chat ends.
 - **Demo.** The stop sends the video through `produceDemoVideo` (demo surface
   `android`, `androidRecordingSession.ts` and `androidDemoRecording.ts`): the
-  idle cut, tap rings, typed-text badges, `ade proof step` chapters and
+  idle cut, tap rings, typed-text badges, `daex proof step` chapters and
   captions, `--zoom`, and the fit under 10 MB. The engines are Swift on macOS
-  and ffmpeg elsewhere (ADE downloads its own; `prepare()` starts the
+  and ffmpeg elsewhere (DAEX downloads its own; `prepare` starts the
   download when the recording starts). The render has 150 s. When no engine
-  renders, the render fails or the time ends, ADE files the video as it was
+  renders, the render fails or the time ends, DAEX files the video as it was
   recorded, at any size, and says why. Only the demo file and its sidecar
   stay in `<project>/.ade/android/recordings/<lane>`. `--plain` skips the
   overlays and the idle cut. One recording gives one proof row.
@@ -923,10 +1033,10 @@ permissions) in `androidDeviceSettings.ts`.
 - **Lease.** The shared device lease (`services/device/deviceLease.ts`), one
   per lane. A chat's leases end when the chat ends.
 - **Turn hint.** A lane with an emulator gets an `<ade-lane-tools>` hint that
-  names it, says to use `ade android`, and says never to run `emulator -avd`
+  names it, says to use `daex android`, and says never to run `emulator -avd`
   or `adb kill-server` (`laneAndroidDeviceDirective.ts`). A lane with both an
   Apple device and an emulator gets one hint that names both.
-- **Release.** On an attached AVD, the packages ADE installed are uninstalled
+- **Release.** On an attached AVD, the packages DAEX installed are uninstalled
   before the lane lets it go.
 
 Points are device pixels, the same pixels as the screenshot. When a viewer has
@@ -935,13 +1045,13 @@ scrcpy control socket. With no viewer, they go through `adb shell input`, so
 an agent does not need the live view. `screenshot` uses
 `adb exec-out screencap -p`. With no `--out`, the file goes to
 `<project>/.ade/android/screenshots/`. An `--out` path must be inside the
-lane's worktree (`ANDROID_PATH_OUTSIDE_LANE`). ADE checks it lexically and
+lane's worktree (`ANDROID_PATH_OUTSIDE_LANE`). DAEX checks it lexically and
 again after it resolves symlinks.
 
 `start`, `device-create` and `device-attach` print a progress line while the
 AVD boots. These lifecycle calls have a 4-minute timeout.
 
-Parity with `ade apple`:
+Parity with `daex apple`:
 
 - `key <name>`: one key (`ANDROID_NAMED_KEYCODES`: return, tab, escape,
   delete, arrows, home, end, page keys, f1-f12, a letter or digit) with
@@ -964,9 +1074,9 @@ Parity with `ade apple`:
   composer's chip packet (`select` always crops, and counts as input).
 - `device-cleanup` (above).
 
-### Instrumentation tests (P3)
+### Instrumentation tests
 
-`ade android test` (`androidInstrumentationTests.ts`) runs
+`daex android test` (`androidInstrumentationTests.ts`) runs
 `gradlew :<module>:connected<Variant>AndroidTest` in the lane's worktree,
 module `app` and variant `debug` by default. It uses the Gradle runner and the
 JDK of `install --gradle`, with `ANDROID_SERIAL` set to the lane's emulator,
@@ -991,9 +1101,9 @@ counts and the first three failures show inline, and a toast says when the
 run ends. The run keeps going when the group closes, and the result shows
 again when it opens.
 
-### Compose previews (P3)
+### Compose previews
 
-`ade android preview` (`androidComposePreviews.ts`) runs Google's Android CLI
+`daex android preview` (`androidComposePreviews.ts`) runs Google's Android CLI
 (`android preview list|render --format json`, always `--no-metrics`) in the
 lane's worktree. The CLI builds the module with Gradle and draws each
 `@Preview` with layoutlib, so no emulator is needed.
@@ -1012,7 +1122,7 @@ lane's worktree. The CLI builds the module with Gradle and draws each
   unless `--no-proof`. With `--machine`, the images are read back and filed on
   the caller's machine, as screenshots are.
 - It needs the Android CLI (`ANDROID_TOOL_MISSING`; install it with the setup
-  card's Android CLI part) and a JDK (`ANDROID_BUILD_FAILED`, with where ADE
+  card's Android CLI part) and a JDK (`ANDROID_BUILD_FAILED`, with where DAEX
   looked). A failed build is `ANDROID_BUILD_FAILED` with the CLI's last lines.
 - One preview command runs for each lane at a time. Each CLI run has a
   10-minute limit, and it stops when the brain shuts down.
@@ -1033,17 +1143,16 @@ its chat's lane.
 ### What only a viewer can do
 
 `ANDROID_AGENT_ACTIONS` in `shared/types/androidEmulator.ts` lists what an
-agent may call: the P0 verbs, `requestRender`, the SDK reads
+agent may call: the core verbs, `requestRender`, the SDK reads
 (`getSdkSetupPlan`, `getSdkInstallState`) and every agent-suite action
 (`ANDROID_AGENT_SUITE_ACTIONS`). The same list feeds the action allowlist.
 
-`ANDROID_USER_ONLY_ACTIONS` are for a viewing client (the desktop, and later
-the web and the phone) and never for a session-bound agent:
+`ANDROID_USER_ONLY_ACTIONS` are for a viewing client (the desktop, the web client and the phone) and never for a session-bound agent:
 
 - `startStream` and `stopStream`. The stream token is only for the viewer that
   started the stream; `getStreamStatus` always returns `transport: null`.
 - `sendTouch`, the live touch stream.
-- `deleteDevice`, which deletes an ADE AVD that no lane holds.
+- `deleteDevice`, which deletes a DAEX AVD that no lane holds.
 
 Apple lets an agent start its stream; Android keeps `startStream` and
 `stopStream` for viewers on purpose: `startStream` hands back the loopback
@@ -1056,13 +1165,13 @@ automation and a terminal are all refused.
 
 - `installSdk`, `cancelSdkInstall` and `setSdkPath`: only the user accepts
   Google's licences and picks the SDK folder, in the setup card or Settings ›
-  Android devices. `ade android sdk install|use|cancel` print that hint, and
-  ADE MCP refuses them.
+  Android devices. `daex android sdk install|use|cancel` print that hint, and
+  DAEX MCP refuses them.
 - `deleteDevice` and `attachRenderProof`.
 
 `status` has `capabilities`: `adb`, `stream`, `record`, `uiTree` (`android-cli`
 or `uiautomator`), `logcat`, `gradle`, and the Android CLI's path and version.
-The `ade-android` skill tells agents how to use the verbs.
+The `daex-android` skill tells agents how to use the verbs.
 
 ### Remote surfaces
 
@@ -1074,7 +1183,7 @@ and `android.recordList` (viewer-allowed) and `android.input`,
 action domain (its argument checks too), except the stream calls and the SDK
 writes.
 
-P2 adds the remote live view. `android.streamTicket` (viewer-allowed) issues a
+`android.streamTicket` (viewer-allowed) issues a
 ticket on the brain's stream relay (the Apple relay, with a second router for
 Android on the same `/apple/stream/<ticket>` path). It never boots the
 emulator: an emulator that is not booted answers `ANDROID_NOT_RUNNING`. The
@@ -1092,7 +1201,7 @@ chat). `android.inspectSnapshot` (controller-only) answers one screenshot
 
 The hosted web client's `androidEmulator` namespace
 (`webclient/adapter/androidDevice.ts`) uses these commands. Reads go through
-`android.invoke`; the SDK writes refuse with "Set up Android in the ADE
+`android.invoke`; the SDK writes refuse with "Set up Android in the DAEX
 desktop app on that computer." Its events come from a status read every 3 s,
 only while the pane listens and the tab is visible.
 
@@ -1131,9 +1240,9 @@ machine pin, and every action is in the `android_emulator` domain with
 `actionPolicy` entries, so it works from another machine.
 
 A chat can drive an emulator on another machine with no new lane, in the same
-way as `ade apple --machine`:
+way as `daex apple --machine`:
 
-1. `ade android … --machine <m>` with no `--lane` uses the chat's work copy on
+1. `daex android … --machine <m>` with no `--lane` uses the chat's work copy on
    that machine. The work copy is a hidden worktree at the chat's commit, made
    on first use. The commit must be on origin. The copy stands in for a lane
    in the Android service (`remote-work-<hash>`), and that lane lives as long
@@ -1144,13 +1253,13 @@ way as `ade apple --machine`:
 **The borrow rule.** The work copy's first device is a free AVD that the
 machine already has, because a new one costs gigabytes and a first boot.
 "Free" means that no lane on that machine holds it and that no other app
-started it. ADE borrows only its own AVDs, and only the ones it made for a
-lane of this project. Stopped AVDs come before running ones. ADE never
+started it. DAEX borrows only its own AVDs, and only the ones it made for a
+lane of this project. Stopped AVDs come before running ones. DAEX never
 borrows the user's own AVDs: a lane of another project can hold one without
 this project knowing, and a run can rewrite the AVD's snapshot.
 
-The borrowed AVD is attached, so ADE never deletes it. ADE makes a new AVD
-(`medium_phone`) only when none is free. When the work copy is deleted, ADE
+The borrowed AVD is attached, so DAEX never deletes it. DAEX makes a new AVD
+(`medium_phone`) only when none is free. When the work copy is deleted, DAEX
 releases its device.
 
 **What the user sees.** The machine returns the work copy's lane id with each
@@ -1163,20 +1272,20 @@ emulator on `<machine>` for this chat right now". The tool stays visible on a
 host that cannot run the emulator.
 
 **The tab that joins the open pane.** When a chat starts to use a device on
-another machine in the current turn, ADE adds that tool's tab to the open
+another machine in the current turn, DAEX adds that tool's tab to the open
 pane, behind the tab on screen. This is the same for the iOS Simulator
 (**Simulator · `<machine>`**) and the Android emulator. It happens once for
-each use, and ADE remembers the uses across reloads, so a tab that the user
-closes does not come back. ADE does not open a closed pane.
+each use, and DAEX remembers the uses across reloads, so a tab that the user
+closes does not come back. DAEX does not open a closed pane.
 
-The phone and web viewers (P2) are in **Remote surfaces** above.
+The phone and web viewers are in **Remote surfaces** above.
 
 ## Live view
 
 The brain pushes a pinned, bundled **scrcpy server v5.0.1** to the emulator
 over adb and starts it with `app_process`. The server encodes H.264 with the
 device's encoder and serves a video socket and a control socket. The brain
-wraps each access unit in ADE's video records (`media/videoRecords.ts`), so
+wraps each access unit in DAEX's video records (`media/videoRecords.ts`), so
 the renderer plays it with the same reader and WebCodecs player as the iOS
 Simulator and Mac Desktop.
 
@@ -1217,7 +1326,7 @@ is never capped. This is the same rule as Apple's
 the stream relay, and a desktop pinned to the machine (it passes
 `remoteViewer` on `startStream`, `stopStream` and `getStreamStatus`).
 
-The emulator has only a software encoder, so ADE runs **one encode per
+The emulator has only a software encoder, so DAEX runs **one encode per
 emulator, never two** (`androidLaneStreams.ts`). The lane's stream has
 holders: the local viewer, a recording, the relay, and a remote desktop. Its
 rate follows them:
@@ -1241,7 +1350,7 @@ still skips frames for a viewer that falls behind.
 
 Why not a second encode for remote viewers: it doubles the encoder's CPU
 while both kinds of viewer watch. That is too much on a 4 vCPU Linux host
-(ADE Cloud), where the emulator already shares the CPU with its own software
+(DAEX Cloud), where the emulator already shares the CPU with its own software
 encoder. A cheaper second encode at a lower size would also need a second
 input path and a second keyframe cache. One encode keeps the cost of one
 viewer, wherever it is. The trade-off: while someone on the machine watches
@@ -1265,10 +1374,10 @@ an app installs, a 3D render files as proof, an agent takes a new lease, a
 system image installs (`image_installed`), an instrumentation run runs at
 least one test (`tests_run`), a fold settles (`device_folded`), or a Compose
 preview render writes an image (`previews_rendered`), a Play Store
-screenshot set is taken (`store_screenshots`), or ADE stops an emulator by
+screenshot set is taken (`store_screenshots`), or DAEX stops an emulator by
 itself (`emulator_auto_stopped`: idle, or its brain was gone). Boot health has three
 outcomes: a start that booted (`device_booted`), one that did not
-(`boot_failed`), and an adb server restart that ADE made so a refused
+(`boot_failed`), and an adb server restart that DAEX made so a refused
 device could boot (`adb_restarted`). Extra devices have two: a lane made an
 extra device (`extra_device_created`, Apple's name), and an extra became the
 lane's device (`device_promoted`). Each outcome counts at most once a day.
@@ -1285,128 +1394,34 @@ Sentry issue; `boot_failed` and the log line still count it. An expected code (`
 carry the rest. No path, AVD, package, lane, image, angle or preview name
 goes with it. `docs/logging.md` holds the contract.
 
-## Source file map
-
-| Path | Role |
-|---|---|
-| `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
-| `apps/desktop/src/main/services/android/androidEmulatorService.ts`, `androidEmulatorServiceDeps.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. Its inputs and its state for one lane are in `androidEmulatorServiceDeps.ts`. |
-| `apps/desktop/src/main/services/android/androidEmulatorLifecycle.ts` | The boot and the stop that run on the lane's queue (`startLocked`, `stopLocked`): the disk grow before a first start on a cloud computer, the memory guard's reservation, the owner record's launch, boot and forget, the stop reason, the mid-boot abort, and the boot timeout. One implementation (`slots`) serves the lane's device and its extras. |
-| `apps/desktop/src/main/services/android/androidMachinePreferences.ts`, `apps/desktop/src/shared/types/androidEmulatorRecording.ts` | The machine's Android settings file (`sdkPath` and `preferences`, atomic writes, a broken file refused), the machine preferences, and the recording types. |
-| `apps/desktop/src/main/services/android/androidAutoRecord.ts` | Auto-record: an agent's input starts a recording, the end of its turn stops it, and the opt-outs (`--no-record`, the lane switch, the person's own input). |
-| `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state files of the emulators ADE started (the lanes' own and their extras'), and the stops that use them: on dispose, and when a project is removed after a hand-off. |
-| `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
-| `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration (the check's cache). |
-| `apps/desktop/src/main/services/android/androidSdkSetup.ts`, `androidSdkInstall.ts`, `androidSdkRepository.ts`, `androidZipExtract.ts`, `androidCli.ts` | The guided install: the plan, licence checks, the SDK setting, the installer job, Google's repository manifests, the zip reader, and the Android CLI. |
-| `apps/desktop/src/main/services/android/androidAvds.ts`, `androidHardwareProfiles.ts` | AVD list, create and delete, ADE's marker, and the hardware profiles. |
-| `apps/desktop/src/shared/androidDeviceCatalog.ts`, `apps/desktop/src/main/services/android/androidCatalogProfiles.ts` | The brand grid's devices (names, sizes, colours, bodies, profiles), and the merge of ADE's `ade_*` profiles into `devices.xml`. |
-| `apps/desktop/src/main/services/android/androidRender.ts` | The render broker for `ade android render`: the request event, the first window's ack, the filed paths, and the time limit. |
-| `apps/desktop/src/main/services/android/androidEmulatorProcess.ts` | Boot, discovery files, boot completed, and stop. |
-| `apps/desktop/src/main/services/android/androidLaneDeviceStore.ts`, `androidLaneRelease.ts` | The `lane_android_devices` and `lane_android_extra_devices` rows (a lane's AVD is held when either names it), and the release of a lane's AVD and its extras on disk (used by `laneService` with no service). |
-| `apps/desktop/src/main/services/android/androidLaneExtras.ts`, `apps/desktop/src/shared/types/androidEmulatorExtras.ts` | Extra devices: their status, start and stop (on each extra's own queue, through the lifecycle's shared boot), release, which device a `--device` names, and their types. |
-| `apps/desktop/src/main/services/android/androidDevicePromote.ts` | `devicePromote`, and what it must not cut through: the installs and launches in flight (which wait for a promote) and the test runs. |
-| `apps/desktop/src/main/services/android/androidLaneRows.ts` | How the cleanup pass reaches one row: the lane's own device or an extra. |
-| `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
-| `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
-| `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
-| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the memory guard (the decision before each start: pressure, paging, the emulators' budget, available memory, and the boots in flight), and the crash-buffer reader behind the crash pin. |
-| `apps/desktop/src/main/services/machineStats/hostMemorySignals.ts` | The machine's memory signals per OS (pressure, available, swap, commit, PSI, the paging rate) and the real memory of chosen processes. Shared with the brain's resource-pressure sampling. |
-| `apps/desktop/src/main/services/android/androidEmulatorOwners.ts`, `androidEmulatorSweep.ts` | The machine's owner file (`~/.ade/android/emulator-owners.json`) and the sweep's decision for one record; the lifecycle of one brain (owner records, last used, the pin, the guard's cross-brain ledger, the sweep). |
-| `apps/desktop/src/main/services/android/androidEmulatorUse.ts` | One service as the lifecycle sees it: the calls that count as use, busy, the idle stop through the lane's queue (with the device's own input and other viewers), the pin, and emulators taken in from before the owner file. |
-| `apps/desktop/src/main/services/android/androidEmulatorImage.ts` | Which processes are emulators by image name (memory guard, process groups), and the Windows `tasklist` check before a kill. |
-| `apps/desktop/src/main/services/device/deviceMaintenance.ts` | The timers, idle limit and touch throttle that the Apple devices' upkeep and the Android sweep share. |
-| `apps/ade-cli/src/services/runtime/unmanagedBrainIdleExit.ts` | The idle exit of a brain a dev or test launcher marked, once its launcher is gone. |
-| `apps/desktop/src/shared/types/androidEmulatorControl.ts`, `apps/desktop/src/main/services/android/androidAppState.ts`, `androidInspect.ts`, `androidLaneMaintenance.ts`, `androidChromeSetup.ts` | Parity with `ade apple`: the key names and modifiers, intent extras, app state and the app in front, Inspect's packet and source search, the cleanup pass and the "powered off" record, and Chrome's first run. |
-| `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
-| `apps/desktop/src/main/services/android/androidSystemImages.ts`, `apps/desktop/src/shared/types/androidEmulatorImages.ts` | P3: the system image list, install (on the guided install's job) and removal, and their types. |
-| `apps/desktop/src/main/services/android/androidInstrumentationTests.ts`, `apps/desktop/src/shared/types/androidEmulatorInstrumentation.ts` | P3: `ade android test`: the Gradle run, the JUnit XML and Gradle-output readers, and their types. |
-| `apps/desktop/src/main/services/android/androidPosture.ts`, `apps/desktop/src/shared/types/androidEmulatorPosture.ts` | P3: the hinge read and fold (the emulator console and `dumpsys device_state`), and their types. |
-| `apps/desktop/src/main/services/android/androidLaneQueue.ts` | P3: one step at a time per lane, for folds and Compose preview runs. A failed step does not stop the next one. |
-| `apps/desktop/src/main/services/android/androidComposePreviews.ts`, `apps/desktop/src/shared/types/androidEmulatorPreviews.ts` | P3: `ade android preview`: the Android CLI runs, the module check, the proof filing, and their types. |
-| `apps/desktop/src/main/services/android/androidUiSnapshot.ts`, `androidUiTree.ts` | The UI tree (the Android CLI, or uiautomator), its cache, and the element queries. |
-| `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts`, `androidDemoRecording.ts` | The lane's recording sessions (the slot is freed before the demo renders), the MP4 writer and store, and the demo video. |
-| `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes (accessibility too), the app in front, the orientation, location and Clear location, the status bar (demo mode), appearance and permissions. |
-| `apps/desktop/src/main/services/android/androidStoreShots.ts`, `androidWindows.ts`, `apps/desktop/src/shared/types/androidEmulatorDevice.ts`, `apps/ade-cli/src/cliAndroidDevice.ts` | Parity: Play Store screenshots, the window layout, their types, and the CLI verbs for accessibility, status bar, Clear location, Play Store screenshots and windows. |
-| `apps/desktop/src/main/services/android/androidDeviceShell.ts`, `androidProof.ts` | Device shell, adb and emulator console helpers, and the proof filer. |
-| `apps/desktop/src/main/services/android/adb.ts`, `androidEmulatorErrors.ts` | The adb runner and the coded errors. |
-| `apps/desktop/src/renderer/components/android/AndroidDevicePane.tsx` | The pane: picker, stage, rail, drawer, strips and live line. |
-| `apps/desktop/src/renderer/components/android/useAndroidPaneFloat.ts`, `useAndroidStorageActions.ts` | The pane's half of the floating player (the cache and "Float over chat"), and the picker's Storage actions. |
-| `apps/desktop/src/renderer/components/android/drawer/` | The Tools drawer: `AndroidToolsDrawer.tsx`, the four group sections, and `androidDrawerState.ts`. The open group, the one serialized change and the settings come from the shared `device/deviceDrawerState.ts`; the frame, the Location rows and the recording rows from `device/DeviceToolsDrawerShell.tsx`, `device/DeviceLocationRows.tsx` and `shared/RecordingRow.tsx`. |
-| `apps/desktop/src/renderer/components/android/useAndroidInspect.tsx`, `useAndroidRecording.ts` | Inspect (on the shared `device/useDeviceInspect.ts` and `device/DeviceInspectOverlay.tsx`) and the rail's Record. |
-| `apps/desktop/src/renderer/components/android/androidDeviceState.ts` | The pane state, stock profiles, menu rules and error sentences. The 3D-or-flat choice is kept by the shared `device/deviceViewMode.ts`. |
-| `apps/desktop/src/renderer/components/android/AndroidDevicePicker.tsx`, `AndroidSetupCard.tsx`, `AndroidLicenseDialog.tsx`, `useAndroidSdkSetup.ts` | The picker, the setup card, the licence dialog and the card's data. |
-| `apps/desktop/src/renderer/components/android/AndroidSystemImagesSection.tsx`, `useAndroidSystemImages.ts`, `drawer/AndroidInstrumentationTestsRow.tsx` | P3: the picker's System images section and its data, and the App group's Run tests row. |
-| `apps/desktop/src/renderer/components/android/useAndroidPosture.ts`, `AndroidFoldDock.tsx`, `apps/desktop/src/renderer/components/device/proceduralFoldBody.ts`, `device/HingeSlider.tsx` | P3: the pane's hinge state, the fold dock, and the two-panel body and hinge slider that the iPhone Duo shares. |
-| `apps/desktop/src/renderer/components/android/drawer/AndroidPreviewsSection.tsx` | P3: the Tools drawer's Previews group. |
-| `apps/desktop/src/renderer/components/settings/AndroidDevicesSection.tsx`, `deviceSettingsCards.tsx`, `AndroidRecordingsWarning.tsx`, `apps/desktop/src/renderer/components/android/useAndroidMachinePreferences.ts` | Settings › Android devices: the setup card for the picked machine, the cards shared with Apple (Realistic body, recording overlays, Record agent input, the bitrate cap), the recordings storage warning, and the machine preferences read and write. |
-| `apps/desktop/src/renderer/components/android/AndroidToolCardMenu.tsx`, `AndroidRecordingReceipts.tsx`, `AndroidShutdownConfirm.tsx`, `LaneAndroidDeviceMarker.tsx`, `useLaneAndroidDevices.ts`, `apps/desktop/src/renderer/components/device/LaneDeviceMarker.tsx`, `device/useLaneDeviceMarks.ts` | Work tab and chat: the tool-card menu, the recording receipts, the confirm when a tab with a running emulator closes, and the lane device mark (shared with Apple). |
-| `apps/desktop/src/renderer/components/work/AndroidEmulatorRunningPill.tsx`, `DeviceRunningPill.tsx`, `apps/desktop/src/renderer/lib/askOnceStore.ts`, `useConfirmKeys.ts` | The chat's "Emulator running" pill on one status read per machine, and the ask-once and confirm-key helpers. |
-| `apps/desktop/src/renderer/components/android/useAndroidOrientation.ts`, `useAndroidScreenCaptures.ts`, `androidPickerRequests.ts`, `drawer/AndroidWindowsRow.tsx`, `apps/desktop/src/renderer/components/device/OrientationMenuItems.tsx` | The rotation (reverse rotations too), the screen captures, the picker's requests, and the drawer's split screen and free window row. |
-| `apps/desktop/src/shared/androidDevicePresentation.ts`, `computerUseAndroid.ts`, `computerUseCommandReaders.ts`, `apps/ios/ADE/Views/Work/WorkComputerUseSummaryAndroid.swift` | The device's readable name, and the chat summaries of `ade android` commands on the desktop and the phone. |
-| `apps/desktop/src/renderer/browserMockAndroid.ts`, `browserMockAndroidPreferences.ts`, `browserMockAndroidUtil.ts` | The browser mock's emulator, preferences and helpers. |
-| `apps/desktop/src/renderer/components/android/AndroidDeviceStage.tsx`, `AndroidDeviceRail.tsx`, `AndroidDeviceStatus.tsx` | The stage (on the shared `device/DeviceFlatView.tsx`), the rail (on `device/DeviceRail.tsx`), and the strips, cards and live line (on `device/DeviceStatusStrip.tsx` and `device/DeviceLoadingCard.tsx`). |
-| `apps/desktop/src/renderer/components/android/AndroidCatalogGrid.tsx`, `androidTileRenderer.ts` | The brand grid tiles and their details, and the one shared WebGL renderer for the tile stills and the hover turn. |
-| `apps/desktop/src/renderer/components/android/androidDeviceBody.ts`, `androidDeviceModels.ts`, `useAndroidBootScreen.ts` | The procedural device bodies (and any model file), and the boot screen drawn on the 3D model. |
-| `apps/desktop/src/renderer/components/android/AndroidRenderSheet.tsx`, `androidRender.ts`, `useAndroidRenderRequests.ts` | The Render sheet (on the shared `device/DeviceRenderSheet.tsx`), the drawing and filing of renders (on `device/deviceRenderProof.ts` and `device/deviceRenderPass.ts`), and the pane's answer to `ade android render`. |
-| `apps/desktop/src/renderer/components/android/useAndroidDeviceStream.ts`, `useAndroidDeviceInput.ts`, `androidStreamLease.ts` | The stream (on the shared `device/useStreamRecovery.ts` and `device/useGracefulStreamLease.ts`), input, and the per-lane stream lease (a `device/streamLease.ts` table of its own). |
-| `apps/desktop/src/renderer/components/terminals/workToolPanels.tsx` | The Android tool's targets (This lane, Android · `<machine>`). |
-| `apps/desktop/src/renderer/components/android/AndroidDeviceMiniPlayer.tsx`, `androidMiniPlayerStore.ts`, `apps/desktop/src/renderer/components/device/miniPlayerSurface.ts` | P2: the floating player, which emulator floats, and the surface rules it shares with the Apple player. |
-| `apps/desktop/src/renderer/components/android/AndroidQuickChips.tsx`, `AndroidCrashPin.tsx`, `drawer/AndroidLogsSection.tsx`, `androidTextDraft.ts` | P2: the quick chips, the crash pin, the Logs group, and the chat draft and copy they share. |
-| `apps/desktop/src/renderer/components/android/useAndroidLaneDeviceCard.ts` | P2: the tools pane card's line. |
-| `apps/desktop/src/renderer/webclient/adapter/androidDevice.ts`, `streamTicket.ts` | P2: the hosted web client's `androidEmulator` namespace, and the relay ticket helpers it shares with `appleDevice.ts` (one ticket for each stream URL). |
-| `apps/ios/ADE/Views/Work/AndroidDeviceViewer.swift`, `AndroidDeviceViewerModel.swift`, `apps/ios/ADE/Services/SyncService+AndroidDevice.swift` | P2: the phone viewer, its control model, and the `android.*` commands it sends. The stream itself is `AppleStreamSession.swift`, and the touch rules are `LiveStageTouch` in `LiveStageChrome.swift`, both shared with the simulator viewer. |
-| `apps/desktop/src/renderer/components/terminals/useRemoteDeviceTabs.ts` | The tab that joins the open pane for a remote device use (iOS and Android). |
-| `apps/desktop/src/shared/androidFormat.ts` | `formatAndroidBytes`: decimal sizes (`2.8 GB`), shared by the desktop and the `ade android` CLI so a size reads the same in both. |
-| `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidSuite.ts`, `cliAndroidFormat.ts` | `ade android` plans and error hints (P0 verbs in `cliAndroid.ts`; the P1 agent, P3 and `sdk` verbs in `cliAndroidSuite.ts`), and its text formatters. The help page is in `cli.ts`. |
-| `apps/ade-cli/src/services/sync/androidRemoteCommands.ts` | The `android.*` remote commands a phone or a web tab sends. |
-| `apps/desktop/resources/android/` | The scrcpy server jar, its licence and its README. |
-
-## Limits and later phases
-
-P0 does not have:
-
-- the 3D view, device models or the brand grid (P1, now built: device bodies
-  are procedural; no model files ship yet);
-- UI tree and element verbs, logcat, app install and launch, record, lease,
-  the turn hint and the `ade-android` skill (P1, above);
-- Inspect, Record on the rail and the Tools drawer (P1, now built);
-- phone and web viewers, the phone's full-screen view, quick chips, the Logs
-  drawer, the RAM guard, and two floating players, one for each device kind
-  (P2, now built; see the sections above);
-- fold by drag, Compose preview render, a system image manager and
-  instrumentation tests (P3, now built; see the sections above). The phone
-  viewer does not fold yet.
-
-The full list is in §6 of the [plan](../../plans/android-emulator.md).
-
 ## Troubleshooting
 
 | State | What to do |
 |---|---|
-| `ANDROID_SDK_NOT_FOUND` | Install Android Studio or the command-line tools, or set `ANDROID_HOME`. Then press **Check again** or run `ade android status --text`. |
+| `ANDROID_SDK_NOT_FOUND` | Install Android Studio or the command-line tools, or set `ANDROID_HOME`. Then press **Check again** or run `daex android status --text`. |
 | `ANDROID_TOOL_MISSING` | Install the missing package (`platform-tools`, `emulator`) with `sdkmanager`. |
-| `ANDROID_NO_SYSTEM_IMAGE` | Install a system image for the host ABI, or pass `--image <package>`. `ade android devices --text` lists the installed images. |
+| `ANDROID_NO_SYSTEM_IMAGE` | Install a system image for the host ABI, or pass `--image <package>`. `daex android devices --text` lists the installed images. |
 | `ANDROID_NO_ACCELERATION` | Turn on acceleration: Windows Hypervisor Platform on Windows, KVM access on Linux. WSL2 has none, and a VM has it only with nested virtualization. The banner's **How to fix** opens Google's guide. |
-| `ANDROID_EMULATOR_EXITED` | The emulator exited. Read its log, `<project>/.ade/android/logs/<avd>.log` on the emulator's machine (**Open log**, or the path in `ade android status --text`). Then **Restart**. |
-| `ANDROID_BOOT_TIMEOUT` | The boot took more than 180 s. Read the log, then run `ade android start` again. |
-| `ANDROID_ADB_UNAUTHORIZED` | The emulator runs, but the adb server refuses it as `unauthorized` for 20 s. The server started before `~/.android/adbkey` changed (a new SDK or Android CLI setup can write a new key), and it never reads the key again. When no other connected device uses the server (an `unauthorized` or `offline` row does not count), ADE restarts it and the boot goes on (`# ADE` lines in the log say so). Otherwise the pane offers **Restart adb and start**, after a confirm, for the device whose start failed, and `ade android start --restart-adb` in the person's own terminal does the same. An agent cannot restart adb: the RPC server refuses its `restartAdb` with a policy error that says to ask the person. The pane shows no **Restart adb and start** for a refusal that came after ADE already restarted the server. When adb still refuses the device after ADE restarted the server, the emulator does not trust the current key: cold boot the AVD, or wipe its data, then start it again. |
+| `ANDROID_EMULATOR_EXITED` | The emulator exited. Read its log, `<project>/.ade/android/logs/<avd>.log` on the emulator's machine (**Open log**, or the path in `daex android status --text`). Then **Restart**. |
+| `ANDROID_BOOT_TIMEOUT` | The boot took more than 180 s. Read the log, then run `daex android start` again. |
+| `ANDROID_ADB_UNAUTHORIZED` | The emulator runs, but the adb server refuses it as `unauthorized` for 20 s. The server started before `~/.android/adbkey` changed (a new SDK or Android CLI setup can write a new key), and it never reads the key again. When no other connected device uses the server (an `unauthorized` or `offline` row does not count), DAEX restarts it and the boot goes on (`# ADE` lines in the log say so). Otherwise the pane offers **Restart adb and start**, after a confirm, for the device whose start failed, and `daex android start --restart-adb` in the person's own terminal does the same. An agent cannot restart adb: the RPC server refuses its `restartAdb` with a policy error that says to ask the person. The pane shows no **Restart adb and start** for a refusal that came after DAEX already restarted the server. When adb still refuses the device after DAEX restarted the server, the emulator does not trust the current key: cold boot the AVD, or wipe its data, then start it again. |
 | `ANDROID_PATH_OUTSIDE_LANE` | `screenshot --out` must be inside the lane worktree. Give a path there, or leave out `--out`. |
 | Work copy gone (`ANDROID_NOT_RUNNING`) | "This chat's work copy on this machine is gone, so it has no Android device here." Run the command again to make a new copy. |
-| `ANDROID_NOT_RUNNING` | Boot the lane's emulator first (`ade android start`), or make one (`ade android device-create --profile <id>`). |
-| `ANDROID_AVD_HELD_BY_OTHER_LANE` | Pick a free AVD (`ade android devices --text`), or make one. |
-| `ANDROID_LANE_HAS_DEVICE` | Use the lane's AVD, or run `ade android device-detach` first. To keep it and add another, make an extra: `ade android device-create --extra`. |
+| `ANDROID_NOT_RUNNING` | Boot the lane's emulator first (`daex android start`), or make one (`daex android device-create --profile <id>`). |
+| `ANDROID_AVD_HELD_BY_OTHER_LANE` | Pick a free AVD (`daex android devices --text`), or make one. |
+| `ANDROID_LANE_HAS_DEVICE` | Use the lane's AVD, or run `daex android device-detach` first. To keep it and add another, make an extra: `daex android device-create --extra`. |
 | `ANDROID_EXTRA_DEVICE_LIMIT` | The lane holds its limit of extra devices (2 by default). Remove one (`device-detach --device <avd>`), or raise `ADE_ANDROID_LANE_EXTRA_DEVICES` (up to 8). Mind the memory: each running one holds 2 to 5 GB. |
 | `ANDROID_DEVICE_IS_EXTRA` | That AVD is one of the lane's extras. Make it the lane's device with `device-promote --device <avd>`. |
-| `ANDROID_DEVICE_NOT_LANE_OWNED` | `--device` names an AVD the lane does not hold. `ade android status --text` lists the lane's device and its extras. |
+| `ANDROID_DEVICE_NOT_LANE_OWNED` | `--device` names an AVD the lane does not hold. `daex android status --text` lists the lane's device and its extras. |
 | `ANDROID_LANE_DEVICE_BUSY` | The lane's device (or the extra) is in use: a recording, an open live view, tests, an install or launch, a start or stop, or another holder's lease. Finish that, then promote again. In the pane, open the picker first: it closes the live view. |
-| An extra and an older brain on the same project (a dev app beside the installed ADE) | An older brain counts only the lanes' own rows as held. Extras are in their own started-emulators file (`started-extra-emulators.json`), which an older brain never reads, so it never stops a running extra as an orphan; it also cannot see or stop one. |
+| An extra and an older brain on the same project (a dev app beside the installed DAEX) | An older brain counts only the lanes' own rows as held. Extras are in their own started-emulators file (`started-extra-emulators.json`), which an older brain never reads, so it never stops a running extra as an orphan; it also cannot see or stop one. |
 | `ANDROID_AVD_RUNNING` | Another app started that AVD. Close it there, or attach another AVD. |
 | `ANDROID_SYSTEM_IMAGE_IN_USE` | An AVD uses that system image. Stop its emulator first. To remove an image that AVDs use, confirm it in the picker's System images. |
 | `ANDROID_TESTS_RUNNING` | The lane's instrumentation tests already run. Wait for that run to end. |
 | "This emulator has no hinge" | Fold works on a foldable AVD only. Make one from a Pixel Fold or Galaxy Z Fold tile. |
 | `preview`: "has no build.gradle" | Pass `--module <folder>`: the Gradle module that holds the `@Preview` functions, not the project's root. |
 | `ANDROID_NO_FREE_PORT` | All ports 5554–5682 are in use. Stop an emulator you do not need. |
-| `ANDROID_LOW_MEMORY` | The [memory guard](#the-memory-guard-p2) refused the start: the sentence says why (pressure, swapping, the emulators' budget, or free memory). Stop an emulator you do not need, or close apps. **Start anyway** (`--force`) boots past it. `android.start_low_memory` in the brain log has the numbers. |
-| `ANDROID_LOW_DISK` | A device's first start makes its data partition (6 GB), and the emulator wants 1.2 times that free. On an ADE Cloud computer ADE checks this before the start (one `statfs` of the AVD folder) and refuses; the sentence gives both numbers. Elsewhere the emulator's own "Not enough space to create userdata partition" exit reads the same. On ADE Cloud the first start grows the disk itself when it is short (inside the plan's disk; the computer restarts, and ADE continues the chat). If it can't, the Android pane offers **Grow the disk** (inside the plan's disk at one time, or as extra disk on a paid plan). That button uses the lane's size-change job and keeps the running chats: they continue after the restart. Elsewhere, free disk space and start again. `android.start_low_disk` in the brain log has the numbers. |
-| The emulator stopped by itself | ADE stops an emulator nobody used for 20 minutes, and one whose brain is gone ([Emulator lifecycle](#emulator-lifecycle)). Start it again, or turn on **Keep running** (`ade android keep-running on`). `android.emulator_stopped` in the brain log says why. |
+| `ANDROID_LOW_MEMORY` | The [memory guard](#the-memory-guard) refused the start: the sentence says why (pressure, swapping, the emulators' budget, or free memory). Stop an emulator you do not need, or close apps. **Start anyway** (`--force`) boots past it. `android.start_low_memory` in the brain log has the numbers. |
+| `ANDROID_LOW_DISK` | A device's first start makes its data partition (6 GB), and the emulator wants 1.2 times that free. On a DAEX Cloud computer DAEX checks this before the start (one `statfs` of the AVD folder) and refuses; the sentence gives both numbers. Elsewhere the emulator's own "Not enough space to create userdata partition" exit reads the same. On DAEX Cloud the first start grows the disk itself when it is short (inside the plan's disk; the computer restarts, and DAEX continues the chat). If it can't, the Android pane offers **Grow the disk** (inside the plan's disk at one time, or as extra disk on a paid plan). That button uses the lane's size-change job and keeps the running chats: they continue after the restart. Elsewhere, free disk space and start again. `android.start_low_disk` in the brain log has the numbers. |
+| The emulator stopped by itself | DAEX stops an emulator nobody used for 20 minutes, and one whose brain is gone ([Emulator lifecycle](#emulator-lifecycle)). Start it again, or turn on **Keep running** (`daex android keep-running on`). `android.emulator_stopped` in the brain log says why. |
 | `ANDROID_STREAM_FAILED` | The live view failed. `tap`, `swipe`, `button`, `type` and `screenshot` do not need it. Press **Reconnect** in the pane. |
