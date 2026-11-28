@@ -1830,25 +1830,37 @@ const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINI
  * on by itself (`running`: its setup, until the agent's stage starts).
  */
 const BEFORE_CHAT_STATES = ["joining", "needs_approval", "joined", "waiting_for_sign_in", "running"] as const;
+/** The server's own stops, which nothing undoes by itself (a stopped computer doesn't wake on a request): the launch ends at once. */
+const SERVER_STOP_REASONS: ReadonlySet<string> = new Set(["out_of_hours", "blocked", "user"]);
+/**
+ * Any other stop (one the provider reported, a Mac's: `boot_failed`,
+ * `mac_switch_off`, …) ends the launch only after this long: the code that
+ * stopped it may end the launch itself with its own sentence first, and a
+ * launch whose state changed is left as it is.
+ */
+const OTHER_STOP_GRACE_MS = 10 * 60_000;
 
 /**
  * Launches whose computer the server stopped before the chat started (the
- * credits ran out, a block, another stop; `cloud_power_log` says which): they
- * fail at the next tick with why and what to do, instead of a spinner until
+ * credits ran out, a block, a person's stop; `cloud_power_log` says which):
+ * they fail at the next tick with why and what to do (any other stop after
+ * `OTHER_STOP_GRACE_MS`), instead of a spinner until
  * the join or sign-in window ends. The stop already ended the meter; Retry
  * deletes the stopped computer and makes a new one. A free sign-in wait isn't
  * stopped at 0 credits (`stopAll` skips a free window), so it isn't ended here.
  */
 async function failStoppedLaunches(env: CloudEnv, now: number, onProgress?: (record: CloudLaunchRecord) => Promise<void>): Promise<number> {
   const rows = (await env.DB.prepare(`
-    select l.*, (select p.reason from cloud_power_log p where p.instance_id = l.instance_id and p.action = 'stop' order by p.created_at desc limit 1) as stop_reason
+    select l.*, c.status_changed_at as stopped_at,
+      (select p.reason from cloud_power_log p where p.instance_id = l.instance_id and p.action = 'stop' order by p.created_at desc limit 1) as stop_reason
     from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
     where l.state in (select value from json_each(?)) and c.status = 'stopped' and c.deleted_at is null limit ?
-  `).bind(JSON.stringify(BEFORE_CHAT_STATES), UNJOINED_PER_TICK).all<LaunchRow & { stop_reason: string | null }>()).results ?? [];
+  `).bind(JSON.stringify(BEFORE_CHAT_STATES), UNJOINED_PER_TICK).all<LaunchRow & { stop_reason: string | null; stopped_at: number | null }>()).results ?? [];
   let ended = 0;
   for (const row of rows) {
     // The agent started: the lane is the person's, and its chat ended or rests like any other.
     if (row.state === "running" && agentStartedIn(row)) continue;
+    if (!SERVER_STOP_REASONS.has(row.stop_reason ?? "") && now - (row.stopped_at ?? now) < OTHER_STOP_GRACE_MS) continue;
     const error = await stoppedLaunchSentence(env, row.user_id, row.stop_reason, now).catch((cause: unknown) => {
       reportCloudFailure("cloud.launch_stopped_sentence_failed", { launchId: row.launch_id, message: cause instanceof Error ? cause.name : "unknown" });
       return CLOUD_LAUNCH_COMPUTER_STOPPED;

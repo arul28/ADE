@@ -3140,6 +3140,25 @@ describe("ADE Cloud server launcher", () => {
       expect(usedMilli(harness)).toBe(used);
     });
 
+    it.each<[string, boolean, string, string | null]>([
+      ["back within the grace: the launch goes on", true, "joining", null],
+      ["still stopped after the grace: the launch ends with Retry", false, "failed", CLOUD_LAUNCH_COMPUTER_STOPPED],
+    ])("a stop the server didn't make (the provider's, a Mac's) waits 10 minutes before it ends a launch: %s", async (_label, cameBack, state, error) => {
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", launchBody)).status).toBe(201);
+      at(1);
+      // What the tick writes when the provider says stopped on its own (`seen_by_tick`).
+      harness.exec("update cloud_computers set status = 'stopped', status_changed_at = ? where instance_id = ?", clock, MADE);
+      harness.insert("cloud_power_log", { instance_id: MADE, user_id: OWNER, action: "stop", reason: "seen_by_tick", created_at: clock });
+      const sweep = () => failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      at(9);
+      await sweep();
+      expect(harness.row("select state from cloud_launches where launch_id = ?", LAUNCH).state).toBe("joining");
+      if (cameBack) harness.exec("update cloud_computers set status = 'running', status_changed_at = ? where instance_id = ?", clock, MADE);
+      at(12);
+      await sweep();
+      expect(harness.row("select state, error from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state, error });
+    });
+
     it("a free sign-in wait at 0 credits keeps its computer: the zero stop skips the free window, and the step goes on", async () => {
       await startWaiting();
       harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
