@@ -1,504 +1,329 @@
 # Windows support and troubleshooting
 
-ADE supports the packaged Windows 10/11 x64 desktop.
-Windows ARM64 and iOS Simulator remain out of scope. App Control over CDP, the
-built-in Browser, proof-file ingestion, phone pairing, the local Windows brain,
-Windows as an SSH-bootstrap runtime target, and a per-lane Windows screen
+DAEX supports the packaged Windows 10/11 x64 desktop. Windows ARM64 and the iOS
+Simulator are out of scope. App Control over CDP, the built-in browser,
+proof-file ingestion, phone pairing, the local Windows brain, Windows as an
+SSH-bootstrap runtime target, and a per-lane Windows screen
 ([Windows Desktop](../features/windows-desktop/README.md)) are supported.
 
-Public Windows installers ship. v1.2.52 was the first signed public release;
-downloads are served from `https://ade-app.dev/download/windows` and the
-PowerShell installer from `https://ade-app.dev/install.ps1`. The exact-SHA proof
-in [`windows-release-proof.md`](./windows-release-proof.md) remains a standing
-regression check rather than a precondition.
+Signed public Windows installers ship with every release. Downloads are served
+from the website's `/download/windows` page and the PowerShell installer from
+`https://ade-app.dev/install.ps1`. The exact-SHA proof in
+[windows-release-proof.md](./windows-release-proof.md) is a standing regression
+check, not a precondition.
+
+The CLI is `daex` (`ade` still works). Internal names keep the old spelling:
+`ADE_*` variables, `~/.ade`, the `ADE Runtime (...)` Run value, the `ade-runtime-*`
+pipes, `ade-win32-x64.exe` and the `%LOCALAPPDATA%\Programs\ADE` install folder.
+
+Running a dev app, profiling a running brain, or benchmarking on a Windows host:
+see **On Windows** in [local-development.md](local-development.md#on-windows).
 
 ## What Windows gets instead
 
 Every capability below behaves differently on Windows than on macOS. The list is
-exhaustive by intent: if a Windows user notices something missing or weaker and
-it is not named here, treat that as a bug, not a known gap.
-
-Running a dev app, profiling a running brain, or benchmarking anything on a
-Windows host: see **On Windows** in
-[local-development.md](local-development.md#on-windows). It carries the dev-app
-recipe, the `ade`-CLI-resolves-the-project-from-cwd trap, and which measurement
-techniques give wrong answers here.
-
-Three outcomes are possible, and they are not interchangeable. **Degraded** means
-the capability works with a stated cost. **Blocked** means the capability is
-absent and the surface says so. **Unavailable** means the OS offers no route at
-all and the surface does not exist.
+exhaustive by intent: if a Windows user notices something missing or weaker that
+is not named here, treat it as a bug. **Degraded** means it works with a stated
+cost. **Blocked** means it is absent and the surface says so. **Unavailable**
+means the OS offers no route and the surface does not exist.
 
 | Capability | Outcome | What Windows does | Why |
 | --- | --- | --- | --- |
-| Native OS computer use — screenshot, video, GUI automation | Degraded | [Windows Desktop](../features/windows-desktop/README.md) gives each lane a Windows screen through `ade screen`: a private Remote Desktop child session of the user's account after a one-time admin setup, or the user's main desktop when they tap Allow on the card in the chat. Screenshots, recordings, UI Automation and real input work on both seats. Codex Computer Use and Ghost OS stay macOS-only. | The private seat needs the one-time setup, the brain in the console session, an unlocked PC and a free holder (one lane at a time); the shared seat takes the user's foreground. |
-| ADE desktop app started as administrator | Degraded | Agents get no built-in browser, App Control recording or demo videos while it runs; the app docks a warning banner. Recordings are filed as recorded. | Windows refuses the medium-integrity brain access to the elevated app's desktop-bridge pipe. Quit ADE and open it normally. |
+| Native OS computer use (screenshot, video, GUI automation) | Degraded | [Windows Desktop](../features/windows-desktop/README.md) gives each lane a Windows screen through `daex screen`: a private Remote Desktop child session after a one-time admin setup, or the user's main desktop when they tap Allow in the chat. Codex Computer Use and Ghost OS stay macOS-only. | The private seat needs the setup, the brain in the console session, an unlocked PC and one lane at a time; the shared seat takes the user's foreground. |
+| Desktop app started as administrator | Degraded | Agents get no built-in browser, App Control recording or demo videos while it runs; the app docks a warning banner. | Windows refuses the medium-integrity brain access to the elevated app's desktop-bridge pipe. Quit and open it normally. |
 | iOS Simulator drawer, Xcode Preview | Unavailable | Hidden. | Requires macOS and Xcode. |
-| Claude Code background-job reattach | Supported | ADE resolves the daemon at `\.\pipe\cc-daemon-<nonce>-control`, reading the nonce from `<Claude config dir>/daemon/pipe.key`. No key, a malformed key or a daemon that does not answer resolves to nothing, which is byte-for-byte the old behaviour. The endpoint and the line protocol are verified against a stand-in pipe server on a Windows host; an exchange with a live Claude daemon has not been observed, because `claude --bg` refuses to start from a non-TTY on workspace trust. | This row used to read Degraded, on the reasoning that Claude Code ships no `control.sock` on Windows and `os.userInfo().uid` is `-1`, so there was nothing to attach to. The premise is right and the conclusion was wrong: Claude Code has a Windows branch that publishes a named pipe instead of a socket file, and only ADE's POSIX discovery existed. The per-turn respawn the row warned about was also unreachable — ADE's Claude `--bg` turn path has no callers. See `docs/OPTIMIZATION_OPPORTUNITIES.md`, round 2. |
-| Auto-update install time and relaunch | Degraded | Installing an update takes 42–44 s in the last two measured updates, not the <10 s macOS needs (timed from quit-and-install to the new version's main-process start). The relaunch itself is fixed: the installer is now driven silently, which is the only mode the assisted NSIS target can start the app from. Phase timings, what is ruled out, and what is still unattributed: `windows-update-timeline.md`. | NSIS extraction of ~800 MB (about 2,900 files) is nearly all of it. The two PowerShell steps still inside the install take about 4 s together (service removal 2.4–2.9 s, the terminal-command shim about 1 s). On an update, `windows-install-setup.ps1` returns after the shim (`-Updating`), so the install no longer registers the brain's startup entry or starts a brain. |
-| Graceful brain shutdown | Degraded | ADE asks the brain to shut down over its own RPC channel and force-terminates only after the grace window. | Windows has no deliverable `SIGTERM`; `process.kill` is `TerminateProcess`, which no handler can intercept. |
-| Orphan agent recovery | Degraded | Recovery uses the on-disk PID registry and a listening-port scan. | Windows cannot read another process's environment, so the macOS `ps -wwE` environment-tag pass has no equivalent. The port half is implemented. |
-| Open files of another process (import-list liveness / CLI session capture) | Degraded | When Sysinternals `handle.exe` is on PATH, ADE lists files a provider CLI has open and treats that as live. Without it, ADE cannot enumerate handles: it does not guess from mtime except as an explicit last-resort fallback, and Claude `--session-id` assignment plus transcript capture still identify ADE-owned sessions. | Windows has no `lsof`. `openfiles /query` requires a global audit flag. |
-| Claude Code sandbox permission modes | Blocked | Permission modes themselves work; the sandbox does not. | Vendor limitation — Claude Code sandboxing is WSL-2 only. Not an ADE gap. |
-| Credential storage at rest | Degraded | DPAPI through Electron `safeStorage`. | No Keychain. DPAPI is user-scoped rather than per-item ACL'd, so it is a weaker boundary than a Keychain item. |
-| Remote runtime bootstrap from a locally built channel | Blocked | A local `package:alpha` build sets `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` and ships no Darwin/Linux sidecars, so it cannot drive a remote macOS or Linux runtime. CI-built installers are unaffected. | Darwin binaries cannot be produced on a Windows host. |
-| Windows as an SSH-bootstrap runtime target | Supported | Windows 10 22H2 (build 19045) and Windows 11 x64 can be bootstrapped over Windows OpenSSH Server. | Requires PowerShell 5.1 or newer and the built-in `tar.exe`. WSL, ARM64, and Windows Server remain unsupported as targets. |
-| Windows ARM64 | Unavailable | x64 only. The Cursor provider is additionally gated on ARM64 even under emulation. | Native and provider payloads are incomplete; `@cursor/sdk` publishes no `win32-arm64` package. |
-| Cross-channel phone-sync launch gate | Degraded | The launch gate skips the listener scan and answers from the sync-host lock file. A hard-killed brain's lock is cleared once its PID is dead. The owner-identity check that rejects a reused PID still runs off the main thread: awaited for a live owner on another channel, and in the background for a same-channel owner, where it only clears a stale lock. The gap: a brain that holds phone sync without a usable lock file (missing, unreadable, or another lock version) is not seen at launch, so two channels can briefly both hold phone sync. `ade serve` still runs the full scan when it starts a brain. | The listener scan is a full-machine `Get-NetTCPConnection` + `Get-CimInstance` PowerShell query. It runs before any window exists, so on every launch it would block first paint — the cost `lsof` does not carry on macOS. |
-| Symlink-dependent operations | Degraded | Junctions are used where possible. Operations that need a real symlink require Developer Mode or an elevated shell. | Windows restricts symlink creation to administrators unless Developer Mode is on. |
-| Moving a project to another folder or drive | Blocked | Settings → General → Project location shows "Available on macOS for now." in place of the **Move…** button, and the move preflight refuses a move on Windows. | The move copies with macOS `ditto`, checks volumes with `df` and `diskutil`, and finds open files with `lsof`. None of those has a Windows implementation yet. |
-| Keep awake with the lid closed | Blocked | The Keep awake picker has no lid-closed level (it is absent, not greyed out). "While I'm away" says it stops idle sleep, not the lid. | Windows has no `pmset disablesleep` equivalent, and the wake lock Windows uses stops idle sleep only. |
+| Claude Code background-job reattach | Supported | DAEX resolves the daemon at `\\.\pipe\cc-daemon-<nonce>-control`, reading the nonce from `<Claude config dir>/daemon/pipe.key`. No key or no answer resolves to nothing. Verified against a stand-in pipe server, not a live Claude daemon. | Claude Code publishes a named pipe on Windows instead of a socket file. |
+| Auto-update install time | Degraded | Installing an update takes about 42-44 s, not the under 10 s macOS needs. See [windows-update-timeline.md](./windows-update-timeline.md). | NSIS extraction of about 800 MB (2,900 files) is nearly all of it. |
+| Graceful brain shutdown | Degraded | DAEX asks the brain to shut down over its RPC channel and force-terminates only after the grace window. | Windows has no deliverable `SIGTERM`. |
+| Orphan agent recovery | Degraded | Uses the on-disk PID registry and a listening-port scan. | Windows cannot read another process's environment. |
+| Open files of another process | Degraded | With Sysinternals `handle.exe` on PATH, DAEX lists files a provider CLI has open. Without it, Claude `--session-id` assignment and transcript capture still identify DAEX-owned sessions; mtime is only a last resort. | No `lsof`; `openfiles /query` needs a global audit flag. |
+| Claude Code sandbox permission modes | Blocked | Permission modes work; the sandbox does not. | Claude Code sandboxing is WSL-2 only. |
+| Credential storage at rest | Degraded | DPAPI through Electron `safeStorage`. | DPAPI is user-scoped, a weaker boundary than a Keychain item. |
+| Remote runtime bootstrap from a local channel build | Blocked | A local `package:alpha` build sets `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` and ships no Darwin/Linux sidecars. CI-built installers are unaffected. | Darwin binaries cannot be built on Windows. |
+| Windows as an SSH-bootstrap runtime target | Supported | Windows 10 22H2 and Windows 11 x64 over Windows OpenSSH Server. | Needs PowerShell 5.1+ and `tar.exe`. WSL, ARM64 and Windows Server are not targets. |
+| Windows ARM64 | Unavailable | x64 only. Cursor is also gated on ARM64. | Native and provider payloads are incomplete; `@cursor/sdk` has no `win32-arm64` package. |
+| Cross-channel phone-sync launch gate | Degraded | The launch gate answers from the sync-host lock file instead of a listener scan. A brain that holds phone sync without a usable lock file is not seen at launch, so two channels can briefly both hold it. `daex serve` still runs the full scan. | The scan is a full-machine PowerShell query that would block first paint. |
+| Symlink-dependent operations | Degraded | Junctions where possible; a real symlink needs Developer Mode or an elevated shell. | Windows restricts symlink creation. |
+| Moving a project to another folder or drive | Blocked | Settings > General has no Project location card on Windows, and the move preflight refuses ("Moving a project is only available on macOS for now."). | The move uses macOS `ditto`, `df`, `diskutil` and `lsof`. |
+| Keep awake with the lid closed | Blocked | The Keep awake picker has no lid-closed level. "While I'm away" stops idle sleep, not the lid. | No `pmset disablesleep` equivalent. |
 
-Three things that are **not** downgrades, recorded here because they are commonly
-assumed to be:
+Not downgrades, though often assumed to be:
 
-- Git costs one process start per command, as on macOS. Git for Windows puts only
-  its launcher (`<Git>\cmd\git.exe`) on PATH, which starts the real git as a second
-  process; ADE runs the real `<Git>\<build>\bin\git.exe` directly (`runGit`). A
-  brain started from Git Bash (`MSYSTEM` set) keeps the launcher, so measure git
-  costs from PowerShell or the installed app, not from Git Bash.
-
-- Cursor runs natively on Windows x64. The onboarding flow installs it with
-  `irm 'https://cursor.com/install?win32=true' | iex`; there is no WSL
-  requirement.
-- Reduced-motion preferences are honored. Chromium maps
-  `prefers-reduced-motion` to Settings → Accessibility → Visual effects →
-  Animation effects, so no macOS-only API is involved.
+- Git costs one process start per command. DAEX runs the real
+  `<Git>\<build>\bin\git.exe` directly, not the `cmd\git.exe` launcher
+  (`runGit`). A brain started from Git Bash (`MSYSTEM` set) keeps the launcher,
+  so measure git costs from PowerShell or the installed app.
+- Cursor runs natively on Windows x64; onboarding installs it with
+  `irm 'https://cursor.com/install?win32=true' | iex`.
+- Reduced motion is honored (Settings > Accessibility > Visual effects >
+  Animation effects).
 
 ## Background brain on Windows
 
-The current Windows supervisor is **not a Scheduled Task**. `ade brain start`
-installs a per-user, per-channel `REG_SZ` value under:
+The supervisor is **not a Scheduled Task**. `daex brain start` installs a
+per-user, per-channel `REG_SZ` value under:
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 ```
 
-The value starts a hidden, UTF-8-with-BOM PowerShell launcher under the
-channel's ADE home, through `conhost.exe --headless` (resolved from System32
-like the other trusted tools). The one-shot start task and the WMI fallback
-start it the same way. Started bare, `powershell.exe` is a console program with
-no console to inherit, so Windows opened one for it, and on Windows 11 that is a
-Windows Terminal window that takes the foreground; `-WindowStyle Hidden` only
-hides it once PowerShell is running. Every sign-in, update, repair and brain
-restart flashed a terminal and swallowed whatever the user was typing. The
-headless host gives PowerShell a console with no window at all, and the
-supervisor's console no longer lives inside the user's Windows Terminal
-process. conhost starts PowerShell with the same command line, so the
-supervisor is still a `powershell.exe` naming the launcher. A headless conhost
-exits as soon as its stdin reads end-of-file, so it only works where it gets no
-standard input at all (a task, the Run key, WMI); a Node `spawn` with
-`stdio: "ignore"` hands it `NUL` and the client never runs.
+Code: `apps/ade-cli/src/serviceManager/installWindows.ts` and
+`windowsSupervisor.ts`.
 
-That launcher restores the complete resolved brain
-environment, starts the packaged ADE runtime, and writes an advisory JSON record
-containing supervisor and runtime process ids. Status validates that the
-recorded supervisor is a PowerShell process whose command line names the exact
-launcher before treating it as ADE-owned.
+- The value starts a hidden, UTF-8-with-BOM PowerShell launcher under the
+  channel's home through `conhost.exe --headless` (resolved from System32).
+  Started bare, `powershell.exe` gets a visible Windows Terminal window that
+  takes the foreground. A headless conhost exits when its stdin reads EOF, so it
+  only works where it gets no standard input (a task, the Run key, WMI); a Node
+  `spawn` with `stdio: "ignore"` hands it `NUL` and fails.
+- The launcher restores the resolved brain environment, starts the packaged
+  runtime, and writes an advisory `<launcher>.pid.json` with supervisor and
+  runtime pids. Status treats a supervisor as DAEX-owned only if it is a
+  PowerShell process whose command line names the exact launcher.
+- The Run value's name is `ADE Runtime (<channel>-<hash>)`, hashed from the
+  channel and the user's **SID**, never `USERDOMAIN` (which is `WORKGROUP` over
+  SSH). Install, repair and uninstall delete every other value for this channel
+  or launcher. Without a readable SID it falls back to the bare account name.
+- The pipe names (`\\.\pipe\ade-runtime-<channel>-<hash>`,
+  `ade-desktop-bridge-...`) hash the home, the channel and the profile folder of
+  the account that owns the process (`os.userInfo()`), so a desktop logon, an
+  SSH session, a task and `runas` compute one name. A brain also listens on the
+  names an older build could have derived (`USERDOMAIN\USERNAME` variants), a
+  client with no explicit socket picks the listening name from the pipe listing,
+  and a brain refuses to start while any of those names is taken or
+  `<home>/brains` records a live brain of this channel on another pipe.
+  `daex brain status` says when the brain answers on an older name.
 
-The Run value's name is `ADE Runtime (<channel>-<hash>)`, and the hash is derived
-from the channel and the user's **SID**, never from `USERDOMAIN`. That variable
-is `WORKGROUP` inside an OpenSSH session and the machine name at the desktop, so
-an install over SSH used to register a second value for the same launcher and
-every sign-in then started two supervisors. Install, repair and uninstall
-enumerate every value whose name starts `ADE Runtime (<channel>-` or whose
-command names this channel's launcher and delete all but the current one;
-uninstall deletes all of them. A host where the SID cannot be read falls back to
-the bare account name, which is also session-independent.
-
-The brain's pipe names (`\\.\pipe\ade-runtime-<channel>-<hash>` and
-`ade-desktop-bridge-...`) follow the same rule. The hash covers the ADE home,
-the channel and the profile folder of the account that owns the process, read
-from its token (`os.userInfo()`), so a desktop logon, an SSH session, a
-scheduled task and `runas` all compute one name. ADE up to v1.2.125 hashed
-`USERDOMAIN\USERNAME` instead, and an SSH `ade brain status` dialed a pipe the
-running brain never opened. For the move:
-
-- A brain also listens on the names an older ADE could have derived for this
-  account (its domain as the machine name, `WORKGROUP`, or none), so an older
-  `ade` or desktop still reaches it.
-- A client with no explicit socket dials the current name, or the older name
-  that is listening when only an older brain runs. It reads the pipe listing to
-  choose; it never dials a pipe just to test it.
-- A brain refuses to start while any of those names is taken, or while
-  `<home>/brains` records a live brain of this channel on another pipe. Two
-  brains never share one home because they disagree on the name.
-- `ade brain status` says when the brain answers on an older name, and names
-  the pipe a brain it cannot reach is recorded on.
-
-One supervisor and one brain exist per user and channel, whatever the number of
+One supervisor and one brain run per user and channel, whatever the number of
 logon sessions. Before starting a supervisor the launcher:
 
-1. **reads the session.** It compares `WTSGetActiveConsoleSessionId()` with its
-   own `Process.SessionId` and logs both. This only decides whether the
-   child-session branch below applies; it does not stop a brain from starting.
-   If the API cannot answer, it logs the failure and exits rather than guessing.
-2. **outside the console session, honours a Windows Desktop launch request.**
-   A usable `child-launch.json` (below) means the session was opened for the
-   driver: the launcher starts the driver and exits, and never starts a brain
-   there. Without a usable request it carries on to the mutex.
-3. **takes a cross-session mutex,** `Global\ade-supervisor-<launcher-hash>-<SID>`.
-   This is what keeps one brain per user and channel. An existing owner, in
-   any session, causes the newcomer to exit 0, leaving that owner alone. A
-   mutex API or creation failure causes it to exit 1. The handle is held for
-   the supervisor's lifetime; Windows releases it on exit. `Global\` excludes
-   duplicates across sessions rather than just inside one session.
+1. **Reads the session**, comparing `WTSGetActiveConsoleSessionId()` with its
+   own session id. If the API cannot answer, it logs and exits.
+2. **Outside the console session, honours a Windows Desktop launch request**
+   (`<home>\windows-desktop\child-launch.json`): when it parses, `expiresAt` is
+   in the future, and `driverPath` exists and ends in `ade-desktop-driver.exe`,
+   the launcher starts the driver hidden with its arguments and exits without
+   starting a brain. Otherwise it goes on.
+3. **Takes a cross-session mutex**, `Global\ade-supervisor-<launcher-hash>-<SID>`.
+   An existing owner in any session makes the newcomer exit 0; a mutex failure
+   exits 1.
 
-So the brain runs in whichever session first starts a supervisor while none is
-running. That is usually the console session, but it can be a Remote Desktop
-session: Remote Desktop moves the user's session off the console and gives the
-console a fresh, empty one, and the launcher used to refuse every session but the
-console, so no brain could start at all while the user worked over Remote
-Desktop (an update installed from RDP on 2026-10-08 ended with no brain). A host
-with no console session at all (`0xFFFFFFFF`: Windows Sandbox, headless VMs,
-RDP-only servers) also runs its brain.
+So the brain runs in whichever session first starts a supervisor: usually the
+console, but it can be a Remote Desktop session, and a host with no console
+session (`0xFFFFFFFF`: Windows Sandbox, headless VMs) also runs one. A brain
+outside the console keeps running while Remote Desktop is disconnected and ends
+only when that session signs out; the Run value, the desktop's service install
+or `daex brain start` restarts it later. Windows Desktop private screens need the
+brain in the console session; `daex doctor` shows which session it is in.
 
-A brain outside the console session keeps running while Remote Desktop is
-disconnected, and when Windows reconnects that session at the PC (its default
-when the user signs in there again), the brain is back on the console with it.
-It ends only when that session signs out. Nothing restarts it until the user's
-account has a session again; then
-the first of these starts it, in whichever session it runs: the startup Run
-value at the next sign-in, the desktop app's service install at launch, or
-`ade brain start`. Windows Desktop private screens need the brain in the console
-session; `ade doctor` shows which session the brain is in.
+The `child-launch.json` branch is a fallback: for each private start the driver
+also registers a per-user logon task, `ADE private screen <home hash>`, that runs
+the driver's child mode about two seconds into the sign-in through
+`conhost.exe --headless`. Its trigger expires after three minutes and the driver
+deletes it once the child connects.
 
-`ade brain start` hands the launcher to a one-shot Scheduled Task (or, when
-that is refused, WMI `Win32_Process.Create`) so it escapes the caller's job
-object. The task is registered with priority 4, an ordinary app's. The Task
-Scheduler default, 7, starts the launcher below normal with low memory and I/O
-priority, and the brain and the desktop driver inherit both: on a PC under
-memory pressure Windows trims the brain first and pages it back in behind every
-other process, so its event loop stalled for seconds in page-in waits.
+`daex brain start` hands the launcher to a one-shot Scheduled Task (or WMI
+`Win32_Process.Create` when refused) so it escapes the caller's job object. The
+task runs at priority 4 (an ordinary app's), not Task Scheduler's default 7,
+which would start the brain with low memory and I/O priority and let Windows
+page it out first under memory pressure.
 
-Outside the console session the launcher reads
-`<ADE home>\windows-desktop\child-launch.json`, the Windows Desktop feature's
-launch request:
+Install and repair treat the PID record as advisory: they enumerate live
+supervisors by command line in every session of the user and stop them all before
+starting the replacement. A brain that exits with `socket_owned_by_other` makes
+the supervisor log and exit instead of restarting forever.
 
-```json
-{
-  "driverPath": "C:\\Program Files\\ADE\\resources\\native\\ade-desktop-driver.exe",
-  "args": ["child", "--pipe", "\\\\.\\pipe\\ade-screen-..."],
-  "expiresAt": "2026-09-30T12:00:00.000Z"
-}
-```
+**Never stop the brain from inside it.** An install that would replace the
+brain, and every uninstall, first refuses when the command runs inside a process
+it would stop (the recorded brain or supervisor, any supervisor of this launcher
+and its children, or a stale channel brain it would reap). An agent's shell is
+the brain's child, so otherwise `daex brain stop` or `restart` from a chat ends
+every chat on the machine. The refusal carries `selfMutationBlocked` (or
+`selfMutationUnconfirmed` when it could not tell) and names the
+`ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` override that DAEX's update helpers
+set. The update's removal preflight (`checkWindowsServiceRemovable`) decides the
+same way. "Inside" is read from the Windows parent chain; when the chain ends in
+an MSYS or Cygwin `bin` folder (Git Bash's `exec` shims break it), the check asks
+that install's `ps.exe -W`. When neither answers, it refuses.
 
-When the file exists, parses, `expiresAt` is in the future, and `driverPath`
-exists and ends in `ade-desktop-driver.exe`, the launcher starts it hidden with
-those arguments and no wait, so the driver can connect back to the brain over
-the named pipe, and exits. That branch never starts a supervisor or a brain. A
-missing, expired or unusable request is logged and the launcher goes on to the
-mutex, which a running brain already holds.
+**Wedge watchdog.** Every 15 s the launcher reads the brain's heartbeat
+(`<home>\runtime\heartbeat.json`); macOS uses the separate `com.ade.watchdog`
+launch agent instead. An absent, unreadable or foreign heartbeat is never a
+wedge. A kill needs all three:
 
-That branch is the fallback. Explorer starts startup entries only once a new
-session settles, which on a busy PC took longer than the 30 s the driver waits,
-so for each private start the driver also registers a per-user logon task,
-`ADE private screen <home hash>` (no elevation needed for the user's own
-logon trigger). It runs the driver's child mode with the user's interactive
-token at priority 4 about two seconds into the sign-in, through
-`conhost.exe --headless` so the console program opens no terminal window. The task's trigger
-expires after three minutes and Windows then deletes it; the driver deletes it
-as soon as the child connects or the start is torn down.
+1. the beat is older than 90 s and belongs to the launcher's child;
+2. the supervisor was awake to watch it go stale: when the gap since its
+   previous poll is at least `max(90 s, 3 x 15 s)` and the beat's age fits inside
+   that gap plus the staleness window, it logs `machine slept` and clears any
+   strike (modern standby suspends supervisor and brain together);
+3. a previous poll already saw this same beat (matched on its timestamp), so two
+   consecutive stale polls are needed.
 
-Install and repair treat the PID record as advisory. They also enumerate live
-supervisors by command line — PowerShell processes whose command line names this
-launcher, in any session of the user — and stop every one of them before
-starting the replacement. And when the brain exits having failed with
-`socket_owned_by_other` (another brain already owns the pipe), the supervisor
-logs that and exits instead of restarting on a backoff forever.
+macOS applies the same rules in `evaluateBrainHeartbeat`, with the suspend floor
+`max(staleMs, 3 x the checker's interval)` (`brainWatcherSuspendFloorMs`): 90 s
+on Windows, 180 s on macOS. `ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s
+threshold on both (a positive integer, never below 30 s); the Windows supervisor
+reads it once at start.
 
-An install that would replace the brain, and every uninstall, first refuses
-when the command runs inside a process it would stop: the recorded brain or
-supervisor, any supervisor of this launcher and its children, or a stale
-channel brain the install would reap. An agent's shell is a child of the
-brain, so without this an agent's `ade brain stop` or `restart` ended every
-chat on the machine, and nothing started the brain again until the next
-sign-in. Everything before the refusal only reads: the launcher is rewritten,
-and a running legacy `ADE Runtime` task ended, only after it. The refusal
-carries `selfMutationBlocked` and names the
-`ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` override that ADE's own update
-helpers set; when the command could not tell whether it is inside, it is
-refused all the same and also carries `selfMutationUnconfirmed`. The update's
-removal preflight (`checkWindowsServiceRemovable`) makes the same decision. An
-install that keeps a healthy brain stops nothing and still succeeds from
-inside. macOS (launchd) and Linux (systemd, by process tree and by the unit's
-cgroup, and the detached supervisor) refuse the same way.
+Release proof records separate bounded signals: the Run value exists, a
+redacted record from `<launcher>.pid.json` with proof-local pid aliases, an IPC
+readiness record (a client completed initialize on the channel's endpoint), and a
+correlated startup log extract. The Run entry re-establishes the supervisor at
+the next logon; for an in-session crash, prove recovery through `daex brain
+start` or repair.
 
-"Inside" is read from the Windows parent chain, in one PowerShell call. Git
-Bash breaks that chain: MSYS runs a script's `exec` as a new Windows process
-and ends the old one, so a program started through a `#!/bin/sh … exec` shim
-(ADE's own `ade` shim for Git Bash) has a parent whose parent no longer
-exists. When the chain ends at a process in an MSYS or Cygwin `bin` folder,
-the check asks that install's own `ps.exe -W`, which still maps each MSYS
-process to its MSYS parent, and carries on from the parent's Windows pid. When
-neither can answer, the check refuses rather than guess.
-
-Release proof records these as separate bounded signals, not one inferred
-"service is running" claim:
-
-- a redacted process record that the channel-qualified HKCU Run value exists;
-- a redacted process record derived from `<launcher>.pid.json`, with proof-local
-  aliases for both `supervisorPid` and `runtimePid` rather than numeric PIDs;
-- a redacted IPC readiness record showing that a client completed initialize on
-  the channel's runtime endpoint after startup or recovery; and
-- a bounded startup/recovery log extract correlated by a proof-local alias.
-
-The launcher's wait is sliced, not unbounded. Every 15 s it reads the brain's
-heartbeat file (`<ADE home>\runtime\heartbeat.json`). This is the Windows half
-of the cross-platform wedge watchdog — macOS uses a separate `com.ade.watchdog`
-launch agent because launchd has no loop to fold the check into. An absent,
-unreadable, or foreign heartbeat is never read as a wedge, so the guard cannot
-fire on a brain it does not own.
-
-A stale beat is not enough to stop the child. A kill needs three facts, and the
-last two exist because modern standby suspends the supervisor and the brain
-together — on wake, a beat 40 minutes old describes the suspension, not a wedge:
-
-1. the beat is older than 90 s and belongs to the child the launcher started;
-2. **the supervisor was awake to watch it go stale.** It measures its own
-   lateness, the one thing a suspended process can still report. When the gap
-   since its previous poll is at least `max(90 s, 3 × 15 s)` and the beat's age
-   fits inside that gap plus the staleness window, the launcher logs
-   `machine slept` and clears any strike. A brain that went quiet days before a
-   ten-minute nap is not explained by the nap, and still dies;
-3. **a previous poll already saw this same beat**, matched on the beat's own
-   timestamp rather than its age. A brain the OS merely stopped scheduling beats
-   again before the next poll and never reaches the kill; a wedged one is still
-   sitting on the same timestamp one cadence later. A beat that comes back fresh
-   clears the strike, so the two stale polls have to be consecutive.
-
-macOS applies the identical two rules in `evaluateBrainHeartbeat`. The suspend
-floor is the same formula on both platforms — `max(staleMs, 3 × the checker's
-own interval)` — not the same number: 90 s on Windows (15 s poll) and 180 s on
-macOS (60 s StartInterval), with `brainWatcherSuspendFloorMs` computing it
-there and the rendered PowerShell computing it inline.
-
-`ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s staleness threshold on both
-platforms, with the same rules: a positive integer wins, anything else keeps the
-default, and the result never drops below 30 s. The suspend floor is computed
-after the override, so it rescales with it. Only the pickup differs. The macOS
-checker is a fresh process every 60 s, so it reads the variable at the next
-check. The Windows supervisor reads the variable once when it starts, so a
-changed machine variable applies after the brain service restarts. Neither
-platform has an override for the poll interval.
-
-The PID JSON is advisory ownership evidence. It is not a readiness file, and an
-ONLOGON Scheduled Task is not a current supervisor or readiness mechanism.
-The Run entry re-establishes the supervisor at the next user logon; the launcher
-waits for the runtime and then exits with it. For an in-session runtime crash,
-prove crash detection and recovery through the supported `ade brain start` or
-repair path rather than claiming that the launcher contains an automatic
-restart loop.
-
-Stable, Alpha, and custom service labels get separate value names,
-launchers, ADE homes, and named pipes. Installation and uninstall also query and
-remove exact Scheduled Task names created by older preview builds. A Scheduled
-Task found during migration is legacy residue; it is not the active supervisor
-contract.
-
-The current-user startup key requires no administrator access. Do not move the
-entry to HKLM, request elevation merely to start ADE at login, or tell users to
-repair the current service in Task Scheduler.
+Stable, Alpha and custom service labels get separate value names, launchers,
+homes and pipes. Scheduled Tasks from older preview builds are legacy residue
+that install and uninstall remove by exact name. The current-user key needs no
+administrator access: never move it to HKLM, request elevation to start at login,
+or tell users to repair the service in Task Scheduler.
 
 ## First diagnostic pass
 
-Run these from a newly opened PowerShell or cmd window so it sees the current
-user PATH:
+From a new PowerShell or cmd window (so it sees the current user PATH):
 
 ```powershell
-ade brain status --text
-ade doctor --json
-ade runtime service-status --text
+daex brain status --text
+daex doctor --json
+daex runtime service-status --text
 ```
 
-`ade report-issue` produces the same redacted Markdown report the desktop's
-report dialog shows, and it reads local files only — it never starts or
-contacts the brain, so it works on a machine where ADE will not come up and on a
-headless host with no error screen to press. `--send` sends it to the ADE team
-privately; `--open` after a successful send opens a public GitHub issue that
-holds only the reference, the version and the OS. Prefer it over hand-assembled output: paths, the account name, hostnames,
-tailnet and `.local` names, addresses and credential-shaped values are stripped
-by `redactDiagnosticText` over the whole document, and secrets, environment
-blocks and pairing PINs are never collected at all. See
+`daex report-issue` produces the same redacted report as the desktop's report
+dialog. It reads local files only and never starts or contacts the brain, so it
+works where DAEX will not come up. `--send` sends it privately; `--open` after a
+send opens a public GitHub issue that holds only the reference, the version and
+the OS. `redactDiagnosticText` strips paths, account and host names, addresses
+and credential-shaped values; secrets, environment blocks and pairing PINs are
+never collected. See
 [storage and recovery](../features/storage-and-recovery/README.md#diagnostic-reports-the-report-dialog).
 
-Before sharing anything you assembled by hand, remove user paths, repository
-names, machine/device ids, account details, IPs, URLs with query strings, and
-any credential-shaped value. Prefer reporting the status/error code and ADE
-version. Do not attach the whole ADE home or a raw database.
+Before sharing anything assembled by hand, remove user paths, repository names,
+machine and device ids, account details, IPs, URLs with query strings and
+credential-shaped values. Never attach the whole home or a raw database.
 
 ## Brain is installed but not running
 
-First rule out a brain that is simply still starting. An install that reports
-`starting` has registered the service and left a live child that had not
-answered on the pipe inside `WINDOWS_HANDOVER_TIMEOUT_MS` (15 s — shorter than
-the POSIX budget because the supervisor is a process the installer starts and
-watches directly). That is not a failed install: the supervisor owns that child,
-and restarting it only resets its clock. `ade connect` says "installed — the
-background service is still starting", and the desktop shows `brain_starting`
-with no Repair offered and reopens the project itself once the pipe answers.
-Give it up to `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) before treating it as
-stuck. If it is genuinely not coming up:
+First rule out a brain that is still starting. An install that reports
+`starting` left a live child that did not answer on the pipe within
+`WINDOWS_HANDOVER_TIMEOUT_MS` (15 s). The supervisor owns it, and restarting only
+resets its clock. `daex connect` says "the background service is still
+starting", and the desktop shows `brain_starting` with no Repair and reopens the
+project once the pipe answers. Give it `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s).
+If it really is stuck:
 
-1. Confirm the channel-qualified value exists under the current user's Run key.
-   Do not paste its command because it contains local installation paths.
-2. Run `ade brain start`, then `ade brain status --text`.
-3. Confirm the PID record exists under the channel ADE home's `runtime/`
-   directory and that the supervisor/runtime are live. Report proof-local PID
-   aliases rather than raw command lines.
-4. If status says the startup entry exists but the supervisor is not running,
-   run `ade brain stop` followed by `ade brain start` to rewrite the launcher and
-   entry.
-5. If an old `ADE Runtime` Scheduled Task remains, normal install/uninstall
-   should remove it. A cleanup failure is fail-closed; capture only its bounded
-   error text and retry from the same user account.
+1. Confirm the channel's value exists under the current user's Run key (do not
+   paste its command: it has local paths).
+2. Run `daex brain start`, then `daex brain status --text`.
+3. Confirm the PID record exists under the channel home's `runtime/` folder and
+   that supervisor and runtime are live.
+4. If the startup entry exists but no supervisor runs, `daex brain stop` then
+   `daex brain start` rewrites launcher and entry.
+5. An old `ADE Runtime` Scheduled Task is removed by install/uninstall; a cleanup
+   failure is fail-closed, so capture its error and retry as the same user.
 
-If a logoff or reboot was part of the failure, verify both process recovery and
-an initialized client call. A process in Task Manager alone does not prove that
-the named pipe is healthy.
+A process in Task Manager does not prove the pipe is healthy: verify an
+initialized client call.
 
 ## Desktop cannot attach to the local brain
 
-- Confirm desktop and CLI are the same channel. Stable and Alpha intentionally
-  use different ADE homes and pipe names.
-- Close only the affected channel, restart its brain, then relaunch that channel.
-- A second Windows account must not be able to use the first account's pipe.
-  Access denial is expected isolation, not a reason to weaken named-pipe ACLs.
-- Do not publish a full named-pipe path in support artifacts. Record a channel
-  alias and the initialize result.
-- If the desktop reports a packaged/runtime build mismatch, reinstall the same
-  signed version before changing local state.
+- Desktop and CLI must be the same channel; Stable and Alpha use different homes
+  and pipes.
+- Close only the affected channel, restart its brain, relaunch that channel.
+- A second Windows account must not reach the first account's pipe; access
+  denial is expected isolation.
+- On a packaged/runtime build mismatch, reinstall the same signed version before
+  changing local state.
 
-## Phone, Relay, or Tailscale cannot connect
+## Phone, Relay or Tailscale cannot connect
 
-- `crdtSyncAvailable` must be true. If it is false, reinstall/restart the
-  packaged app; Windows pairing is blocked rather than silently running without
-  CRR support.
-- LAN requires the approved Windows Defender Firewall path and a reachable sync
-  listener. Record the route kind and coarse outcome, never IPs or pairing data.
-- Tailscale resolution checks the normal Program Files installation, then PATH.
-  Use `ADE_TAILSCALE_CLI` only for a non-default install.
-- Relay is available only while the Windows brain has a current ADE account
-  lease and owns the machine-wide sync-host lease. There is no separate Relay
-  toggle.
-- A connected Relay control is not sufficient; directory publication requires
-  the end-to-end self-probe to pass.
-- On a physical iPhone, verify both the visible connection and a bidirectional
-  synthetic CRR row roundtrip. Do not treat "Connected" as complete sync proof.
+- `crdtSyncAvailable` must be true; otherwise reinstall/restart (pairing is
+  blocked without CR-SQLite).
+- LAN needs the Windows Defender Firewall rule (`apps/desktop/scripts/windows-firewall-rules.ps1`)
+  and a reachable sync listener (ports 8787-8999).
+- Tailscale resolution checks Program Files, then PATH; `ADE_TAILSCALE_CLI` is for
+  a non-default install.
+- Relay works only while the brain has a current account lease and owns the
+  machine-wide sync-host lease, and directory publication needs the end-to-end
+  self-probe to pass.
+- On a physical iPhone, verify a bidirectional CRR row roundtrip, not just
+  "Connected".
 
 ## Provider or terminal launch fails
 
-- Reproduce as four separately labelled cases: Windows PowerShell 5.1,
-  PowerShell 7, cmd, and Git Bash. A generic `powershell` result does not prove
-  either PowerShell version, and cmd results do not stand in for Git Bash.
-- For each of Claude, Codex, Cursor, OpenCode, and Droid, test authenticated and
-  unauthenticated states, fresh launch, and tracked resume separately. Resume
-  bugs often bypass the fresh structured command path.
-- Use a disposable path/prompt containing Unicode, spaces, quotes, dollar and
-  percent signs, ampersands, and backticks.
-- Exercise ConPTY resize, Ctrl+C, explicit cancellation, descendant cleanup,
-  and crash restore. Do not use a successful terminal close as the only
-  process-cleanup signal.
-- Confirm interrupted sessions expose bounded recovery metadata and actionable
-  recovery instructions. Redact prompts, transcripts, command arguments,
-  account identifiers, and paths independently for every provider.
-- Provider credentials are machine-local. Never copy a credential store into an
-  evidence bundle or across a cross-machine handoff.
+- Reproduce as four labelled cases: Windows PowerShell 5.1, PowerShell 7, cmd
+  and Git Bash.
+- For each provider, test authenticated and unauthenticated states, fresh launch
+  and tracked resume separately (resume bugs often bypass the fresh launch path).
+- Use a disposable path and prompt with Unicode, spaces, quotes, `$`, `%`, `&`
+  and backticks.
+- Exercise ConPTY resize, Ctrl+C, cancellation, descendant cleanup and crash
+  restore.
+- Provider credentials are machine-local; never copy a credential store into
+  evidence or across machines.
 - The shared credential store (`credentials.json.enc`) is sealed with the bare
-  machine key on every platform, never with DPAPI- or keychain-derived material.
-  It is co-owned by the desktop app, the brain and the CLI, and any binding one
-  of them can derive but another cannot locks that other one out permanently.
-  Windows DPAPI (`CurrentUser`) is symmetric between the desktop app and the
-  scheduled-task brain because both run as the signed-in user — but the DPAPI
-  helper is a PowerShell spawn that can time out, and a timeout used to throw
-  out of a plain credential read. Verify that a DPAPI failure degrades to an
-  "unreadable, may be recoverable" report and never terminates the brain.
-- Single-writer secrets that want OS-level protection belong in the Electron
-  safeStorage store (`credentials.safe.enc`), which only the desktop app reads.
+  machine key on every platform, never DPAPI or keychain material, because the
+  desktop app, the brain and the CLI all read it. A DPAPI helper timeout must
+  degrade to an "unreadable, may be recoverable" report, never end the brain.
+  Single-writer secrets that want OS protection go in the Electron safeStorage
+  store (`credentials.safe.enc`), which only the desktop reads.
 
 ## Standalone brain or installation is damaged
 
-- Exercise the standalone `ade-win32-x64` install independently of the desktop:
-  `ade brain start`, `ade brain status --text`, `ade doctor --json`, and the
-  supported update command must all operate from the standalone payload.
-- A Windows client may bootstrap supported macOS/Linux runtimes. Verify the
-  OpenSSH client prerequisite first and require a bounded actionable error when
-  it is absent. This does not make Windows an SSH-bootstrap *target*.
-- Windows standalone install and `ade brain update` are implemented, but the
-  exact-SHA proof must re-hash `ade-win32-x64.exe`, its native archive,
-  `install.ps1`, and `SHA256SUMS` from the immutable proof run. Missing or
-  mismatched evidence is a public-release blocker; do not relabel it as a pass
-  or substitute a manual binary copy.
-- The service-removal check must pass from Electron main: `resolveAdeServeCommand()`
-  describes `ADE.exe <resources>\ade-cli\cli.cjs serve`, and `readRecordedBrain`
-  also accepts the command in the service launcher script. A machine stuck on
-  1.2.112/1.2.113 recovers with `ade brain update`, whose `--apply-staged` step
-  installs the desktop app itself (sha512 and Authenticode signer checked, service
-  restored if the installer fails). See
+- The standalone `ade-win32-x64.exe` install must work without the desktop:
+  `daex brain start`, `daex brain status --text`, `daex doctor --json` and
+  `daex brain update`.
+- A Windows client can bootstrap macOS and Linux runtimes; check the OpenSSH
+  Client prerequisite first.
+- The service-removal check must pass from Electron main:
+  `resolveAdeServeCommand()` describes `ADE.exe <resources>\ade-cli\cli.cjs serve`,
+  and `readRecordedBrain` also accepts the command in the launcher script. A
+  machine stuck on an update recovers with `daex brain update`, whose
+  `--apply-staged` step installs the desktop app (sha512 and Authenticode signer
+  checked, service restored on failure). See
   [Desktop auto-update](../features/onboarding-and-settings/desktop-auto-update.md).
-- `install.ps1` stages everything under the ADE home, never `%TEMP%`:
-  `<runtime dir>.new` / `.previous` beside the runtime, `ade.new.exe` /
-  `ade.bak.exe` beside `ade.exe`. `%TEMP%` holds the downloads and nothing else,
-  because it is routinely on a different volume from the user profile
-  (redirected TEMP, a RAM disk, a roaming profile) where `Move-Item` degrades to
-  copy-then-delete, and because AppLocker and most EDR agents block execution
-  out of `%TEMP%` outright — which would fail the preflight on every managed
-  corporate machine. Every promotion is a same-directory rename, and the
-  preflight runs the new binary against the staged runtime it will actually
-  load. A failed install prints a stage-aware note: before promotion, the
-  existing install was not touched; after a rollback, the previous one was put
-  back. If the rollback itself failed, the recovery copies are named in the
-  error and are the machine's only copy — do not delete them.
-- Repair a partial launcher/runtime installation with the product's bounded
-  repair path before testing reinstall or uninstall. Repair must preserve
-  projects and user state; reinstall and uninstall remain separate scenarios
-  with their own ownership checks.
+- `install.ps1` stages everything under the home, never `%TEMP%` (which may be on
+  another volume, and which AppLocker and EDR often block): `<runtime dir>.new` /
+  `.previous` beside the runtime, `ade.new.exe` / `ade.bak.exe` beside `ade.exe`.
+  Every promotion is a same-directory rename, and the preflight runs the new
+  binary against the staged runtime. A failed install says whether the existing
+  install was untouched or rolled back; if the rollback failed, the named recovery
+  copies are the only copy, so keep them.
+- Repair a partial install with the product's repair path before testing
+  reinstall or uninstall; repair keeps projects and user state.
 
 ## Update does not land
 
-- Confirm `latest.yml`, installer, and blockmap match the manifest hashes and
-  the installed app's update authority is the repository that built it.
-- Preserve the first verified cached download after a lost handoff; ADE clears
+- `latest.yml`, the installer and the blockmap must match the manifest hashes,
+  and the installed app's update authority must be the repository that built it.
+- DAEX keeps the first verified cached download after a lost handoff and clears
   the cache after a second failure for the same target.
-- A checksum, signature, publisher-pin, or timestamp failure must clear unsafe
-  cache data and must not replace the running app.
-- Verify the relaunch version, project data, and HKCU supervisor after update.
-  References to "Scheduled Task repair" are stale; only legacy-task cleanup is
-  expected.
+- A checksum, signature, publisher-pin or timestamp failure clears unsafe cache
+  data and never replaces the running app.
+- After an update, verify the relaunch version, project data and the HKCU
+  supervisor.
 
 ## Uninstall leaves residue
 
-The uninstaller owns only its channel's background service, launcher/PID record,
-terminal shim, and the matching user PATH entry. It should not delete projects,
-another ADE channel, or unrelated PATH entries.
-
-Check, using redacted aliases:
-
-- the channel's HKCU Run value is absent;
-- its supervisor/runtime process tree is stopped;
-- its launcher and PID record are absent;
-- exact legacy Scheduled Task names are absent;
-- the installer-owned shim and PATH component are absent; and
-- other channels and project data remain.
-
-If cleanup fails, leave the product state intact and report the bounded cleanup
-error. Do not manually delete broad ADE homes as a support shortcut.
+The uninstaller owns only its channel's service, launcher and PID record,
+terminal shim and the matching user PATH entry. Check that the channel's Run
+value, supervisor/runtime tree, launcher, PID record, legacy task names, shim and
+PATH entry are gone, and that other channels and project data remain. Never
+delete whole homes as a support shortcut.
 
 ## Support bundle boundary
 
-A safe support bundle may contain the proof manifest, the relevant scenario
-entries, small redacted event extracts, synthetic DB query results, proof-local
-process/IPC/network summaries, and cropped screenshots. It must not contain:
+A safe bundle may contain the proof manifest, the relevant scenario entries,
+small redacted event extracts, synthetic DB query results, proof-local
+process/IPC/network summaries and cropped screenshots. It must not contain:
 
-- `.ade/secrets`, credential stores, tokens, pairing PINs, DPoP material, or
+- `.ade/secrets`, credential stores, tokens, pairing PINs, DPoP material or
   signing files;
-- raw `.db`, WAL, or SHM files;
+- raw `.db`, WAL or SHM files;
 - full logs or environment blocks;
-- home paths, account or computer names, email addresses, IPs, or device ids;
-- chat transcripts, source files, private repository names, or artifact bytes
-  unrelated to the reproduction; or
-- raw certificate subjects or certificate files. Store only approved digests
-  needed to compare identity.
+- home paths, account or computer names, emails, IPs or device ids;
+- transcripts, source files, private repository names or unrelated artifact
+  bytes;
+- raw certificate subjects or files (only approved digests).
 
-Validate release evidence with `windows-proof-manifest.mjs` before attaching it
-to a support or release record.
+Validate release evidence with `apps/desktop/scripts/windows-proof-manifest.mjs`
+before attaching it to a support or release record.

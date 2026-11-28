@@ -1,7 +1,7 @@
 # Linux desktop support
 
-ADE supports a Linux desktop alongside the standalone brain. The desktop must
-adopt an existing brain on the same ADE home and channel; it must not create a
+DAEX supports a Linux desktop alongside the standalone brain. The desktop must
+adopt an existing brain on the same home and channel; it must not create a
 second authority or change a headless machine's pairing identity. Lanes and
 commands on another machine follow that machine's runtime pin, including an iOS
 simulator on a Mac. Linux lane screens use their own Xvfb display; that is
@@ -10,8 +10,8 @@ separate from the user's X11 or Wayland desktop session.
 ## Development and network
 
 Use Node 24 and the isolated, detached dev launcher in
-[local development](local-development.md). Give each agent its own socket,
-ADE home and throwaway project; a separate home alone does not isolate a project
+[local development](local-development.md). Give each agent its own socket
+and throwaway project; a separate home alone does not isolate a project
 database. Rebuild native dependencies for the target Electron and architecture;
 never install Linux dependencies into a macOS checkout. Do not weaken Chromium's
 sandbox globally. Diagnose user-namespace/AppArmor restrictions on the affected
@@ -19,7 +19,7 @@ host and use an explicit, scoped remedy only where necessary.
 
 The sync host advertises `_ade-sync._tcp` via mDNS/Bonjour and publishes whether
 a PIN is configured, not the PIN. The default TCP port is 8787, with fallback
-through 8999 if occupied; use the actual advertised port. For LAN discovery,
+through 8999 if occupied (`syncProtocol.ts`); use the actual advertised port. For LAN discovery,
 allow UDP 5353 multicast and the chosen TCP sync port on the trusted network in
 the host firewall, and check network isolation between devices. Do not open the
 whole fallback range indiscriminately. If multicast is unavailable, use an
@@ -28,21 +28,21 @@ machine's configured PIN or other authorized pairing flow.
 
 ## Decisions
 
-- **Formats:** AppImage and deb, x64 and arm64, named `ADE-<version>-linux-<x64|arm64>.<ext>`. Other formats are not built.
-- **Updates:** the AppImage updates in place from `latest-linux.yml` (x64) or `latest-linux-arm64.yml` (arm64), through the same stop-brain, swap, relaunch path as macOS and Windows. The new AppImage starts through `bash`, which closes every descriptor the old app had open first: electron-updater's plain `spawn` handed them all over, so the old version's GPU, network and crash-reporter processes never saw their app quit and kept the old, deleted AppImage mounted until ADE quit again. A deb cannot update itself without root, so it links the download. An apt repository is the follow-up that would change this.
-- **Menu entry and links:** the deb installs a desktop entry. An AppImage writes its own to `~/.local/share/applications` at launch, so it appears in the menu and `ade://` can open it. It is rewritten when the file moves, a deb launch removes it so it cannot shadow the package's entry, and a file ADE did not write is left alone. The AppImage's `ade` shim follows the file the same way.
+- **Formats:** AppImage and deb, x64 and arm64, named `ADE-<version>-linux-<x64|arm64>.<ext>` (the file name keeps `ADE`). Other formats are not built.
+- **Updates:** the AppImage updates in place from `latest-linux.yml` (x64) or `latest-linux-arm64.yml` (arm64), through the same stop-brain, swap, relaunch path as macOS and Windows. The new AppImage starts through `bash`, which closes every descriptor the old app had open first; otherwise the old version's GPU, network and crash-reporter processes keep the deleted AppImage mounted. A deb cannot update itself without root, so it links the download. An apt repository is the follow-up that would change this.
+- **Menu entry and links:** the deb installs a desktop entry. An AppImage writes its own to `~/.local/share/applications` at launch, so it appears in the menu and `daex://` and `ade://` links open it. It is rewritten when the file moves, a deb launch removes it so it cannot shadow the package's entry, and a file DAEX did not write is left alone. The AppImage's CLI shim follows the file the same way.
 - **Keep awake:** "While I'm away" runs `systemd-inhibit`. polkit grants the sleep lock only to a user with a local seat session, so a headless machine and a distribution without systemd both report that the lock failed. logind lets a user suspend past their own lock, and GNOME's idle suspend runs as that user and reads only its own session's locks, so when a GNOME session answers, the command under `systemd-inhibit` is `gnome-session-inhibit --inhibit suspend` too (suspend only, so the screen still locks itself), held by a shell that owns it and the `tail`. Without one, it falls back to the logind lock alone. Verified on Ubuntu 24.04 GNOME; KDE and other desktops are not checked.
 - **Brain version:** an AppImage keeps a brain newer than itself, except after Go back or a switch to an older track, which leave a marker so the next launch installs the matching brain.
-- **Sandbox:** never turned off automatically. electron-builder's AppRun appends `--no-sandbox` when user namespaces are blocked, so `scripts/linux-appimage-launcher.sh` strips it and stops with an explanation; `ADE_ALLOW_NO_SANDBOX=1` is the person's explicit opt-in. No AppArmor profile is offered for the AppImage, because it could only match a path under `/tmp` that any local user could create. The deb installs a profile for its fixed path.
-- **Login shells:** Debian's `/etc/profile` sets PATH from scratch in every login shell, which dropped what ADE puts on PATH (the `ade` and `gh` shims, `~/.local/bin`, npm's global bin). ADE already resolves the person's login and interactive shell PATH into every agent and terminal environment at startup (`augmentProcessPathWithShellAndKnownCliDirs`), so on Linux it skips the second login shell: terminals start interactive but not login, as GNOME Terminal, Konsole and VS Code do (the saved default shell too), and every Codex that runs commands gets `-c allow_login_shell=false` (`codexLinuxShellArgs`), so its commands run as `bash -c`, not `bash -lc`. Variables a profile exports besides PATH come only from the desktop session's environment. macOS keeps login shells (`path_helper` keeps existing entries); Windows is unchanged. The cloud image also carries `/etc/profile.d/ade-shims.sh` for login shells started outside ADE.
+- **Sandbox:** never turned off automatically. electron-builder's AppRun appends `--no-sandbox` when user namespaces are blocked, so `apps/desktop/scripts/linux-appimage-launcher.sh` strips it and stops with an explanation; `ADE_ALLOW_NO_SANDBOX=1` is the person's explicit opt-in. No AppArmor profile is offered for the AppImage, because it could only match a path under `/tmp` that any local user could create. The deb installs a profile for its fixed path.
+- **Login shells:** Debian's `/etc/profile` sets PATH from scratch in every login shell, which drops what DAEX puts on PATH (the CLI and `gh` shims, `~/.local/bin`, npm's global bin). DAEX already resolves the person's login and interactive shell PATH into every agent and terminal environment at startup (`augmentProcessPathWithShellAndKnownCliDirs`), so on Linux it skips the second login shell: terminals start interactive but not login, as GNOME Terminal, Konsole and VS Code do (the saved default shell too), and every Codex that runs commands gets `-c allow_login_shell=false` (`codexLinuxShellArgs`), so its commands run as `bash -c`, not `bash -lc`. Variables a profile exports besides PATH come only from the desktop session's environment. macOS keeps login shells (`path_helper` keeps existing entries); Windows is unchanged. The cloud image also carries `/etc/profile.d/ade-shims.sh` (`infra/ade-cloud/template/ade-shims-profile.sh`) for login shells started outside DAEX.
 - **Brain:** an AppImage copies its standalone runtime to the same `~/.ade` layout `install.sh` uses, so the service never points into the temporary mount. A deb can use its stable `/opt` path. A compatible running brain is adopted; a newer one is kept.
-- **Stopping the brain from inside it:** `ade brain stop`, `restart`, and a `start` that would replace the brain refuse when the command runs inside that brain, as on macOS and Windows: an agent's shell is the brain's child, and `systemctl --user restart` or `disable --now` stops the unit's whole cgroup, the command included. The systemd unit refuses by process tree (the unit's `MainPID`) and by cgroup (the command sits inside the unit's `ControlGroup`, as a `nohup` job whose shell exited does); the no-systemd supervisor and a cloud machine's start-script loop refuse by process tree. `ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` overrides; ADE's own update helpers set it. Unit-tested only; not yet checked on a real Linux host.
+- **Stopping the brain from inside it:** `daex brain stop`, `restart`, and a `start` that would replace the brain refuse when the command runs inside that brain, as on macOS and Windows: an agent's shell is the brain's child, and `systemctl --user restart` or `disable --now` stops the unit's whole cgroup, the command included. The systemd unit refuses by process tree (the unit's `MainPID`) and by cgroup (the command sits inside the unit's `ControlGroup`, as a `nohup` job whose shell exited does); the no-systemd supervisor and a cloud machine's start-script loop refuse by process tree. `ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` overrides; DAEX's own update helpers set it. Unit-tested only; not yet checked on a real Linux host.
 
 ## Release flow
 
 `release-core.yml` builds each architecture in `build-linux-release`, and `release-publish.yml` refuses to publish without all four packages and both manifests. Beta and stable use the same job. On a beta, `scripts/beta/feed.mjs` publishes the two Linux manifests to `beta-feed` with absolute URLs, as for macOS and Windows.
 
-Linux packages build on a fixed Ubuntu, never `ubuntu-latest`: a native module needs the glibc of the image that built it, and a moved image once broke every system older than itself. `validate-linux-artifacts.mjs` holds each packaged binary, and the brain's native archive, to what Ubuntu 22.04 provides (`linux-system-library-ceiling.mjs`), so moving the image means re-checking that. `transcribe-cli` is linked statically on Linux for the same reason. electron-builder fetches its own tools during the build, so `run-linux-electron-builder.mjs` retries a target when one of those downloads fails.
+Linux packages build on a fixed Ubuntu, never `ubuntu-latest`: a native module needs the glibc of the image that built it. `apps/desktop/scripts/validate-linux-artifacts.mjs` holds each packaged binary, and the brain's native archive, to what Ubuntu 22.04 provides (`linux-system-library-ceiling.mjs`), so moving the image means re-checking that. `transcribe-cli` is linked statically on Linux for the same reason. electron-builder fetches its own tools during the build, so `run-linux-electron-builder.mjs` retries a target when one of those downloads fails.
 
 To try a release without reaching any machine's update feed, dispatch `beta.yml` from the branch with `preview_ref` set. It publishes a prerelease that is installed by hand.
 

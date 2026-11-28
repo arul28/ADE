@@ -1,52 +1,51 @@
 # Local development
 
-Everything you need to run, test, and package ADE from a checkout. The README
+Everything you need to run, test and package DAEX from a checkout. The README
 keeps the short version; this is the full reference.
+
+The CLI is `daex`; `ade` is a permanent alias and works in every command
+below. Internal names keep the old spelling on purpose (`ADE_*` env vars,
+`~/.ade`, `.ade/` folders, the `ADE Alpha.app` bundle); see
+`docs/brand/README.md`.
 
 ## Glossary
 
 | Term | Meaning |
 | --- | --- |
-| Brain | The always-on, machine-owned ADE process for one channel. It carries the sync websocket, project catalog, local RPC endpoint, and executor authority. |
-| Runtime | ADE execution machinery: processes/services that open DBs and run agents, PTYs, git, and orchestration. A runtime process can host the brain role, but "brain" is the authority/lifecycle term. |
-| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; use it for dev/test work instead of the automated stable/alpha brain service. |
-| Machine | A physical computer with a per-channel ADE home and stable sync device identity. |
-| Channel | A build lane such as stable, alpha, or dev. Each channel has its own ADE home. Beta is an update track of stable, not a channel. |
-| Client | A surface that attaches to the brain: desktop, ADE Mobile, or an SSH-bound desktop window. |
-| Project | A registered repo with one ADE database at `<project>/.ade/ade.db`. |
+| Brain | The always-on, machine-owned DAEX process for one channel. It carries the sync websocket, project catalog, local RPC endpoint and executor authority. |
+| Runtime | The machinery that opens databases and runs agents, PTYs, git and orchestration. A runtime process can host the brain role; "brain" is the authority and lifecycle term. |
+| Manual runtime | A foreground runtime started with `daex runtime run --socket <path>`. Sync is always off. |
+| Machine | A computer with a per-channel DAEX home and a stable sync device identity. |
+| Channel | A build line such as stable, alpha or dev. Each has its own home. Beta is an update track of stable, not a channel. |
+| Client | A surface that attaches to the brain: desktop, the iPhone app, or an SSH-bound desktop window. |
+| Project | A registered repo with one database at `<project>/.ade/ade.db`. |
 | Lane | A task worktree under `.ade/worktrees/` that shares the project database. |
-| Catalog | The machine-level project list served by the brain to clients and ADE Mobile. |
+| Catalog | The machine-level project list the brain serves to clients and the phone. |
 
 ## Brain vs. manual runtime
 
-This table describes the current code behavior.
-
 | Capability | Brain | Manual runtime |
 | --- | --- | --- |
-| Lifecycle | Always-on login service for an ADE channel; Desktop can install/repair it in packaged builds. | Foreground process started explicitly with `ade runtime run --socket <path>`. |
-| Owner | Machine / ADE install. | User or developer who launched it. |
-| Sync | Yes. | No; `ade runtime run` forces sync off. |
-| Mobile websocket | Yes. | No. |
-| Phone pairing / PIN | Yes. | No. |
-| Mobile/machine catalog authority | Yes. | No; it may expose registry data to explicitly attached clients, but ADE Mobile ignores manual runtimes. |
+| Lifecycle | Always-on login service for a channel; a packaged desktop installs or repairs it. | Foreground process started with `daex runtime run --socket <path>`. |
+| Sync, phone websocket, pairing PIN, catalog authority | Yes. | No; `runtime run` forces sync off, and the phone ignores manual runtimes. |
 | Runs agents, PTYs, git, lanes, PR work | Yes. | Yes. |
-| Clients | Desktop and ADE Mobile attach to it; SSH-bound desktop windows attach to the remote machine's ADE transport. | Only clients explicitly pointed at its endpoint attach to it. |
-| Survives client close | Yes, when service-owned. Desktop fallback spawns still exist for recovery and dev paths. | Only while that foreground process is still running. |
+| Clients | Desktop and the phone attach to it; SSH-bound windows attach to the remote machine's transport. | Only clients pointed at its endpoint. |
+| Survives client close | Yes, when service-owned. | Only while the foreground process runs. |
 
 ## What to rebuild after a change
 
 | Change you made | What to run/test | Why |
 | --- | --- | --- |
-| iOS UI/client-only change | Build the iOS app from the lane and connect it to an existing ADE brain. | The phone is a client; UI-only work does not require a new brain. |
-| iOS sync protocol, project catalog, pairing, or remote-command change | Rebuild/restart the target brain from the lane, then build the iOS app from the same lane. | The phone and brain both need the new contract. |
-| Desktop renderer UI change | Run/build Desktop from the lane and let it attach to the channel brain. | Renderer code is client-side unless it depends on new brain APIs. |
-| Desktop main/preload/runtime-bridge change | Run/build Desktop from the lane; rebuild/restart the brain only if the runtime RPC contract or brain behavior changed. | Electron main is a client/bridge, but some handlers route through the brain. |
-| Brain, sync, project catalog, pairing, agents, PTYs, lanes, PR workflows, or CLI runtime service change | Rebuild the ADE CLI/brain from the lane and restart the target brain before testing clients. | These live in the always-on process; existing installed brains keep running old code. |
-| Manual runtime behavior | Start `ade runtime run --socket <path>` from the lane and point a client at that endpoint. | Manual runtimes are standalone and sync is always off. |
-| Remote runtime / SSH transport change | Test with a remote target using the lane-built desktop/runtime artifacts. | SSH-bound windows talk to the remote ADE transport, not the local mobile brain. |
-| Docs or web-only change | Run the docs/web preview or static checks for that surface. | No ADE brain/client lifecycle is involved. |
+| iOS UI-only change | Build the iOS app from the lane and connect it to an existing brain. | The phone is a client. |
+| iOS sync protocol, catalog, pairing or remote-command change | Rebuild and restart the target brain from the lane, then build the iOS app from the same lane. | Both sides need the new contract. |
+| Desktop renderer UI change | Run Desktop from the lane against the channel brain. | Renderer code is client-side unless it needs new brain APIs. |
+| Desktop main/preload/runtime-bridge change | Run Desktop from the lane; restart the brain only if the RPC contract or brain behavior changed. | Some handlers route through the brain. |
+| Brain, sync, catalog, pairing, agents, PTYs, lanes, PR workflows or CLI runtime service | Rebuild the CLI/brain from the lane and restart the target brain before testing clients. | Installed brains keep running old code. |
+| Manual runtime behavior | Start `daex runtime run --socket <path>` from the lane and point a client at it. | Manual runtimes are standalone. |
+| Remote runtime / SSH transport | Test against a remote target with lane-built desktop and runtime artifacts. | SSH windows talk to the remote transport. |
+| Docs or web-only change | Run that surface's preview or static checks. | No brain or client lifecycle is involved. |
 
-## Running ADE locally
+## Running DAEX locally
 
 First-time setup:
 
@@ -54,16 +53,22 @@ First-time setup:
 npm run setup
 ```
 
-That installs desktop, ade-cli, web, `packages/sdk` and `packages/chat-ui` in their own
-folders, and the five Cloudflare Workers (`apps/account-directory`, `password-key-service`,
-`push-relay`, `tunnel-relay`, `webhook-relay`) with one `npm install` at the repo root:
-they are one npm workspace with one root `package-lock.json`, so wrangler, workerd,
-TypeScript and Sentry are installed once and shared. To install only the Workers, run
-`npm ci` at the repo root.
+`setup` (`scripts/install-apps.mjs`) installs desktop, ade-cli, web,
+`packages/sdk` and `packages/chat-ui` in their own folders, and the five
+Cloudflare Workers (`apps/account-directory`, `password-key-service`,
+`push-relay`, `tunnel-relay`, `webhook-relay`) with one `npm install` at the
+repo root: they are one npm workspace with one root `package-lock.json`. To
+install only the Workers, run `npm ci` at the repo root.
 
-Since Electron 42, `npm install` no longer downloads the Electron binary; `npm run setup`
-fetches it afterwards through `apps/desktop/scripts/ensure-electron.cjs`, the same step
-`npm run dev` runs, and fails with the download's exit code if it cannot.
+`npm install` does not download the Electron binary; `setup` and `npm run dev`
+fetch it through `apps/desktop/scripts/ensure-electron.cjs` and fail with the
+download's exit code if they cannot.
+
+Use Node 24 (the version in `.nvmrc`). CI and release builds use it too. The
+`daex` CLI itself runs on Node 22.13 or newer; before 24.14 it ignores
+`HTTPS_PROXY` (a brain says so once at start). See
+[Building the static runtime](#building-the-static-runtime) for the embedded
+Node.
 
 Daily desktop dev:
 
@@ -71,17 +76,33 @@ Daily desktop dev:
 npm run dev
 ```
 
-That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, refreshes the shared dev runtime at `/tmp/ade-runtime-dev.sock` when needed, launches the Electron desktop app, and points desktop at that runtime. This is the normal desktop-dev flow.
+`dev` runs `dev:desktop` (`scripts/dev-desktop.mjs --auto`): it rebuilds
+`apps/ade-cli`, refreshes the shared dev runtime at `/tmp/ade-runtime-dev.sock`
+when needed, launches the Electron app and points it at that runtime.
 
-**This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. Its own socket keeps it from taking over chats run by the installed brain, including across different ADE homes. While the installed brain is live on the project, the dev brain leaves chats it does not run to it: it does not recover or prewarm them or fire their scheduled wakes. Other dev brains do not make one another yield. Its own chats and messages sent directly to it still work; a send, steer or interrupt for a chat another brain runs is refused with the owner's socket instead of starting a second provider process. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand or copy `~/.ade` secrets into another home. (A hand-run `ade serve` that finds the installed brain alive starts with sync off and says so on stderr.) Use a separate `ADE_HOME` only for deliberate scratch-home work; a new home shows the account gate, and full project isolation also needs a throwaway project. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want. When another machine must reach a branch brain, use a dev test machine (below) instead.
+**This is the only supported way to run a dev app on a machine that also runs
+the installed DAEX.** The dev brain shares `~/.ade` (your account, projects and
+sync identity) and starts with `--no-sync`, so it can never take the
+machine-wide sync host lease. Its own socket keeps it from taking over chats the
+installed brain runs: while the installed brain is live on the project, the dev
+brain does not recover, prewarm or fire scheduled wakes for chats it does not
+run, and a send, steer or interrupt for such a chat is refused with the owner's
+socket. An unpackaged app never installs or repairs the brain service. The
+launcher prints a dev isolation report (state root, socket, sync, account,
+machines, project) before the window opens; read it.
+
+Do not start `daex serve` by hand or copy `~/.ade` secrets into another home. (A
+hand-run `daex serve` that finds the installed brain alive starts with sync off
+and says so.) `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and
+is almost never what you want. When another machine must reach a branch brain,
+use a [dev test machine](#test-what-other-machines-call-into-a-dev-test-machine).
 
 ### If you are an agent, start it detached
 
-`npm run dev:desktop` runs in the foreground for as long as the app is open. An
-agent that runs it as an ordinary command holds its turn open until the app
-exits, and when the harness ends the turn it kills the process group — so the
-window the human was about to look at closes. Start it in the background and
-wait for the report instead:
+`npm run dev:desktop` runs in the foreground while the app is open. An agent
+that runs it as an ordinary command holds its turn open, and when the harness
+ends the turn it kills the process group and the window closes. Start it in the
+background and wait for the report:
 
 ```bash
 node scripts/dev-detached.mjs /tmp/ade-dev-<lane>.log \
@@ -90,222 +111,182 @@ until grep -q 'dev isolation report' /tmp/ade-dev-<lane>.log; do sleep 2; done
 cat /tmp/ade-dev-<lane>.log
 ```
 
-A plain `&` is not enough: it survives the shell exiting but not a SIGTERM to
-the process group, which is how a turn is torn down. The script puts the app in
-its own session, so `electron exited (code=143)` mid-run stops happening.
+A plain `&` is not enough: it does not survive a SIGTERM to the process group.
+The script puts the app in its own session.
 
-The rules that go with it (`AGENTS.md` and the context skill link here):
+Rules (`AGENTS.md` and the context skill link here):
 
-- **Pick your own socket.** The default is `/tmp/ade-runtime-dev.sock` and it is
-  shared. Two dev brains on one socket restart each other. Use one path per
-  lane and keep using the same one, so `--attach` finds it.
-- **Read the isolation report before anything else.** If it says `sync : ON`,
-  stop and fix that: a dev brain holding the machine-wide sync host lease drops
-  the installed brain's tunnel and kills the agents running under it.
-- **Never hand-start `ade serve`**, never set a fresh `ADE_HOME`, never copy
+- **Pick your own socket.** The default `/tmp/ade-runtime-dev.sock` is shared;
+  two dev brains on one socket restart each other. Use one path per lane and
+  keep using it, so `--attach` finds it.
+- **Read the isolation report first.** If it says `sync : ON`, stop and fix
+  that: a dev brain holding the sync host lease drops the installed brain's
+  tunnel and kills the agents under it.
+- **Never hand-start `daex serve`**, never set a fresh `ADE_HOME`, never copy
   `~/.ade` secrets, and never run a packaged build on a machine serving live
   agents.
-- **Testing something saved to the account.** With sync off, a dev brain
-  has no account stores, so MCP servers and other vault-backed saves cannot
-  be tested. Start the app with `ADE_DEV_ACCOUNT_STORES=1` to open your real
-  account's settings and vault in a folder of the dev brain's own
-  (`~/.ade/dev-account-stores/<pid>`, deleted when it stops). Sync stays off,
-  and no migration or credential pull runs. The isolation report's `account`
-  line says which mode you are in. What you save reaches all your machines,
-  so remove test entries when you finish.
-- **`--no-sync` protects the sync lease only.** It does not isolate the
-  database: a dev brain still sees every chat and task in every lane, so do not
-  restart one casually while other lanes are working.
-- **A dev desktop never connects to your other machines on its own.** A paired
-  machine (a Mac Studio, a Windows box) keeps one connection per device, and
-  every ADE on this computer shares the device pairing in `~/.ade`. A dev app
-  that reconnected saved machines took them from the installed ADE, which then
-  showed "Another ADE on this computer is using the connection" and waited.
-  An unpackaged desktop now connects only when someone presses Connect in it
-  (`explicitConnectOnly` in `RemoteConnectionService`), and the isolation
-  report says so on its `machines` line. Pressing Connect in a dev app still
-  takes that machine from the installed ADE: press Connect in the installed app
-  afterwards. Do not press Disconnect in a dev app either; it saves
-  "don't auto-connect" to the shared machine list, which the installed app
-  reads too. `ADE_DEV_REMOTE_AUTOCONNECT=1` restores auto-connect on purpose.
-- **Close the app before you edit its main-process code, and reopen it when
-  you need it.** `apps/desktop/scripts/dev.cjs` watches the main build (`tsup
-  --watch` over `src/main`, the preload and the `src/shared` code they import)
-  and relaunches Electron after every successful rebuild, and each relaunch
-  brings the window to the front, over whatever the human is doing.
-  Renderer-only edits go through Vite and hot-reload in place, with no
-  relaunch. So once you have looked at what you needed, stop the dev app's
-  process group before your next batch of such edits, and start it again only
-  when you are ready to look at the result. If you did not change brain code
-  and your dev brain is still running,
-  `npm run dev:desktop:attach -- --socket <your socket>` reopens just the
-  window. Never leave the app open while you edit main-process code.
-- **Mind the machine's memory.** Run one dev app per agent, and only while you
-  use it. Before you start a dev app, a dev brain, a simulator or a build,
-  check `memory_pressure | tail -1` and wait while free memory is under ~30%:
-  many lanes' dev apps, brains and simulators at once once filled a Mac
-  Studio, and the installed ADE that hosts every agent kept crashing. A dev
-  app an agent starts from its shell (an ADE chat or run) opens no detached
-  DevTools window; attach over CDP instead, or set `ADE_OPEN_DEVTOOLS=1` to get
-  it. An App Control launch cannot be told from a person's, so put
-  `NO_DEVTOOLS=1` in its command. Run by hand, it still opens DevTools
-  unless `NO_DEVTOOLS=1` is set. View > Toggle DevTools works either way.
+- **Testing something saved to the account.** With sync off, a dev brain has no
+  account stores. Start the app with `ADE_DEV_ACCOUNT_STORES=1` to open your
+  real account's settings and vault in a folder of the dev brain's own
+  (`~/.ade/dev-account-stores/<pid>`, deleted when it stops). Sync stays off.
+  The report's `account` line says which mode you are in. What you save reaches
+  all your machines, so remove test entries when you finish.
+- **`--no-sync` protects the sync lease only.** A dev brain still opens the same
+  project `.ade/ade.db` and sees every chat in every lane, so do not restart one
+  casually while other lanes are working. Use a throwaway project for full data
+  isolation.
+- **A dev desktop never connects to your other machines on its own.** Every
+  DAEX on this computer shares the device pairing in `~/.ade`, and a paired
+  machine keeps one connection per device. An unpackaged desktop connects only
+  when someone presses Connect in it (`explicitConnectOnly`), and the report's
+  `machines` line says so. Pressing Connect takes that machine from the
+  installed app: press Connect there afterwards. Do not press Disconnect in a
+  dev app; it saves "don't auto-connect" to the shared machine list.
+  `ADE_DEV_REMOTE_AUTOCONNECT=1` restores auto-connect on purpose.
+- **Close the app before you edit main-process code.**
+  `apps/desktop/scripts/dev.cjs` watches the main build (`tsup --watch` over
+  `src/main`, the preload and the `src/shared` code they import) and relaunches
+  Electron after every rebuild, bringing the window to the front. Renderer-only
+  edits hot-reload through Vite. If you did not change brain code and your dev
+  brain still runs, `npm run dev:desktop:attach -- --socket <your socket>`
+  reopens just the window.
+- **Mind the machine's memory.** One dev app per agent, only while you use it.
+  Before you start a dev app, brain, simulator or build, check free memory
+  (`memory_pressure | tail -1` on macOS) and wait while it is under about 30%.
+  A dev app started from an agent's shell opens no detached DevTools window;
+  attach over CDP, or set `ADE_OPEN_DEVTOOLS=1`. An App Control launch passes
+  `NO_DEVTOOLS=1` itself.
 - **Stop what you started, brain included.** Stop the dev app's process group
-  (the pid `dev-detached.mjs` printed) and then confirm its brain exited:
-  `pgrep -fl "<your socket>"`. A full desktop typecheck takes an 8 GB heap;
-  do not leave one running in the background, and do not start a second while
-  one is still going.
+  (the pid `dev-detached.mjs` printed), then confirm its brain exited:
+  `pgrep -fl "<your socket>"`. A full desktop typecheck takes an 8 GB heap; do
+  not run two at once.
 
-When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
-they still run code from that lane checkout, but they open the primary checkout's
-project data by default. For example, running from
-`/path/to/ADE/.ade/worktrees/my-lane` opens `/path/to/ADE` as the ADE project
-and uses the lane path as the workspace root.
+Run from a lane worktree under `.ade/worktrees/`, these commands run that
+lane's code but open the primary checkout's project data by default
+(`--project-root` overrides it).
 
 Dev command matrix:
 
 ```bash
-npm run dev:desktop          # refresh shared dev runtime, then launch desktop
-npm run dev:desktop:attach   # desktop only; fail if dev runtime is not already running
-npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
-npm run dev:desktop -- --first-run  # walk setup as a brand-new user, isolated from your ADE (below)
-npm run dev:runtime          # runtime only in the foreground
-npm run dev:all              # start shared dev runtime, then run `npm run dev:desktop:attach`
-npm run dev:stop             # stop the dev runtime
-npm stop dev                 # same as dev:stop
+npm run dev:desktop          # refresh the shared dev runtime, then launch desktop
+npm run dev:desktop:attach   # desktop only; fails if the dev runtime is not running or its build differs
+npm run dev:desktop:clean    # like dev:desktop, after clearing the Vite cache
+npm run dev:desktop -- --first-run  # walk setup as a brand-new user (below)
+npm run dev:runtime          # runtime only, in the foreground
+npm run dev:all              # start the shared dev runtime, then dev:desktop:attach
+npm run dev:stop             # stop the dev runtime (same as npm stop)
+npm run dev:clean-data       # list dev user-data folders; --yes removes stale ones
 ```
 
 ### Test what other machines call into: a dev test machine
 
-A dev app's brain runs `--no-sync`, so nothing else can reach it. That covers
-everything you can see from this computer, but not a change another machine
-calls into: a cloud box asking this Mac for a simulator, the phone, another
-computer's desktop connecting. Do not replace the installed brain for that,
-and do not wait for a merge. Run this checkout's brain as its own machine:
+A dev brain runs `--no-sync`, so nothing else can reach it. For a change
+another machine calls into (a cloud computer asking this Mac for a simulator,
+the phone, another computer's desktop), run this checkout's brain as its own
+machine instead of replacing the installed brain:
 
 ```bash
 npm run dev:machine -- start            # builds the CLI if needed; prints a report
-npm run dev:machine -- login            # once: approve the code, it is named "<Mac> (dev)"
+npm run dev:machine -- login            # once: approve the code; it is named "<Mac> (dev)"
 npm run dev:machine -- project --clone  # a --shared clone of this repo, on this branch
 # from any machine on the account:
-ade lanes list --machine "<Mac> (dev)"
-ade apple start --machine "<Mac> (dev)"
+daex lanes list --machine "<Mac> (dev)"
+daex apple start --machine "<Mac> (dev)"
 npm run dev:machine -- stop             # keeps its home and sign-in
-npm run dev:machine -- remove           # signs out (its account row goes) and stops; starts a stopped one to sign it out
+npm run dev:machine -- remove           # signs out (its account row goes) and stops
 ```
 
-`--name <n>` runs more than one. What keeps it apart from the installed ADE
+`--name <n>` runs more than one. What keeps it apart from the installed app
 (`apps/ade-cli/src/services/sync/devTestMachine.ts`):
 
-- **Its own home,** `~/.ade-dev-machine-<name>`: its own machine key, device id,
-  sign-in and account row. The row's hardware anchor hashes the home path, so
-  it never merges with this computer's row.
-- **Its own sync lease** (a lock file in its home) and the next free sync port.
-  Every brain's listener scan skips a brain started with `--dev-test-machine`,
-  so neither reports the other as a conflict or offers to quit it.
-- **No Tailscale entry.** Tailscale Serve is machine-wide; a test machine
-  publishes and tidies nothing there. It is reached over the relay or the LAN.
-- **No shared project.** Its home is marked, and any `ade` command on it refuses
-  a project the installed ADE (or Alpha) has registered, or a folder inside one
-  such as a lane worktree: two machines would both write one project database.
-  `project --clone` gives it a clone with the real `origin`, which is how
-  `--machine` finds the repository there.
+- **Its own home,** `~/.ade-dev-machine-<name>`: its own machine key, device
+  id, sign-in and account row. The row's hardware anchor hashes the home path,
+  so it never merges with this computer's row.
+- **Its own sync lease** and the next free sync port. Brains skip a brain
+  started with `--dev-test-machine` in their listener scan.
+- **No Tailscale entry.** It is reached over the relay or the LAN.
+- **No shared project.** Any `daex` command on its home refuses a project the
+  installed app (or Alpha) has registered, or a folder inside one. `project
+  --clone` gives it a clone with the real `origin`, which is how `--machine`
+  finds the repository.
 
 Approving the sign-in code needs a browser signed in to your account; an agent
-can do it in ADE's browser (`ade browser open <the printed URL>`, Continue,
-Allow) when the test machine is its own. A dev desktop can connect to the test
-machine like any other (Connections, Connect), which is how you check a
-desktop-side change against a branch brain.
+can use the DAEX browser (`daex browser open <the printed URL>`). A dev desktop
+can connect to the test machine like any other (Connections, Connect).
 
 ### Walk first-run setup as a new user
 
 `npm run dev:desktop -- --first-run` is the one sanctioned exception to "share
-`~/.ade`". It runs the dev app the way a brand-new user meets ADE: the welcome
-card, Connect your agents, Bring your projects in, the tour, and nothing it does
-reaches your ADE.
+`~/.ade`". It runs the dev app the way a new user meets DAEX, and nothing it
+does reaches your setup.
 
-- Its own ADE home, `~/.ade-dev-first-run`: project registry, personal chats,
-  launch defaults, provider sign-ins, machine identity and account session.
-  Every launch empties it **except its account sign-in**, so setup finds no
-  project already in ADE and no saved choice.
+- Its own home, `~/.ade-dev-first-run`. Every launch empties it **except its
+  account sign-in**.
 - Its own brain socket (`ade-runtime-first-run`, unless `--socket`), sync off,
   fresh Electron app data, and Home with no project open (`--home`).
-- Shared, on purpose: the agents' own history (`~/.claude`, `~/.codex`, …),
-  which setup reads to find projects, and the provider CLIs' own logins. A
-  project you open from it is still the real repo and its project database, so
-  use a scratch project when the tour sends its first chat.
+- Shared on purpose: the agents' own history (`~/.claude`, `~/.codex`, ...),
+  which setup reads to find projects, and the provider CLIs' logins. A project
+  you open from it is still the real repo, so use a scratch project when the
+  tour sends its first chat.
 
-`--first-run --keep` skips the reset and reopens the same app as a returning
-user: the visit where What's new pages and situational suggestions can show.
-In dev builds the command palette also has **Dev: Suggestions test mode** (each
-suggestion shows as soon as its signal is there, no cooldown or wait for a
-later launch) and **Dev: Reset Tips, suggestions and What's new**.
+`--first-run --keep` skips the reset and reopens as a returning user. In dev
+builds the command palette also has **Dev: Suggestions test mode** and **Dev:
+Reset Tips, suggestions and What's new**.
 
 Sign it in once, as its own device: through the app's sign-in card, or
-`ADE_HOME=~/.ade-dev-first-run ade --socket /tmp/ade-runtime-first-run.sock login`.
-Never copy `~/.ade/secrets` into it: a copied session shares a refresh token
-with your ADE, and whichever rotates it first signs the other out. The launcher
-refuses to reset the home while a brain is still listening on its socket.
+`ADE_HOME=~/.ade-dev-first-run daex --socket /tmp/ade-runtime-first-run.sock login`.
+Never copy `~/.ade/secrets` into it: a copied session shares a refresh token,
+and whichever rotates it first signs the other out. The launcher refuses to
+reset the home while a brain listens on its socket.
 
-Browser preview of the desktop renderer (UI work without Electron):
+### Browser preview of the renderer
 
 ```bash
 cd apps/desktop
 npm run dev:vite             # mock-only: synthetic window.ade, fast shell
-ADE_PROJECT_ROOT=/path/to/project npm run dev:vite:live   # mock + live runtime bridge (Linear, sync, lanes)
+ADE_PROJECT_ROOT=/path/to/project npm run dev:vite:live   # mock + live runtime bridge
 ```
 
-`dev:vite:live` starts the ADE dev runtime, a localhost HTTP bridge to the runtime endpoint, and Vite with a proxy so the browser can call real backend methods on top of the mock. Set `ADE_PROJECT_ROOT` to your primary project checkout (where `.ade/` and secrets live), especially when working from a lane worktree. Full details: [apps/desktop/README.md](../../apps/desktop/README.md).
+`dev:vite:live` starts the dev runtime, a localhost HTTP bridge to it, and Vite
+with a proxy, so the browser can call real backend methods on top of the mock.
+Set `ADE_PROJECT_ROOT` to your primary checkout. Details:
+[apps/desktop/README.md](../../apps/desktop/README.md).
 
-The dev commands intentionally use a temp endpoint and a separate Electron profile so they do not collide with the installed ADE app:
+### Dev endpoints, logs and environment
+
+The dev commands use a temp endpoint and a separate Electron profile:
 
 ```text
 /tmp/ade-runtime-dev.sock
 ~/Library/Application Support/ade-desktop-dev
 ```
 
-The auto-started dev runtime is **detached**, so nobody is reading its stdout or
-stderr. Its output goes to an append-only dev log instead — a daemon that dies
-during startup would otherwise leave no trace at all:
+The auto-started runtime is detached, so its output goes to an append-only log
+(`0600`, truncated past about 20 MB, best effort):
 
 ```text
 ~/.ade/runtime/dev-runtime.out.log
 ```
 
-The log is created mode `0600`, truncated when it passes ~20 MB, and is strictly
-best effort: if it cannot be opened the runtime still starts (with `stdio:
-"ignore"`, as before). The startup line printed by `dev:desktop` names the path
-whenever the log is in use.
+The launcher strips the detached runtime's environment: caller and run identity
+(`ADE_CHAT_SESSION_ID`, parent chat, spawn, browser token, run ids),
+lane/project/workspace bindings (`ADE_LANE_ID`, `ADE_PROJECT_ROOT`,
+`ADE_WORKSPACE_ROOT`), `ADE_DEFAULT_ROLE`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+when they point into a DAEX `provider-homes` folder, the `CLAUDECODE` /
+`CLAUDE_CODE_*` markers, `ADE_RUNTIME_PARENT_PID` and `ADE_RUNTIME_IDLE_EXIT_MS`.
+`PATH`, `HOME`, the perf-run id and outside provider paths stay.
 
-The dev launcher sanitizes the detached runtime's environment before it starts.
-It removes inherited caller and run identity (`ADE_CHAT_SESSION_ID`, parent
-chat, spawn, browser token, and run ids), lane/project/workspace bindings
-(`ADE_LANE_ID`, `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT`), and the agent's
-`ADE_DEFAULT_ROLE`. It also removes `CLAUDE_CONFIG_DIR` and `CODEX_HOME` only
-when they point inside an ADE `provider-homes` directory, plus the
-`CLAUDECODE` / `CLAUDE_CODE_*` markers that identify a parent Claude session.
-The shell's `PATH`, `HOME`, performance-run id, and provider paths outside ADE
-are retained. The detached runtime also drops `ADE_RUNTIME_PARENT_PID` and
-`ADE_RUNTIME_IDLE_EXIT_MS` so it outlives the process that launched it.
+A hand-started brain does the same cleanup when it detects an agent shell, and
+reports what it removed. A plain `daex serve` defaults to role `agent`, which
+refuses desktop, phone and web clients; for those use `daex --role cto serve`.
 
-A hand-started brain performs the same cleanup when it detects an agent shell:
-it drops caller identity, lane/project/workspace bindings and inherited default
-role itself, and removes ADE provider-home paths and Claude parent-session
-markers before serving. The dev app's main process strips the provider-home
-paths and Claude markers as well. No `env -u` prefix is needed. The startup
-message reports the inherited values it removed. A plain `ade serve` still
-defaults to role `agent`, which refuses desktop, phone and web clients; start a
-hand-run brain for those clients as `ade --role cto serve`.
+A separate `ADE_HOME` does not isolate a project. Each project keeps its
+database in `<project>/.ade/ade.db`, so a test brain on `~/.ade-alpha` that opens
+`~/Projects/ADE` writes the same database as the installed brain. Register only
+a throwaway project in a test home, and check `lsof <project>/.ade/ade.db` to see
+who holds a project's database.
 
-A separate `ADE_HOME` does not isolate a PROJECT. Machine state lives in the
-home, but each project keeps its own database in `<project>/.ade/ade.db`. A
-test brain on `~/.ade-alpha` that opens `~/Projects/ADE` — because it is in that
-home's `projects.json`, or because an `ade` command ran from inside it — writes
-the same `ade.db` as the installed brain. For a test brain that must not touch
-the installed one, register only a throwaway project in its home, and check
-with `lsof <project>/.ade/ade.db` which processes hold a project's database.
-
-Override it when needed:
+Overrides:
 
 ```bash
 npm run dev:desktop -- --socket /tmp/my-ade-dev.sock
@@ -314,57 +295,67 @@ ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 ```
 
 > [!WARNING]
-> Never point `--socket` at an ADE runtime you do not want restarted. In the default
-> `--auto` mode the wrapper **shuts down and recreates** whatever runtime is
-> already listening on that endpoint whenever its build hash does not match the
-> checkout you are launching — so aiming at the production `~/.ade/sock/ade.sock`
-> or another lane's live runtime will kill it (and any clients attached to it).
-> Point at a fresh per-lane endpoint (below), or use
-> `npm run dev:desktop:attach -- --socket <path>` to connect to an already-running
-> runtime — attach mode refuses on a build-hash mismatch instead of restarting.
+> Never point `--socket` at a runtime you do not want restarted. In `--auto`
+> mode the wrapper **shuts down and recreates** whatever runtime listens on that
+> endpoint when its build hash does not match the checkout, so aiming at the
+> production `~/.ade/sock/ade.sock` or another lane's runtime kills it and its
+> clients. Use a fresh per-lane endpoint, or `npm run dev:desktop:attach --
+> --socket <path>`, which refuses on a build-hash mismatch instead.
+
+A brain that `dev:desktop` starts exits when the launcher exits. A brain from
+`npm run dev:runtime`, or one a launcher left behind, exits after 20 idle
+minutes (`ADE_RUNTIME_IDLE_EXIT_MS`, set in `scripts/dev-shared.mjs`); set
+`ADE_DEV_RUNTIME_IDLE_EXIT_MS` (ms, `0` disables) on the launch command to
+change it.
+
+Starting a brain on a home that already has one prints who else is there and
+logs `brain.home_shared`. A record counts only while its pid is a process with
+the start time it wrote (`isBrainRecordLive`); on Linux a pid whose
+`/proc/<pid>/status` Tgid names another process is a thread, so its record is
+gone. List brains and their homes before assuming:
+
+```bash
+pgrep -alf "cli.cjs serve|/bin/ade serve|/bin/daex serve"
+ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME   # no output = the shared ~/.ade
+```
 
 ### Agent CLIs in a dev run
 
-A dev app or a source-checkout brain runs ADE's own pinned agent CLIs, never the
-ones on your PATH, just like a packaged build. Codex, Claude Code, OpenCode and
-the Copilot runtime come from the checkout's `node_modules` (the lockfile is the
-pin) and are never downloaded. The other pins (Droid, Grok, Qwen, Kimi, Devin,
-Antigravity, Pi, the Copilot and Cursor terminal CLIs, Node, Muse) download into
-the shared tools root the first time a chat, probe or terminal needs them. The
-dev run does no startup download pass.
+A dev app or source-checkout brain runs DAEX's own pinned agent CLIs, never the
+ones on your PATH. Codex, Claude Code, OpenCode and the Copilot runtime come from
+the checkout's `node_modules` (the lockfile is the pin). The other pins (Droid,
+Grok, Qwen, Kimi, Devin, Antigravity, Pi, the Copilot and Cursor terminal CLIs,
+Node, Muse) download into the shared tools root the first time a chat, probe or
+terminal needs them. A dev run does no startup download pass.
 
 | Variable | Use |
 | --- | --- |
-| `ADE_TOOLS_ROOT=/tmp/<dir>` | Download into a throwaway tools root. Use one for any validation that downloads, so `~/.ade/tools` stays untouched. |
-| `ADE_DISABLE_TOOLS_FETCH=1` | No downloads at all. Tools not already on disk read "ADE has not downloaded <Tool> for this machine yet". |
-| `ADE_FORCE_TOOLS_FETCH=1` | A source-checkout `ade serve` behaves like a packaged one (startup pass included). |
+| `ADE_TOOLS_ROOT=/tmp/<dir>` | Download into a throwaway tools root, so `~/.ade/tools` stays untouched. |
+| `ADE_DISABLE_TOOLS_FETCH=1` | No downloads. Missing tools read "DAEX has not downloaded <Tool> for this machine, and downloads are turned off in this DAEX process." |
+| `ADE_FORCE_TOOLS_FETCH=1` | A source-checkout `daex serve` behaves like a packaged one (startup pass included). |
 
-Running your own CLI build is a dev/test hook only: `CLAUDE_CODE_EXECUTABLE_PATH`,
+Your own CLI build is a dev hook only: `CLAUDE_CODE_EXECUTABLE_PATH`,
 `CODEX_EXECUTABLE`, `DROID_EXECUTABLE`, `ADE_PI_PACKAGE_ROOT`,
 `ADE_MUSE_EXECUTABLE` and the ACP `<PROVIDER>_EXECUTABLE` variables. See
 [agent tools cache](../features/onboarding-and-settings/agent-tools-cache.md#dev-checkouts).
 
-Use Node 24 (the version in `.nvmrc`) for repository development. CI and the
-release builds use it too. `npm run build:static` in `apps/ade-cli` embeds the
-Node it runs on in the headless runtime, so a release brain built by CI gets
-Node 24's proxy and system-certificate support; the build warns when it embeds
-a Node older than 24.14, which ignores `HTTPS_PROXY`, and refuses one older
-than 22.19.0 because the runtime runs Pi's SDK worker on its own Node. Set
-`ADE_STATIC_NODE_BINARY` to use another Node binary for that build. On Apple
-Silicon, `npm run build:static -- --target darwin-x64` builds the Intel runtime
-when `ADE_STATIC_NODE_BINARY` names an official darwin-x64 Node (`node
-scripts/release-tools/officialNodeBinary.mjs --target darwin-x64` downloads one
-and prints its path) and Rosetta 2 is installed; the release builds it that
-way. The `ade`
-CLI still runs on Node 22.13 or newer: before 24.14 it ignores `HTTPS_PROXY`
-(a brain says so once at start) and otherwise works as before.
+### Building the static runtime
+
+`npm run build:static` in `apps/ade-cli` (`scripts/build-static.mjs`) embeds the
+Node it runs on in the headless runtime. It warns when that Node is older than
+24.14 (which ignores `HTTPS_PROXY`) and refuses one older than 22.19.0 (the
+runtime runs Pi's SDK worker on its own Node). `ADE_STATIC_NODE_BINARY` picks
+another Node binary. On Apple Silicon, `npm run build:static -- --target
+darwin-x64` builds the Intel runtime when `ADE_STATIC_NODE_BINARY` names an
+official darwin-x64 Node (`node scripts/release-tools/officialNodeBinary.mjs
+--target darwin-x64` downloads one) and Rosetta 2 is installed.
 
 ### On Windows
 
-Everything above applies; these are the differences that have actually cost
-someone a day. Verified on Windows 11 with an installed Stable brain running.
+Everything above applies, with these differences. See also
+[windows-support.md](./windows-support.md).
 
-**Endpoints are named pipes, not socket files.** Pass a pipe name to `--socket`:
+**Endpoints are named pipes.** Pass a pipe name to `--socket`:
 
 ```powershell
 node scripts/dev-detached.mjs "$wt\perf\dev.log" npm run dev:desktop -- `
@@ -373,49 +364,30 @@ node scripts/dev-detached.mjs "$wt\perf\dev.log" npm run dev:desktop -- `
   --remote-debugging-port=9413
 ```
 
-**The printed pid is a console host.** On Windows `dev-detached.mjs` and the
-dev brain run their command under `scripts/dev-console-host.mjs`, which gives
-it a console no one can see; a plain detached process has no console, and every
-`cmd.exe`, `git` and probe under it flashed a Windows Terminal window. Stop the
-whole tree with `taskkill /T /F /PID <pid>`. A command that cannot start says so
-in the log instead of on stderr.
+**The printed pid is a console host.** `dev-detached.mjs` and the dev brain run
+their command under `scripts/dev-console-host.mjs`, which gives it a hidden
+console (otherwise every `cmd.exe`, `git` and probe under it flashes a terminal
+window). Stop the whole tree with `taskkill /T /F /PID <pid>`.
 
-**Launch it from PowerShell, not Git Bash.** MSYS rewrites anything that looks
-like a POSIX path, so `\\.\pipe\ade-runtime-dev-x` reaches Node as
-`C:\pipe\ade-runtime-dev-x` and the runtime exits with "exited before opening
-C:\pipe\…". `MSYS_NO_PATHCONV=1` also works; PowerShell is less surprising.
+**Launch from PowerShell, not Git Bash.** MSYS rewrites POSIX-looking paths, so
+`\\.\pipe\ade-runtime-dev-x` reaches Node as `C:\pipe\ade-runtime-dev-x` and the
+runtime exits. `MSYS_NO_PATHCONV=1` also works.
 
-**Do not set `ADE_HOME`.** The rule above ("a never-signed-in home shows the
-account gate") is not a macOS detail — it is the whole ballgame. Your account
-lives in `~/.ade`, so a private home gives you a dev app sitting on a sign-in
-page with no projects and nothing to measure. The launcher refuses an alternate
-home outright and names the escape hatch (`ADE_DEV_ALLOW_ALT_HOME=1`); wanting
-that escape hatch almost always means the plan is wrong. Share `~/.ade`, isolate
-the **pipe**.
+**Do not set `ADE_HOME`.** Your account lives in `~/.ade`; a private home gives
+you a dev app on a sign-in page with no projects. The launcher refuses an
+alternate home and names the escape hatch (`ADE_DEV_ALLOW_ALT_HOME=1`). Share
+`~/.ade`, isolate the pipe.
 
-Done right, a dev app on Windows is the macOS experience: your real account,
-your real projects, your real chats and transcripts, alongside the installed
-brain.
+**The CLI resolves the project from the shell's cwd.** `daex lanes create` run
+from `.ade/worktrees/<lane>` acts on the **primary project**, whatever the dev
+app opened, and has created real lanes, branches and pushes that way. Prefer
+driving the dev window (CDP, App Control). If you must use the CLI, `cd` into the
+target project, set `ADE_HOME` and `ADE_RUNTIME_SOCKET_PATH`, and run one
+read-only command first. A dev brain reports version `1.0.0-beta.1`; the
+installed one reports the release version.
 
-#### The `ade` CLI resolves the project from the shell's cwd
-
-This is the one that bites, and no amount of `ADE_HOME`, `--socket` or
-`--no-sync` protects you from it. A command like `ade lanes create` run with the
-shell sitting in `.ade/worktrees/<lane>` operates on the **primary project**,
-because that is what the cwd resolves to — not on whatever project the dev app
-opened. That has created a real lane, branch, pushed remote branch and worktree
-in a live project, and taken the installed brain down with it.
-
-- Prefer driving the dev **window** (CDP / App Control) over the CLI.
-- If the CLI is unavoidable: `cd` into the target project first, set `ADE_HOME`
-  and `ADE_RUNTIME_SOCKET_PATH`, and run one read-only command to confirm what
-  you are pointed at **before** anything that writes. A dev brain reports
-  version `1.0.0-beta.1`; the installed one reports the release version.
-
-#### Verify, do not assume
-
-A dev launch has landed on the production pipe before (a stale `ade.exe` earlier
-on `PATH` spawned a brain on the Stable endpoint). After launching, check:
+**Verify, do not assume.** A stale `ade.exe` earlier on `PATH` once spawned a
+dev brain on the Stable endpoint. After launching, check:
 
 ```powershell
 # the installed brain still owns the stable pipe, and its heartbeat advances
@@ -424,67 +396,48 @@ Get-Content "$env:USERPROFILE\.ade\runtime\heartbeat.json"   # seq must climb
 [System.IO.Directory]::GetFiles("\\.\pipe\") | Where-Object { $_ -match 'ade-runtime' }
 ```
 
-Capture your own PIDs at launch and stop **only** those; never `Stop-Process` a
-brain you did not start. A dev brain also leaves `~/.ade/brains/<pid>.json`
-behind — remove your own record, nobody else's.
+Stop only the PIDs you started, and remove only your own
+`~/.ade/brains/<pid>.json` record.
 
-**One brain per project database.** `--no-sync` protects the sync lease, not the
-database. A contended SQLite write costs the holder's hold time plus ~50-80 ms,
-and because `node:sqlite` is synchronous it blocks the brain's whole event loop
-for that long. Worse, when releasing the lock depends on the blocked process's
-own event loop nothing can release it: it waits the full `busy_timeout`
-(5,000 ms) and throws `database is locked`. Two brains on one project is fine
-for reproducing behaviour and wrong for clean before/after numbers.
+**One brain per project database for clean numbers.** A contended SQLite write
+blocks the brain's event loop (`node:sqlite` is synchronous), and a lock whose
+release depends on the blocked loop waits the full `busy_timeout` (5,000 ms) and
+throws `database is locked`. Two brains on one project are fine for reproducing
+behaviour, wrong for before/after numbers.
 
-#### Measuring on Windows: what works, and what lies
+#### Measuring on Windows
 
-Use the instrumentation that already ships before writing any:
+- `ADE_TRACE_IPC=1` (or `verbose`) logs IPC invoke summaries; tracing is on in
+  an unpackaged app.
+- `ADE_PERF_RUN_ID=<id>` appends every IPC invoke, main-loop delay, long task
+  and renderer-memory sample to `~/.ade/perf-runs/<id>/events.jsonl`. Look at
+  the gaps between events to tell work from waiting.
+- To profile a brain you must not restart, `node -e
+  "process._debugProcess(<pid>)"` opens its inspector on 127.0.0.1:9229 until
+  that process exits; a short `Profiler.start`/`stop` is read-only.
 
-- `ADE_TRACE_IPC=1` (or `verbose`) logs IPC invoke summaries; tracing is already
-  on in an unpackaged app.
-- `ADE_PERF_RUN_ID=<id>` appends every IPC invoke, main-loop delay, long task and
-  renderer-memory sample to `~/.ade/perf-runs/<id>/events.jsonl`. Aggregate it per
-  channel, then look at the **gaps between** events: that is what answers "slow
-  because of work, or slow because nothing is happening?".
-- To profile a brain you must not restart — including the installed one —
-  `node -e "process._debugProcess(<pid>)"` opens its inspector on
-  127.0.0.1:9229, and a short `Profiler.start`/`stop` over that socket is
-  read-only. The port stays open until that process exits, so treat it as
-  lingering state.
+Traps that give confident, wrong answers:
 
-Four traps that produce confident, wrong answers:
+- **`window.ade` cannot be monkey-patched.** `contextBridge` freezes it, so a
+  wrapper reports hundreds of wrapped methods and records zero calls. Time IPC
+  in main or the preload.
+- **"The DOM stopped mutating" is not "it finished loading."** Measure
+  something content-shaped, such as the transcript's `scrollHeight`
+  stabilising.
+- **State carries between trials.** The app restores the last-selected chat, so
+  a "cold open" is usually warm. Vary the target or relaunch.
+- **Process CPU cannot measure a renderer on a many-core box.** Use a CDP trace.
+  See `scripts/perf-animation-lab/README.md`.
 
-- **`window.ade` cannot be monkey-patched.** `contextBridge` freezes it
-  (`writable: false, configurable: false, isFrozen: true`), so wrapping the
-  bridge to time IPC silently does nothing — it will report that it wrapped
-  hundreds of methods and then record zero calls. Time IPC in the main process or
-  the preload instead.
-- **"The DOM stopped mutating" is not "it finished loading."** A settle detector
-  conflates loading with later churn and will report tens of seconds for an
-  operation that rendered in 50 ms. Measure something content-shaped, such as the
-  transcript scroller's `scrollHeight` changing and then stabilising.
-- **State carries between trials.** Clicking an already-selected chat is a no-op,
-  and the app restores the last-selected chat on reload, so a "cold open"
-  measurement is usually warm. Vary the target or relaunch between trials.
-- **Process CPU cannot measure a renderer on a many-core box.** With other agents
-  building, the same animation strategy sampled 11.0% then 5.0% of a core and the
-  ordering inverted between runs; a CDP trace of the same thing repeats to within
-  2%. See `scripts/perf-animation-lab/README.md`.
-
-For calibration on this hardware: a healthy dev app switches between real chats
-in **53-111 ms** to first content and settles in **0.3-1.4 s**, while the brain
-sits ~98.6% idle and a 24-second window of UI work contains about **1 second** of
-IPC. So if you are chasing a multi-second stall and the brain is idle and the
-renderer has no long tasks, the cost is latency, not compute — look for polls,
-debounces and idle-callback starvation rather than slow functions.
+Calibration on a healthy Windows dev app: switching between real chats takes
+53-111 ms to first content and settles in 0.3-1.4 s, with the brain about 98.6%
+idle. A multi-second stall with an idle brain and no long tasks is latency: look
+for polls, debounces and idle-callback starvation.
 
 ## Run a specific lane worktree
 
-To preview a lane's build without disturbing your installed ADE app or its
-runtime, run `dev:desktop` **from the lane checkout** on its own endpoints. Running
-from the worktree makes Vite serve that lane's code, while the wrapper
-auto-resolves project *data* to the primary checkout (as described above), so you
-see the lane's UI backed by your real lanes, PRs, and chats:
+Run `dev:desktop` **from the lane checkout** on its own endpoints. Vite serves
+that lane's code, and project data resolves to the primary checkout:
 
 ```bash
 cd /path/to/ADE/.ade/worktrees/<lane>
@@ -492,65 +445,46 @@ ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock \
   npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
 ```
 
-The per-lane `--socket` gives the lane build an isolated runtime (and sidesteps
-the warning above — nothing else is listening there); the per-lane bridge endpoint
-avoids colliding with the installed app's `~/.ade/sock/desktop-bridge.sock`. Set
-`ADE_PROJECT_ROOT=/path/to/other-project` only if you want a different project's
-data. A fresh worktree has no `node_modules`: ADE no longer links the primary
-checkout's packages into new lanes. Run `npm run setup` inside the worktree
-first, or give the project a default lane template that installs or copies
-them (Settings › Lane templates › Set up with an agent).
+The per-lane bridge endpoint avoids the installed app's
+`~/.ade/sock/desktop-bridge.sock`. A fresh worktree has no `node_modules`: run
+`npm run setup` inside it first, or give the project a lane template that
+installs them (Settings > Lane templates > Set up with an agent).
 
-When launching that same flow through ADE App Control from a running Alpha
-ADE window, also clear the packaged-channel environment variables inherited from
-the host app (and use an absolute lane cwd). Otherwise the dev Electron app can
-reuse the Alpha profile and lose the single-instance lock instead of opening
-the lane build:
+Launching that flow through App Control from a running Alpha window: clear the
+inherited packaged-channel variables and use an absolute cwd, or the dev app
+reuses the Alpha profile and loses the single-instance lock:
 
 ```bash
-ade --socket app-control launch --force \
+daex --socket app-control launch --force \
   --cwd "/path/to/ADE/.ade/worktrees/<lane>" \
   --command "sh -lc 'ADE_PACKAGE_CHANNEL= ADE_DESKTOP_APP_NAME= ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock'" \
   --text
 ```
 
-App Control runs a launch with no `--cwd` in the caller's lane worktree, and
-`ade app-control status` shows the `cwd` it used. Before, the default was the
-primary checkout, so a lane's agent started the primary checkout's app.
+App Control runs a launch with no `--cwd` in the caller's lane worktree;
+`daex app-control status` shows the `cwd` it used.
 
 ### Each lane's dev app has its own user-data folder
 
-Electron keeps its single-instance lock in the app's user-data folder. When
-every dev app shared `ade-desktop-dev`, a second lane's app lost the lock and
-never opened a window. `dev:desktop` started from a lane worktree now uses
-`ade-desktop-dev-<lane>` and prints it as `user data :`. The primary checkout
-keeps `ade-desktop-dev`. An explicit `ADE_DESKTOP_USER_DATA_PATH` still wins.
+Electron keeps its single-instance lock in the user-data folder. `dev:desktop`
+from a lane worktree uses `ade-desktop-dev-<lane>` (printed as `user data :`);
+the primary checkout keeps `ade-desktop-dev`. `ADE_DESKTOP_USER_DATA_PATH` wins.
 
-- A new lane folder copies `ade-state.json` from `ade-desktop-dev` once. Other
-  machine-local state (window layout, the welcome screen) starts fresh.
+- A new lane folder copies `ade-state.json` from `ade-desktop-dev` once.
 - On any `ADE_HOME` other than `~/.ade`, the app gets a folder for that home
-  (`…-home-<name>-<hash>`) that copies nothing. The app registers every project
-  its folder remembers into the home it runs on, so a reused lane folder put
-  the owner's real project into a scratch home.
-- If two dev apps still share a folder, the second one prints which app holds
-  it and exits.
-- Each lane folder has a `.ade-dev-lane.json` marker with its worktree.
-  `dev:desktop` removes marked folders whose worktree is gone, or that went
-  unused for 30 days, each time it starts.
-- To see every folder with its size, run `npm run dev:clean-data`. Add `--yes`
-  to remove the stale ones. Folders made by hand before this change have no
-  marker. Nothing removes them by itself; add `--include-unmarked` to remove
-  the ones no app is using.
+  (`…-home-<name>-<hash>`) that copies nothing, so a scratch home never picks up
+  real projects.
+- If two dev apps still share a folder, the second prints which app holds it
+  and exits.
+- Each lane folder has a `.ade-dev-lane.json` marker. `dev:desktop` removes
+  marked folders whose worktree is gone or that went unused for 30 days.
+  `npm run dev:clean-data` lists every folder with its size; `--yes` removes the
+  stale ones, `--include-unmarked` also removes unmarked ones no app uses.
 
-A brain that `dev:desktop` starts exits when the launcher exits, even when the
-terminal closes without Ctrl+C. A brain from `npm run dev:runtime` is not tied
-to anything and still stops after 20 idle minutes.
+### Test Mac Desktop in the dev app
 
-### Test Mac Desktop in the dev app instead of an Alpha build
-
-Mac Desktop needs the native helper and two macOS grants, and both are usable
-from the dev app on this Mac, so a lane's Mac Desktop changes do not need a
-packaged Alpha to be tried:
+Mac Desktop needs the native helper and two macOS grants, both usable from the
+dev app:
 
 ```bash
 cd /path/to/ADE/.ade/worktrees/<lane>
@@ -559,116 +493,64 @@ ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock \
   npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
 ```
 
-The dev app runs the Electron binary from `node_modules`, which carries
-Electron's own stable code signature, so macOS keeps its Screen Recording and
-Accessibility grants across rebuilds; grant them once for "Electron" in System
-Settings. An unpackaged app always starts its brain with `--no-sync`
-(`main.ts`, `disableSync`), so a dev brain can never take the machine-wide sync
-host lease from the installed ADE. On 2026-09-21 one did, before that guard
-existed, and the agents running under the installed brain died with the lease.
-Set `ADE_DEV_RUNTIME_SYNC=1` only when a dev brain must host sync on purpose,
-and never on a machine whose installed ADE is doing real work.
+The dev app runs the Electron binary from `node_modules`, signed by the dev
+launcher (below), so macOS keeps the Screen Recording and Accessibility grants
+across rebuilds; grant them once for "Electron". Because the dev brain does not
+host sync it never publishes to the account, so the Connections card is not
+testable this way; the Mac Desktop pane is. Use `--project-root` to point at a
+throwaway project. The floating corner preview shows only for chat sessions.
 
-`--no-sync` guards the sync lease; it does not isolate project data. A dev
-brain still opens the same project `.ade/ade.db` as the installed app. Runtime
-ownership keeps a live chat with its owner across ADE homes, and a dev brain on
-its own socket leaves the installed brain's other chats and scheduled work
-alone. The shared database still contains the same project state, so use a
-throwaway project when you need full data isolation. Starting a brain on a home
-that already has one prints who else is there and logs `brain.home_shared`.
-A record counts only while its pid is a process with the start time it wrote
-(`isBrainRecordLive`). On Linux a thread id also answers `kill(pid, 0)`, and an
-ADE Cloud computer restarts with the new brain's threads on the old brain's pid
-numbers, which used to warn of a second brain on every restart; a pid whose
-`/proc/<pid>/status` Tgid names another process is a thread, so its record is
-gone. A process whose start time `ps` can't read right now (it failed or timed
-out under load) keeps its record.
-List the brains, with their homes, before assuming:
-
-```bash
-pgrep -alf "cli.cjs serve|/bin/ade serve"
-ps eww -p <pid> | tr ' ' '\n' | grep ADE_HOME   # no output = the shared ~/.ade
-```
-
-A dev brain is spawned detached so it survives the Electron restarts a dev
-loop is made of, which also means it survives the app going away for good. One
-ran orphaned on the shared home for five hours. Launcher-spawned brains now
-exit after 20 idle minutes (`ADE_RUNTIME_IDLE_EXIT_MS`, set in
-`scripts/dev-shared.mjs`); set `ADE_DEV_RUNTIME_IDLE_EXIT_MS` (milliseconds,
-`0` disables it) on the launch command to raise or clear it, for example when
-testing in the dev app for longer than the budget. For work that only needs to read or drive a lane, give the brain
-its own home — `ADE_HOME=$HOME/.ade-<name>` on its own socket — instead of
-sharing `~/.ade`. A separate home keeps machine-level state separate, while a
-throwaway project is still required to isolate project data. Because the dev
-brain does not host sync it never publishes to the account, which is why the
-Connections card is not testable this way; everything on the Mac Desktop pane
-is. Use `--project-root` to point the dev app at a throwaway project so the
-lane's displays never touch real work. The floating corner preview only shows
-for chat sessions, so test it from a chat, not from a shell session.
-
-To test auto-runtime creation, use the default dev commands after stopping the dev runtime:
-
-```bash
-npm run dev:stop
-npm run dev:desktop          # tests the desktop wrapper creating the dev runtime
-```
+To test auto-runtime creation, run `npm run dev:stop`, then `npm run dev:desktop`.
 
 ## Test the push relay locally
 
-Use these steps to test `/attention/*`, account settings and the `/cloud/*` reads against a local push relay:
+To test `/attention/*`, account settings and the `/cloud/*` reads against a
+local push relay:
 
-1. Run the relay as its own process: `wrangler dev --local --port 8824 --env-file <relay env file>`. Do not run it in one `wrangler dev -c a -c b` with the account directory. The env file reaches only the first worker, so the relay gets no Clerk settings and the production `SENTRY_DSN`.
-2. Put these values in the relay env file: `VAULT_ENCRYPTION_KEY` (32-byte base64), `DIRECTORY_AUTH_SECRET` (the same value as the directory), the Clerk client id, and `WEB_CLIENT_ORIGIN` set to the web client's dev origin (`http://localhost:5174` by default).
-   `WEB_CLIENT_ORIGIN` must be the exact origin of the web client you run. If vite starts on another port, set it to that port, or the relay refuses the browser's requests (CORS).
-3. Start the web client with `ADE_DEV_PUSH_RELAY_PROXY_TARGET=http://127.0.0.1:8824`. If you do not set it, the dev proxy sends `/attention/*` to the production relay.
+1. Run the relay as its own process: `wrangler dev --local --port 8824
+   --env-file <relay env file>`. Do not run it in one `wrangler dev -c a -c b`
+   with the account directory: the env file reaches only the first worker.
+2. In the relay env file set `VAULT_ENCRYPTION_KEY` (32-byte base64),
+   `DIRECTORY_AUTH_SECRET` (same as the directory), the Clerk client id, and
+   `WEB_CLIENT_ORIGIN` to the web client's exact dev origin
+   (`http://localhost:5174` by default), or the relay refuses the browser
+   (CORS).
+3. Start the web client with
+   `ADE_DEV_PUSH_RELAY_PROXY_TARGET=http://127.0.0.1:8824`. Without it the dev
+   proxy sends `/attention/*` to the production relay.
 
-The directory's `ACTIVITY_RELAY` binding reaches the separate relay through the wrangler dev registry. With no `AGENT37_API_KEY`, `/cloud/instances` answers 503 locally; that is expected.
+The directory's `ACTIVITY_RELAY` binding reaches the relay through the wrangler
+dev registry. With no `AGENT37_API_KEY`, `/cloud/instances` answers 503 locally.
 
-## Rebuild ADE Alpha locally
+## Build DAEX Alpha locally
 
-Use this command when you need a local packaged macOS Alpha build without
-waiting for the GitHub release workflow.
+A local packaged macOS Alpha build, without the release workflow:
 
 ```bash
 npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.ade-alpha
 ```
 
-Beta is not a local build. It is an update track of the normal ADE install.
-Switch to it in Settings > About > Updates. The Beta builds come from
-`.github/workflows/beta.yml`. To build one branch once, run
-`gh workflow run beta.yml -f preview_ref=<branch>`. See
-[Update tracks](../features/onboarding-and-settings/desktop-auto-update.md#update-tracks-stable-and-beta).
-
-The build prints one line about code signing. "Signing identity: ADE Local"
-means macOS keeps the app's Screen Recording and Accessibility grants across
-rebuilds. The ad-hoc warning means it does not; set up the certificate once as
-described in [Alpha builds and macOS permission grants](#alpha-builds-and-macos-permission-grants).
-
-`package:alpha` builds exactly the checkout you are in. It does not create a
-packaging worktree.
-
-Local channel outputs:
+`package:alpha` (`scripts/package-channel.mjs alpha`) builds exactly the
+checkout you are in. Outputs:
 
 ```text
 apps/desktop/release-alpha/mac-arm64/ADE Alpha.app
 apps/desktop/release-alpha/ADE-Alpha-local.zip
 ```
 
-Every Alpha build carries a per-build version of the form
-`<base>-alpha.<yyyymmddHHMM>`, where `<base>` is the newest `v*` tag
-reachable from HEAD (or the `apps/desktop/package.json` version when no tag
-exists) and the timestamp is UTC — for example `1.2.75-alpha.202609211035`.
-The stamp is written into the packaged app's `version` (electron-builder
-`extraMetadata.version`, so `app.getVersion()` reports it), into
-`ADE_CLI_VERSION` for the bundled CLI build, and through `ADE_DESKTOP_VERSION`
-for the Windows packaging wrapper. This is what stops a fresh Alpha app
-from reusing a brain left by an earlier build: the runtime compatibility gate
-treats equal versions as compatible, so a build has to identify itself with a
-version that changes every time. The desktop never writes the stamp back into
-`package.json`.
+Beta is not a local build; it is an update track of the normal install
+(Settings > About > Updates), built by `.github/workflows/beta.yml`. To build one
+branch once: `gh workflow run beta.yml -f preview_ref=<branch>`. See
+[Update tracks](../features/onboarding-and-settings/desktop-auto-update.md#update-tracks-stable-and-beta).
 
-Install the build you want to test by replacing the matching app in
-`/Applications`:
+Every Alpha build has a per-build version `<base>-alpha.<yyyymmddHHMM>` (UTC),
+where `<base>` is the newest reachable `v*` tag (or the `apps/desktop/package.json`
+version). It goes into the app's `version`, `ADE_CLI_VERSION` for the bundled CLI
+and `ADE_DESKTOP_VERSION` for the Windows wrapper, so a fresh Alpha never reuses
+a brain from an earlier build (the runtime gate treats equal versions as
+compatible).
+
+Install it by replacing the app in `/Applications`:
 
 ```bash
 rm -rf "/Applications/ADE Alpha.app"
@@ -676,93 +558,70 @@ ditto "apps/desktop/release-alpha/mac-arm64/ADE Alpha.app" "/Applications/ADE Al
 xattr -dr com.apple.quarantine "/Applications/ADE Alpha.app" 2>/dev/null || true
 ```
 
-If the Dock already has an
-ADE Alpha icon, remove and re-pin it after installing from `/Applications`;
-Dock icons keep the exact bundle path they were pinned from, so an old icon can
-launch a stale `apps/desktop/release-*` build even after `/Applications` was
-updated.
+Re-pin a Dock icon after installing: Dock icons keep the exact path they were
+pinned from.
 
-Replacing the app bundle does not replace a brain process that is already
-running for that channel. Before restarting the channel brain, close or finish
-any active ADE Desktop, agent, or mobile sessions that depend on it.
-Then restart and verify the channel brain through the CLI:
+Replacing the app does not replace a running brain. Close sessions that depend
+on it, then restart and verify the channel brain:
 
 ```bash
-ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade brain status --text
-ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade brain restart --text
-ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade doctor --text
-ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade sync status --text
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" daex brain status --text
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" daex brain restart --text
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" daex doctor --text
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" daex sync status --text
 ```
 
-Do not kill ADE brain processes directly during normal testing; the channel
-brain owns the mobile sync websocket and may have desktop, terminal, or phone
-clients attached. If you intentionally leave an old incompatible brain running,
-the packaged desktop may preserve it and launch a private no-sync fallback
-runtime for the desktop window, which means the Mobile drawer will not be using
-that fallback's sync service.
+Do not kill brain processes directly during normal testing. If an old
+incompatible brain stays running, the packaged desktop may launch a private
+no-sync fallback runtime for its window.
 
-Launching a packaged channel build should install or repair that channel's
-always-on brain service. Official auto-updates also refresh this service on the
-first launch after an update, and the installed service is expected to report the
-same runtime build hash as the packaged desktop CLI:
+Launching a packaged channel build installs or repairs that channel's brain
+service, and the service should report the same runtime build hash as the
+packaged CLI:
 
 ```bash
 launchctl print gui/$(id -u)/com.ade.runtime.alpha
 ls -l ~/Library/LaunchAgents/com.ade.runtime.alpha.plist ~/.ade-alpha/sock/ade.sock
 ```
 
-Set or rotate the channel's mobile pairing PIN from **Connections > Mobile**,
-or from the CLI against that channel home:
+Set or rotate the channel's phone pairing PIN from **Connections > Mobile**, or:
 
 ```bash
-ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade brain pin generate
-ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade brain pin set 123456
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" daex brain pin generate
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" daex brain pin set 123456
 ```
 
-This build does not
-replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state.
-Alpha also uses a separate Electron profile directory
-(`ade-desktop-alpha`) so browser storage and window state
-do not collide with dev or stable. Local channel packages include this Mac's
-runtime binary. Release builds still require the full cross-platform runtime
-artifact set used by remote runtime bootstrap.
+Alpha never touches the production `ADE.app`, `daex`/`ade` or `~/.ade`, and uses
+its own Electron profile (`ade-desktop-alpha`). Local channel packages include
+only this Mac's runtime binary.
 
 ### Alpha builds and macOS permission grants
 
-`npm run package:alpha` signs the app locally. There is
-no Developer ID certificate behind a channel build, so the default is an ad-hoc
-signature, and the app's designated requirement is its cdhash. The cdhash changes
-on every build, so macOS treats each rebuild as a new app and drops its Screen
-Recording and Accessibility grants. Re-adding ADE Alpha in System
-Settings works until the next build.
+A channel build has no Developer ID certificate, so by default it is signed
+ad-hoc and its designated requirement is its cdhash, which changes on every
+build: macOS drops its Screen Recording and Accessibility grants each time. A
+self-signed code-signing certificate makes the requirement the bundle id plus
+the certificate leaf, so grants survive.
 
-A self-signed code-signing certificate makes the designated requirement the
-bundle identifier plus the certificate leaf, which does not change between
-rebuilds. Grants then survive.
+Create it once:
 
-Create the certificate once:
+1. Keychain Access > Certificate Assistant > Create a Certificate.
+2. Name it exactly `ADE Local`, Certificate Type `Code Signing`.
+3. Run a channel build and press `Always Allow` on the keychain prompt.
 
-1. Open Keychain Access › Certificate Assistant › Create a Certificate.
-2. Name it exactly `ADE Local`, set Certificate Type to `Code Signing`, and
-   create it.
-3. Run a channel build and press `Always Allow` on the keychain prompt, so later
-   builds can use the private key without prompting.
+Then remove ADE Alpha from Screen Recording and Accessibility and add it back
+once. The build prints "Signing identity: ADE Local" when it is used.
 
-Then remove ADE Alpha from Screen Recording and from Accessibility,
-add it back once, and the grants are stored against the new requirement.
+The packager picks `ADE Local` automatically. `--sign "<identity>"` or
+`ADE_CHANNEL_SIGN_IDENTITY` picks another (a name or SHA-1). Developer ID is
+never picked automatically. Without any, the build stays ad-hoc and warns.
 
-The dev launcher (`npm run dev:desktop`) signs the lane's Electron in
-`node_modules` the same way (`apps/desktop/scripts/sign-dev-electron.cjs`): the
-`ADE Local` certificate, else the first `Apple Development:` identity, never
-Developer ID. Ad-hoc Electron is trusted by its cdhash, so every Electron
-upgrade made macOS ask for the login Keychain password again, and the dev app
-waited on that prompt at start. Signed, "Always Allow" holds across upgrades.
-`ADE_DEV_SIGN=0` skips it; `ADE_DEV_SIGN_IDENTITY` picks the identity.
+The dev launcher signs the lane's Electron in `node_modules` the same way
+(`apps/desktop/scripts/sign-dev-electron.cjs`): `ADE Local`, else the first
+`Apple Development:` identity, never Developer ID, so "Always Allow" on the login
+Keychain holds across Electron upgrades. `ADE_DEV_SIGN=0` skips it;
+`ADE_DEV_SIGN_IDENTITY` picks the identity.
 
-The packager uses the certificate automatically when an identity named exactly
-`ADE Local` is present. To use another certificate, or a specific SHA-1 hash,
-pass `--sign "<identity>"` or set `ADE_CHANNEL_SIGN_IDENTITY`. Developer ID
-identities are never selected automatically. Without any of these, the build
-stays ad-hoc and prints a warning.
-
-Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:desktop:sharded` for the full desktop suite. The desktop test suite is large, so run the smallest relevant subset first.
+Validate with `npm --prefix apps/desktop run typecheck` and the tests that cover
+your change; `npm run test:desktop:sharded` is the full desktop suite (CI runs
+it; see "Running checks" in `AGENTS.md`).

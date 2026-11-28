@@ -158,7 +158,7 @@
     },
     {
       "id": "channel-isolation",
-      "title": "Stable and Beta remain isolated for one Windows user",
+      "title": "Stable and Alpha remain isolated for one Windows user",
       "hosts": ["windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-11-x64"],
@@ -170,10 +170,10 @@
       },
       "requiredEvidenceKinds": ["process", "ipc", "db"],
       "passConditions": [
-        "Stable and Beta use different startup values, ADE homes, named pipes, and databases.",
+        "Stable and Alpha use different startup values, ADE homes, named pipes, and databases.",
         "Stopping or uninstalling one channel does not stop or delete the other."
       ],
-      "dependencies": ["Stable and Beta signed installers for one exact source commit"]
+      "dependencies": ["Stable and Alpha installers for one exact source commit"]
     },
     {
       "id": "account-isolation",
