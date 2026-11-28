@@ -224,7 +224,7 @@ struct CloudLaneStateLines: View {
           picked: store.newComputerSizes[key],
           pick: { store.pickNewComputerSize(machineKey: key, sizeId: $0) },
           words: CloudBalanceWords(store.account),
-          leftMilli: store.account.map { $0.hours.leftMilli + max(0, $0.earnedHours?.leftMilli ?? 0) }
+          leftMilli: store.account?.hoursLeftMilli
         )
       },
       keeping: keeping,

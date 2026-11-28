@@ -213,7 +213,7 @@ func cloudHoursForecast(_ account: CloudPhoneAccount, now: Date) -> String? {
   // Nothing used yet this period (a plan just bought, a month just reset): no pace to speak of.
   guard let recent = account.recentUse, recent.days > 0, recent.usedMilli > 0, (account.hours.usedMilli ?? 1) > 0,
         let periodEnd = account.billing?.periodEnd else { return nil }
-  let left = Double(account.hours.leftMilli)
+  let left = Double(account.hoursLeftMilli)
   guard left > 0 else { return nil }
   let perDay = recent.usedMilli / recent.days
   let endsAt = now.timeIntervalSince1970 * 1000 + (left / perDay) * 86_400_000
@@ -887,6 +887,6 @@ func cloudCapitalized(_ phrase: String) -> String {
 }
 
 extension CloudPhoneAccount {
-  /// The credits left, the plan's and the earned ones, as the ADE Cloud page counts them (`cloudHoursLeftMilli`).
+  /// The credits the person can spend, the plan's and invites', as every "hours left" and "minutes left" counts them (desktop `cloudHoursLeftMilli`).
   var hoursLeftMilli: Int { hours.leftMilli + max(0, earnedHours?.leftMilli ?? 0) }
 }

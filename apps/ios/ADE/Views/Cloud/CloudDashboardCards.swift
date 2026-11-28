@@ -2,8 +2,9 @@ import SwiftUI
 import UIKit
 
 // The ADE Cloud page's cards (`CloudDashboardScreen`), top to bottom: the
-// hero, the notices, lanes and computers, plans, sizes, invite friends, and
-// what agents may do. The plans card is `CloudPlansCard.swift`, the
+// hero with the ads switch and the notices, lanes and computers, sizes and
+// prices, plans, invite friends, sign-ins and what agents may do. A wide page
+// puts the money (credits, plans, invites) left and the computers right. The plans card is `CloudPlansCard.swift`, the
 // sign-ins card `CloudSignInsCard.swift`; the words they share are
 // `CloudPhoneFormat.swift`.
 
@@ -20,6 +21,69 @@ struct CloudDashboardScreen: View {
   /// The account server's own read wins for a tester's provider pick: a save lands there first.
   @ObservedObject private var accountStore = AccountCloudStore.shared
 
+  /// Two columns once the page is this wide (points); one below it.
+  private static let twoColumnWidth: CGFloat = 720
+  @State private var wide = false
+
+  /// The credits, with what happens at zero, and the ads switch that changes every price.
+  @ViewBuilder private var creditsRegion: some View {
+    CloudHero(store: store, celebrating: moment != nil)
+    if let moment {
+      CloudPlanMomentCard(moment: moment) { self.moment = nil }
+    }
+    // Pricing v3: the one ads switch, under the credits, because it changes every price below it.
+    CloudAdsCard()
+    CloudNotices(store: store)
+  }
+
+  /// The computers, then the sizes and their prices.
+  @ViewBuilder private var computersRegion: some View {
+    // A move of a computer to the other kind, while it runs (and its reason once it failed).
+    ForEach(store.shownMoves) { move in
+      CloudMoveCard(store: store, move: move)
+    }
+    CloudLanesCard(store: store, pushes: pushes)
+    CloudSavedLaneWorkCard(store: store)
+    if let account = store.account, account.catalog != nil {
+      CloudSizesCard(account: account, tiers: store.tiers)
+    }
+  }
+
+  @ViewBuilder private var plansRegion: some View {
+    if let account = store.account, account.catalog != nil {
+      CloudPlansCard(account: account, tiers: store.tiers, newPlanId: moment?.planId)
+    }
+  }
+
+  /// The rest that is about the account: today's sponsored switch, DAEX Free Models and invites.
+  @ViewBuilder private var moneyRest: some View {
+    // Today's sponsored switch, only while Pricing v3 doesn't reach the account (`CloudAdsCard` replaces it).
+    if cloudPricing() == nil {
+      CloudSponsoredCard(pageAccount: store.account)
+    }
+    // DAEX Free Models keeps its own switch and words.
+    CloudFreeModelsCard(pageAccount: store.account)
+    if let referral = store.account?.referral {
+      CloudInviteCard(referral: referral, syncService: store.syncService, words: CloudBalanceWords(store.account), onChanged: { Task { await store.reload() } })
+    }
+  }
+
+  /// The rest that is about the computers: sign-ins, what agents may do, the testers' iPhone pick.
+  @ViewBuilder private var machinesRest: some View {
+    if store.isDirect {
+      // No computer answers for the account: its ADE Cloud sign-ins, read directly.
+      SettingsCloudAccountProviders(syncService: store.syncService)
+    } else {
+      CloudSignInsCard(store: store)
+    }
+    CloudAgentsCard(store: store)
+    // Testers only: the iPhone provider pick is a setting, so it sits with the rest at the end.
+    if let account = accountStore.account ?? store.account, CloudPhoneProviderPicker.shows(account) {
+      CloudPhoneProviderPicker(account: account, syncService: store.syncService, onSaved: { await store.reload() })
+        .adeKitCard()
+    }
+  }
+
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
@@ -32,48 +96,35 @@ struct CloudDashboardScreen: View {
             Task { await store.reload() }
           }
         default:
-          CloudHero(store: store, celebrating: moment != nil)
-          if let moment {
-            CloudPlanMomentCard(moment: moment) { self.moment = nil }
-          }
-          // Pricing v3: the one ads switch, under the credits, because it changes every price below it.
-          CloudAdsCard()
-          if let account = accountStore.account ?? store.account, CloudPhoneProviderPicker.shows(account) {
-            CloudPhoneProviderPicker(account: account, syncService: store.syncService, onSaved: { await store.reload() })
-              .adeKitCard()
-          }
-          CloudNotices(store: store)
-          // A move of a computer to the other kind, while it runs (and its reason once it failed).
-          ForEach(store.shownMoves) { move in
-            CloudMoveCard(store: store, move: move)
-          }
-          CloudLanesCard(store: store, pushes: pushes)
-          CloudSavedLaneWorkCard(store: store)
-          if let account = store.account, account.catalog != nil {
-            CloudPlansCard(account: account, tiers: store.tiers, newPlanId: moment?.planId)
-            CloudSizesCard(account: account, tiers: store.tiers)
-          }
-          // Today's sponsored switch, only while Pricing v3 doesn't reach the account (`CloudAdsCard` replaces it).
-          if cloudPricing() == nil {
-            CloudSponsoredCard(pageAccount: store.account)
-          }
-          CloudFreeModelsCard(pageAccount: store.account)
-          if let referral = store.account?.referral {
-            CloudInviteCard(referral: referral, syncService: store.syncService, words: CloudBalanceWords(store.account), onChanged: { Task { await store.reload() } })
-          }
-          if store.isDirect {
-            // No computer answers for the account: its ADE Cloud sign-ins, read directly.
-            SettingsCloudAccountProviders(syncService: store.syncService)
+          if wide {
+            // A wide page (the open inner display): money on the left, the
+            // computers on the right, in one scroll, so no line runs the
+            // display's width and nothing important sits under the fold.
+            HStack(alignment: .top, spacing: 16) {
+              VStack(alignment: .leading, spacing: 16) {
+                creditsRegion
+                plansRegion
+                moneyRest
+              }
+              VStack(alignment: .leading, spacing: 16) {
+                computersRegion
+                machinesRest
+              }
+            }
           } else {
-            CloudSignInsCard(store: store)
+            creditsRegion
+            computersRegion
+            plansRegion
+            moneyRest
+            machinesRest
           }
-          CloudAgentsCard(store: store)
         }
       }
       .padding(.horizontal, 16)
       .padding(.top, 8)
       .padding(.bottom, 36)
     }
+    .onGeometryChange(for: Bool.self) { $0.size.width >= Self.twoColumnWidth } action: { wide = $0 }
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .refreshable { await store.refresh() }
     .onAppear { observePlan(store.account) }
@@ -175,8 +226,8 @@ struct CloudHero: View {
         if accountStore.account?.pricing != nil {
           // Pricing v3, each fact once: the computers header has the count and
           // Sizes the hours at each size; what happens at zero is one line here.
-          if let past = pastYourPlan(account, words: words) {
-            Text("When \(words.unit) run out: \(past.value.lowercased()). \(past.note).")
+          if let line = runOutSentence(account, words: words) {
+            Text(line)
               .font(.system(size: 12))
               .foregroundStyle(CloudBrandColor.skyText2)
               .fixedSize(horizontal: false, vertical: true)
@@ -283,18 +334,19 @@ struct CloudHero: View {
       }
       .accessibilityElement(children: .combine)
       CloudCreditsBar(account: account)
-      // The same number as the big one above, so the two never disagree.
+      // Every "hours left" counts all the credits the person can spend, the plan's and
+      // invites' (`hoursLeftMilli`), as the sizes list does; the big number stays the plan's own.
       // Pricing v3 with ads on: the time it lasts on a Medium, at both prices ("Time on a plan").
       // Ads off or not offered: today's line below.
       if let adWords = CloudAdPriceWords(account), adWords.pricing.showsTwoPrices, adWords.pricing.ads.on,
          let medium = store.tiers.first(where: { $0.id == "medium" }),
-         let line = adWords.timeOn(hours.leftMilli, tier: medium) {
+         let line = adWords.timeOn(account.hoursLeftMilli, tier: medium) {
         Text(cloudCapitalized(line) + ".")
           .font(.system(size: 12.5))
           .foregroundStyle(CloudBrandColor.skyText)
           .fixedSize(horizontal: false, vertical: true)
       } else if let line = words.leftBuys(
-        hours.leftMilli,
+        account.hoursLeftMilli,
         medium: store.tiers.first { $0.id == "medium" },
         phoneOn: account.phoneOn
       ) {
@@ -349,7 +401,7 @@ struct CloudHero: View {
       if let small = cloudSmallTierUsingHours(account) {
         CloudMiniMeter(
           label: "Small computers",
-          value: small.hoursLeftLabel(account.hours.leftMilli + max(0, account.earnedHours?.leftMilli ?? 0)),
+          value: small.hoursLeftLabel(account.hoursLeftMilli),
           of: nil,
           fraction: nil,
           note: cloudPricing() != nil
@@ -365,6 +417,32 @@ struct CloudHero: View {
     }
     // The two tiles stand as tall as the taller one.
     .fixedSize(horizontal: false, vertical: true)
+  }
+
+  /// Pricing v3: what happens past the credits, as one sentence under them
+  /// (copy.md "When credits run out"). The phone drops the date and, for App
+  /// Store 3.1.1, the extra credits' price and its link; the words are
+  /// otherwise the desktop's.
+  private func runOutSentence(_ account: CloudPhoneAccount, words: CloudBalanceWords) -> String? {
+    let lead = "When \(words.unit) run out,"
+    // A Small that uses no credits keeps working (a paid plan's, or Free's with ads).
+    let pause = cloudSmallTierUsingHours(account) == nil
+      ? "\(lead) bigger computers pause until the plan renews. Small keeps working."
+      : "\(lead) cloud computers pause until the plan renews."
+    if let extra = account.extraHours, extra.available {
+      guard extra.enabled else { return pause }
+      let used = extra.usedMilli ?? 0
+      return "\(lead) computers keep going on extra \(words.unit), billed after use."
+        + (used > 0 ? " \(words.number(used)) extra \(words.unit) this month." : "")
+    }
+    guard account.plan == "free" else { return nil }
+    if freeHoursHeld(account) {
+      let wait = "cloud computers wait until the free plan's check clears, or you pick a plan."
+      return (account.earnedHours?.leftMilli ?? 0) > 0
+        ? "\(lead) \(words.title.lowercased()) from invites run them first; then \(wait)"
+        : "\(lead) \(wait)"
+    }
+    return pause
   }
 
   /// What happens past the plan's balance: extra on or off, or the free plan
@@ -752,7 +830,7 @@ struct CloudSizesCard: View {
   /// The phone's own read carries `pricing` (both prices) for this phone's country.
   @ObservedObject private var accountStore = AccountCloudStore.shared
 
-  private var leftMilli: Int { account.hours.leftMilli + max(0, account.earnedHours?.leftMilli ?? 0) }
+  private var leftMilli: Int { account.hoursLeftMilli }
   private var words: CloudBalanceWords { CloudBalanceWords(account) }
 
   var body: some View {
