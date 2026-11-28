@@ -1,6 +1,6 @@
 # Configuration Schema
 
-ADE's project configuration is stored in one machine-local YAML file and
+DAEX's project configuration is stored in one machine-local YAML file and
 resolved into a single `EffectiveProjectConfig` that downstream services read
 at runtime. This doc describes the shape and resolution rules. The former
 repository-committed file is accepted only for one-time, non-executable
@@ -14,7 +14,7 @@ Canonical service: `apps/desktop/src/main/services/config/projectConfigService.t
 
 | File | Scope | VCS | Purpose |
 |---|---|---|---|
-| `.ade/local.yaml` | Local | gitignored | The only project config file ADE reads: every setting, personal to this machine. |
+| `.ade/local.yaml` | Local | gitignored | The only project config file DAEX reads: every setting, personal to this machine. |
 
 `.ade/ade.yaml` is **no longer read**. If a legacy file is still in a working
 tree, the first snapshot read carries only the non-executable keys
@@ -42,12 +42,12 @@ kept on the compatibility shape because callers round-trip it through `save`,
 but it is always empty. `save` accepts and discards whatever is passed for it.
 
 `projectConfigService.save({ shared, local })` writes `local.yaml` only. It no
-longer promotes a project from the local-only ADE scaffold to the shared one,
+longer promotes a project from the local-only DAEX scaffold to the shared one,
 because there is no shared config file left to write.
 
 A save that passes `baseLocalHash` (the `trust.localHash` of the snapshot it
 was edited from) is refused with `project_config_changed_on_disk` when
-`.ade/local.yaml` no longer hashes to it, so an edit made outside ADE (an
+`.ade/local.yaml` no longer hashes to it, so an edit made outside DAEX (an
 editor, an agent) is never written over. Renderer settings save through
 `saveProjectLocalConfig` (`renderer/lib/projectLocalConfig.ts`), which re-reads
 and re-applies its change up to three times. A save without `baseLocalHash`
@@ -55,9 +55,9 @@ and re-applies its change up to three times. A save without `baseLocalHash`
 logged by the config reload watcher (`project.config_reload.snapshot_failed`)
 and picked up again on the next write.
 
-## Settings that follow the ADE account
+## Settings that follow the DAEX account
 
-Some `local.yaml` keys follow the ADE account, per repository, so every
+Some `local.yaml` keys follow the DAEX account, per repository, so every
 computer signed in to the account gets them
 (`main/services/config/projectConfigAccountLayer.ts`, key table in
 `projectConfigAccountKeys.ts`). The rows live in the account store under
@@ -73,7 +73,7 @@ computer signed in to the account gets them
 | `tests.suite.<id>` | one row per entry of `testSuites` |
 
 - **Read.** The account value wins over the file. With no sign-in, no account
-  store, or no Git remote, ADE reads the file alone.
+  store, or no Git remote, DAEX reads the file alone.
 - **Move.** When the account syncs, each key the account does not have yet is
   written to it (write-if-absent). A joined list takes the union. A different
   value keeps the account's and records a notice; the person answers with
@@ -95,8 +95,8 @@ computer signed in to the account gets them
   the person can try again; nothing is written to the file alone, and the
   rows the save already wrote get their earlier account values back. A
   notice answer the store refuses fails too, and the notice stays. Notices
-  belong to one repository: after `origin` changes, the old ones are gone. For one release ADE also writes the account values back into
-  `local.yaml` (the mirror), so an older ADE on the same computer still reads
+  belong to one repository: after `origin` changes, the old ones are gone. For one release DAEX also writes the account values back into
+  `local.yaml` (the mirror), so an older DAEX on the same computer still reads
   them.
 - **Held on this computer.** A value with a credential-shaped key (for
   example `API_TOKEN` in a suite's `env`), a folder path under `cwd`,
@@ -166,7 +166,7 @@ travels with the repo.
 
 `browser` is machine-local by intent — which browser your links open in
 is a property of the machine you are sitting at, not of the repository —
-so ADE only ever writes it to `.ade/local.yaml`. Both fields are coerced, not passed through: a `linkOpenMode`
+so DAEX only ever writes it to `.ade/local.yaml`. Both fields are coerced, not passed through: a `linkOpenMode`
 that is neither `in-app` nor `external`, or an `autoOpenDevServer` that
 is not a boolean, is dropped so a hand-edited typo falls back to the
 default instead of silently routing every link to the system browser.
@@ -401,7 +401,7 @@ model pickers. Background naming and idle status lines run on one
 model: the cheap helper for a Claude, Codex or Cursor session (Haiku 5.5
 / GPT-6 Luna / Composer 2.5), the session's own model for every other
 provider, then a deterministic slug. Manual Graph PR create is
-title plus optional markdown — ADE does not draft the description.
+title plus optional markdown — DAEX does not draft the description.
 Live chat compaction stays on
 the chat's own provider. Session intelligence
 (`sessionIntelligence.titles.enabled`) is not a gate: naming always
@@ -430,7 +430,7 @@ clears it and an absent key keeps what is stored.
 `ai.customProviders` and `ai.customModelSlugs` back the **Advanced —
 custom providers & model slugs** block in AI Connections settings. They
 let a user add an OpenAI-/Anthropic-compatible provider (or extra model
-slugs) that flow into ADE's managed OpenCode server config and the model
+slugs) that flow into DAEX's managed OpenCode server config and the model
 picker.
 
 ```ts
@@ -467,9 +467,9 @@ causes each overdue schedule to catch up once; recurring cron work then
 continues from its next normal occurrence.
 
 `AiChatConfig.piExtensionsEnabled?: boolean` loads the user's own Pi
-extensions inside ADE chat, bound to ADE's UI bridge. It **defaults to true**,
+extensions inside DAEX chat, bound to DAEX's UI bridge. It **defaults to true**,
 matching what `pi` does in a terminal; only an explicit `false` turns it off,
-which runs ADE chat with Pi's built-in tools only. The Pi CLI is unaffected
+which runs DAEX chat with Pi's built-in tools only. The Pi CLI is unaffected
 either way. The flag is a ceiling, not a switch: extensions load only in the
 modes that grant their tools outright (`edit`, `full-auto`). Read-only
 (`plan`) and ask-first (`default`, `auto`, `config-toml`) sessions ignore it,
@@ -481,7 +481,7 @@ repository's `.pi/extensions` never executes. See
 [Chat › Pi UI bridge](../chat/README.md#pi-ui-bridge-ask_user-and-extensions).
 
 `AiChatConfig.claudePluginUiEnabled?: boolean` draws what Claude Code mods show
-in ADE chat: status lines, toasts, a band above the prompt and panes. It
+in DAEX chat: status lines, toasts, a band above the prompt and panes. It
 **defaults to false**; only an explicit `true` turns it on, because the channel
 is private to Claude Code. The mods' hooks
 run in the Claude process either way, so this controls the drawing only. See
@@ -493,15 +493,15 @@ always does). It **defaults to false**: each completed turn costs one short
 call on the chat's helper model. See
 [Chat › Next prompt suggestions](../chat/README.md#next-prompt-suggestions).
 
-`AiChatConfig.smartDecisionsEnabled?: boolean` lets ADE ask the Jev decision
+`AiChatConfig.smartDecisionsEnabled?: boolean` lets DAEX ask the Jev decision
 model before its built-in rules ("Smart decisions (Jev)"): OpenCode's free Jev
-with no sign-in, then the ADE bonus. It **defaults to true**; `false` makes
+with no sign-in, then the DAEX bonus. It **defaults to true**; `false` makes
 every Jev call answer `null` with no network call. The group switches
 (`smartChatStatusEnabled`, `smartSettleNudgeEnabled`, `smartPaletteEnabled`,
 `smartLaneEmojiEnabled`, each default true) turn off one group of features.
 `jevZenCreditEnabled?: boolean` (default false) spends the user's own OpenCode
 Zen balance on Jev once the free allowance is out, before the bonus. It stays
-on each computer and never follows the ADE account. See
+on each computer and never follows the DAEX account. See
 [Chat › Jev decisions](../chat/README.md#jev-decisions).
 
 `AiChatConfig.modelHintMode?: "model_and_effort" | "effort_only" | "off"`
@@ -523,7 +523,7 @@ end-of-session summaries:
 - `summaries.reasoningEffort`
 
 `titles.refreshOnComplete` is parsed but is not a gate either. A chat's
-title is refined once after its first completed run, and only when ADE
+title is refined once after its first completed run, and only when DAEX
 wrote that title itself; a terminal session's title is refreshed at close
 whenever an AI provider is available.
 
@@ -597,7 +597,7 @@ adding a git setting doesn't require editing every fixture.
 
 ## No trust gate
 
-ADE no longer reads repository-committed `.ade/ade.yaml`. The one-time
+DAEX no longer reads repository-committed `.ade/ade.yaml`. The one-time
 carry-over copies only the allowlisted non-executable fields into
 `.ade/local.yaml`, drops executable fields, and deletes the legacy file after a
 successful read. Current configuration is personal, scoped to an account or to
@@ -651,7 +651,7 @@ name handled inside `registerIpc.ts`).
 - Hot-reload of config changes is best-effort. Process env, lane
   overlay policies, and AI mode apply to new launches, not live
   ones.
-- Don't edit `.ade/local.yaml` while ADE is open unless you plan to
+- Don't edit `.ade/local.yaml` while DAEX is open unless you plan to
   click "reload" or let the file watcher pick it up — concurrent
   edits will lose.
 - Lane overlay policies evaluate top-to-bottom. If two policies match

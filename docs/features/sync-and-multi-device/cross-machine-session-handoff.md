@@ -43,7 +43,7 @@ agent connection for every step; the modal only states which kind of route
 that is (see [Transport and security](#transport-and-security)).
 
 The plain CLI has no move banner and no send
-routing: they start, cancel, retry and inspect single-chat moves (`ade chat
+routing: they start, cancel, retry and inspect single-chat moves (`daex chat
 handoff …`) and batches (`ade chat move …`).
 
 ### The move record

@@ -870,7 +870,7 @@ A link is only worth sending if the phone can open it, so
 what DAEX opens — a chat, a pull request (`daex://pr/<number>` included),
 Activity with an optional `state=<column>`, `daex://workspace`, a Linear issue,
 and the lane, file, commit, branch and proof links the phone hands to the
-computer — and refuses the rest, such as `daex://pr/` or `daex://prs`. `ade
+computer — and refuses the rest, such as `daex://pr/` or `daex://prs`. `daex
 notify` refuses a bad link; an automation whose link resolves badly at run time
 sends without it and reports `linkSkipped`. Before sending, the sender stamps
 its account machine key and the canonical project id onto a chat or pull

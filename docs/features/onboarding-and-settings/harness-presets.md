@@ -6,9 +6,9 @@
 > types, the file format (`.ade-harness.json`) and this document's headings,
 > because renaming storage to match copy breaks every saved link and every
 > exported file. The mark is a purple gear-and-wrench mark
-> (`renderer/components/shared/CustomToolMark.tsx`), never the ADE logo.
+> (`renderer/components/shared/CustomToolMark.tsx`), never the DAEX logo.
 
-A harness preset pairs a **harness** — the program ADE runs — with a **model
+A harness preset pairs a **harness** — the program DAEX runs — with a **model
 provider** — the account, key, or subscription that answers for it. It carries
 the model, the thinking level, what subagents run on, a name, an accent colour,
 and a logo.
@@ -25,12 +25,12 @@ provider list — and appear as the first tab of every model picker.
 | Field | Meaning |
 |---|---|
 | Harness | One of `claude`, `codex`, `opencode`, `droid`, `pi`, `qwen`, `kimi`, `grok`, `copilot`, `cursor`. |
-| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is measured as a subscription-only login routes only inside OpenCode), or `subscription` (older presets: a Claude or Codex subscription in another harness, now served by the provider's default account). An `account` in a harness that is not its own (a Codex account in Droid) runs through ADE's proxy on that account's own login. |
+| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is measured as a subscription-only login routes only inside OpenCode), or `subscription` (older presets: a Claude or Codex subscription in another harness, now served by the provider's default account). An `account` in a harness that is not its own (a Codex account in Droid) runs through DAEX's proxy on that account's own login. |
 | Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
 | Effort | The **source model's** thinking-tier ladder, when it offers one. The preset stores that ladder; the editor and every launch filter it to the levels the harness can send, and an older preset with no saved ladder resolves the source's from the runtime catalog. The composer starts at the preset's level and can override it for one chat. |
 | Subagents | A model id, or `Same as main`, and — where the harness takes one — its own thinking level. |
 | Subagent naming | Per-role pins for the types the harness exposes by name (Explore, Plan, general-purpose), each with its own level where the harness takes one. A role that follows the subagents takes their model and level. |
-| Name, accent, logo | The identity a preset is recognised by. The logo is the ADE mark, a provider mark, an uploaded image, or a generated one, kept as a small icon so the list fits the one setting it syncs as. |
+| Name, accent, logo | The identity a preset is recognised by. The logo is the DAEX mark, a provider mark, an uploaded image, or a generated one, kept as a small icon so the list fits the one setting it syncs as. |
 
 A preset never holds a credential. The `key` source stores the credential's id
 and label; the key itself stays in the API-key store.
@@ -40,7 +40,7 @@ and label; the key itself stays in the API-key store.
 Presets are an account-scoped preference. They persist in the renderer's
 `ade.userPreferences.v1` blob under `harnessPresets`, and
 `renderer/lib/accountSettingsSync.ts` registers that key so every machine
-signed into the same ADE account converges on the same list. The registry's
+signed into the same DAEX account converges on the same list. The registry's
 newer-wins rule applies to the list as a whole: two machines never interleave
 half of each other's edits into one preset.
 
@@ -63,7 +63,7 @@ sync writes, so a save and a launch cannot be allowed to race:
   machine's list is pushed and awaited. An unreachable brain never blocks the
   launch — it degrades exactly as it always did.
 - **A miss is not remembered.** "This harness preset no longer exists on this
-  account" and "ADE could not read this account's harness presets" carry
+  account" and "DAEX could not read this account's harness presets" carry
   `reasonCode: "preset-not-found"` / `"preset-unreadable"`, so the chat
   resolves again on its next turn instead of pinning the failure for the
   session's life. That is the same rule `proxy-not-ready` and
@@ -112,7 +112,7 @@ thinks, and what it is called.
    in {harness}**, each with the route decision's reason (a ChatGPT sign-in
    inside OpenCode, Zen's free tier). Below the pane: the effort, the subagent
    model and level, and a folded **Subagent naming** disclosure. Pinning a
-   role to a specific model shows the note that the role now runs on ADE's
+   role to a specific model shows the note that the role now runs on DAEX's
    copy of Anthropic's prompt and stops tracking Claude Code. A harness that
    cannot take a subagent model or level says so in one sentence next to where
    the control would be, instead of showing a control it would drop.
@@ -133,7 +133,7 @@ the route catalog with the models the proxy last served for it
 (`<adeHome>/proxy/borrowed-models.json`). On the command line they are
 `--via account:<claude|codex>:<accountId>` and `--via subscription:grok`.
 
-ADE's local proxy (CLIProxyAPI) answers for the account, using the account's
+DAEX's local proxy (CLIProxyAPI) answers for the account, using the account's
 own login, lent to it by `ade-cli/src/services/proxy/borrowedLogins.ts`:
 
 - Only the access token is lent, as `ade-borrow-<provider>-<account>.json` in
@@ -141,7 +141,7 @@ own login, lent to it by `ade-cli/src/services/proxy/borrowedLogins.ts`:
   The refresh token never leaves the CLI. Both vendors rotate it on every use,
   so a copy in the proxy would sign the user's own CLI out the first time
   either side renewed.
-- When a lent token nears expiry, ADE asks its pinned copy of that CLI to renew
+- When a lent token nears expiry, DAEX asks its pinned copy of that CLI to renew
   its own login, then lends the new token: Codex through app-server
   `account/read` with `refreshToken: true` (a day ahead; tokens last 10 days),
   Claude Code through its SDK-mode startup handshake (100 s ahead: Claude Code
@@ -179,12 +179,12 @@ sign-in through other clients.
 On macOS, a Codex login kept in the Keychain (`cli_auth_credentials_store =
 "keyring"` or `"auto"`) is not read: Codex creates the item so only Codex may
 read it, and any other reader makes macOS ask the user. The launch says so and
-how to switch Codex to `"file"`. On Linux and Windows ADE reads Codex's keyring
+how to switch Codex to `"file"`. On Linux and Windows DAEX reads Codex's keyring
 copy (`ai/codexKeyringAuth.ts`), which asks nothing.
 
 A preset saved with a `subscription` source runs on the provider's default
 account, or on a login the user signed in to the proxy itself with
-`ade proxy login` (that login wins when present).
+`daex proxy login` (that login wins when present).
 
 Presets this build cannot read (a newer build's source kind or subscription
 provider) are kept, untouched, in every write of the list to disk and to the
@@ -288,7 +288,7 @@ endpoints. `shared/harnessRoutes.ts` decides, per harness + source + model:
 - **direct** — the harness and the model share a protocol, so the harness is
   pointed straight at the source's endpoint (OpenCode Go's
   `inference/go/anthropic` into Claude Code, DeepSeek's `/anthropic`).
-- **proxy** — no shared protocol; ADE's local CLIProxyAPI translates. ADE
+- **proxy** — no shared protocol; DAEX's local CLIProxyAPI translates. DAEX
   writes one `ade-<source>` upstream per source (per credential for a key)
   into the proxy's config, which hot-reloads, and the harness asks for the
   model through that entry's prefix (`ade-opencode-go/glm-5.3`), so two
@@ -299,26 +299,26 @@ endpoints. `shared/harnessRoutes.ts` decides, per harness + source + model:
   sends ("Unsupported parameter: 'max_tokens'"). The Responses translation
   (CLIProxyAPI 8.0.48) sends no output limit at all, so the model's own limit
   applies; that runs, where chat fails every request (both measured against a
-  stand-in, 2026-11-05). A source whose protocol changes keeps the models
+  stand-in). A source whose protocol changes keeps the models
   earlier launches added, and the launch waits until the proxy serves the
   model on the new protocol (`owned_by` changes with the section).
 - **impossible** — with the reason (Cursor, Copilot, Kimi and Pi only run on
   their own sign-in; OpenCode Zen's free models only answer inside OpenCode;
   an OpenAI sign-in inside OpenCode is a ChatGPT subscription whose token
-  api.openai.com refuses on every protocol, measured 2026-10-15, so it also
+  api.openai.com refuses on every protocol, so it also
   only answers inside OpenCode — use an OpenAI API key or a Codex
   subscription instead).
 
 Protocol support is **per model**. OpenCode Go serves DeepSeek, Kimi K3, Qwen
 and MiniMax on its Anthropic endpoint, GLM, Hy, MiMo and LongCat on OpenAI chat
-only, and GPT/Grok on Responses only (measured 2026-09-29, seeded in
+only, and GPT/Grok on Responses only (seeded in
 `OPENCODE_GO_MODEL_PROTOCOLS`). A Test (below) overrides the seed: its verdict
 is saved in `<adeHome>/cache/harness-route-probes.json` and every launch reads
 it.
 
 A free-tier model is refused by its own gateway to every outside client no
 matter the protocol — usually spelled `-free`, but not always (`big-pickle`,
-measured 2026-10-15, is free-tier and carries no suffix, so it is listed in
+is free-tier and carries no suffix, so it is listed in
 `OPENCODE_ZEN_FREE_TIER_IDS`). A Test that meets the refusal records it like a
 protocol refusal, so a free-tier model with a novel name stops being offered as
 a reachable choice (it stays listed, greyed, under "N models can't run in …")
@@ -344,7 +344,7 @@ model ade-…/<model>" (the first request 0.2 s after a write, measured).
 
 ### Ad-hoc routes
 
-A pairing that was never saved — `ade chat create --via opencode-go --model
+A pairing that was never saved — `daex --model
 …`, or any caller that names a harness, a source and a model directly — travels
 as a preset id of the form `route.<base64url(json)>` — the harness, the source
 reference and the model, never a secret. base64url passes the safe-identifier
@@ -384,10 +384,10 @@ is Providers › Custom providers); "preset" survives only in code and wire
 fields. `ade` names one by its name or id, and the model is always passed too:
 
 ```bash
-ade harness providers --text      # each Custom provider, with the flags to launch it
-ade chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
-ade new chat --mode cli --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
-ade chat create --lane <lane> --provider claude --credential <credential-id> --model <id>
+daex harness providers --text      # each Custom provider, with the flags to launch it
+daex chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
+daex new chat --mode cli --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
+daex chat create --lane <lane> --provider claude --credential <credential-id> --model <id>
 ```
 
 The CLI resolves the name against the account's Custom providers
@@ -398,12 +398,13 @@ mismatch is refused with the right value named. The old `--preset` flag is
 refused with the new spelling. `--via`, `--custom-provider` and
 `--credential` are mutually exclusive: each says where the model runs.
 `--via <source>` with `--provider` and `--model` builds an ad-hoc route id
-(`ade harness routes --text` lists what each harness can reach; `ade harness
+(`daex harness routes --text` lists what each harness can reach; `daex harness
 test` checks one). The `ade-harnesses` skill teaches the whole flow.
 
-Every launch from an agent, a script or ADE MCP names its model
+Every launch from an agent, a script or DAEX MCP names its model
 (`launchModelRule.ts`): the CLI, the MCP `chat_start` tool and the RPC
-agent guard (`assertLaunchModelNamed`) refuse a launch with none. The app's own
+agent guard (`assertLaunchModels`, `assertCliLaunchModelNamed` in
+`apps/ade-cli/src/modelNameGuard.ts`) refuse a launch with none. The app's own
 composer always sends one; internal callers (automations, side chats, forks)
 keep their service-level defaults.
 
@@ -412,7 +413,7 @@ keep their service-level defaults.
 | Source | What the launch gets |
 |---|---|
 | `account` | In its own harness, the instance's config home as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. In another harness, the proxy's connection for that account's lent login, shaped like `subscription`. |
-| `key` / `opencode` | The route's endpoint and token, per harness below. Harnesses that read a config file (Codex, Grok, Droid) get one in a home ADE owns at `<adeHome>/provider-homes/preset/<presetId>/`; Claude Code needs none and keeps the user's own config home, so their plugins, skills and MCP servers still load. The OpenCode token is read from OpenCode's store at launch, in the main process only. |
+| `key` / `opencode` | The route's endpoint and token, per harness below. Harnesses that read a config file (Codex, Grok, Droid) get one in a home DAEX owns at `<adeHome>/provider-homes/preset/<presetId>/`; Claude Code needs none and keeps the user's own config home, so their plugins, skills and MCP servers still load. The OpenCode token is read from OpenCode's store at launch, in the main process only. |
 | `subscription` | The proxy's connection, shaped per harness by `proxyEnv.ts`. The model becomes the proxy's `<prefix>/<model>` routing id. |
 
 ### What each harness accepts
@@ -420,13 +421,13 @@ keep their service-level defaults.
 | Harness | Key | Subscription | Subagent model | Subagent effort |
 |---|---|---|---|---|
 | Claude Code | `ANTHROPIC_BASE_URL` (no `/v1`), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY=""` (never inherited — a shell key would reach another vendor as `x-api-key`), `ANTHROPIC_MODEL` and every tier (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`) pinned to the route's model so background calls do not ask another vendor for Haiku, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS` from the model's real limits. | Yes | Yes | Yes |
-| Codex CLI | `CODEX_HOME` plus a `config.toml` ADE writes there naming one `[model_providers.ade]` block (`wire_api = "responses"`, `env_key = "ADE_PRESET_API_KEY"`, `model_context_window` from the model's limits). `~/.codex/config.toml` is never touched. | Yes | Yes (key/subscription; a Codex *account* preset keeps the account's own config) | same |
+| Codex CLI | `CODEX_HOME` plus a `config.toml` DAEX writes there naming one `[model_providers.ade]` block (`wire_api = "responses"`, `env_key = "ADE_PRESET_API_KEY"`, `model_context_window` from the model's limits). `~/.codex/config.toml` is never touched. | Yes | Yes (key/subscription; a Codex *account* preset keeps the account's own config) | same |
 | OpenCode | A provider block merged into the session's config, not an env var — OpenCode has no "use this key against this endpoint" variable. Needs an endpoint. | Yes | Yes (`agent.<type>.model`; nothing for a preset running on an OpenCode sign-in, which owns its config) | No |
 | Droid | `FACTORY_HOME_OVERRIDE` at a preset-owned home, with `customModels` (camelCase; Droid ignores snake_case `custom_models`) written into its `.factory/settings.json`. | Yes (via proxy) | No | No |
 | Qwen Code | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`. | Yes (via proxy) | No | No |
-| Kimi | `KIMI_CODE_HOME` at a preset-owned home whose `config.toml` defines `[providers.ade]` (`type` openai, openai_responses or anthropic, `base_url`, `api_key`), a `[models."ade/<model>"]` alias and `default_model`. The launch names the alias, which ADE passes through untouched. Checked with Kimi Code 2.3.1, CLI and ACP. | Yes (via proxy) | No | No |
+| Kimi | `KIMI_CODE_HOME` at a preset-owned home whose `config.toml` defines `[providers.ade]` (`type` openai, openai_responses or anthropic, `base_url`, `api_key`), a `[models."ade/<model>"]` alias and `default_model`. The launch names the alias, which DAEX passes through untouched. Checked with Kimi Code 2.3.1, CLI and ACP. | Yes (via proxy) | No | No |
 | Grok | `GROK_HOME` at a preset-owned home whose `config.toml` defines `[model."<id>"]` with the route's `base_url`, `api_backend` (`messages`, `chat_completions` or `responses`), `env_key` and the session header. | Yes (via proxy) | Yes (`[subagents.models]`) | No |
-| GitHub Copilot | The runtime's BYOK switches: `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_TYPE` (openai or anthropic), `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, `COPILOT_MODEL`. The CLI reads them itself and needs no GitHub sign-in; the SDK runtime behind Copilot chats does not, so ADE's Copilot worker passes the same endpoint as each session's `provider`. Checked with CLI 1.0.105 and SDK runtime 1.0.22. | Yes (via proxy) | No | No |
+| GitHub Copilot | The runtime's BYOK switches: `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_TYPE` (openai or anthropic), `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, `COPILOT_MODEL`. The CLI reads them itself and needs no GitHub sign-in; the SDK runtime behind Copilot chats does not, so DAEX's Copilot worker passes the same endpoint as each session's `provider`. Checked with CLI 1.0.105 and SDK runtime 1.0.22. | Yes (via proxy) | No | No |
 | Cursor | No. Cursor signs in from its own single-slot store, and a per-preset key would change every other Cursor session on the machine. | No | No | No |
 | Pi | `PI_CODING_AGENT_DIR` at a preset-owned folder whose `models.json` defines provider `ade` (`api` openai-completions, openai-responses or anthropic-messages) and whose `settings.json` makes it the default; a routed Pi chat selects `ade/<model>` explicitly. The user's own `~/.pi/agent` is never touched. Checked with Pi 1.4.0, CLI and chat. | Yes (via proxy) | No | No |
 
@@ -442,21 +443,21 @@ control.
 | Harness | Subagent model | Subagent effort | Named roles |
 |---|---|---|---|
 | Claude Code | `CLAUDE_CODE_SUBAGENT_MODEL` + `_FORCE` | SDK `agents[].effort` | Explore, Plan, general-purpose |
-| Codex CLI | `agents.default_subagent_model` in the `CODEX_HOME` ADE owns | `agents.default_subagent_reasoning_effort` | user-defined roles via `[agents.<role>] config_file` |
-| Grok | `[subagents.models]` per type in the `GROK_HOME` ADE owns | — (a subagent inherits the main thread's level) | explore, plan, general-purpose |
-| OpenCode | `agent.<type>.model` in the `opencode.json` ADE owns | — | explore, general |
+| Codex CLI | `agents.default_subagent_model` in the `CODEX_HOME` DAEX owns | `agents.default_subagent_reasoning_effort` | user-defined roles via `[agents.<role>] config_file` |
+| Grok | `[subagents.models]` per type in the `GROK_HOME` DAEX owns | — (a subagent inherits the main thread's level) | explore, plan, general-purpose |
+| OpenCode | `agent.<type>.model` in the `opencode.json` DAEX owns | — | explore, general |
 | Droid, Qwen Code, Pi, Kimi, GitHub Copilot, Cursor | — | — | — |
 
 The thinking level is the awkward half in Claude Code: there is no
 `CLAUDE_CODE_SUBAGENT_*` variable for it, so a preset that names one gets an
 SDK `agents` entry for `general-purpose` — the type every unspecified spawn
-lands on — carrying ADE's copy of Anthropic's prompt. That is the same fork a
+lands on — carrying DAEX's copy of Anthropic's prompt. That is the same fork a
 named pin already makes, and the wizard says so at the point of the choice. A
 role pinned to a level with no model of its own takes the subagent model, so
 the level has somewhere to land.
 
 Models are passed through exactly as saved, and every pin that travels through
-ADE's proxy carries the proxy's upstream prefix, the same as the main model.
+DAEX's proxy carries the proxy's upstream prefix, the same as the main model.
 
 An unsupported pairing is a value, not an error: the create succeeds, and the
 chat's turns fail with the reason until the preset can be resolved. A chat
@@ -464,7 +465,7 @@ never runs on the harness's own sign-in in its place.
 
 ### Model ids are passed through
 
-Every other ADE launch path rewrites a Claude model id through its alias table.
+Every other DAEX launch path rewrites a Claude model id through its alias table.
 A preset's launch does not (`passthroughModelId`), because a preset's model can
 be a gateway's spelling — `anthropic/claude-opus-4.5` on OpenRouter — that must
 reach the endpoint exactly as typed.
@@ -480,14 +481,14 @@ described under "Subagents and subagent naming" above.
 
 Pinning Explore, Plan or general-purpose sends an SDK `agents` entry. The SDK
 has no "same agent, different model" overlay — an entry replaces the whole
-definition — so ADE supplies its own copy of Anthropic's prompt and the
+definition — so DAEX supplies its own copy of Anthropic's prompt and the
 built-in's `disallowedTools` and `omitClaudeMd` alongside the model. Those
 copies live in `shared/claudeBuiltinAgentPrompts.ts`, stamped with the CLI
 version they came from (`CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION`) and
 re-extracted from the pinned binary's template source whenever the SDK pin
 moves, compared whole and not only line by line. The templates have holes that
 Claude fills from the tools it gives agents: the shell (Bash, or PowerShell on
-Windows without Git Bash) and whether Glob and Grep exist. ADE fills them from
+Windows without Git Bash) and whether Glob and Grep exist. DAEX fills them from
 the same facts, which Claude reports in each `system/init` tool list
 (`claudeCodeInit.ts`); before a report, macOS and Linux use the Agent SDK's set
 (Bash, no Glob or Grep). A pinned agent stops tracking upstream the moment it
@@ -502,14 +503,14 @@ a working session. The preset is dropped with the reason recorded. CLI-mode
 surfaces list presets and routes for every other harness and show these three
 as unavailable with the reason, so the choice cannot be made and then ignored.
 
-### Running one outside ADE
+### Running one outside DAEX
 
-`ade harness env "<Custom provider name>"|<id>|<route-id> --text` prints the launch's exports
+`daex harness env "<Custom provider name>"|<id>|<route-id> --text` prints the launch's exports
 (zsh/bash, or `--shell pwsh`) for `eval`, and the Copy launcher button builds
 the matching `claude --model …` / `codex -m …` command. The output contains the
-provider token and is never written anywhere by ADE.
+provider token and is never written anywhere by DAEX.
 
-The script runs ADE's pinned copy of the harness, never the one on the PATH
+The script runs DAEX's pinned copy of the harness, never the one on the PATH
 (`buildHarnessLaunchEnv` in `chat/harnessRouteCatalog.ts`). It first waits for
 or joins the pin's download, exports the harness's self-update switches, and
 ends with a shell function named after the harness command that runs the
@@ -518,7 +519,7 @@ pinned binary: `claude() { '<pin>' … "$@"; }` in zsh/bash,
 `'<node>' '<script>'` (plus Cursor's flags). So the copied
 `… && claude --model …` runs the pin with no change. When the pin is not
 available on this machine or its download fails, the action throws the state
-sentence and `ade harness env` exits non-zero, so neither launcher form runs
+sentence and `daex harness env` exits non-zero, so neither launcher form runs
 anything. `ai.harnessLaunchEnv` runs on the brain's machine, so the path it
 prints is that machine's.
 
@@ -578,7 +579,7 @@ prints is that machine's.
     accounts, the runtime catalog) and runs a row's live Test.
   - `wizardPrimitives.tsx` — the `FieldError` line the editor's fields share.
   - `harnessSources.ts` — reads the provider accounts and the stored keys into
-    the rows the rail lists. The renderer-local type is `HarnessModelSource`.
+    the rows the rail lists.
   - `harnessAvailability.ts` — whether a harness's pinned copy is downloaded and signed in on
     this computer, as a reason string rather than a disabled row.
   - `harnessModels.ts` — pure: source → provider family, the model choices for a
@@ -622,7 +623,7 @@ prints is that machine's.
   per-model protocol verdicts.
 - `apps/desktop/src/main/services/chat/harnessLaunchPrepare.ts` — starts the
   proxy before a launch whose route needs it.
-- `apps/ade-cli/src/services/proxy/cliProxyApiUpstreams.ts` — ADE's upstream
+- `apps/ade-cli/src/services/proxy/cliProxyApiUpstreams.ts` — DAEX's upstream
   entries in the proxy config.
 - `apps/desktop/src/main/services/chat/harnessPresetConfigHomes.ts` — the
   per-preset and per-credential config homes the resolver hands a launch:
@@ -638,7 +639,7 @@ prints is that machine's.
   launched from another.
 - `apps/desktop/src/shared/safeIdentifier.ts` — the containment rule for every
   ADE-owned path or storage-key segment (`.`, `..` and separators rejected), so
-  a preset, credential or account id cannot escape the directory ADE owns.
+  a preset, credential or account id cannot escape the directory DAEX owns.
 - `apps/ade-cli/src/services/proxy/` — the proxy itself: release resolution and
   hash-verified download (`cliProxyApiRelease.ts`), install and config
   management (`cliProxyApiManagement.ts`), the supervisor that starts, stops and
@@ -653,9 +654,9 @@ prints is that machine's.
   machine's provider accounts: the registry, the base account that is always
   present, default selection, per-provider settings, and the config home each
   account resolves to.
-- `apps/desktop/src/shared/claudeBuiltinAgentPrompts.ts` — ADE's copies of the
+- `apps/desktop/src/shared/claudeBuiltinAgentPrompts.ts` — DAEX's copies of the
   three built-in agent prompts, stamped with the CLI version they were taken
   from and re-extracted from the pinned binary when the SDK pin moves.
 - `apps/desktop/src/shared/harnessPresetCliGate.ts` — the locked CLI gate.
-- `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` — how an agent
+- `apps/desktop/resources/agent-skills/daex-harnesses/SKILL.md` — how an agent
   discovers and uses a preset.

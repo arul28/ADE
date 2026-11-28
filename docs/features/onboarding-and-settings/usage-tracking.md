@@ -1,13 +1,13 @@
 # Usage tracking strategy
 
-ADE treats live provider limits and retrospective token/cost history as two
+DAEX treats live provider limits and retrospective token/cost history as two
 different workloads. Live limits must remain fast enough for the desktop,
 terminal, CLI, and paired mobile clients; history scans may walk large local
 ledgers and therefore run only through the Activity path.
 
-This design was reviewed against CodexBar `main` at
-[`8489002e19eed002016b29faa7de0f8c5371c65c`](https://github.com/steipete/CodexBar/tree/8489002e19eed002016b29faa7de0f8c5371c65c)
-on 2026-07-10. The relevant upstream references are
+The design follows CodexBar
+([`8489002e`](https://github.com/steipete/CodexBar/tree/8489002e19eed002016b29faa7de0f8c5371c65c));
+the relevant upstream references are
 [`claude.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/claude.md),
 [`codex.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/codex.md),
 [`providers.md`](https://github.com/steipete/CodexBar/blob/8489002e19eed002016b29faa7de0f8c5371c65c/docs/providers.md), and
@@ -15,9 +15,9 @@ on 2026-07-10. The relevant upstream references are
 
 ## One poller per machine
 
-Provider quota is a machine fact, not a project fact. The ADE brain polls it
+Provider quota is a machine fact, not a project fact. The DAEX brain polls it
 once per machine and every project scope in that process attaches to the same
-poller: one poll timer, one demand lease, one snapshot. Two ADE windows on one
+poller: one poll timer, one demand lease, one snapshot. Two DAEX windows on one
 computer — on two projects, or one on a project and one on Welcome or the Hub —
 read the same numbers, and a refresh from any of them benefits all of them.
 
@@ -30,7 +30,7 @@ always also emitted to every subscriber, so no window ever holds a value the
 others could not receive.
 
 Project-scoped answers stay per project. Each scope brings its own project
-database and repository root, so ADE's own token/cost stats, GitHub activity,
+database and repository root, so DAEX's own token/cost stats, GitHub activity,
 and the `project` scope of the Usage page are still about the project that
 asked — the transcript ledgers are simply walked once for the whole machine and
 projected per project root.
@@ -97,7 +97,7 @@ with no readable windows or a window already at 100% is not a candidate. The
 rescue prefers the account with the most projected five-hour room, then the
 most weekly room, so the chat is not moved onto an account that is also about
 to stop. If the thread cannot move — the chat has no provider thread yet, or
-the copy fails — ADE falls back to the usage-limit handoff: it starts a new
+the copy fails — DAEX falls back to the usage-limit handoff: it starts a new
 chat on the other account in the same lane and sends the interrupted task
 there, and the original stops waiting to resume. With smart balance off, the
 same account is an offer on the usage-limit pill (Continue on that account),
@@ -106,13 +106,13 @@ does not hop again on its own.
 
 Auto-start windows are off by default. When enabled, the usage service arms one
 unref'd timer per Claude or Codex instance that has a future five-hour reset.
-Five seconds after that reset, ADE sends one small provider request through the
+Five seconds after that reset, DAEX sends one small provider request through the
 instance's own config home, using Claude Haiku 5.5 (no tools) or Codex GPT-6 Luna at low effort and
 standard speed, then
 refreshes quota data. The timer is replaced when a newer reset arrives and is
 reconstructed from the next snapshot; no timer state is persisted. Accounts
 without a five-hour window, including API-key-only accounts, never run the
-request. ADE records only the provider, instance, model, success, whether the
+request. DAEX records only the provider, instance, model, success, whether the
 start was early, and duration, never the response text.
 
 Providers also end windows early: Codex hands out resets at random, and both
@@ -125,7 +125,7 @@ or one landing between the reset and the timer, keeps the armed timer. A
 snapshot that has other windows for the account but no five-hour one means the
 account had none to reset (idle, or a plan without one), so a reset that cleared
 another window starts nothing. Spending
-a reset through ADE (`consumeResetCredit` returning `reset`) starts the next
+a reset through DAEX (`consumeResetCredit` returning `reset`) starts the next
 window directly. Early starts are limited to one per account per 15 minutes.
 
 Which providers qualify lives in `AUTOSTART_WINDOW_TYPE`
@@ -135,9 +135,9 @@ Codex five-hour windows start on the first request. OpenCode and Kimi report
 rolling windows, Copilot, Cursor and Grok calendar or billing periods, and
 Muse's short window has no confirmed start, so none of them is offered.
 
-## ADE versus CodexBar
+## DAEX versus CodexBar
 
-| Concern | ADE before ADE-117 | CodexBar reference | ADE after ADE-117 |
+| Concern | DAEX before ADE-117 | CodexBar reference | DAEX after ADE-117 |
 |---|---|---|---|
 | Claude source | Anthropic OAuth usage endpoint only | App auto: OAuth → Claude PTY → web | OAuth first; explicit user refresh may use a bounded Claude PTY fallback, except after a 403/429 — there the CLI would read the same throttled endpoint with the same account, so it is not spawned. Automatic refresh never opens the interactive CLI. |
 | Claude auth | Every macOS credential lookup could invoke `security`, including background work | Explicit Keychain prompt policy; background reads can be no-UI | Background reads skip Keychain and use the credentials file/cache. Keychain repair is reserved for explicit user refresh. |
@@ -147,12 +147,12 @@ Muse's short window has no confirmed start, so none of them is offered.
 | Cache | Last snapshot plus provider/GitHub scan caches | Separate usage, cookie, and cost caches | Separate in-flight quota and history work. Each provider retains its last-good windows and last-success timestamp. |
 | Stale behavior | A failed refresh could leave source/freshness ambiguous | Stale/error state remains visible | Provider status carries `updatedAt`, `lastAttemptAt`, error kind, optional next retry, and the source when one is known. Unexpired last-good windows remain visible with their source and an explicit stale/re-auth state. |
 | Latency | User refresh could wait on every provider ledger and GitHub scan | Expensive storage scans do not block normal usage refresh | Quota refresh performs only provider credential/quota work. Large history scans can remain pending while a quota refresh completes. |
-| Errors | Mostly provider-prefixed strings | Provider-specific surfaced errors and bounded timeouts | Structured classification for auth, forbidden, conflict, rate limit, timeout, network, invalid response, and unavailable. `Retry-After` and exponential backoff prevent refresh storms, per account: a throttled account waits on its own clock while its siblings keep polling, and an account with nothing to show carries a per-account "Rate-limited — retrying" notice on the desktop rows instead of an empty "No usage yet". The `ade usage snapshot` text output and iOS keep their existing empty state and adopt the field when they next touch their usage rows. |
+| Errors | Mostly provider-prefixed strings | Provider-specific surfaced errors and bounded timeouts | Structured classification for auth, forbidden, conflict, rate limit, timeout, network, invalid response, and unavailable. `Retry-After` and exponential backoff prevent refresh storms, per account: a throttled account waits on its own clock while its siblings keep polling, and an account with nothing to show carries a per-account "Rate-limited — retrying" notice on the desktop rows instead of an empty "No usage yet". The `daex usage snapshot` text output and iOS keep their existing empty state and adopt the field when they next touch their usage rows. |
 
 Codex quota payloads are normalized in `providerQuotaParsers.ts`. Current HTTP
 responses can report only one weekly bucket in `primary_window`, while older
 responses and app-server snapshots may expose five-hour and weekly buckets in
-primary/secondary positions. ADE therefore prefers the bucket's advertised
+primary/secondary positions. DAEX therefore prefers the bucket's advertised
 duration (`limit_window_seconds`, `window_duration_seconds`, or the equivalent
 minute fields) and uses position only when duration metadata is absent. This
 keeps the compact header and detailed Limits panel truthful when a provider
@@ -179,14 +179,14 @@ spend five seconds in `security`, and overlapping UI/startup requests were
 coalesced behind whichever large operation started first. The result was a
 correct quota response queued behind unrelated disk and subprocess work.
 
-ADE now records a structured `usage.refresh.phase` entry for credentials,
+DAEX now records a structured `usage.refresh.phase` entry for credentials,
 quota HTTP, CLI fallback, and history phases, including provider, trigger,
 duration, outcome, and error kind. These entries identify network/auth latency
 without logging credentials or quota payloads.
 
 ## Bounded local ledger scanning
 
-Activity reads provider-owned history in place. ADE does not copy, rewrite, or
+Activity reads provider-owned history in place. DAEX does not copy, rewrite, or
 delete Codex session JSONL under `~/.codex`; Codex remains the owner of chat
 history and retention. A single JSONL record can nevertheless be enormous when
 it contains embedded command or tool output. That is valid JSONL, but treating
@@ -195,7 +195,7 @@ the parser has a chance to ignore the irrelevant payload.
 
 The Codex history reader is therefore a bounded byte-stream pipeline:
 
-- Codex compresses old rollouts to `.jsonl.zst`; ADE streams those through
+- Codex compresses old rollouts to `.jsonl.zst`; DAEX streams those through
   Node's zstd decoder, counts a rollout once when both forms exist, and marks
   the scan incomplete when a compressed file is corrupt or cut off (zstd ends a
   cut-off frame with no output and no error);
@@ -215,12 +215,12 @@ JavaScript: SQLite selects only assistant rows and only the token, cost and
 model fields (`json_extract`), in pages of 5,000 rows by `time_created`, and
 skips a row whose JSON is invalid.
 
-These limits bound ADE's work; they do not truncate the source files. The
+These limits bound DAEX's work; they do not truncate the source files. The
 tradeoff is intentionally visible in the data model: an extreme old record or
 history beyond the detail budget may be absent from per-day, per-model,
 per-project, and estimated-cost attribution.
 
-The all-time token headline has a separate reconciliation path. ADE opens the
+The all-time token headline has a separate reconciliation path. DAEX opens the
 newest Codex `state_*.sqlite` read-only, computes the state index's authoritative
 thread total, point-looks up the bounded set of JSONL thread ids to avoid double
 counting, and treats the result as the union of JSONL history and the current
@@ -236,12 +236,12 @@ and the production scanner remains single-flight. History aggregation runs in a
 separate process, so filesystem and SQLite work cannot stall the desktop or
 headless runtime event loop while terminals, project switching, and remote sync
 remain active. Packaged desktop and ordinary CLI builds ship the worker as
-`usageLedgerWorker.cjs`; the static ADE runtime invokes the same worker through
+`usageLedgerWorker.cjs`; the static DAEX runtime invokes the same worker through
 its hidden embedded entrypoint because a single-executable build cannot load a
-sidecar. Desktop packaging validation derives its required ADE CLI payload from
+sidecar. Desktop packaging validation derives its required DAEX CLI payload from
 `build.extraResources`, so a newly built worker cannot be omitted silently.
 This keeps Activity useful on large Codex histories without putting live Limits
-refreshes or the ADE runtime behind an unbounded disk/memory pass.
+refreshes or the DAEX runtime behind an unbounded disk/memory pass.
 
 `usageLedgerScanners.ts` is the one list of history scanners. The worker walks
 it one provider at a time. The in-process scan (a test harness that injects
@@ -251,9 +251,8 @@ project path is not split at a chunk boundary.
 
 ### The worker streams, so a timeout is partial rather than total
 
-The worker used to buffer every provider and write one JSON object at the very
-end, which meant a timeout — or any failure — threw away eight finished scans
-along with the one still running. It now writes NDJSON: a
+One JSON object at the end would throw away every finished scan on a timeout,
+so the worker writes NDJSON: a
 `ade-usage-ledger-stream/1` header naming the full roster it is about to walk,
 then one line per provider as that provider finishes. The header is what lets
 the client tell "this provider reported nothing" from "this provider never got
@@ -356,18 +355,17 @@ cost has burned users before.
 
 ## Every account home is scanned
 
-ADE runs a second Claude or Codex account under its own config home
+DAEX runs a second Claude or Codex account under its own config home
 (`<adeHome>/provider-homes/claude/<id>`, and the `preset`, `credential` and
 `route` homes harness presets use). Each of those homes keeps its own
-transcripts, so a scan of `~/.claude` and `~/.codex` alone missed every chat ADE
+transcripts, so a scan of `~/.claude` and `~/.codex` alone missed every chat DAEX
 ran under another account. `adeProviderUsageHomes` lists them: every directory under
 `provider-homes/` (including homes whose account was removed, because their
 usage still happened) plus each registry instance's home. A home's provider
 comes from its namespace or registry entry; a preset, credential or route home
 is identified by the CLI's own files (`.claude.json`; Codex's `config.toml` or
 `auth.json`), because Claude keeps a `sessions/` folder too. The usage service
-passes them to the ledger worker as `ADE_USAGE_EXTRA_CLAUDE_HOMES` /
-`ADE_USAGE_EXTRA_CODEX_HOMES`; the scanners add them after the default home and
+passes them to the ledger worker as `ADE_USAGE_EXTRA_<PROVIDER>_HOMES`; the scanners add them after the default home and
 dedupe by message id as before. The scanners never discover homes themselves,
 so a test that points `CODEX_HOME` at a fixture reads only the fixture.
 
@@ -399,7 +397,7 @@ machine's saved rollup shows no split and the page says why.
 ## Spend by chat, lane, and account
 
 `usage.getCostBreakdown {by: chat | lane | account, range, laneId?, rankBy?}`
-ranks ADE's per-turn ledger, by cost or (`rankBy: "tokens"`, the page's Tokens
+ranks DAEX's per-turn ledger, by cost or (`rankBy: "tokens"`, the page's Tokens
 metric) by tokens, before the tail folds into Other. Each row carries the turns' value at list prices
 (`costUsd`, `apiEquivalentUsd` where the ledger has it), `billedUsd` — what API
 keys and routed-away accounts (keyed presets, redirected endpoints, Bedrock)
@@ -414,18 +412,18 @@ records its list-price value when it ends; one whose model has a user price or
 "Map to" (below) is re-priced when read (`repriceTurnForUserPrices`), so a price
 set later reaches past chats too.
 
-The Usage page's hero adds one line from it — ADE chats billed to API keys and
+The Usage page's hero adds one line from it — DAEX chats billed to API keys and
 plan value — under the API-equivalent total, then the type and speed bars.
 
 ## Model detail, Set price, and Map to
 
 `usage.getModelDetail` returns one model's cost, tokens, cost per million
 tokens, cache hit rate (cache reads over the whole input side), daily trend,
-split, the price ADE bills it at (`custom`, `list`, or `fallback`, with
+split, the price DAEX bills it at (`custom`, `list`, or `fallback`, with
 `unpriced` when nothing prices it), its own "Map to", and `mappedFrom`: the
 model ids mapped onto it. A mapped model no longer appears on its own, so its
 target's detail is where it is unmapped (desktop, web and the phone show an
-Unmap button; `ade usage stats --model` prints "Also here").
+Unmap button; `daex usage stats --model` prints "Also here").
 
 `usage.setModelPriceOverride {model, models?, price?, mapTo?}` (CTO role; a
 controller action from the phone) writes this machine's
@@ -445,20 +443,20 @@ the file on disk, so another process's change since is kept.
 The ledger worker reads the file when it starts, so a save re-prices history
 by starting a history refresh in the background; the page updates when that
 scan lands. A scan already running read the old prices, so the re-price runs
-after it finishes rather than joining it. `ade usage prices --text` lists both; `ade usage prices set` writes
+after it finishes rather than joining it. `daex usage prices --text` lists both; `daex usage prices set` writes
 them.
 
 ## Lifetime stats survive lane deletion
 
 Lane deletion cascades away `lanes`, `terminal_sessions`, `claude_sessions`,
-`session_deltas`, and the lane's `operations` rows, so every all-time ADE figure
-used to count only the lanes nobody had tidied up. Deleting a lane now writes one
+`session_deltas`, and the lane's `operations` rows, which would leave every all-time DAEX
+figure counting only the lanes nobody had tidied up. Deleting a lane writes one
 aggregate `lane_usage_tombstones` row first — integer counters, the created and
 deleted calendar days, and a hex active-day bitmap, and nothing that could
 reconstruct what the lane was doing. `usageStatsStore` range-filters those rows
 by the lane's active span, excludes duplicate-absorb rows from creation and
 deletion counts, and folds their decoded active days into streaks. AI token
-totals were never affected: they come from provider transcript files ADE does
+totals were never affected: they come from provider transcript files DAEX does
 not own or delete. See
 [Lanes: what a deleted lane leaves behind](../lanes/README.md#what-a-deleted-lane-leaves-behind).
 
@@ -518,7 +516,7 @@ databases not attached right now keep their last counts.
   same way, so the page is not a scan behind for it.
 - **Unknown is not zero.** With no machine reporting activity, the session
   counts stay unknown (the UI shows no session figure). A machine on an older
-  ADE that used a model in the range makes the counts a floor:
+  DAEX that used a model in the range makes the counts a floor:
   `summary.sessionCountsPartial`, shown as "12+", with a source note naming it.
 
 GitHub metrics are excluded from the merge for the same reason in a different
@@ -614,7 +612,7 @@ the page).
 ### Quota belongs to the login
 
 A provider limit is tied to the login, so every screen shows each login's
-freshest reading from any machine on the ADE account. `peerLiveQuota.ts` holds
+freshest reading from any machine on the DAEX account. `peerLiveQuota.ts` holds
 what the peers last said, in memory only, and `poolPeerQuota` pools it with this
 machine's own snapshot into two views:
 
@@ -623,7 +621,7 @@ machine's own snapshot into two views:
   beats one taken before that machine's login expired; within the same kind the
   newer one wins. An unexpired reading only counts while its reset is in the
   future.
-- **For display** (the popover, `ade usage limits`, Settings): that, plus logins
+- **For display** (the popover, `daex usage limits`, Settings): that, plus logins
   signed in only on another machine, marked `notSignedInHere`. They show as
   **Not signed in here**, so every login's room is in one place. The machine
   that read it is in the window's details ("Read on"). They can take no chat here, so smart balance never picks them
@@ -652,10 +650,10 @@ reads of one published snapshot return one view.
 ## Claude credential hygiene
 
 `~/.claude/.credentials.json` can be a stale leftover while the live login sits
-in the macOS Keychain (the Claude CLI's default store). ADE reads a login
+in the macOS Keychain (the Claude CLI's default store). DAEX reads a login
 without ever changing it (`readClaudeLogin` returns `ok`, `expired`,
 `signed_out`, or `unreadable`). Anthropic rotates the refresh token on every
-refresh and the Claude CLI keeps the only saved copy, so ADE never spends it: a
+refresh and the Claude CLI keeps the only saved copy, so DAEX never spends it: a
 refresh here would leave the CLI's saved token dead and the CLI's next refresh
 would clear the login, which is how idle secondary accounts lost their
 sign-in. These rules keep a dead file token from turning into an OAuth storm
@@ -671,7 +669,7 @@ that gets the whole client rate-limited (429) by Anthropic:
 - Claude Code namespaces the Keychain item per config directory: the machine's
   default login is the bare `Claude Code-credentials`, and a
   `CLAUDE_CONFIG_DIR` login (`~/.ade/provider-homes/claude/<id>`) appends the
-  first 8 hex characters of the SHA-256 of that directory. ADE reads the item
+  first 8 hex characters of the SHA-256 of that directory. DAEX reads the item
   matching the account it is asking about, so a scoped login is never mistaken
   for signed out — and never handed the default account's token.
 - Any successful Keychain read (explicit refresh, provider-status checks)
@@ -698,8 +696,7 @@ that gets the whole client rate-limited (429) by Anthropic:
 
 ## Reproducible baseline
 
-The pre-change baseline came from ADE structured logs for 2026-07-10. Measure
-the same events with:
+Measure the usage refresh from DAEX structured logs with:
 
 ```sh
 rg 'usage\.(forceRefresh|getUsageSnapshot)' ~/.ade/logs -g '*.log'
@@ -772,16 +769,16 @@ signed in keeps the last unexpired windows and marks them stale, the same way
 Claude and Codex already do. These providers are one login per machine: there
 is no second account and no "continue on another account".
 
-| Provider | Credential ADE reads | Quota request | What the bar shows |
+| Provider | Credential DAEX reads | Quota request | What the bar shows |
 |---|---|---|---|
-| Cursor | `cursorAuth/accessToken` in the local Cursor `state.vscdb` (macOS `~/Library/Application Support/Cursor/User/globalStorage`, Linux `$XDG_CONFIG_HOME/Cursor/...` or `~/.config/Cursor/...`, Windows `%APPDATA%\Cursor\...`). A token whose JWT expiry is inside 60 seconds is skipped. ADE does not refresh it. | `GET https://cursor.com/api/usage-summary`. The `WorkosCursorSessionToken` cookie is `userId::accessToken`, with the user id taken from the JWT `sub` after the last `\|`. A bare access token is rejected as signed out. No browser-cookie import, and not the team Admin API. | Plan percent for the billing cycle, labeled monthly. |
-| Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. When that response has no counts or no plan, the Copilot SDK's account quota (`client.rpc.account.getQuota`) is read instead, at most once every 15 minutes unless the user refreshes. Its windows replace these when it has any. ADE reads account email from `GET https://api.github.com/user` with the same token. If that call fails, ADE keeps the last email it read with the same token; a different token gets no remembered email. | Monthly premium quota, including the top-level `quota_reset_date`/`quota_reset_date_utc` when present. |
+| Cursor | `cursorAuth/accessToken` in the local Cursor `state.vscdb` (macOS `~/Library/Application Support/Cursor/User/globalStorage`, Linux `$XDG_CONFIG_HOME/Cursor/...` or `~/.config/Cursor/...`, Windows `%APPDATA%\Cursor\...`). A token whose JWT expiry is inside 60 seconds is skipped. DAEX does not refresh it. | `GET https://cursor.com/api/usage-summary`. The `WorkosCursorSessionToken` cookie is `userId::accessToken`, with the user id taken from the JWT `sub` after the last `\|`. A bare access token is rejected as signed out. No browser-cookie import, and not the team Admin API. | Plan percent for the billing cycle, labeled monthly. |
+| Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. When that response has no counts or no plan, the Copilot SDK's account quota (`client.rpc.account.getQuota`) is read instead, at most once every 15 minutes unless the user refreshes. Its windows replace these when it has any. DAEX reads account email from `GET https://api.github.com/user` with the same token. If that call fails, DAEX keeps the last email it read with the same token; a different token gets no remembered email. | Monthly premium quota, including the top-level `quota_reset_date`/`quota_reset_date_utc` when present. |
 | Grok | Non-expired bearer in `~/.grok/auth.json` (`GROK_HOME` overrides the directory), else `GROK_OAUTH_TOKEN`. Management keys (`xai-…`) and cookie-shaped values are ignored. | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`. No grok.com cookie import. | `creditUsagePercent` for the current period, labeled weekly or monthly from the period length. |
-| OpenCode | `OPENCODE_API_KEY`, else an OpenCode or Zen key in the local OpenCode `auth.json`. Other providers' keys in that file are not sent. When neither exists, the Go plan's own console login is read from `opencode.db` (`account.access_token` plus `account_state.active_org_id`; skipped when past `token_expiry`). ADE refreshes neither credential. | `GET https://opencode.ai/zen/go/v1/usage` for an API key. For the console login, `GET https://opencode.ai/console/api/go/status` with the `x-org-id` header (the header the console requires). | Rolling 5-hour, weekly, and monthly percents. The API-key path reads the reported percents (a value of 1 is 1%, not 100%); the console path computes `100 × usedMicroCents / limitMicroCents` from the string meters and uses the subscription's `access.endsAt` for the month reset, which carries none of its own. An account without a Go plan answers `access: null` and shows no OpenCode row. Both paths are fixture-verified; the console path is live-verified against a Go account on the development machine. |
-| Muse | None read by ADE. The reading arrives over MSP from a running Muse chat's host — `usage/read` when the host starts, `usage/changed` after that. | No request of ADE's own. An older observation never replaces a newer one (two chats' hosts can report out of order), and a window whose reset has passed is dropped until Muse reports the next. | The rolling 5-hour window and the weekly percent Muse reports, with a window length when Muse sends one. In-process only, so a fresh app start shows no Muse row until a Muse chat runs again. |
-| Kimi | Non-expired `access_token` in the token file Kimi Code itself reads (`$KIMI_CODE_HOME`, `~/.kimi-code` by default). `shared/kimiCodeLogin.ts` finds it the way Kimi does. First it reads `[providers."managed:kimi-code"]` in `config.toml`, which holds the API base (`base_url`) and the credential slot (`oauth.key`). The mainland-China default slot is `credentials/kimi-code.json`. Any other host and base, including `kimi login --region global`, has its own `credentials/kimi-code-env-<hash>.json`. `KIMI_CODE_BASE_URL` and `KIMI_CODE_OAUTH_HOST`/`KIMI_OAUTH_HOST` override that entry, as they do for Kimi. With no entry, ADE reads `kimi-code.json`, and the `region` marker picks the mainland-China or global base. A login kept in the OS keyring is not read. ADE never refreshes the token. | `GET {base}/usages`, plus `GET {base}/me` with the same bearer token for email and nickname. The top-level `usage` block (`used`, `limit`, `resetTime`) is the weekly quota. Each `limits[]` row reads `used`, `limit`, and `resetTime` from its `detail`, and its length from `window.duration` times `window.timeUnit` (`TIME_UNIT_MINUTE`, `_HOUR`, `_DAY`, or `_WEEK`). Counts may arrive as numeric strings, and an omitted `used` is 0. If `/me` fails, ADE keeps the last email it read with the same token, so the account id does not fall back to `kimi:local`. A different token gets no remembered email, because it may belong to a different account. Kimi rotates its token when it refreshes, so a refresh that lands on a failed `/me` shows `kimi:local` for that one poll. | The weekly quota plus each limit, typed by length: 8 hours or less is the 5-hour window, 10 days or less is weekly, longer is monthly. The first window of each type is kept. The response shape matches Kimi Code's own client (`packages/oauth/src/managed-usage.ts`). ADE's parsing is fixture-verified. Kimi has not been live-verified on the development machine. |
+| OpenCode | `OPENCODE_API_KEY`, else an OpenCode or Zen key in the local OpenCode `auth.json`. Other providers' keys in that file are not sent. When neither exists, the Go plan's own console login is read from `opencode.db` (`account.access_token` plus `account_state.active_org_id`; skipped when past `token_expiry`). DAEX refreshes neither credential. | `GET https://opencode.ai/zen/go/v1/usage` for an API key. For the console login, `GET https://opencode.ai/console/api/go/status` with the `x-org-id` header (the header the console requires). | Rolling 5-hour, weekly, and monthly percents. The API-key path reads the reported percents (a value of 1 is 1%, not 100%); the console path computes `100 × usedMicroCents / limitMicroCents` from the string meters and uses the subscription's `access.endsAt` for the month reset, which carries none of its own. An account without a Go plan answers `access: null` and shows no OpenCode row. Both paths are fixture-verified; the console path is live-verified against a Go account on the development machine. |
+| Muse | None read by DAEX. The reading arrives over MSP from a running Muse chat's host — `usage/read` when the host starts, `usage/changed` after that. | No request of DAEX's own. An older observation never replaces a newer one (two chats' hosts can report out of order), and a window whose reset has passed is dropped until Muse reports the next. | The rolling 5-hour window and the weekly percent Muse reports, with a window length when Muse sends one. In-process only, so a fresh app start shows no Muse row until a Muse chat runs again. |
+| Kimi | Non-expired `access_token` in the token file Kimi Code itself reads (`$KIMI_CODE_HOME`, `~/.kimi-code` by default). `shared/kimiCodeLogin.ts` finds it the way Kimi does. First it reads `[providers."managed:kimi-code"]` in `config.toml`, which holds the API base (`base_url`) and the credential slot (`oauth.key`). The mainland-China default slot is `credentials/kimi-code.json`. Any other host and base, including `kimi login --region global`, has its own `credentials/kimi-code-env-<hash>.json`. `KIMI_CODE_BASE_URL` and `KIMI_CODE_OAUTH_HOST`/`KIMI_OAUTH_HOST` override that entry, as they do for Kimi. With no entry, DAEX reads `kimi-code.json`, and the `region` marker picks the mainland-China or global base. A login kept in the OS keyring is not read. DAEX never refreshes the token. | `GET {base}/usages`, plus `GET {base}/me` with the same bearer token for email and nickname. The top-level `usage` block (`used`, `limit`, `resetTime`) is the weekly quota. Each `limits[]` row reads `used`, `limit`, and `resetTime` from its `detail`, and its length from `window.duration` times `window.timeUnit` (`TIME_UNIT_MINUTE`, `_HOUR`, `_DAY`, or `_WEEK`). Counts may arrive as numeric strings, and an omitted `used` is 0. If `/me` fails, DAEX keeps the last email it read with the same token, so the account id does not fall back to `kimi:local`. A different token gets no remembered email, because it may belong to a different account. Kimi rotates its token when it refreshes, so a refresh that lands on a failed `/me` shows `kimi:local` for that one poll. | The weekly quota plus each limit, typed by length: 8 hours or less is the 5-hour window, 10 days or less is weekly, longer is monthly. The first window of each type is kept. The response shape matches Kimi Code's own client (`packages/oauth/src/managed-usage.ts`). DAEX's parsing is fixture-verified. Kimi has not been live-verified on the development machine. |
 
-Gemini, Droid, Pi, and Qwen have no remaining-quota source, so ADE adds no
+Gemini, Droid, Pi, and Qwen have no remaining-quota source, so DAEX adds no
 limits card for them; their spend comes from local history. The history scan
 reads Pi (the session root Pi itself uses: `PI_CODING_AGENT_SESSION_DIR`,
 else the `sessionDir` in Pi's `settings.json` with `~` expanded, else
@@ -803,16 +800,16 @@ Primary references: [CodexBar Cursor](https://github.com/steipete/CodexBar/blob/
 [CodexBar Grok](https://github.com/steipete/CodexBar/blob/main/docs/grok.md), and
 [CodexBar OpenCode Go](https://github.com/steipete/CodexBar/blob/main/docs/opencodego.md).
 
-Droid has no remaining-quota endpoint, and ADE shows no limits card for it.
-When the user supplies an optional Factory API key (`fk-…`) in Settings, ADE
+Droid has no remaining-quota endpoint, and DAEX shows no limits card for it.
+When the user supplies an optional Factory API key (`fk-…`) in Settings, DAEX
 reads the credits that each Droid session used from the
-[Factory API](https://docs.factory.ai/api-reference). ADE reads per-session
+[Factory API](https://docs.factory.ai/api-reference). DAEX reads per-session
 credits only. It does not read monthly consumption. Without the key, Droid
 reports no quota source, not an error.
 
-After each Cursor chat turn on a saved Cursor API key, ADE asks
+After each Cursor chat turn on a saved Cursor API key, DAEX asks
 `Agent.getUsage` for the turn's usage. A cloud turn asks for its own run. The
-turn's `done` event waits for the answer, up to 12 s. ADE puts the run's tokens
+turn's `done` event waits for the answer, up to 12 s. DAEX puts the run's tokens
 on `done` and records one billed row, `cursor:getUsage:<runId>`, in
 `usage.cursor.billedEntries.v1` (`cursorBilledUsageStore.ts`). The row keeps
 Cursor's `chargedCents` as its cost override. A stored Cursor login (no API
@@ -825,7 +822,7 @@ and its `done` event does not change. Every Cursor `done` event carries
 `account: { provider: "cursor", kind: "subscription", email? }`.
 
 The Usage tab's production scan runs in the ledger worker, and the worker does
-not read the billed rows. For an ADE Cursor chat, the tab shows the `cursor-agent`
+not read the billed rows. For a DAEX Cursor chat, the tab shows the `cursor-agent`
 character estimate from the chat's Cursor Agent transcript. Only the in-process
 scan (a test harness that injects scanners) adds the billed rows to the `cursor`
 provider, one row per message id.
@@ -881,7 +878,7 @@ chat turn.
   `turnUsageReconcilers.ts` reads it on a timer and appends an amendment line;
   readers apply amendments in time order.
   - Cursor: `cursorDashboardUsage.ts` reads Cursor's dashboard usage events
-    with the Cursor desktop login, 20 s, 90 s, and 300 s after the turn. ADE
+    with the Cursor desktop login, 20 s, 90 s, and 300 s after the turn. DAEX
     does not send an expired login token. An event's `conversationId` is the
     Cursor SDK agent id (verified live), so the match is exact. A turn takes
     the events from 10 s before its first event up to 60 s after its `done`.
@@ -894,7 +891,7 @@ chat turn.
     private: a shape change fails closed (no amendment, a `bad_body`
     warning). Set `ADE_CURSOR_DASHBOARD_USAGE` to `0`, `false`, `off`, or
     `no` to turn the read off.
-  - Droid: with a Factory key, ADE reads the session's Factory credits 15 s
+  - Droid: with a Factory key, DAEX reads the session's Factory credits 15 s
     after the turn. The row gets the session total, and the turn's own
     `factory_credit` plan usage when the brain saw the session's previous
     total. The reads for one session run in order, so a slow read cannot
@@ -907,8 +904,8 @@ chat turn.
 - **Burn rate.** `quotaBurnRate.ts` pairs the quota readings of the last 14
   days with ledger rows. For each window instance (one reset time, within the
   five-minute jitter), it divides the API-equivalent dollars of the matching
-  ADE turns by the percent the window moved. These rules apply:
-  - A span without an ADE turn does not count.
+  DAEX turns by the percent the window moved. These rules apply:
+  - A span without a DAEX turn does not count.
   - A span with a turn that used tokens but has no list price does not count,
     because its dollars are unknown.
   - A turn with no tokens costs $0. It does not make its span unpriced.
@@ -928,7 +925,7 @@ chat turn.
   Other clients on the same login (a terminal Claude Code, the Cursor IDE)
   also move the percent, so the result is a lower bound on dollars per
   percent, and `headroomUsd` is a safe minimum.
-- **Read it.** `ade usage turns --days 14 --text` (action
+- **Read it.** `daex usage turns --days 14 --text` (action
   `usage.getTurnUsageSummary`) returns totals by provider, account, and model,
   the cache hit ratio, the median context, served-model mismatches, and the
   burn rates. `--group-by provider|provider_model|provider_account_model` is
@@ -955,7 +952,7 @@ store at a local snapshot instead of the Worker.
 list, newest project first — before, it read only the newest project's list,
 which dropped OpenCode routes whenever that project had never listed OpenCode
 models. `routerCore` classifies the task from its agent type, its short label,
-and its brief (the Agent tool's `prompt`, or an ADE child chat's first message).
+and its brief (the Agent tool's `prompt`, or a DAEX child chat's first message).
 The brief decides most kinds: a brief that forbids edits ("Read-only", "Do not
 edit any files") is `review` or `read_only`, and an opening edit instruction
 ("You implement", "Apply the verified fixes", "Fix …") is an edit. The label
@@ -992,12 +989,12 @@ well as each event, gives up on a subagent after 6 hours, so a quiet brain still
 logs it. Briefs come from any subagent-spawning tool (`Agent`, `Task`,
 `spawn_agent`, `subagent`; `prompt`, `message`, `instructions`, or `task`). Reports skip v1 lines (from older builds): they guessed
 `high` for a Claude subagent that named a model and classified from the label only. `routeCatalog` and `routerCore` are pure, and the service never
-throws into the chat. Read it with `ade router shadow --days 7` (action
-`usage.getRouterShadowSummary`), list routes with `ade router routes`, dry-run one
-task with `ade router pick`, and force a fetch with `ade router refresh`.
+throws into the chat. Read it with `daex router shadow --days 7` (action
+`usage.getRouterShadowSummary`), list routes with `daex router routes`, dry-run one
+task with `daex router pick`, and force a fetch with `daex router refresh`.
 `ADE_MODEL_ROUTER_SHADOW=0` turns the watcher off.
 
-**Your model catalogue.** `ade models catalog` (action `usage.getModelCatalog`,
+**Your model catalogue.** `daex models catalog` (action `usage.getModelCatalog`,
 read-only, like the other usage reads it runs on the machine the CLI targets)
 lists every model this machine can run, one entry per harness × model, from the
 same model lists and the same registry mapping as the routes (`modelCatalog.ts`
@@ -1014,7 +1011,7 @@ A model the registry has no family for is listed with a null profile. `--text`
 prints one line per model with `MODEL_REGISTRY_AA_ATTRIBUTION`; without it the
 full profiles come back as JSON. It starts nothing and changes no routing.
 
-**Your model sheet.** `ade models sheet [--provider <p>] [--text]` (action
+**Your model sheet.** `daex models sheet [--provider <p>] [--text]` (action
 `usage.getModelSheet`, read-only, same machine scoping as the catalogue)
 organizes the same catalogue by the kind of task each model suits.
 `modelSheet.ts` groups the runnable models by registry family and gives each
@@ -1040,7 +1037,7 @@ is shown as a note and never lends its scores. `--text` prints the task-kind
 table and then each family in words; without it the sheet comes back as JSON.
 It starts nothing and changes no routing.
 
-`ade router efficiency --days 7` (action `usage.getRouterEfficiency`) reports what
+`daex router efficiency --days 7` (action `usage.getRouterEfficiency`) reports what
 the router would have saved. It reads the turn ledger, so the history starts on day
 one, not the day the router shipped. Each chat thread is one series of turns. The
 router may change a thread's route only at a free switch point, where the prompt
@@ -1075,13 +1072,13 @@ The report also summarizes the subagents in the shadow log. Claude reports no
 per-subagent price, so Claude subagents are weighted by tokens instead of dollars.
 OpenCode reports a price, so those subagents carry dollars. The report also lists
 the segments that kept their route and why, the top moves by cost, and the threads
-with the most spend. `ade router efficiency --days 7 --text` prints the readable
+with the most spend. `daex router efficiency --days 7 --text` prints the readable
 form.
 
-Known limits: burn rates count ADE turns only, so a plan also used outside ADE
+Known limits: burn rates count DAEX turns only, so a plan also used outside DAEX
 looks dearer than it is, and cross-plan picks are logged but not yet trustworthy.
-On the Mac Studio (2026-10-04) the Codex and OpenCode Go rows show more than 100% of
-a window in a week, so most of their window use happens outside ADE. The local
+Codex and OpenCode Go rows can show more than 100% of a window in a week when
+most of the window use happens outside DAEX. The local
 history scans (`usageLedgerScanners`) see that use, but their entries carry no
 account yet; feeding them to the burn rate is the next step. Briefs are missing
 for about 9% of Claude subagents whose Agent tool call never reached the
@@ -1089,8 +1086,8 @@ transcript; those classify from the label.
 
 ## Daily usage research report
 
-Each machine sends one compact report for each finished local day to ADE's
-account directory Worker (`POST /usage-research/daily`). ADE uses the reports
+Each machine sends one compact report for each finished local day to DAEX's
+account directory Worker (`POST /usage-research/daily`). DAEX uses the reports
 to learn how to route turns between models: prices, models, times, and costs
 for each provider, mainly Claude and Codex. The wire contract is in
 `apps/desktop/src/shared/usageResearch.ts`. The Worker keeps its own copy.
@@ -1117,7 +1114,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
 - **Ids.** `installId` is the first 32 hex characters of
   sha256("ade-usage-research-install:" + salt). `accountRef` is the first 12
   hex characters of sha256(salt + ":" + account key). The salt is random for
-  each install and stays on the machine. Nothing else ADE sends derives from
+  each install and stays on the machine. Nothing else DAEX sends derives from
   it, so `installId` is not linkable to analytics or the account, and the
   hash alone does not join `accountRef`s across installs. Quota readings are
   account-wide, though: two installs signed in to one account report the same
@@ -1132,7 +1129,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
   machine, set `ADE_USAGE_RESEARCH` to `0`, `false`, `off`, or `no`. Both are
   checked again before every request, so turning analytics off mid-run stops
   the run, and stopping the uploader aborts the request in flight.
-- **Schedule.** The brain starts one uploader for each ADE home
+- **Schedule.** The brain starts one uploader for each DAEX home
   (`usageResearchUploader.ts`, wired in `apps/ade-cli/src/bootstrap.ts`). It
   runs 2 minutes after start, then each hour. Each run looks at the 7 local
   days before today. It never sends today. It sends at most 7 requests, oldest
@@ -1184,10 +1181,10 @@ for each provider, mainly Claude and Codex. The wire contract is in
   explicitly. The top-bar popover keeps the per-account meter rows
   (`UsageLimitsBand` → `UsageAccountRow`), so one snapshot has a compact and a
   gauge presentation.
-- `ade usage limits` (action `usage.getUsageLimits`, pure builder
+- `daex usage limits` (action `usage.getUsageLimits`, pure builder
   `shared/usageLimitsReport.ts`) is the agent-sized read of the same cached
   snapshot, about 2 KB instead of the snapshot's ~1 MB of history. One row per
-  account: named by its email, which `ade chat create --instance` takes (an id
+  account: named by its email, which `daex chat create --instance` takes (an id
   works too; an account that has not signed in has no email, so its id is the
   only handle), each window's percent
   left, reset, and pace (the poll's `etaHours`, counted from the reading), the
@@ -1201,11 +1198,11 @@ for each provider, mainly Claude and Codex. The wire contract is in
   nothing to show still gets a row, so "could not read" is not mistaken for "not
   signed in". It never refreshes. `--machine` / `--all-machines` read other
   machines (see `docs/features/sync-and-multi-device/cross-machine-agents.md`),
-  the ADE MCP typed tool `usage_limits` runs it locally, and `ade chat status`
-  shows the chat's own `account`. The `ade-cli-control-plane` skill tells agents
+  the DAEX MCP typed tool `usage_limits` runs it locally, and `daex chat status`
+  shows the chat's own `account`. The `daex-cli-control-plane` skill tells agents
   to read it only when the user asks about limits.
-- `ade usage refresh` refreshes quota only; `ade usage refresh --history` runs
-  the separate history path. `ade usage stats --text` prints the spend
+- `daex usage refresh` refreshes quota only; `daex usage refresh --history` runs
+  the separate history path. `daex usage stats --text` prints the spend
   summary with the type and speed split and the top models;
   `--by chat|lane|account` prints the ledger breakdown, and
   `--provider P --model M` one model's detail.
@@ -1214,7 +1211,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
   sparkline (cost, tokens, sessions) or an on/off day strip (active days) and
   the change against the previous window; the type and speed bars sit under the
   cost figure. Breakdown switches between Models (every session on the
-  machine), Chats, Lanes (a lane opens its chats) and Accounts (ADE chats).
+  machine), Chats, Lanes (a lane opens its chats) and Accounts (DAEX chats).
   Clicking a model opens its detail dialog with Set price and Map to. `C` / `T`
   switch the Cost/Tokens metric, and ⌘⇧E (Ctrl+Shift+E) exports the visible
   Breakdown view as CSV. The bars use the data-viz categorical order validated
@@ -1255,7 +1252,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
   Limits cards use. Copilot reads `email`/`login` from GitHub `/user`, while Kimi
   reads `email`/`name` from `/me`, using only the bearer already resolved for
   quota. Pi reads only provider key names and `openai-codex.accountId`, then
-  matches that id to ADE's own Codex identity; Claude is unmatched because Pi
+  matches that id to DAEX's own Codex identity; Claude is unmatched because Pi
   has no Claude account id. No token is read into the snapshot, logged, or persisted. Both fields are
   optional: an unknown account shows no line, and a host that predates them
   shows no external link.
@@ -1284,7 +1281,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
   transposes `buildLimitCards`, so one set of numbers feeds both shapes) and the
   `adeUsageLimitCards` family in `ADEUsageDesign.swift` on iOS; both are pure
   and clock-injected, and both are asserted against the same numbers. iOS
-  and `ade usage snapshot` name an account that has no
+  and `daex usage snapshot` name an account that has no
   window yet as `No usage yet` (the snapshot text says `no windows yet`). The row
   itself is `UsageAccountRow.tsx`, rendered by `UsageLimitsBand` in the header
   popup. It replaced a per-window card stack that cost roughly 360px per
@@ -1319,7 +1316,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
   email the row showed, and the peer refuses it when its account now holds
   another login (a new sign-in in the same folder keeps the id). After the
   spend the host drops the peer's old count, then pulls the peers' quota
-  again, so a failed pull cannot offer the spent credit a second time. A peer too old for the method answers "Update ADE on
+  again, so a failed pull cannot offer the spent credit a second time. A peer too old for the method answers "Update DAEX on
   <machine> to spend its reset from here, or spend it there."
 - Accounts pool by email: the same login reported by two machines is one
   account with two `Via` entries, freshest reading first, and its numbers are
@@ -1371,7 +1368,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
   used. Up to eight travel in a peer's reading.
 - The iOS quota rows are readings, not controls: the old tap-to-focus gesture
   on a pace bar is gone. Tapping a row opens the account detail sheet.
-- Codex and Claude both report banked reset credits, and ADE parses them:
+- Codex and Claude both report banked reset credits, and DAEX parses them:
   `parseCodexResetCredits` counts only credits whose status is still
   `available` and reports the soonest expiry; `parseClaudeResetCredits` (Claude
   Code's `cedar_ember` program) counts the grants the server marks usable and
@@ -1403,7 +1400,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
   tree early. The app-server aborts an in-flight request the moment it sees
   stdin EOF, and `account/rateLimits/read` is a network round-trip, so closing
   stdin right after the write returned only the `initialize` reply and dropped
-  the credit payload — which ADE then cached as `availableCount: 0` and never
+  the credit payload — which DAEX then cached as `availableCount: 0` and never
   offered **Use reset**. Notifications interleaved between replies carry no
   numeric id and are ignored.
 

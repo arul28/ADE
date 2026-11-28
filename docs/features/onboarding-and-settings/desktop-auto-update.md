@@ -1,28 +1,42 @@
-# Desktop auto-update disk-space behavior
+# Desktop auto-update
+
+## The minimum-build gate
+
+Besides the updater, the account server can require a minimum build
+(`GET /client/minimum`). Desktop main reads it at launch, every 3 hours and on
+window focus after 30 minutes without a read
+(`main/services/updates/clientUpdateGate.ts`); the rule is
+`desktopUpdateRequirement` in `shared/clientUpdateGate.ts`, and iOS has
+`ClientUpdateGate.swift`. A stale or failed read never blocks. A blocked build
+shows the update screen and drops its own Sentry events. At the DAEX launch the
+minimum is set to the launch build, so apps that register only `ade://` update
+before `daex://` links reach them (builds before the gate, v1.2.130 and older,
+are not blocked). Setting and undoing it: [the update gate
+playbook](../../playbooks/update-gate.md).
 
 ## Update tracks on other machines
 
 In desktop Settings, **Update other machines** shows a **Stable / Beta** choice
 for eligible connected computers. The selected computer checks whether the
 release can open its databases, then downloads it and restarts. The row reports
-progress and shows the new track when that computer reconnects on it. ADE Cloud
+progress and shows the new track when that computer reconnects on it. DAEX Cloud
 manages its own updates. A manually installed Linux package is updated on the
 computer itself. The web app and the phone don't offer this switch: the web
 client has no `switchUpdateTrack`, so the row shows no Stable / Beta choice there.
 
 ## macOS update path
 
-ADE uses `electron-updater` with the macOS ZIP target. The behavior below was
+DAEX uses `electron-updater` with the macOS ZIP target. The behavior below was
 verified against the installed `electron-updater` 6.8.3 source and the official
 [electron-builder auto-update documentation](https://www.electron.build/docs/features/auto-update/).
 
 1. `checkForUpdates()` reads `latest-mac.yml` and emits `update-available`.
-2. ADE keeps `autoDownload` disabled so it can inspect the artifact size and
+2. DAEX keeps `autoDownload` disabled so it can inspect the artifact size and
    preflight the updater-cache volume before calling `downloadUpdate()`.
 3. `electron-updater` writes the full archive under the updater cache's
-   `pending/` directory. ADE disables differential downloads, so new updates
+   `pending/` directory. DAEX disables differential downloads, so new updates
    do not create or retain the root `update.zip` differential cache copy. An
-   `update.zip` left by an older ADE version may still be present; it is never
+   `update.zip` left by an older DAEX version may still be present; it is never
    the staged installer.
 4. After the archive is ready, `MacUpdater` starts a loopback HTTP server and
    emits `update-downloaded`. Native Squirrel.Mac later fetches the cached ZIP
@@ -34,13 +48,13 @@ verified against the installed `electron-updater` 6.8.3 source and the official
 6. Squirrel/ShipIt stages, expands, replaces, and relaunches the application on
    the installed application's volume.
 
-A `ready` snapshot is not proof the ZIP still exists. ADE stores the archive
+A `ready` snapshot is not proof the ZIP still exists. DAEX stores the archive
 under `~/Library/Caches/ade-desktop-updater` (Windows: `%LOCALAPPDATA%\ade-desktop-updater`),
-which the OS may purge while ADE stays running. `MacUpdater` also starts the
+which the OS may purge while DAEX stays running. `MacUpdater` also starts the
 loopback HTTP server at download time, not at install time, so a days-old
 `ready` state can hand Squirrel a dead pipe. Squirrel pipes the pending ZIP
 recorded as `downloadedFile`; a root `update.zip`, if one remains from an older
-ADE version, is only a differential cache copy. ADE therefore:
+DAEX version, is only a differential cache copy. DAEX therefore:
 
 - Re-downloads the staged archive **before** uninstalling the background
   service or calling native `quitAndInstall`, whenever the recorded
@@ -56,12 +70,12 @@ ADE version, is only a differential cache copy. ADE therefore:
   `downloadUpdate()` resolving with a present ZIP is the source of truth.
 
 The same `quitAndInstall()` path serves the desktop pill, the orange Restart
-banner, Settings, `ade update install`, and idle auto-apply.
+banner, Settings, `daex update install`, and idle auto-apply.
 There is no per-surface installer.
 
 The practical volume checks are therefore:
 
-- Before download: ADE's resolved updater cache path.
+- Before download: DAEX's resolved updater cache path.
 - Before staging/install: `process.execPath`, which resolves to the installed
   application bundle's volume on macOS.
 
@@ -69,7 +83,7 @@ The practical volume checks are therefore:
 
 A root-owned `/Applications/ADE.app` makes every update ask for a password.
 `appBundleOwnership.ts` detects it and `AppBundleOwnershipBanner.tsx` docks
-"ADE will ask for your password on every update" with Fix it (an `osascript`
+"DAEX will ask for your password on every update" with Fix it (an `osascript`
 admin `chown -R` of the bundle to the user) and Details. The IPC
 (`registerAppBundleOwnershipIpc.ts`, types in `shared/types/appBundleOwnership.ts`)
 is local-only and takes no pin: it acts on this computer's bundle.
@@ -80,17 +94,17 @@ Windows x64 uses electron-builder's per-user NSIS target and
 `electron-updater`'s `latest.yml` + blockmap contract:
 
 1. Electron-builder generates the installed `resources/app-update.yml` from
-   the package's GitHub publish configuration. ADE does not copy the
+   the package's GitHub publish configuration. DAEX does not copy the
    source-tree YAML into the package. `ADE_RELEASE_REPOSITORY=owner/repo`
    lets CI bind a fork package to the repository that produced it while the
    source default remains the upstream `arul28/ADE`.
-2. `checkForUpdates()` reads `latest.yml`; ADE keeps `autoDownload` disabled
+2. `checkForUpdates()` reads `latest.yml`; DAEX keeps `autoDownload` disabled
    until it has run the same cache-volume capacity preflight used on macOS.
 3. `downloadUpdate()` writes the NSIS installer and blockmap into the updater
    cache. `quitAndInstall()` hands off to the external NSIS updater, so Windows
    uses the 60-second hard quit bound and has no in-process Squirrel staging
    signal. If that installer file is gone from `%LOCALAPPDATA%\ade-desktop-updater`
-   when Install runs, ADE re-downloads it first — the same vanished-archive
+   when Install runs, DAEX re-downloads it first — the same vanished-archive
    restore used on macOS — then hands off to NSIS.
 4. The packaged-artifact smoke test requires the generated update authority
    to match `ADE_RELEASE_REPOSITORY`, preventing a fork build from silently
@@ -99,7 +113,7 @@ Windows x64 uses electron-builder's per-user NSIS target and
 ### What the person sees, and what the installer does
 
 The handoff is silent (`quitAndInstall(true, true)`; it has to be, or the
-assisted installer never relaunches ADE), so ADE shows its own window for the
+assisted installer never relaunches DAEX), so DAEX shows its own window for the
 gap. Right before the handoff, `windowsInstallProgress.ts` copies
 `resources/ade-cli/windows-update-progress.ps1` to
 `%LOCALAPPDATA%\ADE\update-progress-<channel>\` and starts it through
@@ -107,16 +121,16 @@ gap. Right before the handoff, `windowsInstallProgress.ts` copies
 renames that folder away and kills every process whose image lives in it, and
 not from `%TEMP%` because some machines point TEMP at a folder other users can
 write. It uses `cmd start` because, from Electron, a `detached`
-powershell.exe exits without running and an attached one dies with ADE. The
-small, topmost "Updating ADE to vX" window follows the old app quitting, the
+powershell.exe exits without running and an attached one dies with DAEX. The
+small, topmost "Updating DAEX to vX" window follows the old app quitting, the
 installer running, and the steps in `install-steps.log`. It closes when the new
-ADE has a window on screen. If the installer ends and no new ADE appears, or
+DAEX has a window on screen. If the installer ends and no new DAEX appears, or
 the installer is still running after 10 minutes, it says so on the window and
 then acts without waiting for a click, because a remote update (from another
 machine or the phone) has nobody at the PC: it stops a still-running installer
-together with its child processes, then opens ADE. Whichever version is
+together with its child processes, then opens DAEX. Whichever version is
 installed comes up and puts its background service back, so the machine
-returns to the relay. The heartbeat says `failed` first, so that ADE does not
+returns to the relay. The heartbeat says `failed` first, so that DAEX does not
 defer to the window (below). An install the person quit into only gets the
 stuck installer stopped. Its log is read into `ade-update.jsonl` as
 `autoUpdate.install_progress_report` 30 s into the next launch.
@@ -127,37 +141,34 @@ No installer dialog may wait for an answer during a silent update: a
 failed five times) has none, so `installer.nsh` replaces it through the
 `customUnInstallCheck` and `customUnInstallCheckCurrentUser` hooks. The old
 uninstaller fails when it cannot rename a file out of the install folder, which
-a process outside that folder causes by holding a file open (a dev brain from a
-checkout with the installed `resources\app.asar` open did it on 2026-11-18,
-and the PC sat on the hidden box for two hours with no ADE and no service). The
-hook answers the box, reopens the old ADE when the run is a silent update, and
+a process outside that folder causes by holding a file open (for example a dev
+brain from a checkout with the installed `resources\app.asar` open), leaving the
+PC on a hidden box with no DAEX and no service. The hook answers the box, reopens the old DAEX when the run is a silent update, and
 exits with code 2, leaving the old install in place for a later retry. Before
 that reopen it closes this install's live update window through the window's
 own cancel file (killing it after 5 s), because the running window is the
-installed release's script: while it beats a non-failed heartbeat, the old ADE
+installed release's script: while it beats a non-failed heartbeat, the old DAEX
 would take the launch as a hand-launch mid-install and exit. Stable and Beta
 keep their windows side by side in `%LOCALAPPDATA%\ADE`, so only a window whose
 `appExe` is this install's exe counts. A window for an install on
-quit is left alone and ADE stays closed, the same rule the window follows,
-unless the person opened ADE during the install (`launch-requested.json` is
-beside the window): then it is closed and ADE reopened.
+quit is left alone and DAEX stays closed, the same rule the window follows,
+unless the person opened DAEX during the install (`launch-requested.json` is
+beside the window): then it is closed and DAEX reopened.
 
 First, though, the hook names what blocked the update. It unpacks
 `build/ade-update-holders.ps1` into its plugins folder and runs it. The script
 asks Windows' Restart Manager which processes have the install folder's
 programs, libraries, native modules or `app.asar` open, and adds any process
 whose command line names the folder. Processes from outside the folder come
-first. It writes them to `<ADE home>\runtime\update-blocked.json` and adds an
-`install update_blocked … holders=` line to `install-steps.log`. On 2026-11-19
-an orphaned dev app from a PC lane blocked four updates in a row, and nothing
-said so. The brain reports the file in its handshake
+first. It writes them to `<ade home>\runtime\update-blocked.json` and adds an
+`install update_blocked … holders=` line to `install-steps.log`. The brain reports the file in its handshake
 (`runtimeInfo.lastUpdateBlock`, `ade-cli/src/lib/hostUpdateFacts.ts`). It
 drops a report once that version is installed, or after 6 h. The brain reads the
 file off the event loop, at most every 30 s. Another computer's Machines card
-then reads "didn't install: node.exe (PID 7292) had ADE's files open. Close it,
+then reads "didn't install: node.exe (PID 7292) had DAEX's files open. Close it,
 then press Update". The card uses a report only once the far brain has
 restarted since the update was sent, because the installer writes the report
-before it reopens the old ADE.
+before it reopens the old DAEX.
 
 That card also stops waiting out its grace (5 min, or 35 min while
 downloading) when the far brain has restarted since the update was sent and
@@ -171,55 +182,52 @@ carries `startedAgoMs` and `lastUpdateBlock` (`hostUpdateFacts`).
 card applies the same two rules. The card logic lives in
 `renderer/components/remoteTargets/machineUpdateStatus.ts`.
 
-The window also writes a heartbeat. A copy of the old ADE opened by hand during
+The window also writes a heartbeat. A copy of the old DAEX opened by hand during
 the install (the person sees nothing happening and clicks the shortcut) reads
 it, brings the window forward, and exits before starting anything, instead of
-being force-killed by the installer seconds later. An `ade://` link opened in
+being force-killed by the installer seconds later. A `daex://` (or `ade://`) link opened in
 that window of time is dropped with it.
 
 An in-place update does only what an update needs. The old uninstaller runs with
 `--updated`, so `customUnInstall` passes `-Updating`: it stops the background
 service without starting ADE.exe, and leaves the terminal shim, the user PATH
-entry, `ade://`, file associations and the firewall rule in place.
+entry, the `daex://` and `ade://` link handlers, file associations and the firewall rule in place.
 `customInstall` passes `-Updating` to `windows-install-setup.ps1`, which then
 refreshes only the shim. If that refresh fails, the script puts the previous
-shim back, logs `update_continues`, and still exits 0: the update flow has
-already removed the service, and NSIS does not relaunch ADE after an abort, so
-failing here used to leave no brain and no ADE window. When the previous shim
+shim back, logs the reason, and still exits 0: the update flow has already
+removed the service, and NSIS does not relaunch DAEX after an abort, so a
+failure here would leave no brain and no DAEX window. When the previous shim
 cannot be put back either, the script also writes
-`runtime/cli-shim-repair-request` in the channel's ADE home, and the relaunched
+`runtime/cli-shim-repair-request` in the channel's DAEX home, and the relaunched
 app rewrites the shim even though its one-time `ade` install already ran,
 removing the request once that succeeds. The relaunched app
 reinstalls, restarts and verifies the service itself (`runUpdateTransaction`). Every `--updated` install comes
 from `quitAndInstall` (`autoInstallOnAppQuit` is off), which records the
 pending install that makes that launch run the transaction. The trade: if the
-new ADE does not open at all, the brain stays down, and the machine is
-unreachable from the phone, until ADE is next opened. The update window's
+new DAEX does not open at all, the brain stays down, and the machine is
+unreachable from the phone, until DAEX is next opened. The update window's
 recovery above is what opens it when nobody is there. `install-path.cmd` broadcasts
 `WM_SETTINGCHANGE` only when PATH actually changed, and detached. Its 5 s
 per-window timeout stacked to 82 s inside the installer. `customCheckAppRunning`
 replaces electron-builder's app-running check with one PowerShell pass instead
 of three or four. Every step appends its duration to
-`runtime/install-steps.log` in the channel's ADE home (`~/.ade`, or `~/.ade-alpha`
+`runtime/install-steps.log` in the channel's DAEX home (`~/.ade`, or `~/.ade-alpha`
 on the Alpha channel).
 
-Measured in Windows Sandbox with real installers (2026-10-07): from
-`quit_and_install` to the new ADE on screen took 77 s before these changes
-(1.2.94 → next). The steady state, one fixed version to the next, took 43-50 s.
-Over half of that was the sandbox copying files; the same copy takes 7 s on
-recent hardware. The first update after this change still runs the previous
-version's uninstaller, so it gets the install-side savings only.
+In Windows Sandbox with real installers, `quit_and_install` to the new DAEX on
+screen takes 43-50 s, over half of it the sandbox copying files (7 s on recent
+hardware).
 
 ### Windows: the service-removal preflight and blocked builds
 
 The update transaction removes the background service before the installer
 runs. `readRecordedBrain` (`serviceManager/installWindows.ts`) refuses to stop a
-brain whose recorded command does not match the one ADE would launch. From
+brain whose recorded command does not match the one DAEX would launch. From
 Electron main, `resolveAdeServeCommand()` (`serviceManager/common.ts`) describes
 `ADE.exe <resources>\ade-cli\cli.cjs serve` through `electronMainCliScript`
 (`ADE_CLI_JS` when set, else the packaged `cli.cjs`); `readRecordedBrain` also
 accepts the command recorded in the service launcher script
-(`readLauncherBrainCommand`). ADE 1.2.112 and 1.2.113 described a bare
+(`readLauncherBrainCommand`). DAEX 1.2.112 and 1.2.113 described a bare
 `ADE.exe serve`, so they refused to stop the real brain and aborted every
 in-app update.
 
@@ -252,16 +260,15 @@ flags) is stripped before the installer and the app CLI run, and so is
 `ELECTRON_RUN_AS_NODE` for the installer, so the app it reopens starts as an
 app. The app CLI gets the module paths its installer's setup step uses. With no app installed, the standalone runtime swap runs as before.
 `cliDelegation.ts` never delegates `brain update --apply-staged` to
-`ADE_CLI_PATH`; from an ADE terminal it used to hand the install back to the
+`ADE_CLI_PATH`; from a DAEX terminal that would hand the install back to the
 old app's CLI.
 
 ### The app and the brain move together (macOS)
 
-On macOS `brain update --apply-staged` used to swap only the standalone
-`~/.ade/bin/ade` and point the service at it. The app stayed behind (a 1.2.123
-app beside a 1.2.125 brain, 2026-10-27) until someone pressed Restart and
-install. `applyMacDesktopUpdate` (`ade-cli/src/commands/macDesktopUpdate.ts`)
-now runs first when the stable `ADE.app` is in `/Applications` or
+Swapping only the standalone `~/.ade/bin/ade` would leave the app behind the
+brain until someone pressed Restart and install, so on macOS
+`brain update --apply-staged` runs `applyMacDesktopUpdate`
+(`apps/ade-cli/src/commands/macDesktopUpdate.ts`) first when the stable `ADE.app` is in `/Applications` or
 `~/Applications`:
 
 1. App on the target or newer: the service is registered on the app's own
@@ -293,13 +300,13 @@ app is updated by the app itself or by the package manager, never by this comman
 "Update & restart" counts the app's version too (`installedApp`), on every
 platform, so a brain already on the target beside an older closed app is still
 updated. It reads the app through the same `readInstalledDesktopApp`
-(`nativeHelperPaths.ts`) the brain reports, `ade doctor` shows and the macOS
+(`nativeHelperPaths.ts`) the brain reports, `daex doctor` shows and the macOS
 app update swaps, so a machine is judged on the version it reports. An Alpha
 app behind its brain is reported as such ("has no update feed … rebuild
 it"), not offered an update that would change nothing. The macOS swap restores
-the old app only when it moved it, and checks again that ADE is still closed
+the old app only when it moved it, and checks again that DAEX is still closed
 after the service stops.
-`ade setup` never swaps an app that is open, and an older app it does not
+`daex setup` never swaps an app that is open, and an older app it does not
 replace is reported as kept, not as "not installed".
 
 `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` is the single gate. It builds Windows
@@ -327,7 +334,7 @@ service and the `ade` CLI. The plan is `docs/plans/beta-track.md`.
   reads it for the brain and the CLI.
 - **The Beta feed.** Beta reads the fixed GitHub prerelease `beta-feed`. It holds
   `latest-mac.yml`, `latest.yml` and `beta.json`. A 404 means no Beta build
-  exists now, so ADE shows no error. electron-updater's GitHub provider is not
+  exists now, so DAEX shows no error. electron-updater's GitHub provider is not
   used for Beta. For a `-beta.` version it takes the newest release of any kind,
   including Stable. The fixed feed names exactly one build.
   `apps/desktop/src/main/services/updates/autoUpdateService.ts` reads it.
@@ -342,18 +349,18 @@ service and the `ade` CLI. The plan is `docs/plans/beta-track.md`.
   See `apps/desktop/src/main/services/updates/trackSwitchGuard.ts` and
   `apps/desktop/src/main/services/state/dbCompatRecord.ts`.
   `DB_COMPAT_LEVEL` is in `apps/desktop/src/shared/releaseCompat.ts`.
-- **Database copy.** Before the first open by a new app version, ADE copies each
+- **Database copy.** Before the first open by a new app version, DAEX copies each
   database to `<db>.pre-<version>-from-<previous>.bak`. The copy uses the SQLite
-  online backup in small steps. ADE keeps the last 3 copies. `dbCompatRecord.ts` makes them.
+  online backup in small steps. DAEX keeps the last 3 copies. `dbCompatRecord.ts` makes them.
 - **Remote "Update & restart".** It never moves a machine across tracks. A
   request that names a build of the other track updates the machine on its own
   track. See `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts`.
-  A phone or ADE Web asks for the same run (`machine.updateImpact` /
+  A phone or DAEX Web asks for the same run (`machine.updateImpact` /
   `machine.updateAndRestart`), and learns each track's newest build from the
   account directory's `GET /releases/latest`, which runs the desktop's own
   reader over the same two release manifests; a track only ever takes a build of
   that track.
-- **`ade brain update`.** The version `latest` follows the machine track. On Beta
+- **`daex brain update`.** The version `latest` follows the machine track. On Beta
   it is the build that `beta.json` names. It never falls back to the other
   track. See `apps/ade-cli/src/commands/brainUpdate.ts`.
 
@@ -384,7 +391,7 @@ must not block every update.
 The preflight raised the failure itself, so it passes `kind` to
 `setErrorSnapshot` explicitly and `classifyUpdateError` is skipped entirely;
 message-sniffing stays reserved for the opaque errors electron-updater emits.
-Round-tripping ADE's own wording back through a regex would have made the
+Round-tripping DAEX's own wording back through a regex would have made the
 classification hostage to a copy edit.
 
 The Windows cap is a bloat tripwire, not a crash guard: the NSIS installer is
@@ -393,13 +400,13 @@ streamed to disk and run as an external process, so nothing buffers it whole.
 The root cause of the 1054 MB ZIP was foreign-platform runtime payloads. Each
 packaging job now pins `ADE_RUNTIME_TARGET` to the single target it builds, and
 the desktop bundle carries only that target's `ade-<target>` sidecar. Every
-target is still published as a standalone release asset, so `ade brain update`
+target is still published as a standalone release asset, so `daex brain update`
 and the standalone installers are unaffected.
 
 ## Required-space estimate
 
 Release metadata reports compressed archive size, not expanded application
-size. ADE uses a conservative peak-space estimate:
+size. DAEX uses a conservative peak-space estimate:
 
 - Download: `2 × compressed archive + 512 MiB`.
 - Install/staging: `5 × compressed archive + 512 MiB`.
@@ -415,13 +422,13 @@ than an exact installer requirement.
 
 | Failure | Observation path | Snapshot classification | Cache policy |
 | --- | --- | --- | --- |
-| Artifact size preflight (macOS) | Synchronous ADE check before download | `artifact_too_large` at the download phase | Nothing downloaded; no cache to preserve |
-| Capacity preflight | Synchronous ADE check before download/install | `insufficient_space` with measured free/required bytes and affected path | Preserve only after a verified download |
+| Artifact size preflight (macOS) | Synchronous DAEX check before download | `artifact_too_large` at the download phase | Nothing downloaded; no cache to preserve |
+| Capacity preflight | Synchronous DAEX check before download/install | `insufficient_space` with measured free/required bytes and affected path | Preserve only after a verified download |
 | `ENOSPC` | Synchronous throw, rejected download, or updater `error` event | `disk_full` at the active phase | Preserve a verified download; clear incomplete download data |
 | `EDQUOT` | Rejected download or updater `error` event | `quota` at the active phase | Same as `ENOSPC` |
 | Network | Rejected check/download or updater `error` event; `net::ERR_*` included | `network` (phase `check` when the feed request itself failed) | Retry; incomplete cache may be cleared |
 | Stalled download | No progress events or growth of the partial file under `pending/` for 2 minutes | `network` at phase `download` | Cancel with electron-updater's cancellation token; clear the incomplete download and retry from the latest release on the next check or Check again. A stalled staged-archive restore returns to its saved `ready` snapshot |
-| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed; ADE retries with a fresh session, then switches the updater to Node HTTP/HTTPS if Chromium still fails | Recovered checks continue normally; if the Node transport also fails, the check reports `network` at phase `check` | Same as a check failure |
+| Wedged updater session | Feed check fails with `net::ERR_*` while Node's `fetch` reaches the feed; DAEX retries with a fresh session, then switches the updater to Node HTTP/HTTPS if Chromium still fails | Recovered checks continue normally; if the Node transport also fails, the check reports `network` at phase `check` | Same as a check failure |
 | Checksum/signature | Rejected verification or updater `error` event | `verification` / `signature` | Clear unsafe cached data |
 | Permission | Synchronous throw or updater `error` event | `permission` | Preserve only a previously verified download |
 | Installer handoff | Synchronous throw, async updater `error`, or watchdog expiry | `installer` | Preserve the verified download |
@@ -439,17 +446,17 @@ an explicit updater error clears it.
 electron-updater fetches through Chromium's `net` on one session it caches for
 the life of the process. That session can stop working while the machine is
 online: checks then fail with `net::ERR_FAILED` a few milliseconds after they
-start, before any request leaves the machine. ADE now recovers the updater
+start, before any request leaves the machine. DAEX now recovers the updater
 transport for the rest of that launch.
 
 When a check fails with `net::ERR_*`, `checkFeedRecoveringNetSession` asks
 Node's `fetch` for the channel file (`latest-mac.yml` / `latest.yml`) on the
 configured feed (`updaterNetRecovery.ts`). If Node gets no success response
 either (no answer, a 404, a 5xx, a captive portal's page), the feed itself is
-unavailable: `network`, "ADE can't reach the update server". If Node gets a
+unavailable: `network`, "DAEX can't reach the update server". If Node gets a
 success response, the updater gets a fresh in-memory session
 (`electron-updater-recovered-<n>`) and the check runs once more. If Chromium
-still fails on that session, ADE replaces the updater executor's request
+still fails on that session, DAEX replaces the updater executor's request
 creation with Node's `http` / `https` transports and retries again. The Node
 executor follows `location` redirects for both feed checks and artifact
 downloads, and remains active for the rest of that launch.
@@ -460,7 +467,7 @@ later records default-session reachability, network-service pid/age, and app
 uptime. `autoUpdate.net_wedge_recovered` records whether a fresh Chromium
 session or Node transport recovered the check. Only if the final Node request
 also fails does the check report a normal `network` error; a feed reachable by
-Node no longer requires restarting ADE just because Chromium's updater session
+Node no longer requires restarting DAEX just because Chromium's updater session
 is stuck.
 
 ## Stalled downloads
@@ -468,9 +475,9 @@ is stuck.
 electron-updater's request timeout does not catch a quiet download in Electron:
 it waits for a `socket` event that Electron's network requests do not emit. If
 no bytes arrive, the download can remain pending and later checks wait behind
-it until ADE restarts. ADE watches download progress and growth of the partial
+it until DAEX restarts. DAEX watches download progress and growth of the partial
 file under the updater cache's `pending/` directory, so servers that omit
-`Content-Length` are covered too. After two minutes without either signal, ADE
+`Content-Length` are covered too. After two minutes without either signal, DAEX
 cancels the download with electron-updater's cancellation token. A new check,
 including the next periodic check or Check again, starts a fresh full-archive
 download from the newest release. Windows uses the same watchdog and
@@ -483,7 +490,7 @@ there the watchdog keeps running through those steps; they take seconds (the
 checksum is computed while the bytes stream in), far inside the two minutes. If the
 Mac sleeps and the watchdog misses more than four polling intervals, it resets
 the inactivity window instead of treating sleep as a stalled connection. If
-electron-updater did not provide a cancellation token, ADE logs that the
+electron-updater did not provide a cancellation token, DAEX logs that the
 download is unwatched. A staged-archive restore that stalls returns to its
 saved `ready` state, as it does after any failed restore.
 
@@ -549,19 +556,19 @@ clears the updater cache.
 ## Checking while an update is staged
 
 A staged update does not pause update checks. The startup timer, the periodic
-timer, the Settings **Check for updates** button, `ade update`, and the
-`update.checkForUpdates` ADE action all reach the same code, and it behaves the
+timer, the Settings **Check for updates** button, `daex update`, and the
+`update.checkForUpdates` DAEX action all reach the same code, and it behaves the
 same way for all of them while the status is `ready`:
 
 | Feed answer | Result |
 | --- | --- |
 | Same or older than the staged version | Ignored (`autoUpdate.update_available_ignored`). The status, the staged version, and the cached archive do not change; `latestKnownVersion` still records what the feed reported. |
 | Strictly newer | Supersedes. The recorded `downloadedFile` is dropped, the updater cache is wiped with reason `superseded_ready_update`, any auto-apply countdown for the old version is cancelled, and the snapshot runs `checking` → `downloading` → `ready` on the new version. The countdown re-arms on the new `ready`. |
-| The check fails | The staged version, ready status, and cached archive stay intact. ADE records the failure kind, message, and time in `checkFailure`, and logs `autoUpdate.ready_check_failed`. |
+| The check fails | The staged version, ready status, and cached archive stay intact. DAEX records the failure kind, message, and time in `checkFailure`, and logs `autoUpdate.ready_check_failed`. |
 
 Every answered feed check records `lastCheckedAt` and clears any prior
 `checkFailure`. Settings → About shows the last check time, or the failure kind
-and time when the latest check did not get an answer. `ade update status` exposes
+and time when the latest check did not get an answer. `daex update status` exposes
 the same timestamps and failure kind to CLI users.
 
 Every entry point first logs `autoUpdate.check_requested` with the current
@@ -598,7 +605,7 @@ staged `version`, `parked`, and `autoApplyPending` fields below.
 `useAutoUpdateSnapshot` (`renderer/components/app/useAutoUpdateSnapshot.ts`)
 does the initial `updateGetState()` read and subscribes to `onUpdateEvent`; the
 top-bar pill (`AutoUpdateControl`), the app-shell banner (`AutoUpdateBanner`),
-and the Settings About panel (`AboutSection`) all consume it. About shows the
+and the version card in Settings › General all consume it. It shows the
 running version as "Installed" and `latestKnownVersion` as "Latest", but swaps
 "Installed" to the staged version when a download is `ready` or `parked`, so the
 user sees the version they will get after the next restart rather than a stale
@@ -616,8 +623,8 @@ consent that aborts before the native updater can take over does not silently
 vanish: the snapshot records `parked: { reason, at }` where `reason` is a typed
 `AutoUpdateInstallAbortReason` — `refresh_failed`, `install_preflight_failed`,
 `prepare_failed`, `prepare_timeout`, or `handoff_failed`. The app-shell
-`AutoUpdateBanner` renders this exceptional state as "ADE update didn't finish
-— Restart to retry". It also renders "ADE update did not install — Restart to
+`AutoUpdateBanner` renders this exceptional state as "DAEX update didn't finish
+— Restart to retry". It also renders "DAEX update did not install — Restart to
 retry" when launch reconciliation proves that a requested install returned on
 the old version. Both provide a **Restart now** action wired to
 `updateQuitAndInstall()`. A normally downloaded `ready` update appears as a
@@ -635,11 +642,10 @@ reappears while an unchanged state stays hidden.
 ## Applying an update is one transaction
 
 Replacing the application bundle does not touch the background service, which
-keeps running the old code until something reinstalls and restarts it. That
-repair used to happen invisibly inside `localRuntimeConnectionPool`'s
-build-hash mismatch path, so a failure produced a silently broken app.
-
-The relaunch after an update now runs one explicit transaction with four steps —
+keeps running the old code until something reinstalls and restarts it. Doing
+that silently inside `localRuntimeConnectionPool`'s build-hash mismatch path
+would turn a failure into a silently broken app, so the relaunch after an
+update runs one explicit transaction with four steps —
 `swap`, `service`, `restart`, `health` — modelled by the dependency-injected
 `runUpdateTransaction` in `apps/desktop/src/main/services/updates/updateTransaction.ts`.
 It is pure: no Electron, no timers. `main.ts` runs it once when the snapshot
@@ -726,7 +732,7 @@ another attempt.
 
 **That launch waits for the transaction above before it opens anything.** The
 pool refuses every project while the transaction's update window is open
-(`createConnection` answers "ADE is applying an update…"), so a project opened
+(`createConnection` answers "DAEX is applying an update…"), so a project opened
 during it — a restored tab, the startup project, or the one the resume has to
 reach — was refused and dropped, and the resume found no project to ask at all.
 The wait is bounded at 30 seconds and applies only to a launch with a project to
@@ -746,7 +752,7 @@ a second time. What goes wrong instead is now named in the log:
 wait, and `autoUpdate.install_superseded_unarmed_resumes` when a later install
 drops a resume the record never placed.
 
-Dismissing the "ADE updated" notice is not a refusal to resume. The record is
+Dismissing the "DAEX updated" notice is not a refusal to resume. The record is
 kept, marked `noticeDismissedAt`, for the resumes it still owes — it simply
 stops being surfaced as a notice, including on the next launch — and it is
 dropped entirely once it owes nothing or a later install replaces it.
@@ -755,7 +761,7 @@ The brain side does not depend on this list. Before the service uninstall,
 `prepareAutoUpdateInstall` writes the `accepted_update` stop intent
 (`noteBrainStopIntent`, cleared when the uninstall fails), and the stopping
 brain saves its chats and CLIs at work for its next start, with the continue
-cap starting again. `ade brain update` does the same before each service stop
+cap starting again. `daex brain update` does the same before each service stop
 and the restart, and clears the intent when one fails. Both paths use the same
 durable row id, so a chat is continued once. See
 [work in flight across a brain stop](../storage-and-recovery/README.md#work-in-flight-across-a-brain-stop).
@@ -766,7 +772,7 @@ resume flag, `requestedRemotely` and `closeAfterInstall`, and carries the
 chats the first attempt listed, because the brain that attempt stopped can no
 longer list them.
 
-Each row delivers the "ADE restarted, so your last turn ended early…" continue prompt (the same rows re-arm chats after a quit-prompt Repair)
+Each row delivers the "DAEX restarted, so your last turn ended early…" continue prompt (the same rows re-arm chats after a quit-prompt Repair)
 once. Only rows that actually landed `scheduled` (not paused) are reported in
 the post-update "Scheduled N chats to resume" notice, and typing into a chat
 cancels its pending resume. Remote-machine chats and terminals are never
@@ -786,14 +792,14 @@ broken.
 the top of the abort path) and around the post-relaunch transaction (ended in
 its `finally`). Inside the window the pool declines its opportunistic repair,
 logs `local_runtime.service_repair_suppressed`, and answers refused connects
-with "ADE is applying an update. The background service is restarting."
+with "DAEX is applying an update. The background service is restarting."
 
 The window is capped at `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS` (2 minutes) and
 expires on its own, because suppression that depends on a transaction remembering
 to end it would disable recovery for the rest of the session the first time one
 does not settle. Outside the window, repair is still throttled — 0 / 5 s / 15 s /
-30 s / 60 s, then once a minute — since a mismatched runtime previously spawned
-one installer per connect attempt.
+30 s / 60 s, then once a minute — so a mismatched runtime cannot spawn one
+installer per connect attempt.
 
 The typed result rides the existing `AutoUpdateSnapshot` over
 `IPC.updateEvent` / `updateGetState` as `updateTransaction`; no new channel. A
@@ -801,18 +807,18 @@ failure names the step in plain words. A failed `swap` is a warning banner in
 `AutoUpdateBanner` (it stands down while the staleness banner already offers
 the retry). Every other failed step means the background service is down, and
 `BrainDownNotice` owns it: one error banner with the cause, **Fix it** (the real
-service reinstall and restart), then **Restart ADE**, then **Reset ADE**, and
-**Report this error to ADE…** under the text — see
+service reinstall and restart), then **Restart DAEX**, then **Reset DAEX**, and
+**Report this error to DAEX…** under the text — see
 [the brain-down notice](../storage-and-recovery/README.md#the-recovery-screen-and-the-brain-down-notice).
 A project open the pool refused mid-update (`LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`)
 is part of the same notice ("Finishing the update"), never a second banner.
 
 | Step | Line |
 | --- | --- |
-| `swap` | The update didn't finish installing. ADE is still on the old version. |
-| `service` | ADE's background service didn't start after the update |
-| `restart` | ADE's background service didn't restart after the update |
-| `health` | ADE's background service isn't responding after the update |
+| `swap` | The update didn't finish installing. DAEX is still on the old version. |
+| `service` | DAEX's background service didn't start after the update |
+| `restart` | DAEX's background service didn't restart after the update |
+| `health` | DAEX's background service isn't responding after the update |
 
 When the live service status says macOS's "Allow in the Background" is off,
 the notice says that instead of the step's line.
@@ -827,7 +833,7 @@ and the health probe uses whatever endpoint `resolveMachineAdeLayout` reports
 ## Automatic installation policy
 
 Packaged builds keep checking for and downloading updates, but restarting to
-install them is manual by default. Settings → General (the ADE card) exposes the machine-local
+install them is manual by default. Settings → General (the DAEX card) exposes the machine-local
 `AutoUpdatePreferences` contract:
 
 - `automaticInstall: false` by default. A `ready` update waits for the user to
@@ -842,7 +848,7 @@ grace period, the snapshot gets an `autoApplyPending: { deadlineAt }`
 countdown. If `onlyWhenIdle` is disabled, a newly ready update starts the same
 countdown immediately without querying runtime activity.
 
-`AutoUpdateBanner` renders the countdown as an "ADE will update in Ns" toast
+`AutoUpdateBanner` renders the countdown as an "DAEX will update in Ns" toast
 that ticks once per second. Reaching the deadline while the policy is still
 enabled and any required idle condition still holds calls the transactional
 `quitAndInstall(true)` path and emits `ade_update_auto_applied`. It asks to
@@ -863,7 +869,7 @@ the machine.
 
 ### Installing on quit
 
-With automatic install on, quitting ADE installs a downloaded update. It is
+With automatic install on, quitting DAEX installs a downloaded update. It is
 the same install as Restart and install (`quitAndInstall` with
 `closeAfterInstall`), so the background service moves with the app. A plain
 quit leaves the brain running its agents, and an install restarts it, so
@@ -871,11 +877,11 @@ quit leaves the brain running its agents, and an install restarts it, so
 when that stops nothing:
 
 - the service brain answers and runs no chat turn, CLI session or terminal;
-- or ADE runs the brain itself (`app_fallback`), which the quit stops anyway.
+- or DAEX runs the brain itself (`app_fallback`), which the quit stops anyway.
 
 Busy, an isolated brain, or a probe that timed out defers: the quit is a plain
 quit and the update waits for the automatic install of a later launch. The quit
-prompt says which ("installs as ADE quits" or "installs later, when no agent is
+prompt says which ("installs as DAEX quits" or "installs later, when no agent is
 running"), and the log has `autoUpdate.quit_install_start` or
 `autoUpdate.quit_install_deferred`. The work is read before the prompt, again
 after it, and once more right before the background service stops (after the
@@ -883,18 +889,18 @@ feed re-check), since an agent can start meanwhile. That last look turns the
 install back into a plain quit (`InstallOnQuitDeferredError`); the update stays
 downloaded.
 
-The install relaunches ADE, as every install does. Only the updater's own
+The install relaunches DAEX, as every install does. Only the updater's own
 relaunch (`isQuitInstallRelaunch`) starts with a hidden window and no Dock
 icon: on Windows it carries the installer's `--updated`, on Linux the AppImage
 updater's `APPIMAGE_SILENT_INSTALL`, and it must come within 10 minutes of the
 quit. Squirrel.Mac relaunches with no marker, so macOS has only a 3-minute
 window. Any other launch that lands the install (the installer's relaunch lost
-the single-instance lock and the person opened ADE) runs the transaction in
+the single-instance lock and the person opened DAEX) runs the transaction in
 the open. The hidden launch runs the post-update transaction and closes once it
 passes, leaving the brain on the new build. It opens no projects and keeps the
 saved workspace for the next launch. It shows its window when the transaction
-fails, or when the person opens ADE meanwhile (Dock, second launch, a deep link
-or a file). On Windows the "Updating ADE" window shows for a quit-install too:
+fails, or when the person opens DAEX meanwhile (Dock, second launch, a deep link
+or a file). On Windows the "Updating DAEX" window shows for a quit-install too:
 its heartbeat is what makes a copy opened by hand mid-install step aside. In
 that mode it closes once the new ADE.exe starts after the installer. The
 controller is `createInstallOnQuitController`; `main.ts` only wires it. With

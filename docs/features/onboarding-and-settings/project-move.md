@@ -20,12 +20,12 @@ empty.
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/projects/projectMove/projectMovePreflight.ts` | Read-only checks before a move: destination, drive (network, format, case), space, write access (the probe also raises the macOS external-drive prompt early), agents at work, git busy or mid-operation, lanes, plus the notes ADE can't fix. |
+| `apps/ade-cli/src/services/projects/projectMove/projectMovePreflight.ts` | Read-only checks before a move: destination, drive (network, format, case), space, write access (the probe also raises the macOS external-drive prompt early), agents at work, git busy or mid-operation, lanes, plus the notes DAEX can't fix. |
 | `apps/ade-cli/src/services/projects/projectMove/projectMoveEngine.ts` | `runProjectMove` (prepare → copy → git → data → verify → switch), `finishSwitch`, `recoverInterruptedMoves`, `deleteParkedOriginal`. |
 | `apps/ade-cli/src/services/projects/projectMove/moveCopy.ts` | `du` sizes, the file list (no live database, no search index, no sockets; `node_modules` only when dependencies are copied) and the `ditto --bom` copy with progress, `--clone` for same-volume APFS moves. |
 | `apps/ade-cli/src/services/projects/projectMove/moveGitLinks.ts` | Lane links written directly in the copy (never `git worktree repair`), relative worktrees, absolute git config values, absolute symlinks, outside lanes at switch-over. |
 | `apps/ade-cli/src/services/projects/projectMove/moveDatabase.ts` | SQLite-backup snapshot of `ade.db`, the path rewrite with cr-sqlite loaded, and its verification. |
-| `apps/ade-cli/src/services/projects/projectMove/moveAgentHistory.ts` | Renames other tools' history folders for the project (Claude, Cursor, Droid, Qwen, Grok, Pi). ADE's own Claude homes always; the rest opt-in. |
+| `apps/ade-cli/src/services/projects/projectMove/moveAgentHistory.ts` | Renames other tools' history folders for the project (Claude, Cursor, Droid, Qwen, Grok, Pi). DAEX's own Claude homes always; the rest opt-in. |
 | `apps/ade-cli/src/services/projects/projectMove/moveJournal.ts` | `<ADE_HOME>/project-moves/<moveId>.json`: one record per move, the cleanup choice and reminder. |
 | `apps/ade-cli/src/services/projects/projectMove/movePreviousRoots.ts` | Resolves prior roots by following this project's move records in time order, preserving each recorded path spelling without including unrelated projects that reused a destination. |
 | `apps/ade-cli/src/services/projects/projectMove/moveVolumes.ts` | Drives via `df` + `diskutil info -plist`. |
@@ -87,24 +87,24 @@ untouched original.
 - **Trust.** `finishSwitch` copies folder trust to the new path, append only:
   Codex `trust_level` in `$CODEX_HOME/config.toml`, Claude Code's
   `projects["<path>"]` entries (trust, allowed tools, MCP approvals) in
-  `~/.claude.json` and each ADE Claude home, and Copilot's `trustedFolders`.
-- **Health.** Settings → Location and Overview (and `ade health`) check a moved project for
+  `~/.claude.json` and each DAEX Claude home, and Copilot's `trustedFolders`.
+- **Health.** Settings → Location and Overview (and `daex health`) check a moved project for
   anything left behind and fixes it in place; see
   [`project-health.md`](./project-health.md). The check agent's prompt carries
-  the preflight's notes, what ADE did and couldn't do, and points at
-  `ade health`.
+  the preflight's notes, what DAEX did and couldn't do, and points at
+  `daex health`.
 
 ## External drives
 
 - **Simulator screenshots.** CoreSimulatorService can't show macOS's
   external-drive prompt, so `simctl io screenshot`/`recordVideo` into a
   project on another drive fails with "Operation not permitted" (tested).
-  `ade apple` captures into the internal temp folder and ADE writes the file.
+  `daex apple` captures into the internal temp folder and DAEX writes the file.
   Installs, `xcodebuild` builds and XCTest from the drive work (tested).
 - **Preflight notes** for an external drive: keep it connected, Simulator
   capture, Time Machine not backing it up (external drives are excluded by
   default).
-- **Other holders.** Preflight names processes other than ADE that have
+- **Other holders.** Preflight names processes other than DAEX that have
   `ade.db` open (usually a dev build started from a lane); the move stops
   before changing anything if they don't let go.
 
@@ -114,7 +114,7 @@ These belong to other apps or tools. The move does not edit them:
 
 - Claude Code's history and permissions (`~/.claude/projects`), Codex's
   thread list, and Cursor's workspace state. Folder trust is the one part
-  ADE copies (see **Trust**).
+  DAEX copies (see **Trust**).
 - Python virtualenvs and other files with absolute paths (IDE workspace
   files, build output): recreate them after the move.
 - `CLAUDE.md`, `AGENTS.md`, memory and docs that name the old path.
@@ -149,4 +149,4 @@ These belong to other apps or tools. The move does not edit them:
   undone (with the drive unplugged it waits for a later start).
 - **Remote:** the move needs this computer's disk and windows, so the section
   is `machine: "local"`, and a project open from another machine shows "Move
-  it from ADE on that computer" instead of the button.
+  it from DAEX on that computer" instead of the button.

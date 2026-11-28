@@ -2725,7 +2725,7 @@ machine reported in during the last five minutes. The `account.deleteMachine`
 action is for people only. It refuses a caller whose identity names a chat, run,
 step or attempt (`callerIdentityIsAgent` in `apps/ade-cli/src/runtimeRoles.ts`),
 the CTO included. It also refuses without `confirmation: "REMOVE"`
-(`ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION`), the same token `ade machines remove
+(`ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION`), the same token `daex remove
 --confirm REMOVE` takes and forwards. The identity is the caller's own claim,
 so this stops the ordinary agent path, not a process that strips its
 environment. The desktop Account page and the web client remove through the

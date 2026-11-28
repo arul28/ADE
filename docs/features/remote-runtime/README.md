@@ -32,7 +32,7 @@ DAEX Cloud:
   new cloud computer, with its sign-in wait (`cloudLaunchSignInWait.ts`) and the
   continue of a saved chat; `accountLaneIndexPublisher.ts` — the account lane
   index.
-- `apps/ade-cli/src/services/power/cloudPrepareStop.ts` — `ade cloud
+- `apps/ade-cli/src/services/power/cloudPrepareStop.ts` — `daex cloud
   prepare-stop`; `cloudKeepAwake.ts` — the idle step, the rest save before a
   sleep, and the drain on a wake.
 - `apps/ade-cli/src/services/github/cloudGitIdentity.ts` — the commit identity

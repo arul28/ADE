@@ -9,44 +9,10 @@
   preferences (such as automatic update installs) save in the Electron
   user-data `ade-state.json`.
 
-Every client (desktop, CLI, hosted web, iOS) requires an ADE account on a fresh
+Every client (desktop, CLI, hosted web, iOS) requires a DAEX account on a fresh
 launch and gates account-backed surfaces on it; a lost or unreadable session is
 reported as its real state, never as a guest. Project open runs a cheap first
 pass; full lane status and provider modes load after the app is interactive.
-
-## Where state lives
-
-| Scope | Location | Owner | Contents |
-|---|---|---|---|
-| Machine | `~/.ade/` (`ADE_HOME` overrides; Alpha uses `~/.ade-alpha/`) | ADE runtime (`ade serve`) | Endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and its homes (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), binary (`bin/ade`), natives (`runtime/<arch>/`), service logs. |
-| Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff and reconcile state, automatic-install preferences. |
-| Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides: ports, env vars, machine paths. |
-| Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets; `.ade/.gitignore` whitelists only authored files. |
-
-- **The runtime ties the scopes together.** It owns `~/.ade/projects.json`,
-  builds an `AdeRuntime` per project root on the first project-scoped JSON-RPC
-  call, and is the one runtime through which desktop and SSH-attached desktops
-  see lanes, chats and sessions.
-- **Registry writes are serialized.** The desktop, the brain, the CLI and a
-  project move all write `projects.json`. Each write
-  (`ProjectRegistry.mutate`) holds `projects.json.lock`, reads the file fresh
-  and appends a line to `projects.journal.jsonl` (`projectRegistryJournal.ts`),
-  so overlapping writers keep each other's projects.
-- **Project ids.** An id is the hash of the folder as this machine resolves it
-  on each read. When it differs from the stored id, the stored id becomes an
-  alias in `project-aliases.json` (as after a move) and Sentry gets a report.
-- **Project identity files.** Each opened local project has
-  `~/.ade/project-data/<projectId>.json` with its database's device and inode,
-  recorded by the desktop, the brain's project scope and the CLI on open. It
-  sits outside `projects.json` because an older ADE drops unknown fields there.
-- **Missing data stops open.** If a registered project's folder or `.ade`
-  folder, or a recorded database, is missing, registration and open stop with
-  `project_data_missing` before creating new state. The desktop shows the
-  recovery screen (`data_missing`): Restore from Trash (when the folder exists),
-  steps to put it back (it reopens when it returns), or Start fresh. With the
-  project folder gone it says to plug the drive in or move the folder back.
-  Start fresh and removing from recents forget the identity; a new project
-  still creates its first database normally.
 
 ## Source file map
 
@@ -59,7 +25,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   (`ade.app.getLaunchGateState` / `resolveLaunchGate`; one resolve covers every
   window and reload; a fresh signed-out launch asks again). `registerIpc.ts`
   also forwards `copyDependencies` on project-move start, and disk pressure
-  falls back to this computer's ADE storage root without a local project
+  falls back to this computer's DAEX storage root without a local project
   monitor.
 - `main/services/runtime/machineTrustResetMigration.ts`: a one-release
   packaged reset of saved connection grants (remote targets, desktop paired
@@ -76,7 +42,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   `general/MachineUpdateRows.tsx`, `overview/useNeedsAttention.ts`: General,
   where Settings opens. One Needs attention row that opens in place (a failed
   read adds "couldn't check" with Check again; a capability an older build
-  lacks is absent), the You and This machine cards, and the ADE card (version,
+  lacks is absent), the You and This machine cards, and the DAEX card (version,
   the one restart action, update track, automatic installs, an update row per
   machine offered its own track's newest build).
 - `settings/machines/MachinesPage.tsx`, `MachineSettings.tsx`,
@@ -135,7 +101,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     never for the row's device), and the store adopts the newer row, so an
     unjammed queue cannot overwrite a rotated token.
   - `health()` (ok / failing / unavailable, last sync, pending, parked, an
-    error sentence) shows in Settings › ADE MCP; failures log, rate-limited,
+    error sentence) shows in Settings › DAEX MCP; failures log, rate-limited,
     to `<ade home>/runtime/brain.jsonl`.
 - `main/services/account/accountMigrationRunner.ts`,
   `apps/ade-cli/src/services/account/accountMigrationReceipt.ts`: silent,
@@ -161,15 +127,15 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   `systemSleepStopsAgents`, `INERT_KEEP_AWAKE_SNAPSHOT`);
   `settings/KeepAwakeSection.tsx` (radiogroup, "This Mac can still sleep"
   alert, system-sleep fix card).
-- `settings/BackgroundServiceSection.tsx`: General → ADE → Background service:
+- `settings/BackgroundServiceSection.tsx`: General → DAEX → Background service:
   who runs agents, working chats in open projects (plus "may also be running"
-  for busy projects not open), "Stop and quit ADE", and "Ask before quitting"
+  for busy projects not open), "Stop and quit DAEX", and "Ask before quitting"
   (undoes the quit prompt's "Don't ask again"). Stop confirms with the chat
   list and fails closed (`services/runtime/backgroundServiceControls.ts`): it
-  refuses when ADE cannot read what runs, when an agent started after the
+  refuses when DAEX cannot read what runs, when an agent started after the
   confirm, during a lane delete and during any Repair. Packaged builds only.
 - `main/services/runtime/quitPrompt.ts`, `app/QuitPromptHost.tsx`,
-  `shared/quitPromptModel.ts`: the quit and restart confirmation in ADE's
+  `shared/quitPromptModel.ts`: the quit and restart confirmation in DAEX's
   dialog, with a native fallback from the same model (see
   `docs/ARCHITECTURE.md`, shutdown pipeline).
 - Archive: `main/services/archive/archiveService.ts` (`list` / `summary` from
@@ -191,7 +157,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   machine's Claude and Codex accounts: the JSON registry, the base account
   (its `configHome` recomputed each read), default selection,
   `resolve(provider, requestedId)` for every launch, and per-provider settings
-  (smart balance, auto-start windows). Backs `provider_instances.*` and `ade
+  (smart balance, auto-start windows). Backs `provider_instances.*` and `daex
   providers accounts`.
 - `main/services/providerAccounts/`: in-app sign-in. `providerLoginRunner.ts`
   runs the provider's login for one config home in a private node-pty, reads
@@ -247,22 +213,22 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   (only fields a harness has), the OpenCode custom-provider panel,
   `useApiCredentials`, `useAccountProviderKeyNames` (for "This computer
   only").
-- `settings/CloudAgentLimitsCard.tsx`: ADE Cloud › What agents may do alone.
+- `settings/CloudAgentLimitsCard.tsx`: DAEX Cloud › What agents may do alone.
   Desktop: `cloud.getAgentLimits` / `setAgentLimits` (server first, a local
   copy on 404). Web: `accountCall` `limits` / `saveLimits` with the read
   revision; a stale save loads the newer limits and says "Your limits changed
-  on another device. ADE loaded the new ones."
+  on another device. DAEX loaded the new ones."
   - On the web, `getAgentLimits` and `setAgentLimits`
     (`webclient/adapter/cloud.ts`) go to a connected computer's `cloud.read`
     and `cloud.write`. With no computer that has them, they go to the account
     (`GET/PUT /cloud/limits`). A stale `ifRevision` answers 409.
 - `settings/WebAccountCloudCards.tsx`: two cards under
-  `AccountCloudProvidersPanel` in Settings › ADE Cloud, on the web with no
+  `AccountCloudProvidersPanel` in Settings › DAEX Cloud, on the web with no
   own computer that is on (`useAccountProvidersInSettings` in
   `settingsTabContent.tsx`). Each card reads from the account
   (`window.ade.accountSettings`) when it opens and on window focus. There is
   no poll and no secret read.
-  - **Sign-ins on ADE Cloud**: one switch, "Share my sign-ins with ADE
+  - **Sign-ins on DAEX Cloud**: one switch, "Share my sign-ins with DAEX
     Cloud" (`providerLogins.cloud.enabled`; absent is on). Before it writes,
     the card reads the setting again and keeps every other field (picks,
     keys switched off, smart balance). Off reads "Off: you sign in on each
@@ -270,13 +236,13 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   - **MCP servers**: the account's `mcp.servers`, by name and transport only
     (`normalizeMcpRegistry`, `MCP_TRANSPORT_LABEL`). Add, change and secrets
     stay on a computer. Empty: "No MCP servers in your account. Add one in
-    ADE on a computer and every agent gets it, ADE Cloud too."
-  - A failed read shows "ADE couldn't read this from your account. Try
+    DAEX on a computer and every agent gets it, DAEX Cloud too."
+  - A failed read shows "DAEX couldn't read this from your account. Try
     again." with Try again and no Report.
 - `settings/cloudDashboard/CloudDashboard.tsx`: on the web, `ownComputer`
   counts only an own computer that is on. With none on, the account's cards
   above show in place of the computer's sign-ins.
-- `apps/ade-cli/src/services/proxy/`: the local subscription proxy (`ade
+- `apps/ade-cli/src/services/proxy/`: the local subscription proxy (`daex
   proxy`, `proxy.*`): hash-verified download, config written 0600, state
   without secrets, start/stop/health supervisor.
 - `settings/CaptureGestureSection.tsx`: the capture-gesture switch, helper
@@ -302,7 +268,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     `account_gh` comes last. Duplicate tokens are removed.
   - 401/403/429, GraphQL rate/permission errors and 403/404 probe denials move
     to the next source. Invalid or denied credentials cool down five minutes;
-    rate limits wait at least a minute and honour GitHub's reset; then ADE
+    rate limits wait at least a minute and honour GitHub's reset; then DAEX
     retries the preferred source. An exhausted primary user quota pauses every
     known credential of that account instead of cycling tokens.
   - `GitHubStatus.authFailure` separates rate limit, invalid, permission,
@@ -352,7 +318,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   the file changed or validation first passes. `laneOverlayMatcher.ts`
   matches lanes against `LaneOverlayPolicy[]`.
 - `main/services/secrets/projectSecretService.ts`: one project's view of
-  Passwords & Secrets (`ade secrets`, process env, webhook checks) and the
+  Passwords & Secrets (`daex secrets`, process env, webhook checks) and the
   one-time move of the old store; `projectSecretEnv.ts`: bounded dotenv parsing
   and the `0600` export file.
 
@@ -393,7 +359,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   project**, **Chat without a project**, **Browser**, recents panel) and the
   widget grid.
   - **The Projects card** lists the account's projects, one row each, and
-    counts them (`ade projects list --account`) on every client, with or
+    counts them (`daex projects list --account`) on every client, with or
     without a computer (`homeProjectRows.ts`, `useHomeAccountProjects.ts`).
     Folders on no account project follow under "Only on <computer>" and do not
     count: this computer's from `project.listThisComputer` (no pin; reread
@@ -409,12 +375,12 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   - **Settings** sets `standaloneSettingsOpen` and opens `/settings` (see
     [Settings with no project](#settings-with-no-project)).
 - `projects/ProjectWelcomeSidePanels.tsx`: the machine list: this machine,
-  connected own computers, then one **ADE Cloud** row ("Wakes when you start
-  work"). Offline computers hide; no ADE Cloud computer shows by name. "N of M
+  connected own computers, then one **DAEX Cloud** row ("Wakes when you start
+  work"). Offline computers hide; no DAEX Cloud computer shows by name. "N of M
   computers connected" counts all the account's computers.
-- Opening a project with no own computer online binds the tab to ADE Cloud
+- Opening a project with no own computer online binds the tab to DAEX Cloud
   (`openAdeCloudProject`, `renderer/state/adeCloudTabs.ts`): the normal pages
-  with its ADE Cloud lanes.
+  with its DAEX Cloud lanes.
 - `projects/AddProjectForm.tsx`: **Add project** from GitHub. The project
   belongs to the account, not to a computer: **Add project** puts it on the
   account and opens its tab at once (`openAddedAccountProject`), copy or no
@@ -461,7 +427,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   `projectRemovalState.ts` reads what would be lost from git (checkouts,
   changed files, unpushed commits, stashes, unpushed branches) only on request.
   `projectRemovalGuard.ts`: a folder may be deleted only when it is an exact
-  registered root that holds no home folder, ADE home, other project or ADE
+  registered root that holds no home folder, DAEX home, other project or DAEX
   itself, and the copy still matches what was accepted. `projectCopyCheck.ts`
   holds the shared checks. IPC: `ade.project.inspectRemoval` / `removeCopy`
   (this computer), `ade.remoteRuntime.inspectProjectRemoval` /
@@ -507,14 +473,14 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   `accountGateMode`: `required` (never held a session) has no pass-through;
   `recoverable` (expired or unreadable session) always offers **Continue to
   your work**. Local work is never blocked; `AccountSignedOutBanner` nags
-  instead. It keeps a short ADE Relay link and a draggable top strip, and does
+  instead. It keeps a short DAEX Relay link and a draggable top strip, and does
   not repeat for reloads or extra windows. Directly paired machines survive
   sign-out; owner-tagged directory targets go with the account.
 
 - `onboarding/GlassSignInCard.tsx`, `account/useSignInFlow.ts`: the gate's
   sign-in, a frosted panel (`onboarding/launchGateGlass.css`, needs an
   `.ade-gate` ancestor) with the mark, a heading, sign-in, **Sign in with your
-  phone or another device**, the awaiting/cancel line and ADE Relay help. The
+  phone or another device**, the awaiting/cancel line and DAEX Relay help. The
   other-device link starts device authorization with no browser here:
   `AnotherDeviceSignInPanel` shows the link as a QR code and the user code
   (absent on the hosted web). `useSignInFlow` owns browser login, device login
@@ -530,7 +496,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     computer (`machine_revoked` or `pairing_authentication_required`, from the
     sync snapshot via `hooks/useThisComputerRefusal.ts`). It names the date
     from `revokedAt` ("This computer was removed from your account on 14
-    August"), adds "ADE stopped trying to reconnect it on its own." once the
+    August"), adds "DAEX stopped trying to reconnect it on its own." once the
     brain's repair gave up, and offers **Reconnect this computer** (or
     **Confirm it's you**), showing the browser step's code in the bar. Not
     dismissable.
@@ -549,8 +515,8 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   new session overwrites the stored one): it leads with `BrainRepairButton`
   (or a retry) and demotes sign-in to "Sign in anyway".
 - `account/YourMacsCard.tsx`: **Your computers** (this computer first;
-  rename, clear name, remove; the missing-directory row). ADE Cloud's
-  computers never get their own rows: one ADE Cloud row shows while ADE Cloud
+  rename, clear name, remove; the missing-directory row). DAEX Cloud's
+  computers never get their own rows: one DAEX Cloud row shows while DAEX Cloud
   is available, and the web heading counts only the rows it shows. Custom names are
   account-wide and win for display without replacing the reported hostname.
   - **Absence is not removal** (a publish gap, a split listener or an expired
@@ -560,8 +526,8 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     Machine repair never says "Sign in again"; the browser step is "Confirm
     it's you".
   - Rows show the name (`accountMachineRowName`) and, when not the regular
-    app, the install (`accountMachineInstallLabel`: "MacBook Pro" then "ADE
-    Alpha"), with the ADE home on hover.
+    app, the install (`accountMachineInstallLabel`: "MacBook Pro" then "DAEX
+    Alpha"), with the DAEX home on hover.
   - Remove warns for a machine seen in the last five minutes
     (`accountMachineRemovalConfirmBody`, shared with the web). Removal is
     terminal; heartbeats never re-register.
@@ -573,7 +539,7 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   - Outcome words (`describeReconnectOutcome`, `reconnectNeedsFreshSignIn`,
     `readReconnectResult`, `ReconnectOutcome`) live in
     `shared/reconnectOutcome.ts` (no renderer or Node globals), also read by
-    `ade machines reconnect --text`.
+    `daex machines reconnect --text`.
 - `onboarding/FirstRunFlow.tsx`, `firstRun.css` and one stylesheet per step
   (`firstRunWelcome.css`, `firstRunAgentRail.css`, `firstRunProjects.css`,
   `firstRunDevices.css`): first-run setup. `FirstRunSteps.tsx` holds the step
@@ -608,21 +574,21 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
 - `onboarding/HelpMenu.tsx`: the top-bar help menu (docs link, "Show me
   around again", the detailed-tooltip toggle); `SmartTooltip` hover detail is
   the one help surface. `renderer/onboarding/docsLinks.ts`: the typed registry
-  of doc URLs, including the ADE Relay explainer.
+  of doc URLs, including the DAEX Relay explainer.
 - `components/cto/…`: CTO first run is the model picker. A project with no
   stored model opens on `CtoWelcome` (`cto-model-pick`); Linear and the rest
   live on the CTO settings page.
 
 Account Settings shows a named update prompt when a connected computer needs
-a newer ADE version to share its routes or provider inventory. In the
+a newer DAEX version to share its routes or provider inventory. In the
 **Connections** section, **Check again** shows progress and the latest results
-for the local network, Tailscale, and ADE Relay, along with Tailscale setup
+for the local network, Tailscale, and DAEX Relay, along with Tailscale setup
 steps and the time of the check. This computer's Tailscale reading
 (`tailscaleLocalStatus.ts`) also reports `keyExpired` (Tailscale's
 `Self.Expired`, or a key expiry already past), Tailscale's own `Health`
 warnings, and `readError` (a timeout, or Tailscale's first error line) when
-ADE got no answer it could read. The first step then says "Tailscale sign-in
-expired" with the renew path, or why ADE couldn't read Tailscale, and quotes
+DAEX got no answer it could read. The first step then says "Tailscale sign-in
+expired" with the renew path, or why DAEX couldn't read Tailscale, and quotes
 Tailscale's first warning; **Open Tailscale** opens the app on this computer
 (`app.openTailscale`, a fixed list of install paths). The route tiles say
 "Sign-in expired", "Starting" or "Couldn't check" instead of "Not connected".
@@ -647,7 +613,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   `browser.linkOpenMode` and `browser.autoOpenDevServer` to `.ade/local.yaml`
   ([Configuration schema](configuration-schema.md)).
 - `shared/settingsManifest.ts`: the registry data and pure helpers, shared
-  with `ade settings find` and chat chips;
+  with `daex settings find` and chat chips;
   `renderer/components/settings/settingsManifest.ts` re-exports it and adds
   platform, web and standalone rules.
   - One `SettingEntry` per setting (`id`, `label`, `keywords`, `tab`,
@@ -661,8 +627,8 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     installer, auto-updates, storage, session lifecycle and lane templates are
     `hidden` (their writes would have no descriptor and vanish).
   - `passwords.web` (scope `account`, `webOnly: true`) puts **Passwords** in
-    the web Settings nav. The page shows only one notice: "Open ADE desktop
-    or the iPhone to see and change Passwords. Agents on every computer, ADE
+    the web Settings nav. The page shows only one notice: "Open DAEX desktop
+    or the iPhone to see and change Passwords. Agents on every computer, DAEX
     Cloud too, still use them." (`WEB_PASSWORDS_SENTENCE`).
     `sectionWebScope` and `WebScopePill.tsx` print the scope as the section's
     first line on the web.
@@ -675,7 +641,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     `ownerOnlyProjectConfigChange` for an agent `project_config.save` whose
     `local` layer changes a key outside `AGENT_EDITABLE_PROJECT_CONFIG_KEYS`.
     Automation steps may not run `project_config.save`.
-  - The user's terminal keeps `ade settings …` and `ade providers accounts
+  - The user's terminal keeps `daex settings …` and `daex accounts
     add|remove|default` (operator role; an agent shell is clamped to agent).
     An agent can still hand-edit `.ade/local.yaml` (a known gap).
 - **Themes** — `shared/theme/library.ts`, `resolve.ts`,
@@ -760,13 +726,13 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
 - Legacy deep links that still resolve: `#github-connection`,
   `#linear-connection`, `#voice-input`, `#chat-launch-clipboard`,
   `#agent-completion-sound`, `#auto-updates`, `#pr-chat-transcripts`.
-- `settings/AutoUpdatesSection.tsx`: automatic install on General's ADE card,
+- `settings/AutoUpdatesSection.tsx`: automatic install on General's DAEX card,
   off by default; turning it on shows **Wait until active work finishes**
   (on by default), which delays the restart countdown until no turn or work
   session is active.
 - Product analytics has no Settings section: on by default, off under
   `DO_NOT_TRACK=1` or a stored opt-out ([logging](../../logging.md)).
-- `settings/DiagnosticsSharingSection.tsx`: **Send a report to ADE**
+- `settings/DiagnosticsSharingSection.tsx`: **Send a report to DAEX**
   (`general.diagnostics-sharing`, `#diagnostics-sharing`, `web: "hidden"`), the
   only report control that needs nothing visibly broken. No toggle; automatic
   reports are on unless `DO_NOT_TRACK=1` or a stored opt-out. Its own cap: 5
@@ -789,9 +755,9 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     which filters what is on the page, still finds them: `SettingsPage.tsx`
     sets `data-settings-searching` on its content while a search runs.
   - **A stuck computer** (`MachineIntegrationWarning.tsx`): one line above
-    Connected when a computer that should answer ADE MCP is stuck (signed out,
+    Connected when a computer that should answer DAEX MCP is stuck (signed out,
     no relay, account sync failing, waiting for its key past 10 minutes, too
-    old an ADE). It reads ADE MCP's status once when the page opens (account
+    old a DAEX). It reads DAEX MCP's status once when the page opens (account
     level, no pin) and picks computers with `machinesNeedingAttention`
     (`adeMcpState.ts`); offline, left out, getting ready and never-reported
     computers are not counted. Dismissing it lasts until a different computer
@@ -803,18 +769,18 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   - The machine picker says whose GitHub, Linear and Jira connections you are
     viewing. MCP server definitions belong to your account. The MCP page
     searches the registry and the discovered servers and shows ten rows at a
-    time in each list. **Try again** shows progress while ADE checks account sync.
+    time in each list. **Try again** shows progress while DAEX checks account sync.
   - **Links on GitHub** (Linear page) turns typed Linear keys into links on
     github.com through repository autolinks, one per team key. Only a
-    repository admin can read or add them, so when an admin opens the page ADE
+    repository admin can read or add them, so when an admin opens the page DAEX
     adds the missing ones itself, once per repository and key (remembered on
     this computer, so a link the admin deletes is not added again from here).
     **Add** shows only when that failed or a link was removed later. Anyone
-    else gets a quiet note, not a warning: inside ADE's PR view keys link
+    else gets a quiet note, not a warning: inside DAEX's PR view keys link
     anyway (see [Issues](../issues/README.md)).
-  - **ADE agent** (Linear page) reads `viewerIsAdmin` from the Linear connection
+  - **DAEX agent** (Linear page) reads `viewerIsAdmin` from the Linear connection
     status (Linear's `viewer.admin`, asked in the same identity query on every
-    route: this computer, a pinned machine, the CLI, ADE Cloud and the web
+    route: this computer, a pinned machine, the CLI, DAEX Cloud and the web
     client). Linear lets only workspace admins add the agent, so a member sees
     why and **Copy a note for an admin** (the note also shows under the button)
     in place of **Add to workspace**. Unknown (null, an older brain) keeps
@@ -829,7 +795,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   - **How GitHub connects** is an account setting. **GitHub CLI only** uses
     an existing `gh auth login` or a shared copy of that login for GitHub
     operations. Git can use its usual SSH or HTTPS credentials. Live GitHub
-    App notifications require the App, and ADE checks for PR updates
+    App notifications require the App, and DAEX checks for PR updates
     periodically in CLI-only mode. You can remove a previously saved token
     while CLI-only mode is on. **App, token or CLI** restores the credential
     choices.
@@ -837,7 +803,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     repository-permission guidance; App tokens show installation access and
     never report missing `repo` / `workflow` scopes. The App panel says the App
     is read-only and states the read order and the write subset.
-  - Healthy connections hide quota. When ADE compensates, Settings names the
+  - Healthy connections hide quota. When DAEX compensates, Settings names the
     paused source, the replacement and the retry time. The App row's own state
     outranks the ladder (`useGithubAppUserAuth`,
     `describeGithubAppCredentialBadge`), because only it separates a paused
@@ -854,18 +820,18 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     untinted failure box with an incident link, `READS WITH` / `WRITES WITH`
     "Unknown", badges "Waiting on GitHub", no `gh auth login` steps. A missing
     token still shows its instruction.
-- `github/GitHubAppInstallPanel.tsx`: the hosted ADE GitHub App card for
+- `github/GitHubAppInstallPanel.tsx`: the hosted DAEX GitHub App card for
   webhook-relay PR updates. `window.ade.github.getAppInstallationStatus`
   resolves against the relay's `/github/repos/:owner/:repo/status` with the
   local App user token. Two blocks, both from
   `renderer/lib/githubIntegrationStatus.ts`:
-  - **Account · ADE for GitHub.** Device flow: `startAppUserDeviceAuth` (a
+  - **Account · DAEX for GitHub.** Device flow: `startAppUserDeviceAuth` (a
     copyable code, waiting state, verification URL) and
     `pollAppUserDeviceAuth` (renews an expired code up to 3 times).
     `deriveGithubAccountAuthState` reads `credentialState` as `valid` /
     `blocked` / `needs_reauth` / `missing`. **Never judge the account by
     `expiresAt`**: the token lives 8 hours and renews on every use.
-    `describeGithubAccountAxis` returns `cta: null` for every state ADE
+    `describeGithubAccountAxis` returns `cta: null` for every state DAEX
     recovers from.
 
     | State | Shows | Action |
@@ -874,7 +840,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     | `blocked`, no recorded failure | "Renewing…" (another process holds the lease) | none |
     | `blocked`, recorded failure | "Paused" / "Paused until 3:40 PM" (`githubRefreshPauseCopy`), re-authorizing unavailable | none |
     | `needs_reauth` | the problem | "Re-authorize" |
-    | `missing` | not authorized | "Authorize ADE" |
+    | `missing` | not authorized | "Authorize DAEX" |
 
   - **This repo · `owner/name`.** `deriveGithubRepoConnectionState` combines
     account and installation: `connected` / `not_installed` / `access_pending`
@@ -935,7 +901,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   API key, workspace status, automatic GitHub autolinks for admins.
 - `settings/PrChatTranscriptsSection.tsx`: `prTranscriptGists.enabled` under
   Project → Agents.
-- `settings/ResetAdeSection.tsx`: **Reset ADE**, last on General (this machine
+- `settings/ResetAdeSection.tsx`: **Reset DAEX**, last on General (this machine
   only; anchor `reset-ade`, legacy `#about.reset`), mounting `ResetAdeButton`
   from `app/ResetAdeDialog.tsx`.
 
@@ -943,7 +909,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   named blocks `TAB_GROUPS`, `TabContent`, the Providers sub-view).
   `primitives/SettingsSectionRail.tsx`: the sticky rail of a page's blocks,
   shown for two or more blocks at 900 px or wider (a container query), marking
-  the last block at the page end. `AdeCliSection.tsx` sits in General's ADE
+  the last block at the page end. `AdeCliSection.tsx` sits in General's DAEX
   block.
 - `settings/settingsSectionUi.tsx`: `SettingsSectionShell`, toggle styling and
   `SettingsToggle` (fed the persisted value; disabled when the preload lacks
@@ -960,10 +926,10 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     and while running (`applyScheduleSlot`), writing only the look
     (`patchStoredLook`). Stored per computer in `ade.appearanceSchedule.v1`,
     never synced.
-  - **Theme**: `ThemeGallery.tsx` + `ThemePreview.tsx` (search over ADE,
+  - **Theme**: `ThemeGallery.tsx` + `ThemePreview.tsx` (search over DAEX,
     Originals, Editor classics and the user's themes, naming the active
     theme's corners, depth, type and backdrop); `ThemeImportExport.tsx`
-    (export, or import an ADE / VS Code theme with comments and trailing
+    (export, or import a DAEX / VS Code theme with comments and trailing
     commas); `ThemeFilesHelp`; `ThemeCustomizer.tsx` + `themeCustomizerModel.ts`
     (tokens, code colours, shape; saves custom themes). See
     [design/theming.md](../../design/theming.md).
@@ -990,19 +956,21 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   A forced status read after a setup, key or sign-in also re-reads that
   machine's chat model lists in the background, only the changed provider's
   (`refreshRuntimeCatalogsForMachine`, `refreshProvider`; an OpenCode
-  inventory read re-probes OpenCode). For Qwen, Kimi, Grok and Devin the
-  page-open diagnostics read (`ai.getAcpProviderDiagnostics`) is a background
-  write and never wakes a sleeping cloud computer; **Run doctor** is the
-  person's own action (`ai.runAcpProviderDoctor`) and does wake it. A machine
-  on an older ADE that lacks that action falls back to the old doctor run
+  inventory read re-probes OpenCode). For the ACP providers (Qwen, Kimi, Grok, Copilot,
+  Devin, Antigravity) the page-open diagnostics read
+  (`window.ade.ai.acpProviderDiagnostics(args, pin)`, action
+  `ai.acpProviderDiagnostics`) never wakes a sleeping cloud computer; **Run
+  doctor** (`ai.runAcpProviderDoctor`) is the person's own action and does wake
+  it. A machine
+  on an older DAEX that lacks that action falls back to the old doctor run
   with a console warning.
   Cursor offers browser sign-in when disconnected and Sign out when connected;
   keys live in the shared panel.
   - **OpenCode — Universal Model Access**, with a models.dev "catalog synced …
     · refresh" control (`modelsDevLastFetchedAt`, `refreshModelsDev`):
     - **Subscriptions**: one card per OpenCode provider with an `oauth` method
-      (`OAuthConnectModal`), plus **Kimi for Coding** (`KimiKeyDialog`).
-      The opencode.ai sign-in (OpenCode Go and Zen) is copied to ADE Cloud
+      (`OAuthConnectModal`), plus **Kimi for Coding** (an API-key method in `ProvidersSection.tsx`).
+      The opencode.ai sign-in (OpenCode Go and Zen) is copied to DAEX Cloud
       and to the person's other computers with no OpenCode sign-in, without
       its refresh token; this computer keeps renewing it. Other OpenCode
       sign-ins stay here, and an Anthropic one is never copied. See
@@ -1018,7 +986,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
       baseURL, `npm`, models, key) in `ai.customProviders`, and extra slugs in
       `ai.customModelSlugs`.
     - A cold start from the disk cache shows "updating…"
-      (`opencodeProvidersStale`) until the first live probe; without ADE's
+      (`opencodeProvidersStale`) until the first live probe; without DAEX's
       OpenCode copy the group is a card with Download/Retry.
   - **Pi**: a `CollapsibleProviderCard` (readiness, version, CLI path, Open
     `settings.json` / `auth.json` / `models.json`) around `PiProvidersPanel.tsx`.
@@ -1030,7 +998,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   is the tile form. Account fields come from `providerAccountIdentity.ts`, the
   usage poller's reader.
 - `shared/providerRemediation.ts`: the one source of each CLI provider's login
-  command, name and docs URL; `installCommand` is always `null` (ADE downloads
+  command, name and docs URL; `installCommand` is always `null` (DAEX downloads
   its own copies, see [agent tools cache](agent-tools-cache.md)). Read by the
   CLI-tools cards, `ModelPicker/providerEmptyState.tsx`,
   `apps/ade-cli/src/services/agentRegistry.ts` and the `providers.status` RPC;
@@ -1047,12 +1015,12 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     (a "Popular" grid until typing), **Local Model Servers**. A tile opens
     `PiProviderDetailModal.tsx`; starting a sign-in closes it.
   - Local servers have **no sign-in** (login options dropped) and take status
-    from ADE's live probe (Running / Load a model / Not detected), never from
+    from DAEX's live probe (Running / Load a model / Not detected), never from
     `models.json`; only Ollama and LM Studio are probed, others read
     "Configured in Pi".
   - With `sdkAvailable` false, the panel says to run `pi` and use `/login`.
     Rows: `piProviderRow.ts`; shared primitives:
-    `providerSectionPrimitives.tsx`. ADE stores nothing typed into a Pi prompt
+    `providerSectionPrimitives.tsx`. DAEX stores nothing typed into a Pi prompt
     ([Pi sign-in](../chat/agent-routing.md#pi-sign-in)).
 - `settings/OAuthConnectModal.tsx`: the OpenCode subscription dialog, `form →
   starting → waiting → error`. It renders the `oauth` method choice and typed
@@ -1068,7 +1036,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
 - `settings/passwords/PasswordsSection.tsx`: Passwords & Secrets
   (`?tab=secrets` opens its Secrets view). One account vault read on this
   computer, so no machine picker: a status bar (counts, Import, New, ⋯ with the
-  ADE Cloud switch, "Turn off on this computer", Reset), then Logins · Secrets
+  DAEX Cloud switch, "Turn off on this computer", Reset), then Logins · Secrets
   · Activity. Secrets group by project (all-projects first), each with
   **Export .env**; computer-only secrets wear "This computer". Results are
   toasts. `PasswordDialogs.tsx`: new login, new secret (project picker; "Keep
@@ -1094,8 +1062,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   worktrees, DerivedData and build output (size, age, owner, blocked reasons,
   estimates); previewed, confirmed destructive actions; volume pressure,
   categories, policy chips, storage doctor, a project-database card with
-  prune/compact, "Health & diagnostics" (`StorageDiagnostics`, `#diagnostics`)
-  and the cleanup journal (`StorageMaintenanceJournal`). `storageView.ts`
+  prune/compact, "Health & diagnostics" and the cleanup journal. `storageView.ts`
   holds the pure snapshot→target mapping (including `review_first`
   `proof_attachments`). Reads `window.ade.storage.*` and
   `window.ade.app.getRuntimeHealth`; see
@@ -1118,7 +1085,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
 **Usage** (full behaviour: [usage-tracking.md](usage-tracking.md))
 
 - `usage/HeaderUsageControl.tsx`, `UsageLimitsBand.tsx`: the header usage
-  popup for Claude and Codex (`TRACKED_PROVIDERS`) and the automation budget.
+  popup for Claude and Codex and the automation budget.
   - One chip per detected tracked provider: the 5-hour window and the plan
     window (`wk` with a weekly window, else `mo`); percents clamp to 0–100,
     green/amber/red at 75 % / 100 %, ellipsis while missing.
@@ -1136,7 +1103,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   - On the web, `usage.liveReadings()` (web only) is false when no computer
     answers `usage.getQuotaSnapshot`. With no snapshot, the band then says:
     "Claude, Codex and the other providers report their limits through one
-    of your computers. They show here while one is on." The header's ADE
+    of your computers. They show here while one is on." The header's DAEX
     Cloud ring (`useCloudAccount`, `/cloud/account`: hours, disk, computers)
     shows without a computer.
   - Claude background polls never prompt the Keychain; an explicit refresh may
@@ -1145,8 +1112,8 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     and extra usage instead of a false auth error. Codex uses HTTP windows when
     complete and a bounded app-server RPC only for auth recovery or an unknown
     schema.
-  - Budget caps: `ade.usage.getBudgetConfig` / `saveBudgetConfig`. Crossing 25
-    / 50 / 75 / 100 % emits `UsageThresholdEvent`.
+  - Budget caps: `ade.usage.getBudgetConfig` / `saveBudgetConfig`. Crossing a cap's
+    alert percentage logs `budgetCap.alertThreshold` (`budgetCapService.ts`).
 - `usage/usageSnapshotOrdering.ts`: orders by `revision.seq` within one
   `producerId` and always accepts another producer; unstamped disk snapshots
   use `lastPolledAt`. Reset on a binding change.
@@ -1206,7 +1173,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   room; it skips gone logins and says why when nothing was a real choice.
 - `usage/windowAutoStart.ts`: one best-effort small request per enabled
   account just after a five-hour reset or an early window end (including a
-  credit spent in ADE), via a per-provider opener table with no persisted
+  credit spent in DAEX), via a per-provider opener table with no persisted
   timers. `AUTOSTART_WINDOW_TYPE` (`shared/types/providerInstances.ts`) gates
   providers and the toggle.
 - `shared/usageResetCredit.ts`: the reset-credit outcome and copy for desktop,
@@ -1220,7 +1187,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   `providerConnectionStatus.ts`.
 - `usage/UsagePaceBar.tsx`, `UsageSegmented.tsx`: shared pace bar and segmented
   control.
-- `usage/sharedUsageTracking.ts`: one tracker per ADE home; project scopes
+- `usage/sharedUsageTracking.ts`: one tracker per DAEX home; project scopes
   attach (`attachSharedUsageTrackingScope`) and the last detach disposes it.
   `bootedUsageScope.ts`: unbound usage IPC and the event relay borrow a booted
   brain scope.
@@ -1314,8 +1281,8 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   `routerCore` picks the cheapest route that keeps quality;
   `modelRegistryStore` caches `<adeHome>/router/registry.json`;
   `modelRouterService` logs to `<adeHome>/usage/router-shadow-*.jsonl` and
-  changes no turn; `routerEfficiency` backs `ade router efficiency`;
-  `modelCatalog` backs `ade models catalog`; `modelSheet` backs `ade models
+  changes no turn; `routerEfficiency` backs `daex router efficiency`;
+  `modelCatalog` backs `daex models catalog`; `modelSheet` backs `daex models
   sheet`. Contract: `shared/routerRegistry.ts`.
 - `usage/usageStatsStore.ts`: project DB aggregates and the `usage_events`
   ledger: only successful, meaningful user mutations, attributed `desktop`,
@@ -1344,7 +1311,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
 - `main/services/updates/appBundleOwnership.ts`,
   `registerAppBundleOwnershipIpc.ts`, `shared/types/appBundleOwnership.ts`,
   `app/AppBundleOwnershipBanner.tsx`: a root-owned `/Applications/ADE.app` on
-  macOS and the "ADE will ask for your password on every update" banner (Fix
+  macOS and the "DAEX will ask for your password on every update" banner (Fix
   it runs an admin `chown -R` via `osascript`; local only).
 - `apps/ade-cli/src/commands/windowsDesktopRescue.ts`: Windows `brain update
   --apply-staged` also installs the desktop app when one is installed.
@@ -1401,9 +1368,9 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   prerelease; a release beats its prereleases; unparseable segments are `0`).
   `updates/autoUpdateVersions.ts` re-exports `compareUpdateVersions` for main
   and builds `buildReleaseNotesUrl` and `buildGithubReleaseUrl` (also used by
-  `ade doctor`).
+  `daex doctor`).
 - `app/AutoUpdateControl.tsx`: the top-bar badge ("Checking for updates",
-  "Downloading vX.Y.Z (NN%)", "Install update vX.Y.Z", "ADE will quit and
+  "Downloading vX.Y.Z (NN%)", "Install update vX.Y.Z", "DAEX will quit and
   reopen"; "Retry install vX.Y.Z" when `lastInstallFailed` names the staged
   version, with whether the download is still here).
   - The install prompt (`autoUpdateInstallAction.tsx`, shared with the ready
@@ -1416,7 +1383,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
     the prompt says so. The quit prompt uses the same probe. Each probe logs
     `autoUpdate.impact_probe` or `_unknown` to `ade-update.jsonl`.
   - "Resume this computer's chats" is offered when a listed chat can be queued
-    (not personal chats). Connected machines on an older ADE are listed and
+    (not personal chats). Connected machines on an older DAEX are listed and
     update first when left ticked (`machine.updateAndRestart`).
   - The prompt sets `installRequested` and calls
     `window.ade.updateQuitAndInstall()`; `false` clears the flag. While
@@ -1432,18 +1399,120 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   `onUpdateEvent`) for the top-bar pill, the banner and About.
 - `app/AutoUpdateBanner.tsx`: the ready prompt (**Restart and install**;
   dismissal hides that version for the session), the recovery banner (`parked`
-  → "ADE update didn't finish — Restart to retry"; failed handoff → "ADE update
+  → "DAEX update didn't finish — Restart to retry"; failed handoff → "DAEX update
   did not install — Restart to retry"; **Restart now**; dismissal keyed on a
-  failure signature) and the countdown toast ("ADE will update in Ns",
+  failure signature) and the countdown toast ("DAEX will update in Ns",
   **Cancel** → `updateCancelAutoApply()`).
 - `app/BrainRecoveryNotice.tsx`: one notice per brain event-loop recovery,
   from `localRuntime.lastWedge` (`app.getInfo()`) via `formatRecoveryMessage`.
-  A wedge with a command reads "ADE recovered from a background issue … a stuck
-  task (…) was restarted"; `lastCommand` `external-watchdog` reads "ADE
+  A wedge with a command reads "DAEX recovered from a background issue … a stuck
+  task (…) was restarted"; `lastCommand` `external-watchdog` reads "DAEX
   restarted its background service at … after it stopped responding." The
   wedge `ts` is stored in `localStorage` so one event shows once. See
   [ARCHITECTURE.md §2.1](../../ARCHITECTURE.md) and
   [Storage and recovery](../storage-and-recovery/README.md).
+
+## Gotchas
+
+- **Settings acts on the page's machine.** Machine settings, provider
+  sign-ins and storage read `useSettingsMachineScope().pin` and send every
+  call there; `null` is only for this computer's machine-global calls.
+  `useSettingsMachinePage` keeps the pin stable until the binding key changes,
+  so a sync tick does not cancel a provider sign-in. Key effects on
+  `pin?.key`.
+- **Account settings are the account's.** Plan, credits, consents and other
+  account-wide values come from the account server and are stored per
+  account, never in `.ade/`, localStorage or one machine's settings; they take
+  no pin.
+- **The CLI is `daex`; `ade` is a permanent alias.** Both names are installed
+  (`bin` in `apps/ade-cli/package.json`). Files, env vars and folders keep the
+  old name (`~/.ade`, `ADE_HOME`, `bin/ade`).
+- **A provider account is a path, not a credential.** The registry holds config
+  home paths; the tokens inside belong to the provider CLI. So the registry is
+  plain JSON, `remove` deletes nothing, and the domain is not CTO-gated. Never
+  add a field a credential would fit in.
+- **The default account's config home is resolved, never stored.** A frozen
+  path would make DAEX read one directory and launch against another once a
+  user sets `CLAUDE_CONFIG_DIR`. Any persisted `configHome` for the base
+  identity is ignored (its `accentColor` field is never set or shown).
+- **Scope has two axes**: owner (your account or this computer) and coverage
+  (everything or one repository). A value holding a path, a port or a hardware
+  fact is machine scope; everything else is account scope. `SettingScope` is
+  the four combinations, and the sidebar group is the scope.
+- **No trust gate, no committed config.** `.ade/ade.yaml` is not read: it is
+  carried into `local.yaml` once (non-executable keys only) and deleted
+  ([configuration-schema.md](./configuration-schema.md#no-trust-gate)). There is
+  no `getExecutableConfig`; use `getEffective`.
+- **Phone-sync port 8787.** Binding always tries 8787 first, even when
+  `lastPort` is 8788; a brain on 8788 keeps retrying 8787 so phones that saved
+  it reconnect. The "DAEX is already running with phone sync" dialog is the
+  intended cross-channel case (DAEX vs DAEX Alpha). Contract:
+  [sync and multi-device](../sync-and-multi-device/README.md).
+- **Config reload** calls each listener on save; hot reload is best-effort,
+  and some changes (the proxy port) need a restart.
+- **New `ai.*` fields need both `coerceAiConfig` and `mergeAiConfig`**, or they
+  fail to load or to survive the shared+local merge (as `ai.customProviders` /
+  `ai.customModelSlugs` did). Both lists use replace semantics; the UI writes
+  the full list. See
+  [configuration-schema.md](./configuration-schema.md#custom-providers-and-model-slugs).
+- **`freshProject`** is computed when `createOnboardingService` is built and
+  never updates; a wrong boolean shows first-run surfaces on a used project.
+- **Deep links.** `?tab=<id>` is read through `useSearchParams`; old ids resolve
+  through `LEGACY_TAB_ALIASES` (see the pages table).
+- **Install refreshes before quitting.** `quitAndInstall()` re-runs
+  `updater.checkForUpdates()` before `installing`, or DAEX could install a stale
+  download while a newer build exists. Compare with `compareUpdateVersions`,
+  never `===` (`v1.2.3`, `1.2.3-rc.1`, `1.2.3` must order consistently in the
+  reconcile and supersede paths).
+- **`installing` is sticky; `ready` is not.** While `installing`, the service
+  ignores `update-not-available`, `checking-for-update` and `error`. Checks
+  keep running while `ready` (same-or-older ignored, newer supersedes, a failed
+  check keeps the archive). Only a running `quitAndInstall()` blocks a check:
+  status stays `ready` until the handoff, and a supersede then would delete the
+  archive being handed to Squirrel or NSIS. See
+  [Checking while an update is staged](./desktop-auto-update.md#checking-while-an-update-is-staged).
+- **Parked is not failed.** An aborted consent goes to `snapshot.parked`, not
+  `error`; the download stays and the banner offers **Restart now**. Keep it
+  apart from the disk / network / verification errors, and let parked win over
+  `ready` for the same version.
+- **Idle auto-apply needs `RuntimeActivitySummary.idle`** and continuous idle
+  for the grace period; activity clears the countdown and a cancel sets
+  `autoApplySuppressedUntil`. It is off under
+  `ADE_DISABLE_AUTO_UPDATE_APPLY=1` and on dev launches.
+
+## Where state lives
+
+| Scope | Location | Owner | Contents |
+|---|---|---|---|
+| Machine | `~/.ade/` (`ADE_HOME` overrides; Alpha uses `~/.ade-alpha/`) | DAEX runtime (`daex serve`) | Endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and its homes (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), binary (`bin/ade`), natives (`runtime/<arch>/`), service logs. |
+| Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff and reconcile state, automatic-install preferences. |
+| Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides: ports, env vars, machine paths. |
+| Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets; `.ade/.gitignore` whitelists only authored files. |
+
+- **The runtime ties the scopes together.** It owns `~/.ade/projects.json`,
+  builds an `AdeRuntime` per project root on the first project-scoped JSON-RPC
+  call, and is the one runtime through which desktop and SSH-attached desktops
+  see lanes, chats and sessions.
+- **Registry writes are serialized.** The desktop, the brain, the CLI and a
+  project move all write `projects.json`. Each write
+  (`ProjectRegistry.mutate`) holds `projects.json.lock`, reads the file fresh
+  and appends a line to `projects.journal.jsonl` (`projectRegistryJournal.ts`),
+  so overlapping writers keep each other's projects.
+- **Project ids.** An id is the hash of the folder as this machine resolves it
+  on each read. When it differs from the stored id, the stored id becomes an
+  alias in `project-aliases.json` (as after a move) and Sentry gets a report.
+- **Project identity files.** Each opened local project has
+  `~/.ade/project-data/<projectId>.json` with its database's device and inode,
+  recorded by the desktop, the brain's project scope and the CLI on open. It
+  sits outside `projects.json` because an older DAEX drops unknown fields there.
+- **Missing data stops open.** If a registered project's folder or `.ade`
+  folder, or a recorded database, is missing, registration and open stop with
+  `project_data_missing` before creating new state. The desktop shows the
+  recovery screen (`data_missing`): Restore from Trash (when the folder exists),
+  steps to put it back (it reopens when it returns), or Start fresh. With the
+  project folder gone it says to plug the drive in or move the folder back.
+  Start fresh and removing from recents forget the identity; a new project
+  still creates its first database normally.
 
 ## Detail docs
 
@@ -1466,9 +1535,9 @@ screens and the three help tiers below.
 
 It runs once per computer and is stored in global app state
 (`welcomeVideo.completedAt` / `dismissedAt`), so a computer set up before it
-existed never sees it. It runs on, and reads, the computer ADE opens on.
+existed never sees it. It runs on, and reads, the computer DAEX opens on.
 
-ADE Web shows only the welcome card, and only to an account created on or after
+DAEX Web shows only the welcome card, and only to an account created on or after
 2026-11-18 that has not started onboarding anywhere (`webWelcomeDue` in
 `FirstRunSteps.tsx` reads the account's `onboarding.progress` first; if it
 cannot, no card). **Get started** marks onboarding started; **Skip the tour**
@@ -1478,7 +1547,7 @@ shared-lane page (`/shared`) is open.
 1. **Welcome.** One card on the gate's glass: headline, one sentence, provider
    marks, **Get started** and **Skip setup**. Skipping setup still leaves the
    tour for the first project.
-2. **Sign in**, if this computer has no ADE session.
+2. **Sign in**, if this computer has no DAEX session.
 3. **Connect your agents** (`FirstRunAgents.tsx`, `FirstRunAgentRail.tsx`).
    Each agent's 3D logo (`providerBrand`) hangs from a rail, sign-in-capable
    agents first. Moving along the rail swings the logos and turns the nearest
@@ -1518,7 +1587,7 @@ shared-lane page (`/shared`) is open.
      (Claude stops at the window edge by file time); others filter discovery's
      read under the same 2.5 s budget. Escape closes only the picker.
    - Below: an iPhone QR and a line about other computers.
-5. **Into ADE.** Chosen projects join recents and open as tabs; the first opens;
+5. **Into DAEX.** Chosen projects join recents and open as tabs; the first opens;
    worktrees become lanes through normal adoption. For each project with its
    pill on, `useOnboardingChatImport` imports up to 25 chats from the last 30
    days (newest first, any provider) into the lane each ran in (or the main
@@ -1528,10 +1597,10 @@ shared-lane page (`/shared`) is open.
    still come in.
 6. **The tour** (`components/onboarding/tour/`). It starts only inside a
    project the person opened (never on Home or the welcome screen; the screens
-   before a project explain themselves). A violet ADE cursor glides to a real
+   before a project explain themselves). A violet DAEX cursor glides to a real
    control, a ring settles and a card explains it, six cards ("N of 6"): the
    prompt box, its permission/model/effort controls, where it runs (the Run on
-   menu: this computer, another computer or ADE Cloud, with the lane picker
+   menu: this computer, another computer or DAEX Cloud, with the lane picker
    beside it: main checkout or a new lane), the chats list, the first chat,
    and the Tools pane. A person who already has chats gets **Open a chat**
    instead of the first chat (both are card 5); the Tools step is skipped
@@ -1541,7 +1610,7 @@ shared-lane page (`/shared`) is open.
      runnable model (Haiku, Luna or Composer when connected, else the cheapest
      the registry knows). The user sends it. That model is not saved as
      last-used; a model the user picks there is.
-   - The finish card points at ADE Tips for the rest.
+   - The finish card points at DAEX Tips for the rest.
    - Some steps ask for the click; every card has Next and Back; nothing is
      dimmed. Leaving shows a **Tour paused** pill with **Show me**; the step
      returns when its control is on screen, across reloads. A step with
@@ -1563,9 +1632,9 @@ and a `load` that fetches its code ahead; both share one fetch).
 
 - **Once per page per account**, keyed by `id`: a local copy
   (`ade.announcements.seen.v1`) and the account setting `announcements.seen`
-  hold the union across devices and ADE Web (`announcementSeenSync.ts`; merge
+  hold the union across devices and DAEX Web (`announcementSeenSync.ts`; merge
   in `shared/announcementsSeen.ts`: never unseen, earliest time wins, at most
-  500). ADE Web uses `announcements.getSeen` / `markSeen` through the computer
+  500). DAEX Web uses `announcements.getSeen` / `markSeen` through the computer
   (not for lane-share guests). Pages seen before another account signed in
   stay local. Use a new `id` to reshow; remove the entry to retire.
 - **Never an empty window.** A page's entrance is timed from when it mounts,
@@ -1596,26 +1665,26 @@ and a `load` that fetches its code ahead; both share one fetch).
 - **To add one:** create `pages/<Name>.tsx` with a default component taking
   `{ close }` (call it before navigating), and add its entry (through
   `lazyPage`) at the top of `ANNOUNCEMENT_PAGES`. Most pages are a `WhatsNewFeature`: a place, a
-  headline, one sentence on where to try it, an `action` running an ADE Tips
+  headline, one sentence on where to try it, an `action` running a DAEX Tips
   entry, beside a looping muted recording, a screenshot crossfade (`holdMs`,
   optional `caption`) or phones.
 
 ### The agree line and the privacy policy notice
 
-Every sign-in path shows "By continuing, you agree to ADE's Terms and
+Every sign-in path shows "By continuing, you agree to DAEX's Terms and
 Privacy Policy" with links: the shared sign-in card (`onboarding/GlassSignInCard.tsx`,
-which covers the desktop gate, ADE Web and the `/sign-in` page that a desktop
-or `ade login` sign-in opens), the device-code pages on the account directory
+which covers the desktop gate, DAEX Web and the `/sign-in` page that a desktop
+or `daex login` sign-in opens), the device-code pages on the account directory
 (`LEGAL_AGREEMENT_HTML` in `apps/account-directory/src/brandPage.ts`), the
-`ade login` text (`SIGN_IN_LEGAL_LINE`), and the iPhone's
+`daex login` text (`SIGN_IN_LEGAL_LINE`), and the iPhone's
 `AccountSignInView`. Clerk's own hosted page, the fallback when Clerk's API
 cannot be reached from the card, shows Clerk's legal-consent setting instead.
-The card, the device-code pages and `ade login` take the links from
+The card, the device-code pages and `daex login` take the links from
 `shared/legalLinks.ts`; the iPhone keeps them as literals, because SwiftUI
 parses Markdown links only in a string literal.
 
 When the policy changes, existing users see "We updated our Privacy Policy"
-once: a floating app banner on desktop and ADE Web
+once: a floating app banner on desktop and DAEX Web
 (`app/PrivacyPolicyUpdateNotice.tsx`) and a top banner on the iPhone
 (`PrivacyPolicyNoticeBanner` in `apps/ios/ADE/App/ContentView.swift`). Read,
 Got it/OK and × all count as seen. The seen version is per device
@@ -1631,18 +1700,18 @@ To reshow it, change the policy's `LAST_UPDATED` and its changelog
 (`apps/web/src/app/pages/PrivacyPage.tsx`), `PRIVACY_POLICY_VERSION`
 (`shared/legalLinks.ts`) and `PrivacyPolicyNotice.version` (iOS) together.
 
-### Boot splash and the ADE logo
+### Boot splash and the DAEX logo
 
-"Starting ADE" plays a WebGL2 liquid glass reveal
+"Starting DAEX" plays a WebGL2 liquid glass reveal
 (`components/ui/LiquidGlassLogoReveal.tsx`, parts in `components/ui/liquidGlass/`)
 for the boot or the reveal (about 3.5 s), whichever ends later, once per window
 (`app/BootSplashReveal.tsx`). Reduced motion, no WebGL or a failed logo load
 show the still logo. The hosted web never plays it. The logo everywhere is
 `<AdeWordmark>` (`logo.png` dark, `logo-light.png` light).
 
-### ADE Tips
+### DAEX Tips
 
-The second tier: every feature worth knowing, from Help › ADE Tips, the
+The second tier: every feature worth knowing, from Help › DAEX Tips, the
 palette, the Home widget or the tour's last card (`renderer/onboarding/adeTips.ts`;
 `components/onboarding/tips/`). One group at a time as a tile wall: the group
 tile, screenshot tiles (`size`, `shot`, packed without holes in four and two
@@ -1666,26 +1735,26 @@ startup-context tip points at the provider's initial context inventory.
   Activity row the user dismissed still counts), nor for 30 s after the last
   turn ends; a card already up steps aside and comes back (`useAgentBusy`).
   Another machine's items match the project by name; an item from the
-  project's own device matches only by folder. ADE Tips' header turns them off. A tip with
+  project's own device matches only by folder. DAEX Tips' header turns them off. A tip with
   `card: false` (setup and power-user tips such as Beta track, Headless,
-  Keyboard, Quick slots, Music) stays in ADE Tips but is never a card, and
-  ADE Web never offers a `desktopOnly` tip (`tipOfferedAsCard`).
+  Keyboard, Quick slots, Music) stays in DAEX Tips but is never a card, and
+  DAEX Web never offers a `desktopOnly` tip (`tipOfferedAsCard`).
 - **Testing**: `npm run dev:desktop -- --first-run --keep` reopens as a
   returning user; dev palette **Dev: Suggestions test mode** (no limits) and
   **Dev: Reset Tips, suggestions and What's new** (`resetOnboardingTiers`).
 
 ### The unasked budget and onboarding sync
 
-Everything ADE shows that the person did not ask for (What's new opening by
+Everything DAEX shows that the person did not ask for (What's new opening by
 itself, tip cards, surveys, situational suggestions) shares one budget
 (`renderer/onboarding/unaskedBudget.ts`): at most one a day (20 h gap),
 nothing in a new account's first three days. A suggestion is never held back
 by it, but spends it.
 
-The sidebar nudges ("Invite friends, get free cloud hours" and "Star ADE on
+The sidebar nudges ("Invite friends, get free cloud hours" and "Star DAEX on
 GitHub") stay outside it: each already has its own message-count schedule with
 snoozes and a final dismissal (`lib/nudgePill.ts`). One shows at a time, and
-"Invite friends" goes first (it shows only to someone who has used ADE Cloud,
+"Invite friends" goes first (it shows only to someone who has used DAEX Cloud,
 and it pays them hours); the star pill takes the place once the invite is
 dismissed or done. Both wait while the tour runs (`onboarding/useTourOpen.ts`)
 and mount only while the sidebar shows. The "Import your chats" pill under the
@@ -1705,14 +1774,14 @@ first account signed in belongs to that account; when another account signs
 in there, its copy replaces the computer's. The shared pass loop is
 `renderer/lib/accountValueSync.ts` (also used by What's new seen pages); a
 desktop brain pull counts only when `accountSettings.sync` reports `ready`. The desktop goes through its brain,
-ADE Web through the account relay. Signed out or offline, the local copy
+DAEX Web through the account relay. Signed out or offline, the local copy
 decides. No polling.
 
 ### Situational suggestions
 
 The third tier: a bottom-right card (`suggestion` placement,
 `docs/design/notices.md`) shown only on a signal: what, why now, one action,
-**Not now** (files it under "Suggested for you" in ADE Tips, with **Don't
+**Not now** (files it under "Suggested for you" in DAEX Tips, with **Don't
 suggest again**).
 
 - Rules (`renderer/onboarding/situationalSuggestions.ts`,
@@ -1732,11 +1801,11 @@ suggest again**).
 | --- | --- | --- |
 | Plan running low | A Claude or Codex limit at 20% left or less with one account signed in (the tab machine's snapshot); once per provider per reset window | Settings › AI accounts |
 | `@` sends work to another machine | Another machine of the project is online and no sent message ever had an `@machine` mention | A new chat in the primary lane |
-| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`); again after 30 days | Settings › Passwords & Secrets |
+| DAEX secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`); again after 30 days | Settings › Passwords & Secrets |
 | Connect the tracker | A sent message links a Linear, Jira or GitHub issue or PR and the tab's machine is not connected (read only then) | Settings › Integrations › that tracker |
 | The Work grid | Three or more chats working and the grid off | Turns on Focus with the grid, opens Work |
 | Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week here; only hashes kept | Automations |
-| ADE on iPhone | A week after first run, no other machine and no paired phone (read once then) | Connections › Phone |
+| DAEX on iPhone | A week after first run, no other machine and no paired phone (read once then) | Connections › Phone |
 | Stacked PRs | A lane on another lane (not the main checkout) with an open PR, while it has none | PRs |
 | Import your .env | The open project's main checkout has a git-ignored `.env` on the person's own connected computer; once per set of files (`useEnvImportSuggestion.ts`) | Passwords & Secrets with the import dialog ([The `.env` tip](../passwords/README.md#the-env-tip)) |
 
@@ -1751,7 +1820,7 @@ Preview with `?mockSuggestion=<id>` (flags in `browserMock.ts`).
 through `AdeCliSection`.
 
 1. **Reset pre-account machine trust** once, in packaged builds only. Before
-   attaching, ADE removes only `remote-machines.json`,
+   attaching, DAEX removes only `remote-machines.json`,
    `desktop-paired-machines.json`, `sync-paired-devices.json` and the
    runtime-host grants sidecar from the channel's machine secrets directory;
    sessions, identity, the PIN, the bootstrap token, projects and SSH files
@@ -1759,20 +1828,20 @@ through `AdeCliSection`.
    completes only after the restart is confirmed; an early exit retries the
    restart without erasing newer pairings.
 2. **Bring up the runtime.** The pool attaches to `~/.ade/sock/ade.sock`, else
-   spawns `ade serve --socket <path>` from the bundled CLI. `initialize`
+   spawns `daex serve --socket <path>` from the bundled CLI. `initialize`
    checks the version and a SHA-256 build hash of the CLI script
    (`ADE_RUNTIME_BUILD_HASH`, set by `apps/ade-cli/src/cli.ts`; compared in
    `LocalRuntimeConnectionPool.connectClient`). A dev `0.0.0` with a matching
    hash is accepted. A mismatch raises `LocalRuntimeCompatibilityError`; the
    pool kills the stale runtime when it reported a pid, unlinks the endpoint
    and spawns a compatible one.
-3. **Register a per-user login service.** `installServiceBestEffort()` runs `ade
+3. **Register a per-user login service.** `installServiceBestEffort()` runs `daex
    serve --install-service` once per session (`apps/ade-cli/src/serviceManager/`:
    launchd, systemd, Windows startup), exposed as
    `LocalRuntimeStatus.serviceInstall` and `serviceHealth` (`unsupported |
    not_installed | installed | running | error | unknown`). On macOS both
    launch agents (brain and watchdog) carry `AssociatedBundleIdentifiers`, so
-   Login Items show ADE's name and icon.
+   Login Items show DAEX's name and icon.
 4. **Install `ade` on `PATH`** through `window.ade.adeCli.installForUser()`
    and the bundled helper (`…/Resources/ade-cli/install-path.sh` on macOS);
    Settings → System → Advanced shows the path, Install / Repair and the PATH
@@ -1814,26 +1883,26 @@ irm https://ade-app.dev/install.ps1 | iex          # Windows PowerShell
   `. "$HOME/.ade/env"` block to `~/.zshrc`, `~/.bash_profile` (macOS bash) or
   `~/.bashrc` (Linux bash). Fish, unknown shells, non-interactive runs and
   `ADE_INSTALL_NO_PATH=1` get printed instructions.
-- **Register through `ade brain start`**, which pins the default role to `cto`
-  (needed by `ade connect` and the desktop). `serve --install-service` would
+- **Register through `daex brain start`**, which pins the default role to `cto`
+  (needed by `daex connect` and the desktop). `serve --install-service` would
   leave `ADE_DEFAULT_ROLE` unset, land on `agent` and break sign-in.
-- **Then `ade setup`**, shared by both platforms: pinned agent CLIs, account,
+- **Then `daex setup`**, shared by both platforms: pinned agent CLIs, account,
   desktop app, an end-to-end check (brain running, machine linked) and a
   five-step summary. A failed step names its fix inline and under "What's
   left".
   - Before the account step, `awaitRuntimeService` probes the socket, installs
     the service only if nothing answers, and dials for
     `SETUP_SERVICE_START_BUDGET_MS` (`RUNTIME_SERVICE_START_WAIT_MS`, 90 s),
-    printing "Starting ADE's background service..." only when it waits. The
+    printing "Starting DAEX's background service..." only when it waits. The
     wait never blocks later steps. A still-starting brain makes the account
-    step *skipped* ("ADE's background service is still starting"), ending with
-    "Give it a moment, then run `ade connect`."
+    step *skipped* ("DAEX's background service is still starting"), ending with
+    "Give it a moment, then run `daex connect`."
   - An already-linked machine is offered keep / switch / skip. The desktop step
     skips its ~1 GB download for the same version, resumes with a Range
     request, and launches detached (no inherited Windows console).
-  - `ade connect --headless` for no browser. Non-interactive runs skip prompts
+  - `daex connect --headless` for no browser. Non-interactive runs skip prompts
     and print commands; `ADE_INSTALL_NO_PROMPT=1` / `-NoPrompt` opts out.
-    `ade setup` can be re-run.
+    `daex setup` can be re-run.
 - See [`apps/ade-cli/README.md`](../../../apps/ade-cli/README.md) for the flow
   and overrides.
 
@@ -1852,9 +1921,9 @@ saves and who it affects, once per group.
 
 | Group | Saves to | Pages |
 |---|---|---|
-| **General** | — | Needs attention, You and this machine, ADE version and updates on every machine |
-| **You** | Your ADE account, everywhere | Account, Usage, Sharing (desktop only) |
-| **App** | How ADE behaves for you | Chat, Providers, Android devices and Apple devices (each with a machine picker in its title), MCP servers, ADE MCP, Notifications, Appearance, Behaviour and Keyboard (these three on this computer) |
+| **General** | — | Needs attention, You and this machine, DAEX version and updates on every machine |
+| **You** | Your DAEX account, everywhere | Account, Usage, Sharing (desktop only) |
+| **App** | How DAEX behaves for you | Chat, Providers, Android devices and Apple devices (each with a machine picker in its title), MCP servers, DAEX MCP, Notifications, Appearance, Behaviour and Keyboard (these three on this computer) |
 | **Project** | The open project (routed to its machine) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Deleted & Archived (Recently deleted, Archive; every machine at once), Disk space (Space, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
 | **System** | This computer, or the picked machine | Machines (all, and a page each), Advanced (background service, the `ade` command, Send a report, Database copies, Reset) |
 
@@ -1871,7 +1940,7 @@ saves and who it affects, once per group.
   hides on this computer until it changes. What was ignored sits folded under
   the rows ("2 ignored items") with Show again.
 - **You** and **This machine** cards.
-- **ADE**: version and track, the one restart action ("Restart and update", or
+- **DAEX**: version and track, the one restart action ("Restart and update", or
   "Restart and switch to Stable", the same words as the top bar, floating
   prompt and restart dialog), the track, automatic installs, an update row per
   machine.
@@ -1883,7 +1952,7 @@ unable to start chats; never one never set up, switched off, still
 downloading (`runtimeDownloadPending`) or running with a side note (an old
 Codex token for usage). "Background service calls failed" counts a call once
 after its last retry, skips refusals the brain marks expected, and lists the
-worst (`RuntimeHealthSnapshot.failedActionsTop`). An ADE Cloud box that is
+worst (`RuntimeHealthSnapshot.failedActionsTop`). A DAEX Cloud box that is
 asleep, stopped or changing state is dropped once the box list answers. The
 renderer gathers problems (`settings/overview/useNeedsAttention.ts`); the
 project part is `projectHealth.getReport` ([project-health.md](./project-health.md)).
@@ -1897,7 +1966,7 @@ page holding them. `DEFAULT_SETTINGS_TAB` names the landing page (not
 **Other machines** are reached from Machines or the Providers picker, never a
 copy of every page. A machine's page reads and writes through its pin (keep
 awake, terminal shell, Continue chats after restarts, its update track via
-`ai.getMachineUpdateTrack`); a row only that machine's ADE can change shows
+`ai.getMachineUpdateTrack`); a row only that machine's DAEX can change shows
 its value and "Change on that machine". Offline machines show what was last
 known. The Project group is named after the repository and disappears outside
 a project.
@@ -1919,7 +1988,7 @@ Deleted & Archived: **Recently deleted** (lanes and chats, a lane with its
 chats) and **Archive** (lanes, chats, shells), both read from every online
 machine at once, with no machine picker. Each view has one toolbar (kind
 filter, search) and no second title; row meta lines wrap through
-`MetaLine.tsx`. Disk space: **Space** (lane and ADE
+`MetaLine.tsx`. Disk space: **Space** (lane and DAEX
 storage, cleanup history; one machine, picked on the page) and **Rules** (idle
 archiving, session lifecycle, project files). Agents: PR chat transcripts. The
 web shows Recently deleted, Archive and Rules. Links and search switch to the
@@ -1931,7 +2000,7 @@ space.
   active or unpushed lanes.
 - A machine change clears the previous machine's lane, storage and health data
   first.
-- Disk pressure stays available with no project by reading this computer's ADE
+- Disk pressure stays available with no project by reading this computer's DAEX
   storage root.
 
 ### Settings with no project
@@ -1943,7 +2012,7 @@ returns; the top bar shows a "Settings" tab).
 - Only project-free settings show: the standalone resolver hides
   `account-repo` and `machine-repo` entries and tabs whose sections all need a
   project.
-- Integrations shows only account pages (ADE Cloud, MCP servers); GitHub,
+- Integrations shows only account pages (DAEX Cloud, MCP servers); GitHub,
   Linear and Jira tiles and status reads are left out.
 - Mixed pages (Chat, Notifications) check `isStandaloneSettings()` and show one
   "Open a project to change these." (`ProjectSettingsNotice`) instead of the
@@ -1968,11 +2037,11 @@ Project section, or the default page. `isMachineScopedSettingsRoute`
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `general/GeneralPage.tsx`, `NeedsAttentionStrip.tsx`, `MachineUpdateRows.tsx`, `UpdateTrackControls.tsx`, `AutoUpdatesSection.tsx` | Needs attention, You and This machine, the ADE card. Legacy `?tab=overview`, `health`, `about`, `updates`, `onboarding`, `help`, `tours`, `home`. |
-| Machines (System) | `machines/MachinesPage.tsx`, `MachineSettings.tsx` | Every machine (tile, status, OS, version and track, free disk here) and a page each: updates, providers link, Continue chats after restarts, terminal shell, keep awake, service, `ade` command, system, projects. ADE Cloud is one more row, as in the Connections panel: its lanes, how many are awake and the credits left, from memory with no wake; it opens Settings › ADE Cloud and counts as one machine. Each lane computer stays out of the list. Legacy `?tab=computer`, `computers`, `this-computer`. |
-| Advanced (System) | `health/HealthService.tsx`, `BackgroundServiceSection.tsx`, `AdeCliSection.tsx`, `DiagnosticsSharingSection.tsx`, `DatabaseCopiesSection.tsx`, `ResetAdeSection.tsx` | Service status, background service and quit question, the `ade` command (`#ade-cli`), **Send a report to ADE** (`#diagnostics-sharing`, not on hosted web; no consent switch), **Database copies** (`#database-copies`, this computer: one copy per database from the last update, deleted after a day of the update working, Reveal and Delete; restore is the "ADE could not start" window's Go back), **Reset ADE** (`#reset-ade`, last; `#about.reset` lands here). Legacy `?tab=service`, `ade-service`, `diagnostics`, `context`. |
+| General | `general/GeneralPage.tsx`, `NeedsAttentionStrip.tsx`, `MachineUpdateRows.tsx`, `UpdateTrackControls.tsx`, `AutoUpdatesSection.tsx` | Needs attention, You and This machine, the DAEX card. Legacy `?tab=overview`, `health`, `about`, `updates`, `onboarding`, `help`, `tours`, `home`. |
+| Machines (System) | `machines/MachinesPage.tsx`, `MachineSettings.tsx` | Every machine (tile, status, OS, version and track, free disk here) and a page each: updates, providers link, Continue chats after restarts, terminal shell, keep awake, service, `ade` command, system, projects. DAEX Cloud is one more row, as in the Connections panel: its lanes, how many are awake and the credits left, from memory with no wake; it opens Settings › DAEX Cloud and counts as one machine. Each lane computer stays out of the list. Legacy `?tab=computer`, `computers`, `this-computer`. |
+| Advanced (System) | `health/HealthService.tsx`, `BackgroundServiceSection.tsx`, `AdeCliSection.tsx`, `DiagnosticsSharingSection.tsx`, `DatabaseCopiesSection.tsx`, `ResetAdeSection.tsx` | Service status, background service and quit question, the `ade` command (`#ade-cli`), **Send a report to DAEX** (`#diagnostics-sharing`, not on hosted web; no consent switch), **Database copies** (`#database-copies`, this computer: one copy per database from the last update, deleted after a day of the update working, Reveal and Delete; restore is the "DAEX could not start" window's Go back), **Reset DAEX** (`#reset-ade`, last; `#about.reset` lands here). Legacy `?tab=service`, `ade-service`, `diagnostics`, `context`. |
 | Appearance (App, this computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx`, `AppearanceScheduleSettings.tsx` | Per computer, never synced: theme families with search, Auto / Light / Dark, import/export, interface and code faces, reduce motion, Focus grid chats per page, terminal text, **Background** (`#background`: plain, gradient, picture, shuffle with cadence and App colours from the picture), **Schedule**. One page, under This computer. Chat looks are on Chat. |
-| Apple devices (App, follows `?machine=`) | `AppleDevicesSection.tsx`, `devices/AppleMachineSection.tsx`, `devices/AppleToolsSection.tsx`, `devices/useDevToolsStorage.ts` | The picked Mac's Xcode (version, build, app and developer folder, update, first-launch setup), one bar of what simulators, runtimes and Xcode build data (DerivedData) take on its disk, then each list biggest first with its delete: simulators (owner: a lane, ADE, or yours; a lane's or a running one can't be deleted here), runtimes (Remove, Remove replaced), build data (Delete, Delete unused for 30 days or whose project is gone; refused while Xcode builds). Every call carries the page's pin. A Windows or Linux machine shows "The iOS Simulator runs on a Mac" with the ADE Cloud iPhone and the person's Macs. Then this window's simulator and preview choices: 3D body, recording overlays, remote streaming bitrate cap, recordings storage warning, filed in the account store per device (`device.<syncDeviceId>.<key>`). |
+| Apple devices (App, follows `?machine=`) | `AppleDevicesSection.tsx`, `devices/AppleMachineSection.tsx`, `devices/AppleToolsSection.tsx`, `devices/useDevToolsStorage.ts` | The picked Mac's Xcode (version, build, app and developer folder, update, first-launch setup), one bar of what simulators, runtimes and Xcode build data (DerivedData) take on its disk, then each list biggest first with its delete: simulators (owner: a lane, DAEX, or yours; a lane's or a running one can't be deleted here), runtimes (Remove, Remove replaced), build data (Delete, Delete unused for 30 days or whose project is gone; refused while Xcode builds). Every call carries the page's pin. A Windows or Linux machine shows "The iOS Simulator runs on a Mac" with the DAEX Cloud iPhone and the person's Macs. Then this window's simulator and preview choices: 3D body, recording overlays, remote streaming bitrate cap, recordings storage warning, filed in the account store per device (`device.<syncDeviceId>.<key>`). |
 | Keyboard (App, this computer) | `keyboard/KeyboardPage.tsx`, `ShortcutsCard.tsx`, `QuickSlotsCards.tsx` | A banner (status, Quick slots leader, shortcut and change counts, main modifier, where it saves), then cards. **Shortcuts** (`#keyboard-shortcuts`): every action in `shared/keybindings.ts`, a recorder, conflict marks against shortcuts, Quick slot chords and OS-reserved chords, reset per shortcut or all; saved on this computer (`lib/keybindingStore.ts`, `ade.keybindings.v1`) for every project and window (the hosted client keeps them in the browser); older per-project overrides are copied once. **Quick slots**: nine actions on a leader + digit (`Option+Command` macOS, `Ctrl+Shift` Windows), a 3×3 grid, leader and sticky choices, saved model profiles (model + thinking). With the caret in the composer a profile inserts an `@model` chip; elsewhere it sets the chat's model. See [Quick slots](../chat/quick-slots.md). |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (with `ChatAppearancePreview`), `SmartDecisionsSection.tsx` | Typography and density, surface (tint, corners), details (copy-button position, minimap, drafts button, launch-prompt clipboard, live preview), voice input. Smart decisions (OpenCode Jev) and the model hint sit beside Next prompt and save to `.ade/local.yaml`; without an OpenCode Zen sign-in the row offers **Sign in to OpenCode**. Label maps are imported from `AppearanceSection.tsx`, not copied. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Connections, model routing, spend cap, voice input. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi with in-app sign-in) and **OpenCode — Universal Model Access**. Background helpers here are scheduled-work pause/recovery only. Legacy `?tab=ai`, `providers`, `background-jobs`, `automations`. On hosted web every provider page is hidden and the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) shows the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
@@ -1982,7 +2051,7 @@ Project section, or the default page. `isMachineScopedSettingsRoute`
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear. Legacy `?tab=integrations`, `github`, `linear`, and `?integration=github|linear`; `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | `AttentionPreferences` delivery: per-event policy (off / ambient / notify) for agent, PR, message, goal and background-service events, everywhere or for one project, computer or phone (scope switcher above the matrix; "Choose events" under Machines), quiet hours (saved with this computer's time zone), focus suppression, phone delivery and escalation, the completion sound. Then Activity's surfaces: the notch (enabled; reveal `always` or `hover`, the same strip either way; expanded panel), celebrations, sounds, hide-previews, per-machine mute, and delivery switches for iPhones and iPads registered to the account. The notch always flashes for work that needs you, and the strip shows state-group counts. One `useActivitySettings()` model; `ActivitySettingsControls` also mounts in the Activity popover and pane. Legacy `?tab=attention`, `activity`, and `#attention-notch`, `#celebrations`, `#attention-sounds`, `#hide-previews`. |
 | Passwords & Secrets (This computer) | `passwords/PasswordsSection.tsx`, `PasswordDialogs.tsx`, `passwordsFormat.ts` | One end-to-end encrypted vault (logins, passkeys, secrets), on by default; secrets for every or one project, in the account or this computer only, `.env` import and export. `?tab=secrets` / `secret` open Secrets. See [Passwords & Secrets](../passwords/README.md). |
-| Deleted & Archived (Project) | `lanes/LanesSettingsPage.tsx` (`DeletedArchivedPage`), `RecentlyDeletedSection.tsx`, `ArchiveSection.tsx`, `EveryCopyList.tsx`, `state/everyCopyRead.ts` | Recently deleted lanes and chats, and the archive, from every online copy of the project in one list (no picker; an asleep ADE Cloud computer is not read, and neither is the ADE Cloud account itself). Each row acts on its own machine's pin. Legacy `?tab=archive`, `archived`, `recently-deleted`, `trash`. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Deleted & Archived (Project) | `lanes/LanesSettingsPage.tsx` (`DeletedArchivedPage`), `RecentlyDeletedSection.tsx`, `ArchiveSection.tsx`, `EveryCopyList.tsx`, `state/everyCopyRead.ts` | Recently deleted lanes and chats, and the archive, from every online copy of the project in one list (no picker; an asleep DAEX Cloud computer is not read, and neither is the DAEX Cloud account itself). Each row acts on its own machine's pin. Legacy `?tab=archive`, `archived`, `recently-deleted`, `trash`. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Disk space (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk and lane storage, cleanup history, idle-archive rules, session lifecycle, project files, for the copy picked on the page. Rule fields show the value in force with "Inherited". Legacy `?tab=storage`, `disk`, `space`, `session-lifecycle`; `?tab=diagnostics` opens Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives with spend) and the `usage/` components | The one-page usage dashboard (see the source map); scope `account` / `machine` / `project`. Legacy `?tab=usage`, `ade-usage`. |
 
@@ -2010,7 +2079,7 @@ the old value only after the brain confirms.
 |---|---|---|
 | `never` (default) | Holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
 | `while-away` | The brain holds one OS wake lock **only while work runs**: macOS `caffeinate -i -w <brain pid>`; Windows a `SetThreadExecutionState` helper that exits with the brain; Linux `systemd-inhibit --what=idle:sleep` around `tail --pid=<brain pid>`, plus `gnome-session-inhibit --inhibit suspend` in a GNOME session, whose idle suspend ignores the user's own logind lock. The screen still locks. Stops idle sleep, not the lid. | macOS, Windows, Linux with systemd |
-| `lid-closed` | `pmset -a disablesleep 1` through the authorization dialog. Machine-wide; outlives ADE. | macOS only |
+| `lid-closed` | `pmset -a disablesleep 1` through the authorization dialog. Machine-wide; outlives DAEX. | macOS only |
 
 - **A wake lock stops idle sleep only** (measured: an `IOPMAssertion` held 35
   days slept through two lid closes). No code or copy may imply otherwise.
@@ -2099,12 +2168,12 @@ config directory selected at launch by one variable, `CLAUDE_CONFIG_DIR` or
 `CODEX_HOME`. Other providers have one identity per machine (no config-home
 override or no local account file).
 
-- **Registry.** The brain owns `provider-instances.json` in the machine ADE
+- **Registry.** The brain owns `provider-instances.json` in the machine DAEX
   home beside `projects.json`. It is not a SQLite table, because every table
   with a primary key becomes a cr-sqlite CRR and replicates to devices where
   these paths mean nothing. ADE-made accounts get
   `<adeHome>/provider-homes/<provider>/<instanceId>/` (`0700`; the CLI writes
-  its credentials there). ADE never reads, copies or revokes those credentials.
+  its credentials there). DAEX never reads, copies or revokes those credentials.
 - **The default account is synthesized on read.** The machine's existing login
   has the provider slug as its id (`claude`, `codex`) and its home is whatever
   `providerConfigHomes.ts` resolves on each read. No migration or first-boot
@@ -2117,7 +2186,7 @@ override or no local account file).
   the user can be told. The machine's own login and the current default refuse
   removal.
 - **Accounts have no names.** Surfaces show the signed-in email, else the id
-  (`ProviderInstance.label`, set by `providerInstanceDisplayLabel`). The id is
+  (`ProviderInstance.label`). The id is
   what `--instance` takes and never changes; new accounts get the next free
   `<provider>-<n>`. `create` takes no label (an optional one only shapes the
   id). No surface offers Rename; the `rename` action stays for older phones and
@@ -2126,13 +2195,13 @@ override or no local account file).
   `setDefault`, `setAccent`, `getSettings`, `setSettings`, `loginCommand`,
   `refresh`, all on the agent tier with no CTO gate (an account is a path, not
   a token). Reachable from IPC, the preload three-way route (pinned runtime →
-  project runtime → local IPC), the daemon action bus and `ade providers
+  project runtime → local IPC), the daemon action bus and `daex providers
   accounts list|add|remove|default`. `setAccent` and `accentColor` exist only
   for compatibility; no surface shows an account colour.
 - **Per-provider settings** (`smartBalance`, `autoStartWindows`) live under
   `settings.<provider>` in the same file, default off.
 - **Signing in is a command, not a flow.** `loginCommand` returns the provider
-  binary, its argv and the one env var for the account's home; `ade providers
+  binary, its argv and the one env var for the account's home; `daex providers
   accounts add` prints it.
 - **AI settings save to `.ade/local.yaml`.** `ai.updateConfig` (IPC, the `ai`
   domain, the brain's remote command) merges into the local layer through
@@ -2154,7 +2223,7 @@ the card body.
   every chat compacts when full.
 - **Cache env rules.** Nothing is added when the environment already states a
   TTL, and a launch on a preset or stored credential never gets it (that
-  endpoint bills separately). ADE has no default: 1-hour writes cost more and
+  endpoint bills separately). DAEX has no default: 1-hour writes cost more and
   pay off only when subagents wait over 5 minutes. The chat's cache countdown
   and Compact first read the lifetime Claude really wrote
   ([composer and UI](../chat/composer-and-ui.md)), not this setting.
@@ -2282,41 +2351,41 @@ default.
 
 Every provider page has a read-only **Initial context window** card: what a new
 chat on that provider receives before the first message, on the page's
-machine. ADE lists items; it does not switch them off.
+machine. DAEX lists items; it does not switch them off.
 
-- **Four parts**: the provider (its prompt and tools, in its colour), ADE
+- **Four parts**: the provider (its prompt and tools, in its colour), DAEX
   (teal), the user's setup (pink), this project (amber). A bar shows shares;
   each item lists a size, its file and, for config entries, where it is set
   (`Set in ~/.codex/config.toml`).
-- **Sizes.** ADE items are counted from the text a real launch builds (the same
+- **Sizes.** DAEX items are counted from the text a real launch builds (the same
   builders, dry-run); user and project items from their files by the
   provider's discovery rules; both are estimates (about 4 characters per
   token, `≈`). The total is the median first request of one-request chats in
   the turn ledger (at least 3; this project's when enough, else the
   machine's); with fewer, the listed sum. The provider part is the median
   minus the listed items.
-- **Row buttons.** A gear opens the managing ADE page (MCP servers). A folder
+- **Row buttons.** A gear opens the managing DAEX page (MCP servers). A folder
   button reveals the file (Finder or Explorer), only for This computer and not
   on hosted web, through `ai.revealProviderContextPath`, whose allowlist holds
   the providers' config homes, the project, instruction files in parent
-  folders and ADE's folders. A symlinked skill pointing outside shows as the
+  folders and DAEX's folders. A symlinked skill pointing outside shows as the
   link.
 - **Machines.** Both renderer calls take the page's pin. A failed read shows
   **Try again**; a failed **Check again** keeps the last list and says so. An
-  older ADE without the action hides the card.
+  older DAEX without the action hides the card.
 
 ### API keys panel
 
 Every provider page ends its right column with **API keys**: one row per key
-ADE sees, with label, exported variable, masked tail, source (Local store,
+DAEX sees, with label, exported variable, masked tail, source (Local store,
 Environment, Project config), endpoint host and declared model count.
 
 - **Local store** rows offer **Replace** and **Delete** (confirmed).
 - **Environment** and **Project config** rows are read-only: "Managed outside
-  ADE — clear the env/config value to remove."
+  DAEX — clear the env/config value to remove."
 - **This computer only.** A Local store key the account lacks shows "This
   computer only" ("That computer only" for another computer); other computers
-  and ADE Cloud cannot use it, and saving it again while signed in moves it to
+  and DAEX Cloud cannot use it, and saving it again while signed in moves it to
   the account. Key names are read once (`useAccountProviderKeyNames.ts`,
   `accountSecrets` kind `provider_api_key`, names only) and after a save or
   delete; when the account cannot answer, no tag shows.
@@ -2345,18 +2414,18 @@ Environment, Project config), endpoint host and declared model count.
   writes the single slot its SDK signs in from.
 
 **One key store**: the account vault kind `provider_api_key` holds every key for
-every computer and ADE Cloud.
+every computer and DAEX Cloud.
 
 - Names: `<provider>` for the default, `<provider>#<credentialId>` for others
   (`credentialStorageKey`, `main/services/ai/apiKeyStore.ts`).
-- An ADE Cloud key goes to `<provider>`, or `<provider>#ade-cloud` when that row
+- A DAEX Cloud key goes to `<provider>`, or `<provider>#ade-cloud` when that row
   holds a different key; cloud computers read `<provider>#ade-cloud` first.
-- On ADE Cloud, Qwen Code signs in with a DashScope key (`qwen` in
+- On DAEX Cloud, Qwen Code signs in with a DashScope key (`qwen` in
   `shared/cloudSignIns.ts`), written into Qwen's own settings, never the
   brain's environment.
 - Two idempotent one-time moves per computer after sign-in
   (`main/services/account/accountMigrationRunner.ts`): device keys into the
-  account (`provider_api_keys`), and ADE Cloud's `integration/cloud-key-<id>`
+  account (`provider_api_keys`), and DAEX Cloud's `integration/cloud-key-<id>`
   keys into `provider_api_key` (`cloud_keys_api_store`). Neither deletes.
 
 ### OpenCode custom providers
@@ -2466,7 +2535,7 @@ credentials that were only unreadable.
 - **Waiting is not unreadable.** Until the OS store answers its first check
   (macOS prompts for an unrecognized build), reads are **waiting**. The check
   runs off the main thread, so the window stays usable;
-  `isSecureStorageCheckPending()` lets a surface say "ADE is waiting for the
+  `isSecureStorageCheckPending()` lets a surface say "DAEX is waiting for the
   system keychain" (Settings → Providers shows an info banner and re-reads on
   answer). Nothing is cached meanwhile (key reads, legacy-token migrations and
   file-backed adoption re-run), so a granted prompt shows keys without a
@@ -2497,77 +2566,22 @@ tab, whose account header runs the same `account.repairSession` (one store, one
 repair). Writing a new GitHub token clears the flag. An older runtime that
 omits the field keeps the two-way behaviour.
 
-## Gotchas
-
-- **A provider account is a path, not a credential.** The registry holds config
-  home paths; the tokens inside belong to the provider CLI. So the registry is
-  plain JSON, `remove` deletes nothing, and the domain is not CTO-gated. Never
-  add a field a credential would fit in.
-- **The default account's config home is resolved, never stored.** A frozen
-  path would make ADE read one directory and launch against another once a
-  user sets `CLAUDE_CONFIG_DIR`. Any persisted `configHome` for the base
-  identity is ignored (its `accentColor` field is never set or shown).
-- **Scope has two axes**: owner (your account or this computer) and coverage
-  (everything or one repository). A value holding a path, a port or a hardware
-  fact is machine scope; everything else is account scope. `SettingScope` is
-  the four combinations, and the sidebar group is the scope.
-- **No trust gate, no committed config.** `.ade/ade.yaml` is not read: it is
-  carried into `local.yaml` once (non-executable keys only) and deleted
-  ([configuration-schema.md](./configuration-schema.md#no-trust-gate)). There is
-  no `getExecutableConfig`; use `getEffective`.
-- **Phone-sync port 8787.** Binding always tries 8787 first, even when
-  `lastPort` is 8788; a brain on 8788 keeps retrying 8787 so phones that saved
-  it reconnect. The "ADE is already running with phone sync" dialog is the
-  intended cross-channel case (ADE vs ADE Alpha). Contract:
-  [sync and multi-device](../sync-and-multi-device/README.md).
-- **Config reload** calls each listener on save; hot reload is best-effort,
-  and some changes (the proxy port) need a restart.
-- **New `ai.*` fields need both `coerceAiConfig` and `mergeAiConfig`**, or they
-  fail to load or to survive the shared+local merge (as `ai.customProviders` /
-  `ai.customModelSlugs` did). Both lists use replace semantics; the UI writes
-  the full list. See
-  [configuration-schema.md](./configuration-schema.md#custom-providers-and-model-slugs).
-- **`freshProject`** is computed when `createOnboardingService` is built and
-  never updates; a wrong boolean shows first-run surfaces on a used project.
-- **Deep links.** `?tab=<id>` is read through `useSearchParams`; old ids resolve
-  through `LEGACY_TAB_ALIASES` (see the pages table).
-- **Install refreshes before quitting.** `quitAndInstall()` re-runs
-  `updater.checkForUpdates()` before `installing`, or ADE could install a stale
-  download while a newer build exists. Compare with `compareUpdateVersions`,
-  never `===` (`v1.2.3`, `1.2.3-rc.1`, `1.2.3` must order consistently in the
-  reconcile and supersede paths).
-- **`installing` is sticky; `ready` is not.** While `installing`, the service
-  ignores `update-not-available`, `checking-for-update` and `error`. Checks
-  keep running while `ready` (same-or-older ignored, newer supersedes, a failed
-  check keeps the archive). Only a running `quitAndInstall()` blocks a check:
-  status stays `ready` until the handoff, and a supersede then would delete the
-  archive being handed to Squirrel or NSIS. See
-  [Checking while an update is staged](./desktop-auto-update.md#checking-while-an-update-is-staged).
-- **Parked is not failed.** An aborted consent goes to `snapshot.parked`, not
-  `error`; the download stays and the banner offers **Restart now**. Keep it
-  apart from the disk / network / verification errors, and let parked win over
-  `ready` for the same version.
-- **Idle auto-apply needs `RuntimeActivitySummary.idle`** and continuous idle
-  for the grace period; activity clears the countdown and a cancel sets
-  `autoApplySuppressedUntil`. It is off under
-  `ADE_DISABLE_AUTO_UPDATE_APPLY=1` and on dev launches.
-
 ## Archive
 
-Archiving **hides** a lane, chat or shell; ADE never deletes an archived item
-by itself. The only thing ADE deletes on its own is a dead App Control shell.
-Project → Deleted & Archived → Archive, `ade archive` and a weekly desktop banner
+Archiving **hides** a lane, chat or shell; DAEX never deletes an archived item
+by itself. The only thing DAEX deletes on its own is a dead App Control shell.
+Project → Deleted & Archived → Archive, `daex archive` and a weekly desktop banner
 all read `archive.list` / `archive.summary`.
 
 - **Dead App Control shells are deleted.** An agent-launched shell
   (`launchedBy: "agent"`) nobody typed into is deleted with its transcript once
   dead: at once when a new shell replaces it, after 10 minutes on a clean exit
-  or ADE stop, and after its chat settles following a crash. A relaunch by the
+  or DAEX stop, and after its chat settles following a crash. A relaunch by the
   same chat reuses it. Typing into it (`terminal.write { fromUser }` or a hand
   resume) makes it the person's, never deleted. See
   [terminals and sessions](../terminals-and-sessions/README.md#dead-agent-shells).
 - **Delete is the person's alone.** `archive.delete` is `ADE_ACTION_USER_ONLY`
-  and `archive.restore` is `ADE_ACTION_CTO_ONLY`. The CLI refuses `ade archive
+  and `archive.restore` is `ADE_ACTION_CTO_ONLY`. The CLI refuses `daex archive
   delete` and points at Settings. Deleting a lane keeps its branch; a dirty
   worktree needs a confirmed forced delete.
 - **The reminder asks, never acts.** At most once per project per week, when

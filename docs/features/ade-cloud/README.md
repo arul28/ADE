@@ -1371,7 +1371,7 @@ the phone (`cloud.read`) and a brain with no project can read it.
   when the RPC server can stamp `viaAdeMcp` (the operator role and a process
   the MCP runner started, `isRunningRemoteRun`). A resize, a delete, a move, a
   cancel and loosening the limits always need the person. A read-only
-  connection is refused. It can read the account with no wake: `ade cloud
+  connection is refused. It can read the account with no wake: `daex cloud
   status`, `list`, `hours`, `limits`, and the list and read forms of `lanes`,
   `chats`, `sessions`, `backups`, `jobs` and `project`
   (`remoteMcpCommandPolicy.ts`, `isCloudAccountRead`).

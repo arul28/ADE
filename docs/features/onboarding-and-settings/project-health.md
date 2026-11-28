@@ -1,10 +1,10 @@
 # Project health
 
 Project health checks appear in Settings → General (Needs attention) and Settings → Project →
-Location, and `ade health --text` prints the same report. Checks only read; a
+Location, and `daex health --text` prints the same report. Checks only read; a
 fix runs when the person presses it. The `project_health.fix` action is
 CTO-only at the action bridge, so agents can read the report and offer fixes
-but cannot apply them. `ade health --fix <id>` returns a non-zero exit code
+but cannot apply them. `daex health --fix <id>` returns a non-zero exit code
 when the requested fix fails.
 
 Most checks matter after a project moves (see
@@ -22,18 +22,18 @@ Most checks matter after a project moves (see
 | `apps/desktop/src/preload/preload.ts` | `window.ade.projectHealth.{getReport,fix,ignore,unignore}`, routed with the Settings machine pin. |
 | `apps/desktop/src/main/services/adeActions/actionPolicy.ts` | Restricts `project_health.fix` to the CTO role, and `ignore` / `unignore` to the person (`ADE_ACTION_USER_ONLY`), at the action bridge. |
 | `apps/desktop/src/renderer/components/settings/health/ProjectIgnore.tsx` | The eye-slash Ignore button and menu, the folded "N ignored items" list with Show again, and `useProjectIgnore` (the calls and their toasts). Used by General, Location and Lanes. |
-| `apps/ade-cli/src/cli.ts` | `ade health [--refresh] [--fix <id>]`; the report lists what the person ignored. `--ignore` / `--unignore` point to Settings: the runtime cannot tell a terminal from an agent. |
+| `apps/ade-cli/src/cli.ts` | `daex health [--refresh] [--fix <id>]`; the report lists what the person ignored. `--ignore` / `--unignore` point to Settings: the runtime cannot tell a terminal from an agent. |
 
 ## Checks
 
 | Check | Problem it finds | Fix |
 |---|---|---|
 | `stale-paths` | Saved paths (lanes, proof metadata, layout keys, kv path fields) still name a folder the project was moved out of | `update-paths`: the move's rewrite in one database transaction, through the brain's own connection so it syncs. Layout kv rows already saved at the new root are preserved; when a move itself collides, the moved row wins. |
-| `Lanes` check failure | ADE could not read lane state | The report includes a failed `Lanes` check and a `lanes-failed` issue. It does not report an empty lane list as success. |
+| `Lanes` check failure | DAEX could not read lane state | The report includes a failed `Lanes` check and a `lanes-failed` issue. It does not report an empty lane list as success. |
 | `lane-folders` | Active lanes whose folder is gone | none (restore or archive) |
 | `git-links` | A lane's `.git` points at another repository or a missing folder, or the repository doesn't link back | `relink-lanes` (after a move): relative links, as the move writes them |
 | `symlinks` | Absolute links still pointing at the old folder | `relink-symlinks` |
-| `dependencies` | A checkout's install is missing or empty, or a lane's link to the main checkout's install is broken | ADE skips well-formed scripts-only manifests, but unreadable manifests and workspace roots count as install units; pnpm workspaces use their shared root install. The row names the folders missing packages ("packages/demo has no packages installed") and says the rest of the project is fine only when nothing else is broken. `install-dependencies` opens one terminal per folder with that folder as its working directory, running `<pm> install` (no `cd`/`&&` chain, which Windows PowerShell 5.1 cannot run); when the checkout root itself has nothing installed, only the root install (its `setup` script, else `<pm> install`) runs, because it usually installs the folders under it, and the re-check names anything it skipped. Lanes linked to the main checkout are fixed by installing the main checkout, never reinstalled one by one |
+| `dependencies` | A checkout's install is missing or empty, or a lane's link to the main checkout's install is broken | DAEX skips well-formed scripts-only manifests, but unreadable manifests and workspace roots count as install units; pnpm workspaces use their shared root install. The row names the folders missing packages ("packages/demo has no packages installed") and says the rest of the project is fine only when nothing else is broken. `install-dependencies` opens one terminal per folder with that folder as its working directory, running `<pm> install` (no `cd`/`&&` chain, which Windows PowerShell 5.1 cannot run); when the checkout root itself has nothing installed, only the root install (its `setup` script, else `<pm> install`) runs, because it usually installs the folders under it, and the re-check names anything it skipped. Lanes linked to the main checkout are fixed by installing the main checkout, never reinstalled one by one |
 | `virtualenvs` | A Python venv whose scripts name another folder | none (recreate) |
 | `agent-trust` | Claude Code, Codex or Copilot trusted the old folder but not this one | `carry-trust`: copies `~/.claude.json` `projects[...]`, Codex `config.toml` trust and Copilot `trustedFolders` (append only) |
 | `agent-history` | Other tools' history still filed under the old path | `move-history`: renames folders, never overwrites |
@@ -99,14 +99,14 @@ for eligible lanes.
   the old folder; they follow this project's ordered move chain in
   `<ADE_HOME>/project-moves/*.json`, which survives deleting the old copy. A
   project moved by hand (Finder) has none.
-- **Dependencies in lanes.** ADE lanes usually link `node_modules` to the main
+- **Dependencies in lanes.** DAEX lanes usually link `node_modules` to the main
   checkout's. A lane is only expected to have its own top-level install; a
   missing `apps/*` install in a lane is normal.
 - **Malformed manifests.** A `package.json` that cannot be parsed or is not an
   object remains an install unit so one half-edited lane manifest does not hide
-  the dependency check; ADE logs read failures locally.
+  the dependency check; DAEX logs read failures locally.
 - **`~/.claude.json` is always included,** even when `CLAUDE_CONFIG_DIR` points
-  at an ADE Claude home (as it does inside ADE's own agent processes).
+  at a DAEX Claude home (as it does inside DAEX's own agent processes).
 - **Failed reads stay visible as failures.** A failed lane read becomes a
   failed `Lanes` check and `lanes-failed` issue, not a successful empty list;
   Overview likewise shows a "couldn't check" row if a source read fails.

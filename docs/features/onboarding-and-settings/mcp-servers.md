@@ -1,7 +1,7 @@
 # MCP servers
 
 Settings › Integrations › MCP servers is where a user defines an MCP server one time and
-every ADE agent gets it, on every computer they sign in on. Each provider CLI
+every DAEX agent gets it, on every computer they sign in on. Each provider CLI
 keeps its own MCP list, so without this a server added to Claude never reaches
 Codex and a second computer starts with none.
 
@@ -14,19 +14,19 @@ files on a computer.
 ## The catalogue
 
 `apps/desktop/src/shared/mcpCatalogue.ts` (entries in `mcpCatalogueEntries.ts`)
-is ADE's list of known servers: the vendor's own URL or package, how it signs
+is DAEX's list of known servers: the vendor's own URL or package, how it signs
 in (`oauth`, `header`, `env` or `none`), the key's label and where to make it,
 and the brand color and mark (Simple Icons, CC0, else the vendor's own logo
-or svgl.app, reduced to one color). It ships with ADE and is
+or svgl.app, reduced to one color). It ships with DAEX and is
 read-only. Every entry was checked against the vendor's own docs and its
 npm/PyPI publisher, and every `oauth` server offers the dynamic client
-registration that ADE's sign-in needs. Vendors without that registration
+registration that DAEX's sign-in needs. Vendors without that registration
 (Slack, Asana, HubSpot), that take only approved clients (Vercel, Dropbox,
-Ramp) or that refuse ADE's registration (hosted Figma, Calendly) are left out;
+Ramp) or that refuse DAEX's registration (hosted Figma, Calendly) are left out;
 the header of `mcpCatalogueEntries.ts` keeps the full list and the reason for
 each.
 
-The catalogue is a set of quick setups, not the list of servers ADE supports:
+The catalogue is a set of quick setups, not the list of servers DAEX supports:
 any MCP server can be added by its command or URL, and Settings says so above
 the grid. `matchMcpCatalogue` finds the entry a server is, by its exact URL or
 package name. A match gives the MCP server card and the Integrations tiles the
@@ -34,14 +34,14 @@ entry's brand and a **By <publisher>** chip. Any other server's card says
 **Custom**. A remote server's card reads **Connects to** <URL>; a local one
 reads **Runs** <command line>.
 
-Three entries are ADE integrations (`native`: GitHub, Linear, Atlassian).
-Asking for one (`ade mcp servers add linear`, or a URL that matches one) runs
+Three entries are DAEX integrations (`native`: GitHub, Linear, Atlassian).
+Asking for one (`daex mcp servers add linear`, or a URL that matches one) runs
 the integration's connect card instead, so the person connects once for both
-`ade linear` and every agent.
+`daex linear` and every agent.
 
 Where the catalogue is used:
 
-- `ade mcp servers add <name>`: a bare catalogue name builds the entry's
+- `daex mcp servers add <name>`: a bare catalogue name builds the entry's
   definition (`source: "catalog"`). `--import` still means another tool's
   server. The card asks only for the entry's key, adds `Bearer ` when the
   entry's header wants it, and runs the browser sign-in before it adds an
@@ -50,7 +50,7 @@ Where the catalogue is used:
   **Add any MCP server** button and a last **Not listed?** tile. A tile's
   dialog works the same way as the card: an `oauth` server signs in first, and
   a sign-in that fails or is cancelled adds nothing.
-- Settings search, Cmd-K and `ade settings find`: each entry that is not
+- Settings search, Cmd-K and `daex settings find`: each entry that is not
   `native` is a settings entry, `integrations.mcp-<id>`, labelled by its brand
   alone (so "MCP servers" itself still ranks first for "mcp server") and
   owner-only like `mcp.servers`. Its anchor is the tile, `#add-mcp-<id>`
@@ -70,12 +70,12 @@ permission mode. Both cards are user-only (`isUserOnlyConsentCard`): an agent
 that tries to answer one is refused. Both run on the machine that runs the chat
 and write the account-wide list (`main/services/mcp/mcpServerRequest.ts`).
 
-- `ade mcp servers add <name>` (`mcp_registry.request`): a catalogue name, a
+- `daex mcp servers add <name>` (`mcp_registry.request`): a catalogue name, a
   server another tool has (`--import`), or one the agent describes (`--url`,
   or the command after `--`). An agent never guesses an address: a URL whose
   host is one word with no port (`https://blurb/mcp`) is refused, and the agent
   is told to ask for the link or offer to search.
-- `ade mcp servers remove <name>` (`mcp_registry.remove`): only when the person
+- `daex mcp servers remove <name>` (`mcp_registry.remove`): only when the person
   asked. On Remove, the server leaves the list and both off lists, and its
   saved values and sign-in leave the vault; a refused vault cleanup is reported
   in the receipt. If another machine put a different server under the name
@@ -106,9 +106,9 @@ key failed its computer's whole vault upload.
 **A launch never puts a secret on a command line.** The Claude Agent SDK hands
 the Claude CLI every MCP server, env values and headers included, as one inline
 `--mcp-config <json>` argument, which any process on the machine can read with
-`ps` and which the subprocess reaper wrote to its registry file. ADE's Claude
+`ps` and which the subprocess reaper wrote to its registry file. DAEX's Claude
 spawn (`claudeSubprocessReaper.spawnClaudeCodeProcess`) moves that JSON into a
-file only the user can read (`<ADE home>/mcp-launch/chat/<uuid>.json` through
+file only the user can read (`<ade home>/mcp-launch/chat/<uuid>.json` through
 `ensurePrivateDirectory` and `writePrivateFile`: 0700/0600 on POSIX, an
 owner-only ACL on Windows; `moveClaudeMcpConfigOffArgv`) and passes its path, which the
 CLI reads the same way, `${NAME}` expansion included (checked with the pinned
@@ -128,7 +128,7 @@ The page warns about this, and never blocks: the add and edit dialog and each
 found server show a line when an argument or the URL looks like it holds a
 secret (a long token-like string, `Bearer ...`, a `--token`-style flag with a
 value, `key=` or `token=` in a query string), and when one holds a `${NAME}`
-reference, which ADE hands over as written and does not fill in. The check is
+reference, which DAEX hands over as written and does not fill in. The check is
 `mcpPlainTextSecretFindings` in `shared/mcpServerImport.ts`; it reads the
 text's shape, so it can miss a secret and can flag a harmless id.
 
@@ -147,7 +147,7 @@ not editable afterwards. The dialog says so; renaming is remove and add again.
   Your account, This computer, This project. The project switch needs an open
   project with a git remote; the computer switch needs this computer's sync
   device id. Add, edit and remove are here.
-- **Found on this computer, not in ADE.** Servers the provider CLIs already
+- **Found on this computer, not in DAEX.** Servers the provider CLIs already
   have in their own settings, with the providers each came from and an Import
   button. Servers already in the registry (by name) are left out.
 - **Who gets them.** Which agents the registry reaches, read off
@@ -175,7 +175,7 @@ The switches and their labels are dimmed while they cannot be used.
 
 ### Add and edit
 
-`McpServerDialog.tsx`. A name, how ADE reaches it (Command, HTTP, SSE), then
+`McpServerDialog.tsx`. A name, how DAEX reaches it (Command, HTTP, SSE), then
 the command and its arguments (one per line) or the URL, then env variables or
 headers as name and value pairs. In an edit, a value this computer holds shows
 as "Saved" and is never read back; leaving its box empty keeps it.
@@ -202,7 +202,7 @@ off lists it can reach, then its vault items.
 
 ### Browser sign-in
 
-`main/services/mcp/mcpOAuth.ts`. ADE runs the MCP authorization flow itself,
+`main/services/mcp/mcpOAuth.ts`. DAEX runs the MCP authorization flow itself,
 once, instead of each provider CLI running it into its own credential store:
 
 1. Probe the URL with an MCP `initialize` and no credentials. A `401` with
@@ -212,7 +212,7 @@ once, instead of each provider CLI running it into its own credential store:
 2. Read the protected-resource metadata (RFC 9728), then the authorization
    server's metadata (RFC 8414, then OpenID). Old servers with neither get the
    spec's fixed `/authorize`, `/token` and `/register` paths.
-3. Register ADE with dynamic client registration for this sign-in's redirect,
+3. Register DAEX with dynamic client registration for this sign-in's redirect,
    `http://127.0.0.1:<random port>/callback`. A server with no registration
    endpoint cannot be signed in to here; the message says to use a header.
 4. Open the browser on the authorize URL (PKCE S256, `state`, `resource`) and
@@ -276,7 +276,7 @@ missing or malformed file contributes nothing.
 | Cursor | `~/.cursor/mcp.json` | `mcpServers` |
 | OpenCode | `~/.config/opencode/opencode.json` or `.jsonc` (`$XDG_CONFIG_HOME`) | `mcp` |
 | Droid | `<FACTORY_HOME_OVERRIDE or ~>/.factory/mcp.json` | `mcpServers` |
-| Pi | `<Pi agent dir>/mcp.json`: `$PI_CODING_AGENT_DIR` when set, else `~/.pi/agent` (the directory ADE's Pi chats run on) | `mcpServers` |
+| Pi | `<Pi agent dir>/mcp.json`: `$PI_CODING_AGENT_DIR` when set, else `~/.pi/agent` (the directory DAEX's Pi chats run on) | `mcpServers` |
 | Muse | `$XDG_CONFIG_HOME/muse/settings.json` (`~/.config/muse`) | `mcpServers` |
 | Qwen | `<QWEN_HOME>/settings.json` | `mcpServers`, Gemini's shape: `httpUrl` is streamable HTTP, a `url` with no `type` is SSE |
 | Kimi | `<KIMI_CODE_HOME>/mcp.json` | `mcpServers` |
@@ -296,7 +296,7 @@ vault gets the reference text, not what Pi would resolve it to.
 The same name in two providers is one row; the first definition found wins
 (the order above) and the others add their provider to the row. A name the
 registry cannot hold (it allows letters, numbers, `-` and `_`) is listed under
-the section as not offered. ADE's own reserved names (`computer_use`,
+the section as not offered. DAEX's own reserved names (`computer_use`,
 `daex-cto`, and `ade-cto` from before the DAEX rename) are skipped.
 
 Codex can name the env variable a token is read from (`bearer_token_env_var`,
@@ -320,7 +320,7 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 | Codex | Every server that is on, except SSE ones. Codex has no SSE client. |
 | Pi | Every server that is on, except SSE ones (Pi has no legacy SSE client). The chat worker registers them in Pi's own MCP support (`pi.registerMcpServer`), values over the worker IPC only; the servers in Pi's own `mcp.json` load too. None in plan mode or a side chat. MCP calls ask in the modes where `bash` asks and in edit mode; full access runs them. See [Agent Routing › Pi MCP servers](../chat/agent-routing.md#pi-mcp-servers). |
 | Kimi | Every server that is on (stdio, HTTP and SSE), through ACP `session/new`. The servers in Kimi's own config also load, and a same-named one there wins. |
-| Copilot | Every server that is on (stdio, HTTP and SSE), through the SDK session's `mcpServers`. The servers in the user's own Copilot config and the workspace `.mcp.json` also run in interactive chats, and when one of those asks for a sign-in ADE hands over the registry's sign-in for the same URL (matched ignoring host case, a default port and a trailing slash), so Copilot does not open a browser for it. See [Copilot SDK provider › MCP servers](../chat/copilot-sdk-provider.md#mcp-servers). |
+| Copilot | Every server that is on (stdio, HTTP and SSE), through the SDK session's `mcpServers`. The servers in the user's own Copilot config and the workspace `.mcp.json` also run in interactive chats, and when one of those asks for a sign-in DAEX hands over the registry's sign-in for the same URL (matched ignoring host case, a default port and a trailing slash), so Copilot does not open a browser for it. See [Copilot SDK provider › MCP servers](../chat/copilot-sdk-provider.md#mcp-servers). |
 | Antigravity | Every stdio server that is on, through ACP `session/new` (`agy acp` advertises no `mcpCapabilities`, so HTTP and SSE servers are left out). The servers in its own `mcp_config.json` also load, and a same-named one there wins. |
 | Grok, Qwen, Devin | None yet. Their configs are still scanned, so their servers can be imported for the other agents. |
 | Personal chats, side jobs, SDK chats | None. The light session profile and strict MCP chats decide their own servers. |
@@ -349,11 +349,11 @@ Pi is the other way round, by its own documented rule: a server in Pi's
 over a registered one of the same name, and the registered one does not start
 (confirmed in Pi 1.4's MCP extension: `registeredServers` skips every name
 `mcp.json` defines, an `enabled: false` entry included, and Pi counts names
-that differ only in `-` and `_` as one). ADE therefore hands Pi every
+that differ only in `-` and `_` as one). DAEX therefore hands Pi every
 registry server and lets Pi drop the duplicate; it does not need a
 `providerOwnMcpServerNames` entry.
 
-| Provider | Own MCP config ADE reads for that check |
+| Provider | Own MCP config DAEX reads for that check |
 |---|---|
 | Droid | `<FACTORY_HOME_OVERRIDE or ~>/.factory/mcp.json`, `.factory/mcp.json` in the folder and every folder above it |
 | Muse | `$XDG_CONFIG_HOME/muse/settings.json` (`~/.config/muse`), the workspace `.mcp.json` |
@@ -363,14 +363,14 @@ registry server and lets Pi drop the duplicate; it does not need a
 | Devin | `mcp_config.json` / `mcp_config.local.json` (3000.3+) and `config.json` / `config.local.json` (older) under `~/.config/devin` (`%APPDATA%\devin`) and `.devin` |
 | Antigravity | `~/.gemini/config/mcp_config.json`, `.agents/mcp_config.json` |
 
-ADE hands Qwen, Grok and Devin chats no servers today (the ACP session gets
+DAEX hands Qwen, Grok and Devin chats no servers today (the ACP session gets
 an empty list), so for them the check only matters once it does.
 
-## Your servers on ADE accounts
+## Your servers on DAEX accounts
 
-An ADE account runs Claude or Codex on its own config home
+A DAEX account runs Claude or Codex on its own config home
 (`provider-homes/<provider>/<id>/`), and that home has none of the MCP servers
-configured for the machine's own login. So a Claude chat on an ADE account
+configured for the machine's own login. So a Claude chat on a DAEX account
 also gets the servers in the login's `.claude.json` (user scope, and the local
 scope for this project), and a Codex chat gets the login's `config.toml`
 `mcp_servers`, at launch (`mcpUserServersForLaunch.ts`). A name the account's
@@ -380,31 +380,31 @@ strict MCP mode gets none. Claude receives them through the launch's MCP
 config (on its command line, as registry servers already are); Codex through
 the thread config. Nothing is written to either config home.
 
-The same gap exists wherever ADE points a CLI at a config folder of its own.
+The same gap exists wherever DAEX points a CLI at a config folder of its own.
 Claude and Codex presets and routes are covered by the launch override above
 (their env names the folder). A routed Grok launch (`GROK_HOME`) gets the
 user's `[mcp_servers.*]` tables from `~/.grok/config.toml` appended to the
-`config.toml` ADE writes for it, and a Droid preset or route
+`config.toml` DAEX writes for it, and a Droid preset or route
 (`FACTORY_HOME_OVERRIDE`) gets a copy of the user's `.factory/mcp.json`
 (`userGrokMcpServersToml`, `mirrorUserDroidMcpConfig`). Both files are
 ADE-owned, private, and rewritten on each launch; the user's files are only
 read. OpenCode presets add a config file (`OPENCODE_CONFIG`) rather than
 replace the user's, so nothing is lost there.
 
-Tracked Claude and Codex CLIs (Work terminals ADE launches, resumes, imports
+Tracked Claude and Codex CLIs (Work terminals DAEX launches, resumes, imports
 or forks, including from the phone) get the same servers and the same `npx`
 re-pointing (`trackedCliUserMcp.ts`), as `-c mcp_servers.<name>.<key>=…`
 flags for Codex and `--mcp-config <file>` for Claude. A tracked CLI's
 command line can be typed into the terminal as text and is kept for resume,
-so no secret rides on it: Claude's servers go in a private file ADE writes
-under `<ADE home>/mcp-launch/` (named by its contents), and a Codex server
+so no secret rides on it: Claude's servers go in a private file DAEX writes
+under `<ade home>/mcp-launch/` (named by its contents), and a Codex server
 whose env, headers, arguments or URL look like they hold a secret
 (`mcpPlainTextSecretFindings`) is left to start as the user configured it.
 
 ### Tracked CLI terminals
 
-A tracked agent CLI (a Work terminal ADE launches, resumes or reattaches,
-including `ade new chat --mode cli`) gets the registry's servers from the same
+A tracked agent CLI (a Work terminal DAEX launches, resumes or reattaches,
+including `daex new chat --mode cli`) gets the registry's servers from the same
 resolver as a chat (`resolveMcpRegistryForLaunch`, then
 `chatUserMcp.registryServers`, so a server the CLI's own config already starts
 is left to it). The seam is `resolveTrackedCliUserMcp` in
@@ -413,11 +413,11 @@ command line is kept for resume and can be typed into a shell, so:
 
 | CLI | How | What |
 |---|---|---|
-| Claude | `--mcp-config <file>`, the private file under `<ADE home>/mcp-launch/` that already carries the login's servers | Every server that is on, env and header values included. |
+| Claude | `--mcp-config <file>`, the private file under `<ade home>/mcp-launch/` that already carries the login's servers | Every server that is on, env and header values included. |
 | Copilot | `--additional-mcp-config=@<file>`, a private file in the same folder (`copilot-<hash>.json`; `type: local` for stdio, `tools: ["*"]` unless the server names its tools) | Every server that is on, values included. |
 | Codex | `-c mcp_servers.<name>.…` flags | Only servers with no env value, header, credential-looking argument or URL query (`codexEntryCarriesSecret`); the rest are left out. |
-| Cursor, Droid, Pi, Kimi, Qwen, Grok, Devin, Muse | none | No per-launch MCP flag or file ADE can use without writing the user's own config (Droid's `--settings` file takes runtime settings, not servers). Their own config's servers still load. |
-| OpenCode | none | The terminal attaches to ADE's shared OpenCode server and uses that server's config. |
+| Cursor, Droid, Pi, Kimi, Qwen, Grok, Devin, Muse | none | No per-launch MCP flag or file DAEX can use without writing the user's own config (Droid's `--settings` file takes runtime settings, not servers). Their own config's servers still load. |
+| OpenCode | none | The terminal attaches to DAEX's shared OpenCode server and uses that server's config. |
 
 A terminal has no line to say a server started without its key, so a server
 whose value this computer does not hold, or whose sign-in ran out, is left out
@@ -434,7 +434,7 @@ of the server for as long as the server lives, and for a tag or a bare name it
 asks the registry first. Every chat starts its own copy, so the launcher is
 paid once per chat: about 95-190 MB and 1-1.5 s per server.
 
-For chats ADE starts, the launch runs the package npx already installed with
+For chats DAEX starts, the launch runs the package npx already installed with
 `node` directly (`main/services/mcp/npxDirectLaunch.ts`). It does so only
 when that copy is provably the one npx would run today:
 
@@ -463,13 +463,13 @@ CLI the user starts in a terminal is unchanged.
 
 Which servers it applies to, per provider:
 
-| Provider | User's own `npx` servers | ADE registry `npx` servers |
+| Provider | User's own `npx` servers | DAEX registry `npx` servers |
 |---|---|---|
-| Codex | Re-pointed per thread: `mcp_servers.<name> = { command, args }` in the thread config, merged into config.toml's table, so env, tool approvals and timeouts stay. Skipped in strict mode, for a name a caller or ADE also sets, for a server with `cwd`, and for a name the project's `.codex/config.toml` redefines. | Re-pointed |
+| Codex | Re-pointed per thread: `mcp_servers.<name> = { command, args }` in the thread config, merged into config.toml's table, so env, tool approvals and timeouts stay. Skipped in strict mode, for a name a caller or DAEX also sets, for a server with `cwd`, and for a name the project's `.codex/config.toml` redefines. | Re-pointed |
 | Claude | Re-pointed through the launch's MCP config: a server named there replaces the same name from the user and local scopes, and the user's other servers still load. Only for an entry that is just `command` and `args` (an `env` would have to be copied onto a command line), not for a name the project's `.mcp.json` declares or that the user switched off for the folder, and not in strict mode. | Re-pointed |
-| Copilot, Cursor, OpenCode | Re-pointed through the servers ADE hands the chat (Copilot session `mcpServers`, Cursor inline `mcpServers`, OpenCode's shared-server config): a server of that name replaces the user's (Copilot probed; Cursor documents inline first; OpenCode merges by key). Only an entry that is just a command (plus Copilot's `tools`), not a name a workspace or project file overrides, and not in strict mode. | Re-pointed |
-| Droid, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (ADE hands these over itself) |
-| Pi | Unchanged. Pi starts the servers in its own `mcp.json` itself, and stops a stdio server's whole process group, `npx` wrappers included. | Re-pointed (ADE hands these over itself) |
+| Copilot, Cursor, OpenCode | Re-pointed through the servers DAEX hands the chat (Copilot session `mcpServers`, Cursor inline `mcpServers`, OpenCode's shared-server config): a server of that name replaces the user's (Copilot probed; Cursor documents inline first; OpenCode merges by key). Only an entry that is just a command (plus Copilot's `tools`), not a name a workspace or project file overrides, and not in strict mode. | Re-pointed |
+| Droid, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (DAEX hands these over itself) |
+| Pi | Unchanged. Pi starts the servers in its own `mcp.json` itself, and stops a stdio server's whole process group, `npx` wrappers included. | Re-pointed (DAEX hands these over itself) |
 
 ## Background jobs start no MCP servers
 
@@ -485,7 +485,7 @@ config at launch, even for a job that calls none (measured with a stdio
 marker server on the pinned 0.244, 2.3.1, 1.0.46, 1.4.7 and 3000.11.3;
 Droid's `--settings` with `mcpPolicy.enabled: false` and Muse's
 `-c mcpServers...` do not stop it). Their jobs run on a private copy of the
-config folder, built per job under `<ADE home>/provider-task-homes/` and
+config folder, built per job under `<ade home>/provider-task-homes/` and
 removed after it (`providerTaskMcpOff.ts`):
 
 | Provider | Points at the copy with | Left out or rewritten |
@@ -500,20 +500,20 @@ Every other entry of the real folder is linked in (a symlink; on Windows a
 junction for a folder and a hard link for a file), so the sign-in, history
 and session files are the real ones. A CLI that saves a linked file by
 writing a new one and renaming it (Grok does) replaces only the link, so when
-the job ends ADE copies such a file back over the real one, unless the real
+the job ends DAEX copies such a file back over the real one, unless the real
 one changed during the job. A refreshed token is kept. Droid, Kimi and Muse
 get no copy when their file lists no server. When a link cannot be made, the
 job runs on the real folder as before. Copies older than six hours (a
 crashed brain, a removal Windows refused) are removed when the next copy is
-made. Kimi and Grok jobs also run in ADE's scratch folder rather than the
+made. Kimi and Grok jobs also run in DAEX's scratch folder rather than the
 project, like Droid's and Devin's: in a project the user trusted, Grok starts
 the project's `.grok/config.toml` and `.mcp.json` servers (measured on
 1.0.46). Servers a plugin adds (a Grok or Droid plugin, a Claude plugin Grok
 imports) are not in these files and still start.
 
 Cursor one-shots run on a home of their own,
-`<ADE home>/provider-task-homes/cursor-home`, instead of the user's:
-they sign in with an API key, and the worker writes ADE's tool-gate hook into
+`<ade home>/provider-task-homes/cursor-home`, instead of the user's:
+they sign in with an API key, and the worker writes DAEX's tool-gate hook into
 the home it runs on, so the user layer there holds the gate and no servers.
 Strict MCP mode drops the project and plugin layers.
 
@@ -537,7 +537,7 @@ nothing. Servers a Codex plugin adds are not in the file and still start.
 | `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The registry as one chat launch sees it. |
 | `apps/desktop/src/main/services/mcp/npxDirectLaunch.ts` | Runs an `npx` server's installed package with `node` when it is provably the copy npx would run. |
 | `apps/desktop/src/main/services/mcp/chatUserMcp.ts` | The seam the chat service calls at each launch step: registry servers minus double copies, the user's own servers per provider, the Codex overlay and the two Claude halves. |
-| `apps/desktop/src/main/services/mcp/mcpUserServersForLaunch.ts` | The user's own servers for one Claude or Codex launch: the machine login's servers on an ADE account, and `npx` servers re-pointed. |
+| `apps/desktop/src/main/services/mcp/mcpUserServersForLaunch.ts` | The user's own servers for one Claude or Codex launch: the machine login's servers on a DAEX account, and `npx` servers re-pointed. |
 | `apps/desktop/src/main/services/mcp/trackedCliUserMcp.ts` | The same servers for a tracked Claude or Codex CLI, without secret-bearing ones; `trackedCliUserMcpFlags` in `shared/cliLaunch.ts` renders them. |
 | `apps/desktop/src/main/services/mcp/codexMcpOff.ts` | Switches every config.toml server off by name for Codex runs that need none. |
 | `apps/desktop/src/main/services/mcp/providerTaskMcpOff.ts` | The private config-folder copy a Droid, Kimi, Grok, Muse or Devin background job runs on, its write-back, and the Cursor one-shot home. |
