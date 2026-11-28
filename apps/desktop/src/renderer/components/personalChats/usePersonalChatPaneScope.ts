@@ -10,7 +10,10 @@ import {
   agentChatModelCatalogHasAvailableModels,
   descriptorsFromAgentChatModelCatalog,
   personalChatCatalogScopeKey,
+  registerPersonalCatalogReader,
 } from "../shared/ModelPicker/modelCatalog";
+import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
+import { useRuntimeCatalogVersion } from "../shared/ModelPicker/useRuntimeCatalogVersion";
 import { createPersonalAgentChatApi, personalCallResult, type PersonalChatsBridge } from "./personalAgentChatApi";
 import { callPersonalOn, personalAgentChatApiFor } from "./personalChatMachines";
 
@@ -113,12 +116,18 @@ export function usePersonalChatPaneScope(
     const readCatalog = (mode: "refresh-stale" | "force") => (targetMachineId
       ? callPersonalOn<AgentChatModelCatalog>(targetMachineId, "modelCatalog", { mode })
       : callPersonal<AgentChatModelCatalog>("modelCatalog", { mode }));
-    let next = await readCatalog("refresh-stale");
-    if (!current()) return;
-    setCatalog(next);
-    if (next.stale === true || !agentChatModelCatalogHasAvailableModels(next)) {
-      next = await readCatalog("force");
-      if (current()) setCatalog(next);
+    try {
+      let next = await readCatalog("refresh-stale");
+      if (!current()) return;
+      setCatalog(next);
+      if (next.stale === true || !agentChatModelCatalogHasAvailableModels(next)) {
+        next = await readCatalog("force");
+        if (current()) setCatalog(next);
+      }
+    } catch (error) {
+      // A load another answer replaced (a newer load, a Refresh the pane
+      // took) reports nothing: its failure is not the pane's state.
+      if (current()) throw error;
     }
   }, []);
 
@@ -132,6 +141,31 @@ export function usePersonalChatPaneScope(
       onErrorRef.current?.(reason instanceof Error ? reason.message : String(reason));
     });
   }, [enabled, loadModelCatalog, targetKey]);
+
+  // The picker's reads and Refresh for this bucket go to this pane's machine.
+  useEffect(() => {
+    if (!machineId) return;
+    return registerPersonalCatalogReader(
+      personalCatalogScopeKey,
+      (args) => callPersonalOn<AgentChatModelCatalog>(machineId, "modelCatalog", args),
+    );
+  }, [machineId, personalCatalogScopeKey]);
+
+  // A Refresh in the picker lands in the shared bucket for this machine; take
+  // it, so the models it found are in this pane's list and can be picked.
+  // Only a fresh list is taken, and taking it drops this pane's own load
+  // still in flight: an older answer landing later must not undo it.
+  const sharedCatalogVersion = useRuntimeCatalogVersion(personalCatalogScopeKey);
+  const seenSharedVersionRef = useRef(sharedCatalogVersion);
+  useEffect(() => {
+    if (seenSharedVersionRef.current === sharedCatalogVersion) return;
+    seenSharedVersionRef.current = sharedCatalogVersion;
+    if (!enabled) return;
+    const shared = getSharedRuntimeCatalog(personalCatalogScopeKey);
+    if (!shared || shared.stale === true) return;
+    requestSeqRef.current += 1;
+    setCatalog(shared);
+  }, [enabled, personalCatalogScopeKey, sharedCatalogVersion]);
 
   const availableModelIds = useMemo(
     () => (catalog ? descriptorsFromAgentChatModelCatalog(catalog, undefined, personalCatalogScopeKey).availableModelIds : []),

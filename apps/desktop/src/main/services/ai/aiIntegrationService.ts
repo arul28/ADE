@@ -40,6 +40,8 @@ import {
   getLocalProviderDefaultEndpoint,
   isLocalProviderFamily,
   listAcpModelDescriptorsForProvider,
+  hasLiveAcpModelCatalog,
+  type AcpModelProviderGroup,
   listModelDescriptorsForProvider,
   mergeDynamicAcpModelDescriptors,
   createDynamicAcpModelDescriptor,
@@ -1293,13 +1295,17 @@ export function createAiIntegrationService(args: {
       available = available.filter((descriptor) =>
         !(descriptor.isCliWrapped && descriptor.family === family)
       );
-      if (!hasAuth) continue;
+      // A runtime failure (a timeout, a slow cold start) is not a sign-out:
+      // the provider's last own list stays listed. A sign-in failure, or no
+      // list yet, still removes the rows.
+      const keepLastList = !hasAuth && health?.state === "runtime-failed" && hasLiveAcpModelCatalog(provider);
+      if (!hasAuth && !keepLastList) continue;
       // The provider's own list (persisted from the last chat or probe) is the
       // picker; curated rows are only the fallback before one exists. Refresh
       // it in the background when it is missing or old, so this read never
       // blocks on a subprocess. A signed-in provider still waiting for its
       // first-use download lists curated rows (the warm skips it).
-      warmAcpModelCatalog(provider, { logger });
+      if (hasAuth) warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }
@@ -2517,6 +2523,14 @@ export function createAiIntegrationService(args: {
           if (availability.claude.auth.ready && availability.claude.auth.mode === "oauth") {
             ensureClaudeAccountSkillsSynced({ logger });
           }
+          // A runtime failure (a timeout, a slow cold start) is not a
+          // sign-out: an ACP provider's last own list stays listed (the
+          // listing above kept it), while its availability says it is not
+          // ready. A sign-in failure still removes it.
+          const keepsLastAcpList = (provider: AcpModelProviderGroup): boolean =>
+            enabled(provider)
+            && getProviderRuntimeHealth(provider)?.state === "runtime-failed"
+            && hasLiveAcpModelCatalog(provider);
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
             // ADE through OpenCode, Pi, or a local runtime), so the tile toggle
@@ -2527,12 +2541,12 @@ export function createAiIntegrationService(args: {
             if (descriptor.family === "cursor") return availability.cursor;
             if (descriptor.family === "factory") return availability.droid;
             if (descriptor.family === "muse") return availability.muse === true;
-            if (descriptor.family === PROVIDER_STATUS_FAMILIES.qwen) return availability.qwen === true;
-            if (descriptor.family === PROVIDER_STATUS_FAMILIES.kimi) return availability.kimi === true;
-            if (descriptor.family === PROVIDER_STATUS_FAMILIES.grok) return availability.grok === true;
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.qwen) return availability.qwen === true || keepsLastAcpList("qwen");
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.kimi) return availability.kimi === true || keepsLastAcpList("kimi");
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.grok) return availability.grok === true || keepsLastAcpList("grok");
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.copilot) return availability.copilot === true;
-            if (descriptor.family === PROVIDER_STATUS_FAMILIES.devin) return availability.devin === true;
-            if (descriptor.family === PROVIDER_STATUS_FAMILIES.antigravity) return availability.antigravity === true;
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.devin) return availability.devin === true || keepsLastAcpList("devin");
+            if (descriptor.family === PROVIDER_STATUS_FAMILIES.antigravity) return availability.antigravity === true || keepsLastAcpList("antigravity");
             return true;
           }));
 

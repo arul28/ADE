@@ -27,6 +27,14 @@ export function refreshProviderForFamily(family: ProviderFamily): AgentChatModel
   return REFRESH_PROVIDER_BY_FAMILY[family] ?? null;
 }
 
+/** The family a refresh provider id belongs to (`kimi` -> `moonshot`), for its label. */
+export function familyForRefreshProvider(provider: AgentChatModelCatalogRefreshProvider): ProviderFamily | null {
+  for (const [family, candidate] of Object.entries(REFRESH_PROVIDER_BY_FAMILY)) {
+    if (candidate === provider) return family as ProviderFamily;
+  }
+  return null;
+}
+
 const RUNTIME_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
 const RUNTIME_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
 

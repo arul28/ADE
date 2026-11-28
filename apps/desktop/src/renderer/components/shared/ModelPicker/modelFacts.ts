@@ -33,6 +33,8 @@ export const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   qwen: "Qwen",
   moonshot: "Kimi",
   "github-copilot": "GitHub Copilot",
+  devin: "Devin",
+  antigravity: "Antigravity",
 };
 
 export function providerLabel(family: ProviderFamily | string): string {

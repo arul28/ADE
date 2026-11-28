@@ -1187,6 +1187,7 @@ import {
   isLocalProviderFamily,
   createDynamicAcpModelDescriptor,
   listAcpModelDescriptorsForProvider,
+  hasLiveAcpModelCatalog,
   listModelDescriptorsForProvider,
   museModelDescriptorFromCatalogRow,
   replaceDynamicMuseModelDescriptors,
@@ -1646,10 +1647,20 @@ import { devinDirectoryStatus } from "./devinCloudDirectory";
 import { syncCloudLaneMirror } from "../lanes/cloudLaneMirror";
 import { devinCloudAcpSessionId, devinCloudBareSessionId } from "./acpHost/acpDialects/devinCloud";
 import {
+  applyPersistedAcpModelCatalogs,
   buildLiveAcpModelDescriptors,
   recordAcpSessionModelCatalog,
+  refreshAcpModelCatalog,
   warmAcpModelCatalog,
 } from "./acpHost/acpModelDiscovery";
+
+/**
+ * The ceiling on waiting for an ACP agent's model list. The list request has
+ * its own limits (the handshake's minute, then `session/new`), so this only
+ * guards against a process that never answers; the call carrying the picker's
+ * read allows ten minutes.
+ */
+const ACP_REFRESH_LIST_WAIT_MS = 120_000;
 import {
   acquireDroidSdkConnection,
   isDroidSdkPooledAlive,
@@ -78601,6 +78612,16 @@ export function createAgentChatService(args: {
   const MODEL_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
   const MODEL_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
   let modelCatalogCache: AgentChatModelCatalog | null = null;
+  /**
+   * The latest completed model read per provider, across catalog builds that
+   * run side by side. A build that took long (a Refresh waiting on a
+   * provider's discovery) publishes these, not the reads it made when it
+   * started, so it cannot put back a list another build has since replaced.
+   */
+  const latestProviderModelReads = new Map<string, AgentChatModelInfo[]>();
+  /** One entry per read that lists different models: Cursor's differ by source. */
+  const providerModelReadKey = (provider: ModelProviderGroup, cursorSource?: AgentChatCursorModelSource): string =>
+    provider === "cursor" ? `cursor:${cursorSource ?? "all"}` : provider;
   // A newly applied model manifest can add, hide, or re-default models, so the
   // cached catalog is stale until the next rebuild — served once more while a
   // background refresh picks up the change, never rebuilt on the caller.
@@ -78807,9 +78828,37 @@ export function createAgentChatService(args: {
     return discoveredLocalModels;
   };
 
+  /** Qwen's own settings name its models: merge them into the registry and return their ids. */
+  const mergeQwenSettingsModels = async (): Promise<string[]> => {
+    const settings = await loadQwenUserSettings();
+    if (settings.models.length) {
+      mergeDynamicAcpModelDescriptors(
+        "qwen",
+        settings.models.map((model) => createDynamicAcpModelDescriptor("qwen", model.id, {
+          displayName: model.displayName,
+        })),
+      );
+    }
+    return settings.models.map((model) => model.id);
+  };
+
+  /** An ACP provider's rows as the registry holds them at this moment. Synchronous. */
+  const acpModelInfosNow = (provider: AcpChatProvider, qwenConfiguredIds: readonly string[] = []): AgentChatModelInfo[] => {
+    const descriptors = listAcpModelDescriptorsForProvider(
+      provider,
+      provider === "qwen" && qwenConfiguredIds.length ? { configuredModelIds: qwenConfiguredIds } : undefined,
+    );
+    return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
+  };
+
+  const listAcpModelInfos = async (provider: AcpChatProvider): Promise<AgentChatModelInfo[]> =>
+    acpModelInfosNow(provider, provider === "qwen" ? await mergeQwenSettingsModels() : []);
+
   const loadAvailableModels = async (args: {
     provider: AgentChatProvider;
     activateRuntime?: boolean;
+    /** The person asked for this provider again (Refresh): check a cached "not signed in" too. */
+    recheckAuth?: boolean;
     cursorSource?: AgentChatCursorModelSource;
   }): Promise<AgentChatModelInfo[]> => {
     const provider = args.provider;
@@ -79025,35 +79074,52 @@ export function createAgentChatService(args: {
         if (!cli || (!cli.installed && !cli.pinnedDownloadPending)) return [];
         let health = getProviderRuntimeHealth(provider);
         let authReady = health ? health.state === "ready" : cli.authenticated;
-        if (!authReady && !health && args.activateRuntime && cli.installed) {
-          const probe = await probeAcpProviderAuth({ provider, cwd: projectRoot, logger });
-          health = getProviderRuntimeHealth(provider);
-          authReady = probe.state === "ready" || health?.state === "ready";
-        }
-        if (!authReady) return [];
-        // The provider's live list is the picker once it exists; refresh it in
-        // the background when missing or old (never blocks this read, and
-        // only from a copy already here).
-        warmAcpModelCatalog(provider, { logger });
-        if (provider === "qwen") {
-          const settings = await loadQwenUserSettings();
-          if (settings.models.length) {
-            mergeDynamicAcpModelDescriptors(
-              "qwen",
-              settings.models.map((model) => createDynamicAcpModelDescriptor("qwen", model.id, {
-                displayName: model.displayName,
-              })),
-            );
-          }
-          const descriptors = listAcpModelDescriptorsForProvider(provider, {
-            ...(settings.models.length
-              ? { configuredModelIds: settings.models.map((model) => model.id) }
-              : {}),
+        // No verdict yet: an active read checks once. A Refresh the person
+        // asked for checks again even over a cached "not ready", which can be
+        // a check that failed for a moment or landed after the sign-in.
+        if (!authReady && args.activateRuntime && cli.installed && (!health || args.recheckAuth)) {
+          // A Refresh's re-check gets the agent's own limits (the handshake's
+          // minute): a slow start must not read as "not signed in". Its
+          // verdict, a failure included, is published as the provider's
+          // health, so the status says why the list did not come back.
+          const probe = await probeAcpProviderAuth({
+            provider,
+            cwd: projectRoot,
+            logger,
+            ...(args.recheckAuth ? { force: true } : {}),
+          }).catch((error: unknown) => {
+            logger.warn("agent_chat.acp_refresh_auth_check_failed", {
+              provider,
+              error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+            });
+            return null;
           });
-          return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
+          health = getProviderRuntimeHealth(provider);
+          authReady = probe?.state === "ready" || health?.state === "ready";
         }
-        const descriptors = listAcpModelDescriptorsForProvider(provider);
-        return descriptors.map((descriptor, index) => acpModelInfoFromDescriptor(descriptor, provider, index));
+        if (!authReady) {
+          // A runtime failure (a timeout, a slow cold start, a crash) is not
+          // a sign-out: the provider's last own list stays, so its models
+          // stay pickable and a chat start reports the real failure. Only a
+          // sign-in failure, or no list yet, empties the page.
+          applyPersistedAcpModelCatalogs();
+          if (health?.state !== "runtime-failed" || !hasLiveAcpModelCatalog(provider)) return [];
+        } else if (args.activateRuntime) {
+          // An active read waits for the provider's own list when it is
+          // missing or old (a sign-in marks it old), so the answer carries
+          // it, not the list from before. Refresh asks again even when fresh.
+          await refreshAcpModelCatalog(provider, {
+            logger,
+            waitMs: ACP_REFRESH_LIST_WAIT_MS,
+            force: args.recheckAuth === true,
+          });
+        } else {
+          // The provider's live list is the picker once it exists; refresh it in
+          // the background when missing or old (never blocks this read, and
+          // only from a copy already here).
+          warmAcpModelCatalog(provider, { logger });
+        }
+        return await listAcpModelInfos(provider);
       } catch {
         return [];
       }
@@ -79171,6 +79237,7 @@ export function createAgentChatService(args: {
     "droid",
     "kimi",
     "qwen",
+    "devin",
     "antigravity",
   ] as const satisfies readonly AgentChatProvider[];
 
@@ -79187,10 +79254,12 @@ export function createAgentChatService(args: {
   const getAvailableModels = async ({
     provider,
     activateRuntime,
+    recheckAuth,
     cursorSource,
   }: {
     provider?: AgentChatProvider;
     activateRuntime?: boolean;
+    recheckAuth?: boolean;
     cursorSource?: AgentChatCursorModelSource;
   } = {}): Promise<AgentChatModelInfo[]> => {
     const requestedProvider = provider?.trim() ? provider : undefined;
@@ -79199,14 +79268,14 @@ export function createAgentChatService(args: {
     // catalog, the `chat.getAvailableModels` action, and the `providerUsable`
     // preflight in one place instead of four.
     if (requestedProvider && providerIsDisabled(requestedProvider)) return [];
-    const requestKey = `${requestedProvider ?? "all"}:${activateRuntime === true ? "active" : "passive"}:${cursorSource ?? "all"}`;
+    const requestKey = `${requestedProvider ?? "all"}:${activateRuntime === true ? (recheckAuth === true ? "recheck" : "active") : "passive"}:${cursorSource ?? "all"}`;
     const existingRequest = availableModelsRequests.get(requestKey);
     if (existingRequest) {
       return existingRequest;
     }
 
     const request = requestedProvider
-      ? loadAvailableModels({ provider: requestedProvider, activateRuntime, cursorSource })
+      ? loadAvailableModels({ provider: requestedProvider, activateRuntime, recheckAuth, cursorSource })
       : Promise.all(
           aggregateModelProviders.map((catalogProvider) =>
             getAvailableModels({
@@ -79229,7 +79298,8 @@ export function createAgentChatService(args: {
   const modelCatalogRequestKey = (catalogArgs?: AgentChatModelCatalogArgs): string => {
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
-    return `${mode}:${refreshProvider ?? "all"}:${catalogArgs?.cursorSource ?? "all"}`;
+    const userRefresh = catalogArgs?.userRefresh === true && refreshProvider ? ":user" : "";
+    return `${mode}:${refreshProvider ?? "all"}:${catalogArgs?.cursorSource ?? "all"}${userRefresh}`;
   };
 
   const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
@@ -79265,14 +79335,14 @@ export function createAgentChatService(args: {
       "muse",
       "kimi",
       "qwen",
+      "devin",
       "antigravity",
     ] as ModelProviderGroup[]).filter((provider) => !providerIsDisabled(provider));
-    const modelsByProvider = await Promise.all(
+    const readModelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
-        try {
-          return {
-            provider,
-            models: await getAvailableModels({
+        const read = await (async () => {
+          try {
+            return await getAvailableModels({
               provider,
               activateRuntime:
                 (provider === "cursor" && shouldRefreshProvider("cursor"))
@@ -79280,14 +79350,24 @@ export function createAgentChatService(args: {
                 || (provider === "muse" && shouldRefreshProvider("muse"))
                 || (provider === "pi" && shouldRefreshPi)
                 || (isAcpChatProvider(provider) && shouldRefreshProvider(provider)),
+              // Only a person's Refresh for this provider checks a cached
+              // sign-in verdict again and skips the backoff; a `force` read
+              // the host or the picker schedules for a stale catalog does not.
+              ...(isAcpChatProvider(provider) && mode === "force" && refreshProvider === provider
+                && catalogArgs?.userRefresh === true
+                ? { recheckAuth: true }
+                : {}),
               ...(provider === "cursor" && catalogArgs?.cursorSource
                 ? { cursorSource: catalogArgs.cursorSource }
                 : {}),
-            }),
-          };
-        } catch {
-          return { provider, models: [] };
-        }
+            });
+          } catch {
+            return [];
+          }
+        })();
+        // Recorded as it lands, so the map holds the last read to complete.
+        latestProviderModelReads.set(providerModelReadKey(provider, catalogArgs?.cursorSource), read);
+        return { provider, models: read };
       }),
     );
 
@@ -79312,6 +79392,31 @@ export function createAgentChatService(args: {
 
     const descriptorInfo = new Map<string, { provider: ModelProviderGroup; info: AgentChatModelInfo }>();
     const descriptors: ModelDescriptor[] = [];
+    // Builds run side by side, and a Refresh waiting on a provider's discovery
+    // can finish after another build already read some provider again. So each
+    // provider publishes its last completed read across builds, and an ACP
+    // provider that listed models takes its rows again from the registry now:
+    // whichever build publishes last carries the newest lists, and no build
+    // has to be ranked against another.
+    const latestRead = (provider: ModelProviderGroup): AgentChatModelInfo[] =>
+      latestProviderModelReads.get(providerModelReadKey(provider, catalogArgs?.cursorSource)) ?? [];
+    // Qwen's settings are the one await left (they name its models), so they
+    // are read first. Everything after is taken with no await before the
+    // publish below: the latest completed read of every provider and each
+    // listed ACP provider's rows from the registry, so a read or a discovery
+    // that lands while this build waited is what this build publishes.
+    const qwenConfiguredIds = readModelsByProvider.some(({ provider }) => provider === "qwen" && latestRead(provider).length)
+      ? await mergeQwenSettingsModels().catch(() => [])
+      : [];
+    const modelsByProvider = readModelsByProvider.map(({ provider }) => {
+      const models = latestRead(provider);
+      if (!isAcpChatProvider(provider) || !models.length) return { provider, models };
+      try {
+        return { provider, models: acpModelInfosNow(provider, qwenConfiguredIds) };
+      } catch {
+        return { provider, models };
+      }
+    });
     for (const { provider, models } of modelsByProvider) {
       for (const info of models) {
         const descriptor =

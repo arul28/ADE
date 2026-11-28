@@ -3631,6 +3631,7 @@ function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatMod
     ...(mode === "cached" || mode === "refresh-stale" || mode === "force" ? { mode } : {}),
     ...(refreshProvider && MODEL_CATALOG_REFRESH_PROVIDERS.has(refreshProvider) ? { refreshProvider } : {}),
     ...(cursorSource ? { cursorSource } : {}),
+    ...(value.userRefresh === true ? { userRefresh: true } : {}),
   };
 }
 

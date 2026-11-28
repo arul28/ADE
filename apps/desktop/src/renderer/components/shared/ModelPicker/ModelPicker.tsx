@@ -38,9 +38,12 @@ import {
   runtimeCatalogProviderIsFresh,
   refreshProviderForFamily,
   DEFAULT_RUNTIME_CATALOG_SCOPE,
+  isPersonalChatCatalogScopeKey,
 } from "./runtimeCatalogCache";
 import { fetchSharedRuntimeCatalog } from "./sharedCatalogFetch";
 import { useRuntimeCatalogVersion } from "./useRuntimeCatalogVersion";
+import { revalidateProviderAuthStatus } from "./useProviderAuthStatus";
+import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 
 /** The saved preset (or ad-hoc route) a surface is running on, for the trigger. */
 export type ModelPickerActivePreset = {
@@ -257,6 +260,12 @@ export const ModelPicker = memo(function ModelPicker({
   // open picker cannot be pushed into repeated cached-catalog fetches.
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin ?? null);
   runtimePinRef.current = runtimePin ?? null;
+  // The tab and project this picker's own store holds (the nearest
+  // `AppStoreProvider`), so a status re-read fills the bucket its hook reads.
+  const tabBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  const statusStoreRef = useRef({ tabBindingKey, activeProjectRoot });
+  statusStoreRef.current = { tabBindingKey, activeProjectRoot };
   const catalogScopeKeyRef = useRef(catalogScopeKey);
   catalogScopeKeyRef.current = catalogScopeKey;
   const providerRefreshTokenRef = useRef(0);
@@ -319,6 +328,7 @@ export const ModelPicker = memo(function ModelPicker({
   const loadRuntimeCatalog = useCallback(async (args: {
     mode: "cached" | "refresh-stale" | "force";
     refreshProvider?: AgentChatModelCatalogRefreshProvider;
+    userRefresh?: boolean;
   }): Promise<AgentChatModelCatalog | null> => {
     const cursorFlavor = args.refreshProvider === "cursor" ? cursorSource : undefined;
     const shared = getSharedRuntimeCatalog(catalogScopeKey);
@@ -342,6 +352,7 @@ export const ModelPicker = memo(function ModelPicker({
       mode: args.mode,
       ...(args.refreshProvider ? { refreshProvider: args.refreshProvider } : {}),
       ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
+      ...(args.userRefresh ? { userRefresh: true } : {}),
       pin: runtimePinRef.current,
     });
     if (result.status === "unavailable") return null;
@@ -392,14 +403,25 @@ export const ModelPicker = memo(function ModelPicker({
         setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
         setRefreshingProvider(refreshProvider);
         try {
-          const immediate = await loadRuntimeCatalog({ mode: force ? "force" : "refresh-stale", refreshProvider });
+          // `force` is a person's Refresh or Retry; the forced read that
+          // follows a stale answer below is not, so it does not say so.
+          const immediate = await loadRuntimeCatalog(force
+            ? { mode: "force", refreshProvider, userRefresh: true }
+            : { mode: "refresh-stale", refreshProvider });
           if (!immediate) return;
           if (!force && immediate.stale === true) {
             const forced = await loadRuntimeCatalog({ mode: "force", refreshProvider });
             if (!forced) return;
           }
-          if (providerRefreshTokenRef.current !== refreshToken) return;
           if (catalogScopeKeyRef.current !== scopeAtRefresh) return;
+          // The refresh may have found the provider signed in or installed;
+          // the rows stay dimmed until the status this window holds says so.
+          // The status is the machine's, not this provider's, so it is read
+          // again even when the person has moved to another provider since.
+          if (!isPersonalChatCatalogScopeKey(scopeAtRefresh)) {
+            revalidateProviderAuthStatus(runtimePinRef.current, statusStoreRef.current);
+          }
+          if (providerRefreshTokenRef.current !== refreshToken) return;
           onRuntimeCatalogRefreshed?.(refreshProvider, scopeAtRefresh);
         } finally {
           setRefreshingProvider((current) => {

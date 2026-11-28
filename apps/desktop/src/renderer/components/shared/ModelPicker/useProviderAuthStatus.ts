@@ -228,6 +228,25 @@ function probeBinary(scopeKey: string, pin?: OpenProjectBinding | null): Promise
   return request;
 }
 
+/**
+ * Read one machine's provider status again after its model list was
+ * refreshed. The refresh can find the provider signed in or installed when the
+ * status this window holds still says otherwise, and that status decides
+ * whether the picker's rows can be picked. Cheap: the brain answers from the
+ * caches the refresh just renewed, and every surface reading this bucket (this
+ * hook, the chat pane) follows the update event.
+ */
+export function revalidateProviderAuthStatus(
+  runtimePin: OpenProjectBinding | null | undefined,
+  /** Read by the caller from its own store, the one this hook reads too. */
+  store: { tabBindingKey: string | null; activeProjectRoot: string | null },
+): void {
+  if (typeof window.ade?.ai?.getStatus !== "function") return;
+  const pin = statusCachePin(runtimePin, store.tabBindingKey);
+  const projectRoot = pin?.rootPath ?? store.activeProjectRoot;
+  void getAiStatusCached({ projectRoot, pin, revalidate: true }).catch(() => undefined);
+}
+
 export function useProviderAuthStatus(options?: {
   loadStatus?: boolean;
   allowCliOnlyModels?: boolean;
