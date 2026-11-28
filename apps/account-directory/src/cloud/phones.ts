@@ -47,6 +47,7 @@ import { settleFreePlanGithub } from "./freePlanGithub";
 import {
   CLOUD_DELETED_ACCOUNT_PREFIX,
   CLOUD_PATHS,
+  CLOUD_PHONE_BUILD_NEEDS,
   CLOUD_PHONE_DEVICES,
   CLOUD_PHONE_PROVIDER_ABILITIES,
   CLOUD_PHONE_PROVIDERS,
@@ -67,6 +68,7 @@ import {
   type CloudPhoneStart,
   type CloudPhoneState,
   type CloudPhoneSummary,
+  type CloudPhoneToolchain,
   type CloudPhoneUse,
   type CloudPhoneView,
 } from "./contract";
@@ -74,7 +76,7 @@ import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { CLOUD_PLANS } from "./plans";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
-import { forgetRevylAccount } from "./phoneRevyl";
+import { forgetRevylAccount, isRevylBuildAction, routeRevylBuild } from "./phoneRevyl";
 import { PHONE_PROVIDERS, abilityWords, buildGaps, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, recordBuildGap, revylLimitEndsAt, revylLimitMicros, revylMinutesLeft, revylSpentMicros, routeForBuilds, routeOf, startOnRoute, type PhoneRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
@@ -176,7 +178,7 @@ function phoneFacts(session: PhoneSession, now: number) {
   };
 }
 
-/** How a known row takes a newer answer: an ended phone never goes back to live (and holds no build), billed time and cost only grow. */
+/** How a known row takes a newer answer: an ended phone never goes back to live, billed time and cost only grow. */
 const PHONE_MERGE_SQL = `
   state = case when cloud_phones.state = 'ended' then 'ended' else excluded.state end,
   device = coalesce(excluded.device, cloud_phones.device),
@@ -187,7 +189,6 @@ const PHONE_MERGE_SQL = `
   end_reason = coalesce(cloud_phones.end_reason, excluded.end_reason),
   free = max(cloud_phones.free, excluded.free),
   provider_ref = coalesce(cloud_phones.provider_ref, excluded.provider_ref),
-  build_started_at = case when cloud_phones.state = 'ended' or excluded.state = 'ended' then null else cloud_phones.build_started_at end,
   updated_at = excluded.updated_at`;
 
 /** A credits phone's billed minutes in thousandths of a credit, as SQL on its `cloud_phones` row. */
@@ -294,6 +295,7 @@ function rowMinutes(row: PhoneRow, now: number): number {
 /** The period's phones as a person reads where the minutes went (rows are newest first). */
 function recentPhonesOf(rows: readonly PhoneRow[], now: number): CloudPhoneUse[] {
   return rows.slice(0, CLOUD_PHONE_RECENT_SHOWN).map((row) => ({
+    id: row.phone_id,
     startedAt: row.created_at,
     endedAt: row.state === "live" ? null : row.ended_at,
     minutes: rowMinutes(row, now),
@@ -315,7 +317,7 @@ async function stopPhone(env: CloudEnv, userId: string, phoneId: string, now: nu
   }
   if (stopped.after) await savePhone(env, userId, stopped.after.session, now);
   else if (stopped.status === 404) {
-    await env.DB.prepare("update cloud_phones set state = 'ended', ended_at = coalesce(ended_at, ?), end_reason = coalesce(end_reason, 'gone'), build_started_at = null, updated_at = ? where phone_id = ?")
+    await env.DB.prepare("update cloud_phones set state = 'ended', ended_at = coalesce(ended_at, ?), end_reason = coalesce(end_reason, 'gone'), updated_at = ? where phone_id = ?")
       .bind(now, now, phoneId).run();
   }
   logCloud("cloud.phone_stopped", { userId, phoneId, why });
@@ -631,6 +633,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
       phone: context.live ? summaryOfSession(context.live.session, context.live.stopNotice) : null,
       recent: recentPhonesOf(context.rows, now),
       abilities: context.live ? [...CLOUD_PHONE_PROVIDER_ABILITIES[context.live.where.provider]] : nextAbilities(env, picked),
+      toolchains: await toolchainsOf(env, context, picked, now),
     } satisfies CloudPhoneState);
   }
 
@@ -654,7 +657,7 @@ export async function routePhone(request: Request, path: string, env: CloudEnv, 
       : fail("phone_unavailable", "The ADE Cloud iPhone isn't available right now.", 503);
   }
   if (path === CLOUD_PATHS.phoneCall) {
-    return request.method === "POST" ? routePhoneCall(request, env, userId, now) : fail("not_found", "ADE Cloud has no such route.", 404);
+    return request.method === "POST" ? routePhoneCall(request, env, userId, picked, now, waitUntil) : fail("not_found", "ADE Cloud has no such route.", 404);
   }
   const starting = path === CLOUD_PATHS.phone && request.method === "POST";
   // A start is use of the free plan: one free plan per computer and per GitHub account, as a computer's start
@@ -909,15 +912,26 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
 
 /**
  * `POST /cloud/phone/call`: one call to the live phone at a provider with no
- * per-phone token. Brains poll it (`wait`), so it reads the live row alone:
- * no account load, no provider read, no write.
+ * per-phone token. Brains poll it (`wait`, a build's status), so a phone's
+ * call reads the live row alone: no account load, no provider read, no write.
+ * A build's own calls (`isRevylBuildAction`) belong to the account, not to a
+ * phone: they run with or without one up (`routeRevylBuild`), and only the
+ * ones that spend are held to what a start is held to (`buildRefusal`).
  */
-async function routePhoneCall(request: Request, env: CloudEnv, userId: string, now: number): Promise<Response> {
-  const row = await env.DB.prepare("select phone_id, provider, provider_ref, device, ready_at from cloud_phones where user_id = ? and state = 'live' order by created_at desc limit 1")
-    .bind(userId).first<Pick<PhoneRow, "phone_id" | "provider" | "provider_ref" | "device" | "ready_at">>();
-  if (!row) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
+async function routePhoneCall(request: Request, env: CloudEnv, userId: string, picked: CloudPhoneProvider | null, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const body = await readJson(request);
   if (!body) return fail("bad_request", "That request could not be read.", 400);
+  const row = await env.DB.prepare("select phone_id, provider, provider_ref, device, ready_at from cloud_phones where user_id = ? and state = 'live' order by created_at desc limit 1")
+    .bind(userId).first<Pick<PhoneRow, "phone_id" | "provider" | "provider_ref" | "device" | "ready_at">>();
+  if (isRevylBuildAction(body.action)) {
+    // With a Revyl phone up, its build runs as it always did; with none (or a NoMac one), only where a new phone would build first.
+    const revylPhone = row && whereOfRow(row).provider === "revyl" ? row.phone_id : null;
+    return routeRevylBuild(env, userId, body, now, {
+      phoneId: revylPhone,
+      mayBuild: revylPhone ? async () => null : () => buildRefusal(env, userId, body, picked, now, waitUntil),
+    });
+  }
+  if (!row) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
   // The phone the brain holds (`phoneId`): once another one replaced it, its steps never reach the new phone.
   if (typeof body.phoneId === "string" && body.phoneId !== row.phone_id) {
     return fail("phone_not_running", "The cloud iPhone this command was using has stopped.", 409);
@@ -927,6 +941,52 @@ async function routePhoneCall(request: Request, env: CloudEnv, userId: string, n
   if (!call) return fail("bad_request", "This phone takes its calls directly.", 400);
   if (row.ready_at == null) return fail("phone_starting", "Your ADE Cloud iPhone is still starting. Try again in a moment.", 409);
   return call(env, userId, { id: row.phone_id, ref: where.ref }, body, now);
+}
+
+/**
+ * Why a build with no Revyl phone up may not run now, or null when it may.
+ * Held to what a new phone's start is held to (the pause, the credits, the
+ * free-use cap, the route with the project's build tools), and run only where
+ * the account's next phone would build before it starts: a route whose first
+ * stop is Revyl's runners. Anywhere else (NoMac) the build runs on the phone
+ * itself, so it is told `phone_builds_on_phone` and the brain starts the phone
+ * to build. A failed build here costs no phone minutes and no credits; its
+ * runner time counts in the paid plan's Revyl limit (`revylSpentMicros`).
+ */
+async function buildRefusal(env: CloudEnv, userId: string, body: Record<string, unknown>, picked: CloudPhoneProvider | null, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
+  if (env.CLOUD_PHONES_PAUSED?.trim() === "1") return fail("phone_paused", "New ADE Cloud iPhones are paused for a moment. Try again soon.", 503);
+  const context = await phoneContext(env, userId, now);
+  if (context instanceof Response) return context;
+  const credits = startRefusal(context);
+  if (credits) return fail(credits.code, credits.message, 402, { minutes: minutesOf(context.usage) });
+  if (await freeCapRefuses(env, context.account, now, waitUntil)) return fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
+  const free = accountRules(context.account) === "free";
+  const drives = clientDrives(body.providers);
+  const builds = cloudPhoneBuildNeedsOf(body.builds);
+  const planned = await routeOfStart(env, userId, context, planIdOf(context.account), picked, free, drives, now);
+  if (planned instanceof Response) return planned;
+  const routed = routeForBuilds(env, planned.route, { builds, gapped: await buildGaps(env, builds, now, free ? userId : null), needs: [], free, drives });
+  if (routed instanceof Response) return routed;
+  if (routed.order[0] !== "revyl") return fail("phone_builds_on_phone", "This account's cloud iPhone builds on the phone itself, so a build starts the phone.", 409);
+  return null;
+}
+
+/**
+ * What the account's builds use (`CloudPhoneState.toolchains`): the live
+ * phone's, or along the route a new phone would take, so an agent picks
+ * before it spends a minute. `lacks`: build tools the provider's hosts were
+ * found without in the last day (a free plan reads only its own reports).
+ * Never names a provider.
+ */
+async function toolchainsOf(env: CloudEnv, context: PhoneContext, picked: CloudPhoneProvider | null, now: number): Promise<CloudPhoneToolchain[]> {
+  const free = accountRules(context.account) === "free";
+  const route = context.live ? { order: [context.live.where.provider] } : routeOf(env, { picked, free }, () => true);
+  if (route instanceof Response) return [];
+  const gaps = await Promise.all(CLOUD_PHONE_BUILD_NEEDS.map(async (need) => ({ need, gapped: await buildGaps(env, [need], now, free ? context.account.user_id : null) })));
+  return route.order.map((provider) => ({
+    ...PHONE_PROVIDERS[provider].toolchain(env),
+    lacks: gaps.filter(({ gapped }) => gapped.has(provider)).map(({ need }) => need),
+  }));
 }
 
 /** `GET /cloud/phone/viewer`: ADE's page for a phone streamed over WebRTC (Revyl's). Static; the link's `#` part names the phone. */

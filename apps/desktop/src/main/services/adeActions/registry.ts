@@ -4759,6 +4759,8 @@ function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
     perf: guarded(service.perf),
     screenshot: guarded((args) => service.screenshot(args, proof)),
     record: guarded((args) => service.record(args, proof)),
+    // No credits: a build with no phone, and its log (`CLOUD_PHONE_BUILD_ACTIONS`).
+    buildLog: (args) => service.buildLog(args, proof),
   };
 }
 

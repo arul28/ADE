@@ -14,6 +14,7 @@
 
 import {
   withoutPhoneProviderNames,
+  type CloudPhoneBuildNeed,
   type CloudPhoneMinutes,
   type CloudPhoneProvider,
 } from "../../../../../account-directory/src/cloud/contract";
@@ -101,8 +102,30 @@ export type CloudPhoneRunInput = {
   sub?: string;
   scheme?: string;
   configuration?: "Debug" | "Release";
+  /** Env values for the app's launch: `KEY=VALUE`, several split by spaces, commas or lines. */
   env?: string;
   clean?: boolean;
+  /** Build tools the project needs (`metal`): a build before any phone goes only where a new phone would. */
+  builds?: readonly CloudPhoneBuildNeed[];
+  /** The project's lockfiles that go up (Package.resolved, Podfile.lock): its dependency caches are saved again only when one changes. */
+  lockfiles?: string[];
+  /** The project's own cache name, so two projects of one account never trade dependency folders. */
+  cacheKey?: string;
+  /** An Xcode version to build with instead of the default (`27.1`). */
+  xcode?: string;
+};
+
+/** A build on build runners for the account, with no phone (`buildFirst`). `job` names it for its log. */
+export type CloudPhoneBuilt =
+  | { ok: true; version: string; seconds: number; job: string }
+  | { ok: false; answer: CloudPhoneToolAnswer; job: string | null };
+
+/** A build's log (`buildLog`): its steps, and its lines oldest first. `complete`: read back to its start. */
+export type CloudPhoneBuildLog = {
+  status: string;
+  steps: Array<{ name: string; status: string | null; seconds: number | null }>;
+  lines: string[];
+  complete: boolean;
 };
 
 export type CloudPhoneDriver = {
@@ -119,8 +142,12 @@ export type CloudPhoneDriver = {
   run(phone: CloudPhoneHeld, input: CloudPhoneRunInput): Promise<CloudPhoneToolAnswer>;
   /** Installs a packed Simulator `.app` (the service launches it, `control` `launch`): the answer and the bundle id it names. */
   install(phone: CloudPhoneHeld, input: { app: CloudPhonePacked }): Promise<{ answer: CloudPhoneToolAnswer; bundleId: string | null }>;
-  /** Apps and the phone: launch, terminate, open_url, location, push, appearance, … */
-  control(phone: CloudPhoneHeld, input: { action: string; value?: string; app?: string }): Promise<CloudPhoneToolAnswer>;
+  /**
+   * Apps and the phone: launch, terminate, open_url, location, push,
+   * appearance, … A launch's `args` are its launch arguments, one token each
+   * (a provider that takes one string gets them joined); `env`, its env values.
+   */
+  control(phone: CloudPhoneHeld, input: { action: string; value?: string; app?: string; args?: string[]; env?: string }): Promise<CloudPhoneToolAnswer>;
   logs(phone: CloudPhoneHeld, input: { app?: string; since?: string; grep?: string; waitFor?: string; crashes?: boolean }): Promise<CloudPhoneToolAnswer>;
   /** `start`, then `stop`: the stop answers the video. */
   record(phone: CloudPhoneHeld, action: "start" | "stop"): Promise<{ answer: CloudPhoneToolAnswer; video: { bytes: Buffer; extension: "mp4" | "mov" } | null }>;
@@ -128,6 +155,19 @@ export type CloudPhoneDriver = {
   test?(phone: CloudPhoneHeld, input: CloudPhoneRunInput & { only?: string }): Promise<CloudPhoneToolAnswer>;
   /** The `perf` ability: the app's CPU, memory and frame rate, sampled over a few seconds. */
   perf?(phone: CloudPhoneHeld, input: { seconds?: number }): Promise<CloudPhoneToolAnswer>;
+  /**
+   * Builds for the account on the provider's build runners, before any phone
+   * starts, so a failed build costs no phone minutes: `phone_builds` when this
+   * account's builds run on the phone itself (the server says). `prebuilt`:
+   * the upload is one Simulator `.app`, handed back as the build's app.
+   * `nearlyDone` is called once, when only packing the built app is left, so
+   * a phone can start alongside.
+   */
+  buildFirst?(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void): Promise<CloudPhoneBuilt | "phone_builds">;
+  /** Installs a build `buildFirst` made (`seconds` null: one made earlier, used again) and, unless `launch` is false, launches it with `env`: the answer and its bundle id. */
+  installBuilt?(phone: CloudPhoneHeld, built: { version: string; seconds: number | null }, input: { env?: string; launch: boolean }): Promise<{ answer: CloudPhoneToolAnswer; bundleId: string | null }>;
+  /** A build's log by its job (`CloudPhoneBuilt.job`), for the account. */
+  buildLog?(account: string | null, job: string): Promise<CloudPhoneBuildLog>;
 };
 
 export const textAnswer = (text: string, failed = false): CloudPhoneToolAnswer => ({ text: withoutPhoneProviderNames(text), failed, links: [], images: [], stopNotice: null });

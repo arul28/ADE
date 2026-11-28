@@ -4341,6 +4341,13 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
 const CLOUD_PHONE_SPEND_ACTIONS: ReadonlySet<string> = new Set(CLOUD_PHONE_SPEND_ACTION_NAMES);
 
 /**
+ * Cloud iPhone actions that spend nothing but answer for the calling chat
+ * (what its phones used, a build it started): stamped with the caller's chat,
+ * never taken from the arguments, and with no person-or-agent decision.
+ */
+const CLOUD_PHONE_CHAT_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "stop", "build"]);
+
+/**
  * The `cloud` actions that spend money or delete something. The RPC server
  * stamps who is asking on them (see runTool), and each asks for approval
  * unless a person's own client is asking.
@@ -7272,6 +7279,11 @@ async function runTool(args: {
               ...(viaAdeMcp ? { viaAdeMcp: true } : {}),
             },
       };
+    }
+    if (domain === "cloud_phone" && CLOUD_PHONE_CHAT_ACTIONS.has(action) && !argsList && !hasScalarArg) {
+      const { approval: _ignoredApproval, ...phoneArgs } = rawObjectArgs;
+      const chatSessionId = stampedChatSessionIdOf(session, callerCtx);
+      scopedObjectArgs = { ...phoneArgs, ...(chatSessionId ? { approval: { chatSessionId } } : {}) };
     }
     if (domain === "chat" && CROSS_MACHINE_MOVE_ACTIONS.has(action)) {
       if (argsList || hasScalarArg) {

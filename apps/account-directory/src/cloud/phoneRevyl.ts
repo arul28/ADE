@@ -36,6 +36,46 @@ const SESSION_TTL_SECONDS = 7_200;
 const SESSION_MARGIN_MS = 5 * 60_000;
 /** A build runs at most this long on Revyl's runners (it bills by the hour). */
 const BUILD_TIMEOUT_SECONDS = 900;
+/** A build's claim whose start never got Revyl's answer (the Worker stopped mid-start) lapses after this; the start's own timeout is 2 minutes. */
+const BUILD_START_LAPSE_MS = 5 * 60_000;
+/** A start whose answer was lost may have a build running: its claim holds this long (the build's limit plus a wait for a runner), then lapses. */
+const BUILD_UNKNOWN_HOLD_MS = 30 * 60_000;
+
+/**
+ * The Xcode image a build runs on unless it names another: Revyl's newest
+ * stable one (docs.revyl.com/remote-builds/toolchains; Revyl's own default is
+ * older). The Worker var `CLOUD_PHONE_REVYL_IMAGE` moves it without a release.
+ */
+export const REVYL_BUILD_IMAGE = "ios-macos-26-xcode-27.2";
+/** The Xcode versions a build may name (`xcode`), as Revyl's images. */
+export const REVYL_XCODE_IMAGES: Readonly<Record<string, string>> = {
+  "26.2": "ios-macos-26-xcode-26.2",
+  "26.5": "ios-macos-26-xcode-26.5",
+  "26.6": "ios-macos-26-xcode-26.6",
+  "27.0": "ios-macos-26-xcode-27.0",
+  "27.1": "ios-macos-26-xcode-27.1",
+  "27.2": "ios-macos-26-xcode-27.2",
+};
+const IMAGE_NAME = /^ios-[a-z0-9.-]{1,60}$/;
+
+/** The image a build runs on unless it names one: the Worker's (`CLOUD_PHONE_REVYL_IMAGE`), else `REVYL_BUILD_IMAGE`. */
+function revylDefaultImage(env: Pick<CloudEnv, "CLOUD_PHONE_REVYL_IMAGE">): string {
+  const set = env.CLOUD_PHONE_REVYL_IMAGE?.trim();
+  return set && IMAGE_NAME.test(set) ? set : REVYL_BUILD_IMAGE;
+}
+
+/** The image a build runs on: the Xcode version it names (`REVYL_XCODE_IMAGES`), else the default. */
+export function revylBuildImage(env: Pick<CloudEnv, "CLOUD_PHONE_REVYL_IMAGE">, xcode: string | null): string | Response {
+  if (!xcode) return revylDefaultImage(env);
+  const named = Object.hasOwn(REVYL_XCODE_IMAGES, xcode) ? REVYL_XCODE_IMAGES[xcode] : undefined;
+  return named ?? fail("bad_request", `xcode is one of ${Object.keys(REVYL_XCODE_IMAGES).join(", ")}.`, 400);
+}
+
+/** The Xcode and iOS SDK an image builds with (its name says; each image's SDK matches its Xcode). */
+export function revylToolchainOf(image: string): { xcode: string; sdk: string } {
+  const version = /xcode-(\d+(?:\.\d+)*)$/.exec(image)?.[1] ?? "?";
+  return { xcode: version, sdk: `iOS ${version}` };
+}
 /** Revyl's Cloudflare refuses some default user agents. */
 const USER_AGENT = "ade-account-directory/1 (+https://ade-app.dev)";
 
@@ -498,9 +538,9 @@ export async function forgetRevylAccount(env: Pick<CloudEnv, "DB" | "REVYL_PARTN
 /**
  * The calls a brain may make on its live Revyl phone. `proxy` actions go to
  * Revyl's device proxy for that phone (`/execution/device-proxy/<run>/<name>`);
- * the rest are a build's own steps in the account's workspace. Anything else
- * is refused: no call reaches another phone, another workspace, or Revyl's
- * AI-billed steps.
+ * `build.install` puts a build's app on it. Builds themselves belong to the
+ * account, not to a phone (`routeRevylBuild`). Anything else is refused: no
+ * call reaches another phone, another workspace, or Revyl's AI-billed steps.
  */
 const PROXY_ACTIONS: Record<string, "GET" | "POST"> = {
   health: "GET",
@@ -532,7 +572,13 @@ const PROXY_ACTIONS: Record<string, "GET" | "POST"> = {
   start_screen_recording: "POST",
   stop_screen_recording: "POST",
 };
-const BUILD_ACTIONS = new Set(["build.upload_url", "build.start", "build.status", "build.logs", "build.install"]);
+/**
+ * A build's own steps in the account's workspace, with or without a phone up
+ * (`routeRevylBuild`). `build.install` is the phone's (`routeRevylCall`).
+ */
+const WORKSPACE_BUILD_ACTIONS = new Set(["build.upload_url", "build.start", "build.status", "build.logs"]);
+/** A build action that runs in the account's workspace, whether or not a phone is up. */
+export const isRevylBuildAction = (action: unknown): boolean => typeof action === "string" && WORKSPACE_BUILD_ACTIONS.has(action);
 /** Revyl's words for a build that finished, whichever way (`build.status`'s `status`). */
 const BUILD_ENDED = new Set(["success", "succeeded", "completed", "failed", "error", "cancelled", "canceled", "timeout"]);
 
@@ -544,6 +590,8 @@ const SCHEME = /^[A-Za-z0-9 _.+()-]{1,200}$/;
  * it), so whatever folder the brain finds or a person names, the build takes.
  */
 const SUB_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\u0000-\u001f\u007f\\]{1,500}$/;
+/** A build's cache name from the brain: its project, never a path. */
+const CACHE_KEY = /^[a-z0-9-]{1,64}$/;
 
 /** The passthrough: Revyl's status, type and body as they are (a screenshot's PNG, a recording's video). */
 function passthrough(response: Response): Response {
@@ -559,29 +607,52 @@ const shellQuote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'
 /** How long the runner may spend fetching Apple's Metal Toolchain (about 870 MB for Xcode 27.2) inside the build's own limit. */
 const METAL_DOWNLOAD_SECONDS = 420;
 
+/** What one build is: chosen by the brain's arguments only, never a command it sends. */
+export type RevylBuildInput = {
+  /** The folder inside the upload to build (`.` for the top), or the project or workspace it names. */
+  sub: string;
+  scheme: string | null;
+  configuration: "Debug" | "Release";
+  clean: boolean;
+  /** The source is one Simulator `.app` built elsewhere: the runner only hands it back as the build's app. */
+  prebuilt: boolean;
+  /** Revyl's Xcode image (`revylBuildImage`). */
+  image: string;
+  /** The project's cache name (`CACHE_KEY`), so two projects of one account never trade dependency folders. */
+  cacheKey: string;
+  /** The lockfiles in the build folder (Package.resolved, Podfile.lock): a cache is saved again only when one changed. */
+  lockfiles: string[];
+};
+
+/** The folder a build runs xcodebuild in: `sub`, or the folder of the project or workspace it names. */
+function buildFolderOf(sub: string): { folder: string; named: string | null } {
+  const named = /\.(xcodeproj|xcworkspace)\/?$/i.test(sub) ? sub.replace(/\/+$/, "") : null;
+  return { folder: named ? (named.includes("/") ? named.slice(0, named.lastIndexOf("/")) : ".") : sub, named };
+}
+
 /**
  * The build step ADE runs on Revyl's runner, from the brain's choices only
  * (never a command it sends): find the workspace or project in `path` (or
  * take the one `path` names), the scheme (the first, unless named), then
  * build for the Simulator into `build/` at the project's top, where the
- * artifact is collected. Xcode 26 and later ship the Metal compiler as a
- * separate download: a build that failed for want of it (a `.metal` file in
- * the app or a Swift package) fetches it, time-bound, and builds once more,
- * so a project without Metal never pays for the download.
+ * artifact is collected. Its output is passed on a line at a time, so the
+ * log's timestamps say when each line came. Xcode 26 and later ship the
+ * Metal compiler as a separate download: a build that failed for want of it
+ * (a `.metal` file in the app or a Swift package) fetches it, time-bound, and
+ * builds once more, so a project without Metal never pays for the download.
  */
-function buildCommand(input: { sub: string; scheme: string | null; configuration: "Debug" | "Release"; clean: boolean }): string {
+function buildCommand(input: Pick<RevylBuildInput, "sub" | "scheme" | "configuration" | "clean">): string {
   // A `path` that names the project or workspace itself builds that one, from its folder.
-  const named = /\.(xcodeproj|xcworkspace)\/?$/i.test(input.sub) ? input.sub.replace(/\/+$/, "") : null;
-  const folder = named ? (named.includes("/") ? named.slice(0, named.lastIndexOf("/")) : ".") : input.sub;
-  // A named workspace keeps its folder's pods (uploads never carry `Pods/`), without trading the named one for another.
-  const pods = "if [ -f Podfile ] && [ ! -d Pods ] && command -v pod >/dev/null 2>&1; then pod install; fi";
+  const { folder, named } = buildFolderOf(input.sub);
+  // Pods come from the cache when its Podfile.lock matched (`buildCaches`); otherwise (none, or a changed lockfile) they are installed.
+  const pods = "if [ -f Podfile ] && command -v pod >/dev/null 2>&1 && { [ ! -d Pods ] || ! cmp -s Podfile.lock Pods/Manifest.lock; }; then pod install; fi";
   const find = named
     ? [pods, named.toLowerCase().endsWith(".xcworkspace") ? `WS=${shellQuote(`./${named.slice(named.lastIndexOf("/") + 1)}`)}; PJ=` : `WS=; PJ=${shellQuote(`./${named.slice(named.lastIndexOf("/") + 1)}`)}`]
     : [
       "WS=$(find . -maxdepth 1 -name '*.xcworkspace' ! -name 'project.xcworkspace' | head -n 1)",
       "PJ=$(find . -maxdepth 1 -name '*.xcodeproj' | head -n 1)",
       "if [ -z \"$WS$PJ\" ] && [ -f project.yml ] && command -v xcodegen >/dev/null 2>&1; then xcodegen generate; PJ=$(find . -maxdepth 1 -name '*.xcodeproj' | head -n 1); fi",
-      "if [ -f Podfile ] && [ ! -d Pods ] && command -v pod >/dev/null 2>&1; then pod install; WS=$(find . -maxdepth 1 -name '*.xcworkspace' ! -name 'project.xcworkspace' | head -n 1); fi",
+      `${pods.replace("{ [ ! -d Pods ] ||", "{ [ ! -d Pods ] || [ -z \"$WS\" ] ||").replace(/; fi$/, "")}; WS=$(find . -maxdepth 1 -name '*.xcworkspace' ! -name 'project.xcworkspace' | head -n 1); fi`,
     ];
   return [
     "set -eu",
@@ -600,8 +671,8 @@ function buildCommand(input: { sub: string; scheme: string | null; configuration
     // The log is kept to tell why it failed; the exit code goes through a file because a pipe answers tee's.
     `ade_xcodebuild() { if xcodebuild "$@" -scheme "$SCHEME" -configuration ${input.configuration} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/build" ARCHS=arm64 CODE_SIGNING_ALLOWED=NO $ACTION; then echo 0 > "$CODE_FILE"; else echo $? > "$CODE_FILE"; fi; }`,
     // The first build's toolchain line stays out of the build's output: a fetch follows it, and a failure there says so
-    // itself, so a later error is never blamed on a toolchain that was fetched.
-    "{ ade_xcodebuild \"$@\"; } 2>&1 | tee \"$LOG\" | sed '/missing Metal Toolchain/d'",
+    // itself, so a later error is never blamed on a toolchain that was fetched. Each line goes on as it comes (`fflush`).
+    "{ ade_xcodebuild \"$@\"; } 2>&1 | tee \"$LOG\" | awk '!/missing Metal Toolchain/ { print; fflush() }'",
     "CODE=$(cat \"$CODE_FILE\")",
     "if [ \"$CODE\" = 0 ]; then exit 0; fi",
     "if ! grep -q 'missing Metal Toolchain' \"$LOG\"; then exit \"$CODE\"; fi",
@@ -612,23 +683,204 @@ function buildCommand(input: { sub: string; scheme: string | null; configuration
     "if ! wait \"$FETCH\"; then echo \"error: The build runner couldn't fetch Apple's Metal Toolchain, which this project needs for its .metal shaders (missing Metal Toolchain).\" >&2; exit \"$CODE\"; fi",
     "echo 'ADE: fetched the Metal Toolchain; building again.'",
     "ACTION=build",
-    "{ ade_xcodebuild \"$@\"; } 2>&1 | tee \"$LOG\"",
+    "{ ade_xcodebuild \"$@\"; } 2>&1 | tee \"$LOG\" | awk '{ print; fflush() }'",
     "exit \"$(cat \"$CODE_FILE\")\"",
   ].join("\n");
 }
 
+/**
+ * The folders a build keeps between builds (Revyl's path caches, saved only
+ * after a build that succeeded, restored before the next one, one archive per
+ * key in the account's own workspace). Swift packages: their clones and
+ * checkouts in `build/SourcePackages`, so a build doesn't fetch every package
+ * again; CocoaPods: the build folder's `Pods`. Each is saved again only when
+ * one of its lockfiles changed (`hash`), so an unchanged build uploads none.
+ */
+function buildCaches(input: Pick<RevylBuildInput, "sub" | "cacheKey" | "lockfiles">): Array<{ key: string; paths: string[]; hash?: string[] }> {
+  const { folder } = buildFolderOf(input.sub);
+  const inFolder = (file: string): boolean => folder === "." || file.startsWith(`${folder}/`);
+  const resolved = input.lockfiles.filter((file) => /(^|\/)Package\.resolved$/.test(file) && inFolder(file));
+  const podfileLock = folder === "." ? "Podfile.lock" : `${folder}/Podfile.lock`;
+  const caches: Array<{ key: string; paths: string[]; hash?: string[] }> = [
+    { key: `spm-${input.cacheKey}`, paths: ["build/SourcePackages"], ...(resolved.length ? { hash: resolved } : {}) },
+  ];
+  if (input.lockfiles.includes(podfileLock)) caches.push({ key: `pods-${input.cacheKey}`, paths: [folder === "." ? "Pods" : `${folder}/Pods`], hash: [podfileLock] });
+  return caches;
+}
+
+/** The recipe Revyl builds (`POST /apps/remote`): ADE's own step on the image it picked, with its path caches. */
+export function revylRecipe(app: string, input: RevylBuildInput): Record<string, unknown> {
+  return {
+    app_id: app,
+    artifacts: [{ name: "app", path: input.prebuilt ? "*.app" : `build/Build/Products/${input.configuration}-iphonesimulator/*.app`, type: "app" }],
+    build_steps: [input.prebuilt
+      ? { name: "Hand back the app", command: "set -eu\nls -d ./*.app", type: "run" }
+      : { name: "Build the app", command: buildCommand(input), type: "run" }],
+    framework: "ios",
+    platform: "ios",
+    profile: "ade",
+    image: input.image,
+    ...(input.prebuilt ? {} : { caches: buildCaches(input) }),
+  };
+}
+
 const stringArg = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
 
-/**
- * `POST /cloud/phone/call` for an account whose live phone is Revyl's.
- * `phoneId` and `ref` name that phone (`phones.ts` read it live just now).
- */
-async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string; ref: string | null }, body: Record<string, unknown>, now: number): Promise<Response> {
+/** A call's action, its body for Revyl and its query (short lowercase keys and values only). */
+function callParts(body: Record<string, unknown>): { action: string; args: Record<string, unknown>; query: Record<string, string> } {
   const action = typeof body.action === "string" ? body.action : "";
   const args = body.body && typeof body.body === "object" && !Array.isArray(body.body) ? body.body as Record<string, unknown> : {};
   const query = body.query && typeof body.query === "object" && !Array.isArray(body.query)
     ? Object.fromEntries(Object.entries(body.query as Record<string, unknown>).filter((entry): entry is [string, string] => /^[a-z_]{1,40}$/.test(entry[0]) && typeof entry[1] === "string" && entry[1].length <= 200))
     : {};
+  return { action, args, query };
+}
+
+/* ---- Builds: the account's, with or without a phone (`cloud_phone_builds`) ---- */
+
+/** What a finished build ran, in seconds: Revyl's own `duration_ms`, else since its claim. */
+function buildSecondsOf(status: Record<string, unknown> | null, startedAt: number, now: number): number {
+  const ms = Number(status?.duration_ms);
+  return Math.max(0, Math.ceil((Number.isFinite(ms) && ms > 0 ? ms : now - startedAt) / 1000));
+}
+
+/** A build Revyl answers ended: its claim ends with what it ran (only that job's, never a newer build's). */
+async function endBuild(env: Pick<CloudEnv, "DB">, userId: string, job: string, status: Record<string, unknown> | null, now: number): Promise<void> {
+  const row = await env.DB.prepare("select id, started_at from cloud_phone_builds where user_id = ? and job = ? and ended_at is null").bind(userId, job).first<{ id: string; started_at: number }>();
+  if (!row) return;
+  await env.DB.prepare("update cloud_phone_builds set ended_at = ?, status = ?, seconds = ? where id = ? and ended_at is null")
+    .bind(now, String(status?.status ?? "ended").toLowerCase().slice(0, 40), buildSecondsOf(status, row.started_at, now), row.id).run();
+}
+
+/**
+ * The account's one build at a time (Revyl's runners bill ADE): claimed in
+ * one write, so two starts can't both run. A claim whose start never got
+ * Revyl's answer lapses, and one whose answer was lost lapses later; a build
+ * Revyl took holds it until Revyl says it ended (an accepted build may wait
+ * for a runner with no bound), which is asked once here when it's in the way.
+ * Answers the claim's id, or null while another build runs.
+ */
+async function claimBuild(env: CloudEnv, workspace: WorkspaceRow, phoneId: string | null, now: number): Promise<string | null> {
+  const userId = workspace.user_id;
+  await env.DB.prepare(`update cloud_phone_builds set ended_at = ?, status = 'lapsed'
+    where user_id = ? and ended_at is null and ((job is null and started_at <= ?) or (job = 'unknown' and started_at <= ?))`)
+    .bind(now, userId, now - BUILD_START_LAPSE_MS, now - BUILD_UNKNOWN_HOLD_MS).run();
+  const claim = async (): Promise<string | null> => {
+    const id = crypto.randomUUID();
+    const made = await env.DB.prepare(`insert into cloud_phone_builds (id, user_id, provider, job, started_at, phone_id)
+      select ?, ?, 'revyl', null, ?, ? where not exists (select 1 from cloud_phone_builds where user_id = ? and ended_at is null)`)
+      .bind(id, userId, now, phoneId, userId).run();
+    return (made.meta?.changes ?? 0) === 1 ? id : null;
+  };
+  const claimed = await claim();
+  if (claimed) return claimed;
+  // The held build may have ended with nobody following it (ADE closed, a status read failed): asked once,
+  // an ended one frees the claim. An unknown outcome stays held.
+  const held = await env.DB.prepare("select job from cloud_phone_builds where user_id = ? and ended_at is null limit 1").bind(userId).first<{ job: string | null }>();
+  if (!held?.job || !UUID.test(held.job)) return null;
+  const status = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(held.job)}/status`);
+  if (status.status !== 200 || !BUILD_ENDED.has(String(status.body?.status ?? "").toLowerCase())) return null;
+  await endBuild(env, userId, held.job, status.body, now);
+  return await claim();
+}
+
+/**
+ * `POST /cloud/phone/call` for a build action (`isRevylBuildAction`): a build
+ * in the account's Revyl workspace, whether or not a phone is up. `phoneId`
+ * is the account's live Revyl phone, or null. `mayBuild` answers why a build
+ * that would spend may not run (`build.upload_url`, `build.start`), or null:
+ * `phones.ts` holds it to what a phone start is held to, and to a route whose
+ * first stop is Revyl. Reads (`build.status`, `build.logs`) need only the
+ * workspace.
+ */
+export async function routeRevylBuild(
+  env: CloudEnv,
+  userId: string,
+  body: Record<string, unknown>,
+  now: number,
+  { phoneId, mayBuild }: { phoneId: string | null; mayBuild: () => Promise<Response | null> },
+): Promise<Response> {
+  const { action, args, query } = callParts(body);
+  const job = stringArg(args.job);
+  if (action === "build.status" || action === "build.logs") {
+    if (!job || !UUID.test(job)) return fail("bad_request", "job is the build's id.", 400);
+    const workspace = await knownWorkspace(env, userId);
+    if (!workspace) return fail("build_not_found", "That build isn't one of this account's.", 404);
+    const answer = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(job)}/${action === "build.status" ? "status" : "logs"}`, { query });
+    // A finished build (whichever way) frees the account for the next one: only its own claim.
+    if (action === "build.status" && answer.status === 200 && BUILD_ENDED.has(String(answer.body?.status ?? "").toLowerCase())) {
+      await endBuild(env, userId, job, answer.body, now);
+    }
+    return json(answer.body ?? {}, answer.status);
+  }
+  if (action !== "build.upload_url" && action !== "build.start") return fail("bad_request", `${action || "That"} isn't a cloud iPhone action.`, 400);
+  const refused = await mayBuild();
+  if (refused) return refused;
+  // The route goes to Revyl: the account's workspace is made on its first build, as on its first phone.
+  const workspace = await workspaceOf(env, userId, now);
+  if (workspace instanceof Response) return workspace;
+  const app = await workspaceApp(env, workspace, now);
+  if (app instanceof Response) return app;
+
+  if (action === "build.upload_url") {
+    const size = Number(args.file_size);
+    if (!Number.isInteger(size) || size <= 0 || size > 2 * 1024 ** 3) return fail("bad_request", "file_size is the archive's size in bytes, up to 2 GB.", 400);
+    const answer = await workspaceJson(env, workspace, "POST", "/apps/remote/upload-url", { body: { app_id: app, file_size: size, filename: "source.tar.gz" } });
+    return json(answer.body ?? {}, answer.status);
+  }
+  const key = stringArg(args.source_key);
+  // Only a source this workspace's app uploaded to.
+  if (!key || !key.includes(`/build-sources/${app}/`) || key.length > 500) return fail("bad_request", "source_key is the key build.upload_url answered.", 400);
+  const sub = stringArg(args.path) ?? ".";
+  if (sub !== "." && !SUB_PATH.test(sub)) return fail("bad_request", "path is a folder inside the project.", 400);
+  const scheme = stringArg(args.scheme);
+  if (scheme && !SCHEME.test(scheme)) return fail("bad_request", "That scheme name can't be built.", 400);
+  const image = revylBuildImage(env, stringArg(args.xcode));
+  if (image instanceof Response) return image;
+  // The brain names its project's cache; an older one names none, and the folder it builds stands in.
+  const named = stringArg(args.cache_key);
+  if (named && !CACHE_KEY.test(named)) return fail("bad_request", "cache_key names the project's cache.", 400);
+  const cacheKey = named ?? (await sha256Hex(`ade-cache:${sub}`)).slice(0, 16);
+  const lockfiles = Array.isArray(args.lockfiles)
+    ? args.lockfiles.filter((file): file is string => typeof file === "string" && SUB_PATH.test(file) && /(^|\/)(Package\.resolved|Podfile\.lock)$/.test(file)).slice(0, 20)
+    : [];
+  const recipe = revylRecipe(app, {
+    sub,
+    scheme,
+    configuration: args.configuration === "Release" ? "Release" : "Debug",
+    clean: args.clean === true,
+    prebuilt: args.prebuilt === true,
+    image,
+    cacheKey,
+    lockfiles,
+  });
+  const claim = await claimBuild(env, workspace, phoneId, now);
+  if (!claim) return fail("build_running", "A build is already running for your ADE Cloud iPhone. Wait for it to finish, then try again.", 409);
+  const answer = await workspaceJson(env, workspace, "POST", "/apps/remote", {
+    body: { build_definition_hash: await sha256Hex(JSON.stringify(recipe)), git_branch_name: "ade", recipe, source: { key, type: "archive" }, timeout_seconds: BUILD_TIMEOUT_SECONDS },
+    timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
+  });
+  const buildJob = typeof answer.body?.build_job_id === "string" ? answer.body.build_job_id : null;
+  // A start Revyl refused runs nothing: the claim goes. A 5xx or a timeout may hide a build Revyl took:
+  // the claim holds (`unknown`) a while, so a retry can't bill a second one.
+  if (answer.status < 300) {
+    await env.DB.prepare("update cloud_phone_builds set job = ? where id = ?").bind(buildJob ?? "unknown", claim).run();
+  } else if (answer.status < 500) {
+    await env.DB.prepare("delete from cloud_phone_builds where id = ?").bind(claim).run();
+  } else {
+    await env.DB.prepare("update cloud_phone_builds set job = 'unknown' where id = ?").bind(claim).run();
+  }
+  logCloud("cloud.phone_revyl_build", { userId, status: answer.status, withPhone: phoneId != null, image });
+  return json(answer.body ?? {}, answer.status);
+}
+
+/**
+ * `POST /cloud/phone/call` for an account whose live phone is Revyl's: its
+ * device calls and `build.install`. `phoneId` and `ref` name that phone
+ * (`phones.ts` read it live just now).
+ */
+async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string; ref: string | null }, body: Record<string, unknown>, now: number): Promise<Response> {
+  const { action, args, query } = callParts(body);
   const workspace = await knownWorkspace(env, userId);
   if (!workspace) return fail("phone_not_running", "Your ADE Cloud iPhone isn't running. Start it first.", 409);
 
@@ -644,7 +896,8 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
       if (!row?.recording_ref) return fail("not_recording", "No recording is running on this cloud iPhone.", 404);
       args.recording_id = row.recording_ref;
     }
-    const slow = name === "install" || stopping;
+    // A launch restarts the app, its launch values included: slow on a large app.
+    const slow = name === "install" || name === "launch" || stopping;
     const response = await workspaceCall(env, workspace, method, `/execution/device-proxy/${encodeURIComponent(phone.ref)}/${name}`, {
       ...(method === "POST" ? { body: args } : {}),
       query,
@@ -663,85 +916,9 @@ async function routeRevylCall(env: CloudEnv, userId: string, phone: { id: string
     }
     return passthrough(response);
   }
-  if (!BUILD_ACTIONS.has(action)) return fail("bad_request", `${action || "That"} isn't a cloud iPhone action.`, 400);
+  if (action !== "build.install") return fail("bad_request", `${action || "That"} isn't a cloud iPhone action.`, 400);
   const app = await workspaceApp(env, workspace, now);
   if (app instanceof Response) return app;
-
-  if (action === "build.upload_url") {
-    const size = Number(args.file_size);
-    if (!Number.isInteger(size) || size <= 0 || size > 2 * 1024 ** 3) return fail("bad_request", "file_size is the archive's size in bytes, up to 2 GB.", 400);
-    const answer = await workspaceJson(env, workspace, "POST", "/apps/remote/upload-url", { body: { app_id: app, file_size: size, filename: "source.tar.gz" } });
-    return json(answer.body ?? {}, answer.status);
-  }
-  if (action === "build.start") {
-    const key = stringArg(args.source_key);
-    // Only a source this workspace's app uploaded to.
-    if (!key || !key.includes(`/build-sources/${app}/`) || key.length > 500) return fail("bad_request", "source_key is the key build.upload_url answered.", 400);
-    const sub = stringArg(args.path) ?? ".";
-    if (sub !== "." && !SUB_PATH.test(sub)) return fail("bad_request", "path is a folder inside the project.", 400);
-    const scheme = stringArg(args.scheme);
-    if (scheme && !SCHEME.test(scheme)) return fail("bad_request", "That scheme name can't be built.", 400);
-    const configuration = args.configuration === "Release" ? "Release" : "Debug";
-    // `prebuilt`: the source is one Simulator `.app` built elsewhere; the runner only hands it back as the build's app.
-    const prebuilt = args.prebuilt === true;
-    const recipe = {
-      app_id: app,
-      artifacts: [{ name: "app", path: prebuilt ? "*.app" : `build/Build/Products/${configuration}-iphonesimulator/*.app`, type: "app" }],
-      build_steps: [{ command: prebuilt ? "set -eu\nls -d ./*.app" : buildCommand({ sub, scheme, configuration, clean: args.clean === true }), type: "run" }],
-      framework: "ios",
-      platform: "ios",
-      profile: "ade",
-    };
-    // One build at a time per phone (Revyl's runners bill by the hour): claimed in this write, so two starts can't both run.
-    // Only a claim that never got Revyl's answer (no job) lapses; a build Revyl took, or may have, holds it until
-    // it ends or the phone does (an accepted build waits for a runner with no bound).
-    const claim = () => env.DB.prepare("update cloud_phones set build_started_at = ?, build_job = null where phone_id = ? and user_id = ? and (build_started_at is null or (build_job is null and build_started_at <= ?))")
-      .bind(now, phone.id, userId, now - BUILD_TIMEOUT_SECONDS * 1000).run();
-    let claimed = await claim();
-    if ((claimed.meta?.changes ?? 0) !== 1) {
-      // The held build may have ended with nobody following it (ADE closed, a status read failed): asked once,
-      // an ended one frees the claim. An unknown outcome (`unknown`) stays held.
-      const held = await env.DB.prepare("select build_job from cloud_phones where phone_id = ? and user_id = ?").bind(phone.id, userId).first<{ build_job: string | null }>();
-      const job = held?.build_job;
-      if (job && UUID.test(job)) {
-        const status = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(job)}/status`);
-        if (status.status === 200 && BUILD_ENDED.has(String(status.body?.status ?? "").toLowerCase())) {
-          await env.DB.prepare("update cloud_phones set build_started_at = null, build_job = null where phone_id = ? and user_id = ? and build_job = ?").bind(phone.id, userId, job).run();
-          claimed = await claim();
-        }
-      }
-    }
-    if ((claimed.meta?.changes ?? 0) !== 1) {
-      return fail("phone_busy", "A build is already running on your ADE Cloud iPhone. Wait for it to finish, or stop the phone and start a new one.", 409);
-    }
-    const answer = await workspaceJson(env, workspace, "POST", "/apps/remote", {
-      body: { build_definition_hash: await sha256Hex(JSON.stringify(recipe)), git_branch_name: "ade", recipe, source: { key, type: "archive" }, timeout_seconds: BUILD_TIMEOUT_SECONDS },
-      timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
-    });
-    const buildJob = typeof answer.body?.build_job_id === "string" ? answer.body.build_job_id : null;
-    // A start Revyl refused runs nothing: the claim goes back. A 5xx or a timeout may hide a build Revyl took:
-    // the claim holds (`unknown`) until the phone ends, so a retry can't bill a second one; a new phone builds again.
-    if (answer.status < 300) {
-      await env.DB.prepare("update cloud_phones set build_job = ? where phone_id = ? and user_id = ? and build_started_at = ?").bind(buildJob ?? "unknown", phone.id, userId, now).run();
-    } else if (answer.status < 500) {
-      await env.DB.prepare("update cloud_phones set build_started_at = null where phone_id = ? and user_id = ? and build_started_at = ?").bind(phone.id, userId, now).run();
-    } else {
-      await env.DB.prepare("update cloud_phones set build_job = 'unknown' where phone_id = ? and user_id = ? and build_started_at = ?").bind(phone.id, userId, now).run();
-    }
-    logCloud("cloud.phone_revyl_build", { userId, status: answer.status });
-    return json(answer.body ?? {}, answer.status);
-  }
-  const job = stringArg(args.job);
-  if (action === "build.status" || action === "build.logs") {
-    if (!job || !UUID.test(job)) return fail("bad_request", "job is the build's id.", 400);
-    const answer = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(job)}/${action === "build.status" ? "status" : "logs"}`, { query });
-    // A finished build (whichever way) frees the phone for the next one: only its own claim, never one
-    // still waiting for Revyl's answer (no job yet) or a newer build's.
-    if (action === "build.status" && answer.status === 200 && BUILD_ENDED.has(String(answer.body?.status ?? "").toLowerCase())) {
-      await env.DB.prepare("update cloud_phones set build_started_at = null, build_job = null where phone_id = ? and user_id = ? and build_job = ?").bind(phone.id, userId, job).run();
-    }
-    return json(answer.body ?? {}, answer.status);
-  }
   // build.install: the build's app, into the live phone.
   const version = stringArg(args.version_id);
   if (!version || !UUID.test(version)) return fail("bad_request", "version_id is the build's version.", 400);
@@ -777,6 +954,8 @@ export const REVYL_PHONE: PhoneProviderServer = {
   hasKey: revylConfigured,
   ownsTimeLimit: false,
   stopFailedEvent: "cloud.phone_stop_failed.revyl_",
+  // Builds run on Revyl's build runners, before a phone starts (`routeRevylBuild`).
+  toolchain: (env) => ({ ...revylToolchainOf(revylDefaultImage(env)), buildsBeforePhone: true }),
 
   async start(env, { userId, device, now }) {
     const started = await startRevylPhone(env, userId, device, CLOUD_PHONE_IDLE_SECONDS, now);

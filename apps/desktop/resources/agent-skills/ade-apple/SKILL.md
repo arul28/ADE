@@ -167,29 +167,73 @@ the account's ADE Cloud credits (one a minute); a Mac of the person's
 ```
 
 Cloud iPhones differ in a few abilities (app tests, uninstall, StoreKit,
-locale, time zone, status bar, launch env values; or perf, shake, rotate).
-`status` and `ade apple --help` list what yours can. A command that needs one
-starts a phone that has it; to pick ahead, `ade apple start --needs perf,shake`.
-A running phone never changes: if it lacks what you need, the refusal says to
-`ade apple stop` and run the command again. `ade apple perf` reads the
-launched app's CPU, memory and frame rate for about 5 seconds; `control shake`
-and `control orientation landscape|portrait` where the phone has them.
+locale, time zone, status bar, launch arguments and env values; or perf,
+shake, rotate). `status` and `ade apple --help` list what yours can. A command
+that needs one starts a phone that has it; to pick ahead, `ade apple start
+--needs perf,shake`. A running phone never changes: if it lacks what you need,
+the refusal says to `ade apple stop` and run the command again. Never change
+`ade cloud phone-provider`: it is the account's, for every phone on every
+machine, and a project with Metal shaders moves to a phone that builds it by
+itself. `ade apple perf` reads the launched app's CPU, memory and frame rate
+for about 5 seconds; `control shake` and `control orientation
+landscape|portrait` where the phone has them.
+
+### Spend as little as the work needs
+
+The phone counts one credit a minute from the moment it starts until it
+stops, in whole minutes rounded up per phone, idle minutes included. Most of
+what an agent spends there is waiting: a phone left up through a build, or
+while you edit code and read screenshots. Before you start one:
+
+1. **Budget.** Decide how many minutes the work needs (a visual check is
+   usually 2 to 5) and say it. `ade apple status --text` shows the credits
+   left, how this chat's phones used so far ("This chat's cloud iPhones used
+   N min"), and `builds:`: the Xcode each phone builds with and whether it
+   **builds before the phone starts**. Report the minutes you used at the end;
+   `ade apple stop` prints them too.
+2. **Build first, with no phone.** Where `status` says the phone builds before
+   it starts, `ade apple build` checks that the project compiles with no phone
+   and no credits, and `launch` builds first and starts the phone only for a
+   build that worked: a failed build costs no phone minutes. A `launch` of the
+   same source after a `build` that worked installs that build without
+   building again. Fix compile errors with `build`, never with `launch`. Where
+   builds run on the phone itself, every build counts minutes: compile
+   elsewhere first when you can (a Mac).
+3. **One visit for every look.** Plan every screenshot and variant before the
+   phone starts, then do them in one visit: `launch` (or `install`), then each
+   variant, a screenshot each, then `ade apple stop` at once. Make one build
+   cover every variant: give the app its states through launch arguments or
+   a deep link, never a code change and a rebuild per variant:
+   - `ade apple relaunch --bundle-id <id> -- -UseFixture grouped -Flag YES`
+     (each token after `--` is one launch argument; `--env KEY=VALUE` adds env
+     values; both are for that launch only),
+   - `ade apple open-url 'myapp://fixture?state=empty'`,
+   - `ade apple appearance dark|light`, `ade apple content-size ax-xl`,
+     `ade apple control location 37.77,-122.42`.
+4. **Stop between looks.** Run `ade apple stop` whenever your next look is
+   more than about 2 minutes away (editing Swift, reading screenshots,
+   thinking): a new phone starts in about 10 seconds, while one left alone
+   runs on for 5 minutes, all counted. Never keep a phone up through a build.
 
 For one command, `ade apple … --machine cloud`. What differs:
 
-- `launch` and `test` (on a phone that runs tests: `status` says) pack this checkout as it is (uncommitted changes too,
-  git-ignored files left out), upload it, and build it with Xcode there
-  (Xcode projects only). With no `--path`, the project is found where a
-  Mac looks (the top, each top folder, `apps/*`); with two or more things to
-  build, pass `--path <folder or .xcodeproj>`. Launch arguments (`-- …`)
-  don't go with a build: build, then `ade apple relaunch --bundle-id <id> --
-  <args>` (a phone that can't pass them says so). A project with Metal
-  shaders (a `.metal` file, also in a Swift package such as SwiftTerm):
-  `launch` builds it on a cloud iPhone whose Xcode has them, so its first
-  build may move to another phone ("Moved to another cloud iPhone…"). When
-  none can (a free plan, `--env`), the answer says why. `test` never moves:
-  on a phone without the toolchain it fails with that sentence. Then build on
-  a Mac and `install --app` it.
+- `launch`, `build` and `test` (on a phone that runs tests: `status` says)
+  pack this checkout as it is (uncommitted changes too, git-ignored files
+  left out), upload it, and build it with Xcode there (Xcode projects only).
+  With no `--path`, the project is found where a Mac looks (the top, each top
+  folder, `apps/*`); with two or more things to build, pass `--path <folder or
+  .xcodeproj>`. `--xcode 27.1` builds with another Xcode where builds run
+  before the phone (Xcode 26.2 to 27.2; `status` names the default). Launch
+  arguments (`-- …`) don't go with a build: build, then `ade apple relaunch
+  --bundle-id <id> -- <args>`. A failed build answers its first errors; `ade
+  apple build-log <build id> --out <file>` saves its whole log (no phone), and
+  `--grep <pattern>` finds lines in it. A project with Metal shaders (a
+  `.metal` file, also in a Swift package such as SwiftTerm): `launch` builds
+  it where Xcode has them, so its first build may move to another phone
+  ("Moved to another cloud iPhone…"). When none can (a free plan, `--env` on
+  a phone that can't pass it), the answer says why. `test` never moves: on a
+  phone without the toolchain it fails with that sentence. Then build on a
+  Mac and `install --app` it.
   For an app built elsewhere, install its Simulator
   `.app` instead: `ade apple install --app <path>` (`--no-launch` installs
   without starting it). From any machine, Expo builds one in its cloud:
@@ -205,21 +249,21 @@ For one command, `ade apple … --machine cloud`. What differs:
   own. `foreground` answers from the screen text. `act` takes the same words
   as the screen. `show` opens the chat's tools pane on this machine, as it
   does for a Mac's simulator.
-- It spends the account's credits, one a minute, from the first command (a
-  read like `snapshot` starts it too) until it stops, building included. A
-  phone left alone stops by itself only after 5 minutes with no input, and
-  those 5 minutes count: a few separate short visits cost far more than one
-  batch. `ade apple status --text` lists this period's phones with their
-  minutes and how each ended. `ade cloud status` has the credits left, what
-  the iPhone used (`iphone`) and every plan's (`plans`). It stops when the
-  credits run out unless extra credits are on (paid plans), and after 2
-  hours. `ade apple stop` as soon as you are done. Only the person changes the
-  plan or extra credits, in Settings › ADE Cloud. A full-auto chat or an automation uses it only when the
-  person lets agents spend (the agent limits, as for hours).
+- Any command but `status`, `build` and `build-log` starts the phone (a read
+  like `snapshot` too). It stops by itself after 5 minutes with no input
+  (those minutes count), when the credits run out unless extra credits are on
+  (paid plans), and after 2 hours. `ade apple status --text` lists this
+  period's phones with their minutes and how each ended. `ade cloud status`
+  has the credits left, what the iPhone used (`iphone`) and every plan's
+  (`plans`). Only the person changes the plan or extra credits, in Settings ›
+  ADE Cloud. A full-auto chat or an automation uses the phone only when the
+  person lets agents spend (the agent limits, as for hours); `build` and
+  `build-log` spend no credits.
 
 Working fast on it (measured: `snapshot` about 1 s, a step 2–3 s, a fresh
 phone 8–13 s, an app's first launch 6–10 s, though the first launch right
-after a fresh phone starts can take about a minute while it settles):
+after a fresh phone starts can take about a minute while it settles; a build
+of a large app with its dependencies cached, about 90 s):
 
 - Read with `snapshot` (text, about 1 s), not `screenshot`. Take a screenshot
   only for proof or for what text can't show.
@@ -229,9 +273,9 @@ after a fresh phone starts can take about a minute while it settles):
 - A step right after a page or screen change can say the content "can't be
   read" while it still loads. Run `snapshot` once more before falling back
   to a screenshot; web pages in Safari read as text once loaded.
-- It stops after 5 minutes with no command or input. Don't pause between
-  steps to plan for long; if it stopped, the next command starts a fresh one
-  (its apps and their data are gone; the uploaded project stays).
+- A phone that stopped (by you or by itself) is gone with its apps and their
+  data: the next command starts a fresh one, and `launch` installs the last
+  build again without building when the source hasn't changed.
 - `screenshot` prints a `cite:` line for your answer; `--out` takes a path in
   the project or the temp folder.
 

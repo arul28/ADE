@@ -74,7 +74,7 @@ function readArgs(tokens: string[], valueFlags: ReadonlySet<string>, root: () =>
 const VALUE_FLAGS = [
   "--label", "--id", "--find", "--out", "--caption", "--path", "--project", "--scheme", "--target", "--configuration",
   "--bundle-id", "--app", "--grep", "--since", "--wait-for", "--timeout-ms", "--hold-ms", "--duration-ms", "--device",
-  "--only", "--env", "--value", "--url", "--needs", "--seconds",
+  "--only", "--env", "--value", "--url", "--needs", "--seconds", "--xcode",
 ] as const;
 type ValueFlag = (typeof VALUE_FLAGS)[number];
 const VALUE_FLAG_SET: ReadonlySet<string> = new Set(VALUE_FLAGS);
@@ -120,24 +120,41 @@ function proofOwners(): JsonObject {
 const KEY_STEPS: Readonly<Record<string, string>> = { return: "return", enter: "return", escape: "escape", esc: "escape", delete: "delete", backspace: "delete", tab: "tab", space: "space" };
 const DIRECTIONS = new Set(["up", "down", "left", "right"]);
 
-/** `launch` (and `install` with no `--app`): pack this checkout and build it there. */
-function launchCall(args: Args): Call {
-  if (args.flags.has("--no-build")) {
-    const app = flag(args, "--bundle-id");
-    if (!app) throw new CliUsageError("ade apple launch --no-build --bundle-id <id> on the ADE Cloud iPhone.");
-    return { action: "control", args: { action: "launch", app, ...(args.afterDashes.length ? { value: args.afterDashes.join(" ") } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "launch" };
-  }
-  // The phone's build starts the app with no arguments: refused before any upload, never dropped quietly.
-  if (args.afterDashes.length) {
-    throw new CliUsageError(`The ADE Cloud iPhone builds and starts the app without launch arguments. Build first (ade apple launch without -- …), then start it with them: ade apple relaunch --bundle-id <id> -- ${args.afterDashes.join(" ")} (a cloud iPhone that can't pass launch arguments says so).`);
-  }
+/** An app already on the phone, started with its launch arguments (after `--`, one token each) and `--env` values. */
+function relaunchCall(args: Args, label: string): Call {
+  const app = flag(args, "--bundle-id");
+  const env = flag(args, "--env");
+  return {
+    action: "control",
+    args: { action: "launch", ...(app ? { app } : {}), ...(args.afterDashes.length ? { args: args.afterDashes } : {}), ...(env ? { env } : {}) },
+    timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS,
+    label,
+  };
+}
+
+/** The project a build uploads: `--path` (or `--project`), `--scheme`, `--configuration`, `--xcode`, `--clean`. */
+function buildArgs(args: Args): JsonObject {
   const sub = flag(args, "--path") ?? flag(args, "--project");
   const scheme = flag(args, "--scheme") ?? flag(args, "--target");
   const configuration = flag(args, "--configuration");
+  const xcode = flag(args, "--xcode");
+  return { root: args.root(), ...(sub ? { path: sub } : {}), ...(scheme ? { scheme } : {}), ...(configuration ? { configuration } : {}), ...(xcode ? { xcode } : {}), ...(args.flags.has("--clean") ? { clean: true } : {}) };
+}
+
+/** `launch` (and `install` with no `--app`): pack this checkout and build it there. */
+function launchCall(args: Args): Call {
+  if (args.flags.has("--no-build")) {
+    if (!flag(args, "--bundle-id")) throw new CliUsageError("ade apple launch --no-build --bundle-id <id> on the ADE Cloud iPhone.");
+    return relaunchCall(args, "launch");
+  }
+  // A build installs and starts the app as it is: arguments go with a launch of the installed app, never dropped quietly.
+  if (args.afterDashes.length) {
+    throw new CliUsageError(`ade apple launch builds and starts the app without launch arguments. Build first (ade apple launch without -- …), then start it with them: ade apple relaunch --bundle-id <id> -- ${args.afterDashes.join(" ")}`);
+  }
   const env = flag(args, "--env");
   return {
     action: "launch",
-    args: { root: args.root(), ...(sub ? { path: sub } : {}), ...(scheme ? { scheme } : {}), ...(configuration ? { configuration } : {}), ...(env ? { env } : {}), ...(args.flags.has("--clean") ? { clean: true } : {}) },
+    args: { ...buildArgs(args), ...(env ? { env } : {}) },
     timeoutMs: CLOUD_PHONE_BUILD_TIMEOUT_MS,
     label: "build and run on the cloud iPhone",
   };
@@ -239,10 +256,26 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
     if (!app) throw new CliUsageError("ade apple install-app --app <path to a Simulator .app> on the ADE Cloud iPhone.");
     return installAppCall(args, app);
   },
-  relaunch: (args) => {
-    const app = flag(args, "--bundle-id");
-    const value = args.afterDashes.length ? args.afterDashes.join(" ") : undefined;
-    return { action: "control", args: { action: "launch", ...(app ? { app } : {}), ...(value ? { value } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "relaunch" };
+  relaunch: (args) => relaunchCall(args, "relaunch"),
+  // A compile check with no phone: the build alone, where builds run before the phone (status says).
+  build: (args) => ({ action: "build", args: buildArgs(args), timeoutMs: CLOUD_PHONE_BUILD_TIMEOUT_MS, label: "build with no cloud iPhone" }),
+  "build-log": (args) => {
+    const job = args.words[0];
+    if (!job) throw new CliUsageError("ade apple build-log <build id> [--out <file>] [--grep <pattern>] (a failed build's answer names its id).");
+    const out = flag(args, "--out");
+    const grep = flag(args, "--grep");
+    return { action: "buildLog", args: { job, ...(out ? { outPath: path.resolve(out) } : {}), ...(grep ? { grep } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "build log" };
+  },
+  // The Mac's own verbs for these, so one command works on both.
+  appearance: (args) => {
+    const mode = (args.words[0] ?? "").toLowerCase();
+    if (mode !== "dark" && mode !== "light") throw new CliUsageError("ade apple appearance dark|light");
+    return { action: "control", args: { action: "appearance", value: mode }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "appearance" };
+  },
+  "content-size": (args) => {
+    const size = args.words[0];
+    if (!size) throw new CliUsageError("ade apple content-size <xs … xxxl, ax-m … ax-xxxl, or a scale from 0.5 to 2>");
+    return { action: "control", args: { action: "text_size", value: size }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "text size" };
   },
   terminate: (args) => {
     const app = flag(args, "--bundle-id");
@@ -332,6 +365,32 @@ const ENDED_WORDS: Readonly<Record<string, string>> = {
 
 const clock = (ms: unknown): string => (typeof ms === "number" ? new Date(ms).toISOString().slice(0, 16).replace("T", " ") : "?");
 
+/** What the calling chat's phones used this period, in the server's count. */
+function chatUseLine(use: unknown): string {
+  if (!isRecord(use) || typeof use.minutes !== "number" || typeof use.phones !== "number") return "";
+  return `This chat's cloud iPhones used ${use.minutes} min this period (${use.phones} phone${use.phones === 1 ? "" : "s"}).\n`;
+}
+
+/**
+ * What builds use, before any minute is spent: each cloud iPhone a build may
+ * land on (the live one, or the next one's route in order), its Xcode and
+ * SDK, whether it builds before a phone starts, and a tool its hosts lack.
+ */
+function toolchainLines(toolchains: unknown, live: boolean): string {
+  if (!Array.isArray(toolchains) || !toolchains.length) return "";
+  const lines = toolchains.filter(isRecord).map((toolchain, index) => {
+    const where = toolchain.buildsBeforePhone === true
+      ? "builds before the phone starts (a failed build uses no phone minutes; ade apple build checks a compile with no phone)"
+      : "builds on the phone itself, with the phone up and counting";
+    const lacks = Array.isArray(toolchain.lacks) && toolchain.lacks.includes("metal")
+      ? "; found without Apple's Metal Toolchain in the last day (a project with Metal shaders goes to the next one, on a paid plan)"
+      : "";
+    const which = live ? "This cloud iPhone" : index === 0 ? "A new cloud iPhone" : "If that one is busy, or for Metal shaders";
+    return `  ${which}: Xcode ${asString(toolchain.xcode) ?? "?"} (${asString(toolchain.sdk) ?? "?"} SDK), ${where}${lacks}`;
+  });
+  return `builds:\n${lines.join("\n")}\n`;
+}
+
 /** `recent` of a status: one line per phone this period, newest first. */
 function recentLines(recent: unknown): string {
   if (!Array.isArray(recent) || !recent.length) return "";
@@ -367,7 +426,7 @@ function textOf(call: Call, value: unknown): string {
       ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)}). It counts minutes until it stops: ade apple stop when done, or it stops by itself after ${idle} with no input (those ${idle} count too).`
       : "phone: off. Any ade apple command starts it, reads like snapshot too, and it counts minutes from then until it stops.";
     return value.access === "on"
-      ? `ADE Cloud iPhone · on${minutes}\n${phone}\n${recentLines(value.recent)}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n${cloudPhoneAbilityLines(value, isRecord(value.phone) && value.phone.state !== "ended")}`
+      ? `ADE Cloud iPhone · on${minutes}\n${phone}\n${chatUseLine(value.chatUse)}${recentLines(value.recent)}${toolchainLines(value.toolchains, isRecord(value.phone))}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n${cloudPhoneAbilityLines(value, isRecord(value.phone) && value.phone.state !== "ended")}`
       : `ADE Cloud iPhone · ${asString(value.reason) ?? "not available"}\n`;
   }
   if (action === "screenshot") {
@@ -382,7 +441,7 @@ function textOf(call: Call, value: unknown): string {
       + cloudPhoneAbilityLines({ abilities: value.abilities }, true)
       + `It counts minutes until it stops. Run ade apple stop when you are done: by itself it stops only after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input (those minutes count too), or after ${CLOUD_PHONE_MAX_MINUTES / 60} hours. The next command starts a new one.\n`;
   }
-  if (action === "stop") return value.stopped ? "Stopped the ADE Cloud iPhone.\n" : "The ADE Cloud iPhone was not running.\n";
+  if (action === "stop") return `${value.stopped ? "Stopped the ADE Cloud iPhone." : "The ADE Cloud iPhone was not running."}\n${chatUseLine(value.chatUse)}`;
   // A recording saved on the brain's machine (Revyl's has no download link): say where.
   const saved = action === "record" ? asString(value.path) : null;
   const text = `${asString(value.text) ?? ""}${saved ? `\nSaved ${saved}` : ""}`;
