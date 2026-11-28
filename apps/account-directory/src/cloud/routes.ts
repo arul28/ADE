@@ -1903,7 +1903,8 @@ function instanceRouteOf(path: string): { instanceId: string; action: string | u
 }
 
 const CORS_METHODS = "GET, POST, PUT, DELETE";
-const CORS_HEADERS = new Set(["authorization", "content-type", "x-ade-correlation-id"]);
+// `x-ade-pricing`: the web client says it knows Pricing v3 (`CLOUD_PRICING_HEADER`).
+const CORS_HEADERS = new Set(["authorization", "content-type", "x-ade-correlation-id", "x-ade-pricing"]);
 
 function withCors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);

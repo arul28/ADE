@@ -3961,6 +3961,17 @@ export function readCloudSponsoredPick(value: unknown): CloudSponsoredPick | nul
  */
 export const CLOUD_CREDIT_SCALE_V3 = 10;
 
+/**
+ * The header an app sends on `GET /cloud/account` to say it knows Pricing v3
+ * (value `CLOUD_PRICING_VERSION`). Without it, while Pricing v3 reaches the
+ * account, the answer leaves out `pricing` and `sponsored` (an older app would
+ * show its Free-plan ad question on any plan, and its answers can't count),
+ * so an older app shows today's product with no ads. The catalog's numbers
+ * and `credits.phoneMilliPerMinute` are the real ones for every app.
+ */
+export const CLOUD_PRICING_HEADER = "X-ADE-Pricing";
+export const CLOUD_PRICING_VERSION = "3";
+
 /** What a minute of a computer or the iPhone costs now: the full price, or the ad price. */
 export type CloudPriceNow = "ad" | "full";
 
