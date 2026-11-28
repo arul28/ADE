@@ -290,6 +290,13 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, normalizeCtoArchiveQuery, normalizeCtoRecallArgs, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
 import { SHELL_BLOCK_RUN_ENV } from "../../../../desktop/src/shared/types/sync";
+import { isLinearIssueOrdering, isLinearIssueViewType } from "../../../../desktop/src/shared/types";
+import {
+  defaultLinearDisplayPreferences,
+  emptyLinearRailData,
+  linearDisplayFallbackUpdate,
+  parseLinearDisplayPatch,
+} from "../../../../desktop/src/shared/linearDisplayPreferences";
 import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
   parseSessionSettleOverride,
@@ -7253,7 +7260,19 @@ function parseLinearIssueSearchPayload(payload: Record<string, unknown>) {
   const first = asOptionalNumber(payload.first);
   const after = asNullableTrimmedString(payload.after);
   const includeArchived = asOptionalBoolean(payload.includeArchived);
+  const cycleId = asNullableTrimmedString(payload.cycleId);
+  const initiativeId = asNullableTrimmedString(payload.initiativeId);
+  const labelId = asNullableTrimmedString(payload.labelId);
+  const ordering = isLinearIssueOrdering(payload.ordering) ? payload.ordering : null;
+  const orderingDirection: "asc" | "desc" | undefined = payload.orderingDirection === "asc" || payload.orderingDirection === "desc"
+    ? payload.orderingDirection
+    : undefined;
   return {
+    ...(cycleId !== undefined ? { cycleId } : {}),
+    ...(initiativeId !== undefined ? { initiativeId } : {}),
+    ...(labelId !== undefined ? { labelId } : {}),
+    ...(ordering ? { ordering } : {}),
+    ...(orderingDirection ? { orderingDirection } : {}),
     ...(projectId !== undefined ? { projectId } : {}),
     ...(projectSlug !== undefined ? { projectSlug } : {}),
     ...(teamKey !== undefined ? { teamKey } : {}),
@@ -7554,6 +7573,40 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     if (!linearIssueTracker) return [];
     return linearIssueTracker.listCustomViews();
+  });
+  // Linear's own display settings (read and written back), the rail's lists
+  // and one document. The display calls go straight to the tracker: it
+  // answers Linear's defaults when Linear isn't connected and keeps a change
+  // in ADE, without a connection check per call.
+  const linearDisplayView = (payload: Record<string, unknown>) => {
+    const customViewId = asNullableTrimmedString(payload.customViewId);
+    return {
+      viewType: isLinearIssueViewType(payload.viewType) ? payload.viewType : "allIssues" as const,
+      ...(customViewId ? { customViewId } : {}),
+    };
+  };
+  register("cto.getLinearViewPreferences", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    if (!linearIssueTracker) return defaultLinearDisplayPreferences();
+    return linearIssueTracker.getViewPreferences(linearDisplayView(payload));
+  });
+  register("cto.updateLinearViewPreferences", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+    if (!linearIssueTracker) return linearDisplayFallbackUpdate(payload.patch);
+    // Known keys and canonical values only (the tracker checks again).
+    return linearIssueTracker.updateViewPreferences({ ...linearDisplayView(payload), patch: parseLinearDisplayPatch(payload.patch) });
+  });
+  register("cto.getLinearRailData", { viewerAllowed: true }, async (payload) => {
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return emptyLinearRailData();
+    return linearIssueTracker.getRailData({ teamKey: asNullableTrimmedString(payload.teamKey) ?? null });
+  });
+  register("cto.getLinearDocument", { viewerAllowed: true }, async (payload) => {
+    const documentId = asTrimmedString(payload.documentId);
+    if (!documentId) return null;
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    if (!linearIssueTracker) return null;
+    return linearIssueTracker.getDocument({ documentId });
   });
   register("cto.getLinearIssue", { viewerAllowed: true }, async (payload) => {
     const issueId = asTrimmedString(payload.issueId);

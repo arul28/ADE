@@ -91,6 +91,9 @@
 		E20000000000000000000093 /* LinearLaunchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000093 /* LinearLaunchModel.swift */; };
 		E20000000000000000000094 /* LinearPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000094 /* LinearPaneStore.swift */; };
 		E20000000000000000000095 /* LinearIssueListScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000095 /* LinearIssueListScreen.swift */; };
+		E2000000000000000000F1A1 /* LinearIssueListMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000F1A1 /* LinearIssueListMenus.swift */; };
+		E2000000000000000000F1A2 /* LinearIssueListPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000F1A2 /* LinearIssueListPreviews.swift */; };
+		E2000000000000000000F1A3 /* LinearIssueGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000F1A3 /* LinearIssueGrouping.swift */; };
 		E20000000000000000000096 /* LinearIssueDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000096 /* LinearIssueDetailScreen.swift */; };
 		E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000097 /* LinearLaunchScreen.swift */; };
 		E20000000000000000000098 /* LinearPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000098 /* LinearPaneSheet.swift */; };
@@ -703,6 +706,9 @@
 		D20000000000000000000093 /* LinearLaunchModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchModel.swift; path = ADE/Views/Linear/LinearLaunchModel.swift; sourceTree = "<group>"; };
 		D20000000000000000000094 /* LinearPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneStore.swift; path = ADE/Views/Linear/LinearPaneStore.swift; sourceTree = "<group>"; };
 		D20000000000000000000095 /* LinearIssueListScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueListScreen.swift; path = ADE/Views/Linear/LinearIssueListScreen.swift; sourceTree = "<group>"; };
+		D2000000000000000000F1A1 /* LinearIssueListMenus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueListMenus.swift; path = ADE/Views/Linear/LinearIssueListMenus.swift; sourceTree = "<group>"; };
+		D2000000000000000000F1A2 /* LinearIssueListPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueListPreviews.swift; path = ADE/Views/Linear/LinearIssueListPreviews.swift; sourceTree = "<group>"; };
+		D2000000000000000000F1A3 /* LinearIssueGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueGrouping.swift; path = ADE/Views/Linear/LinearIssueGrouping.swift; sourceTree = "<group>"; };
 		D20000000000000000000096 /* LinearIssueDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueDetailScreen.swift; path = ADE/Views/Linear/LinearIssueDetailScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000097 /* LinearLaunchScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchScreen.swift; path = ADE/Views/Linear/LinearLaunchScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000098 /* LinearPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneSheet.swift; path = ADE/Views/Linear/LinearPaneSheet.swift; sourceTree = "<group>"; };
@@ -1321,6 +1327,9 @@
 				D20000000000000000000093 /* LinearLaunchModel.swift */,
 				D20000000000000000000094 /* LinearPaneStore.swift */,
 				D20000000000000000000095 /* LinearIssueListScreen.swift */,
+				D2000000000000000000F1A1 /* LinearIssueListMenus.swift */,
+				D2000000000000000000F1A2 /* LinearIssueListPreviews.swift */,
+				D2000000000000000000F1A3 /* LinearIssueGrouping.swift */,
 				D20000000000000000000096 /* LinearIssueDetailScreen.swift */,
 				D20000000000000000000097 /* LinearLaunchScreen.swift */,
 				D20000000000000000000098 /* LinearPaneSheet.swift */,
@@ -2408,6 +2417,9 @@
 				E20000000000000000000093 /* LinearLaunchModel.swift in Sources */,
 				E20000000000000000000094 /* LinearPaneStore.swift in Sources */,
 				E20000000000000000000095 /* LinearIssueListScreen.swift in Sources */,
+				E2000000000000000000F1A1 /* LinearIssueListMenus.swift in Sources */,
+				E2000000000000000000F1A2 /* LinearIssueListPreviews.swift in Sources */,
+				E2000000000000000000F1A3 /* LinearIssueGrouping.swift in Sources */,
 				E20000000000000000000096 /* LinearIssueDetailScreen.swift in Sources */,
 				E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */,
 				E20000000000000000000098 /* LinearPaneSheet.swift in Sources */,

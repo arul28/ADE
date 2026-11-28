@@ -623,6 +623,9 @@ enum DuoWindowsPreviews {
     case "duo-activity": return AnyView(DuoPresentationFixture(surface: .activity))
     case "duo-settings": return AnyView(DuoPresentationFixture(surface: .settings))
     case "duo-linear": return AnyView(DuoLinearFixture())
+    // The phone's one-column Linear list: groups, nested sub-issues, rings,
+    // PR chips and a delegated agent (`-linearDisplay <grouping>` regroups).
+    case "duo-linear-list": return AnyView(PhoneLinearListFixture())
     default: return nil
     }
   }

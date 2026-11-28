@@ -2866,6 +2866,163 @@ struct NormalizedLinearIssue: Codable, Hashable, Identifiable {
   var blockedByIssues: [NormalizedLinearIssueChild]?
   var blockingIssues: [NormalizedLinearIssueChild]?
   var relatedIssues: [NormalizedLinearIssueChild]?
+  // Newer brains send these; every one is optional so an older brain's
+  // answer still decodes. Keep them last: callers use the memberwise init.
+  /// Linear's issue number within its team (`issue.number`).
+  var number: Int?
+  /// Pull requests Linear has linked to the issue (attachments that are PRs).
+  var pullRequests: [LinearIssuePullRequest]?
+  var projectMilestoneId: String?
+  var projectMilestoneName: String?
+  /// The agent the issue is delegated to (Linear `issue.delegate`).
+  var delegateId: String?
+  var delegateName: String?
+  var delegateAvatarUrl: String?
+  /// Linear's manual order within a group; lower sits higher.
+  var sortOrder: Double?
+  /// Manual order among the parent's sub-issues.
+  var subIssueSortOrder: Double?
+  var labelColors: [LinearIssueLabelColor]?
+  var cycleId: String?
+  var cycleName: String?
+  var assigneeAvatarUrl: String?
+}
+
+/// A pull request linked to a Linear issue. Every field is optional so one odd
+/// attachment never fails the whole issue list.
+struct LinearIssuePullRequest: Codable, Hashable {
+  var url: String?
+  var number: Int?
+  var title: String?
+  var status: LinearPullRequestStatus?
+  /// "owner/name".
+  var repo: String?
+  var branch: String?
+  var linkKind: String?
+  var updatedAt: String?
+}
+
+/// A linked pull request's state. Unknown words read as `.unknown`, so a new
+/// state from a newer brain never fails the issue list.
+enum LinearPullRequestStatus: String, CaseIterable, Codable, Hashable {
+  case open, draft, merged, closed, unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = LinearPullRequestStatus(rawValue: raw.lowercased()) ?? .unknown
+  }
+}
+
+struct LinearIssueLabelColor: Codable, Hashable {
+  var id: String?
+  var name: String?
+  var color: String?
+}
+
+// MARK: Linear display preferences (Linear's own `ViewPreferencesValues`)
+
+/// How the issue list is grouped. Unknown values read as `.workflowState`.
+enum LinearIssueGrouping: String, CaseIterable, Codable, Hashable {
+  case workflowState, assignee, project, priority, cycle, label, projectMilestone, team, none
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = LinearIssueGrouping(rawValue: raw) ?? .workflowState
+  }
+}
+
+/// How issues are ordered inside a group. Unknown values read as `.manual`.
+enum LinearIssueOrdering: String, CaseIterable, Codable, Hashable {
+  case manual, priority, updatedAt, createdAt, dueDate, estimate, title
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = LinearIssueOrdering(rawValue: raw) ?? .manual
+  }
+}
+
+/// Sub-issues under their parent (`showAll`, `showMatching`) or a flat list.
+enum LinearIssueNesting: String, CaseIterable, Codable, Hashable {
+  case none, showAll, showMatching
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = LinearIssueNesting(rawValue: raw) ?? .showAll
+  }
+
+  var nests: Bool { self != .none }
+}
+
+/// Which fields a row shows. Missing keys read as Linear's defaults.
+struct LinearIssueDisplayFields: Codable, Hashable {
+  var id: Bool?
+  var status: Bool?
+  var priority: Bool?
+  var assignee: Bool?
+  var labels: Bool?
+  var project: Bool?
+  var cycle: Bool?
+  var milestone: Bool?
+  var estimate: Bool?
+  var dueDate: Bool?
+  var pullRequests: Bool?
+  var createdAt: Bool?
+  var updatedAt: Bool?
+  var adeStatus: Bool?
+}
+
+/// The person's Linear display settings for one view type, as the brain reads
+/// them (`cto.getLinearViewPreferences`). Decodes leniently: a missing field
+/// takes Linear's default.
+struct LinearDisplayPreferences: Codable, Hashable {
+  var grouping: LinearIssueGrouping = .workflowState
+  var subGrouping: LinearIssueGrouping = .none
+  var ordering: LinearIssueOrdering = .manual
+  var orderingDirection: String = "asc"
+  var nesting: LinearIssueNesting = .showAll
+  var showEmptyGroups: Bool = false
+  var showCompletedIssues: Bool = true
+  var hiddenGroups: [String] = []
+  var fields: LinearIssueDisplayFields = LinearIssueDisplayFields()
+  /// "linear-view" | "linear-user" | "ade" | "default".
+  var source: String = "default"
+
+  /// Linear's defaults: group by status, sub-issues nested, manual order.
+  static let linearDefault = LinearDisplayPreferences()
+
+  init() {}
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    grouping = (try? c.decodeIfPresent(LinearIssueGrouping.self, forKey: .grouping)) ?? .workflowState
+    subGrouping = (try? c.decodeIfPresent(LinearIssueGrouping.self, forKey: .subGrouping)) ?? .none
+    ordering = (try? c.decodeIfPresent(LinearIssueOrdering.self, forKey: .ordering)) ?? .manual
+    orderingDirection = (try? c.decodeIfPresent(String.self, forKey: .orderingDirection)) ?? "asc"
+    nesting = (try? c.decodeIfPresent(LinearIssueNesting.self, forKey: .nesting)) ?? .showAll
+    showEmptyGroups = (try? c.decodeIfPresent(Bool.self, forKey: .showEmptyGroups)) ?? false
+    showCompletedIssues = (try? c.decodeIfPresent(Bool.self, forKey: .showCompletedIssues)) ?? true
+    hiddenGroups = (try? c.decodeIfPresent([String].self, forKey: .hiddenGroups)) ?? []
+    fields = (try? c.decodeIfPresent(LinearIssueDisplayFields.self, forKey: .fields)) ?? LinearIssueDisplayFields()
+    source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? "default"
+  }
+}
+
+/// The part of the display settings the phone's Display menu changes
+/// (`cto.updateLinearViewPreferences` `patch`). Nil fields are left out.
+struct LinearDisplayPreferencesPatch: Codable, Hashable {
+  var grouping: LinearIssueGrouping?
+  var ordering: LinearIssueOrdering?
+  var orderingDirection: String?
+  var nesting: LinearIssueNesting?
+  var showCompletedIssues: Bool?
+  /// `[]` shows every group again.
+  var hiddenGroups: [String]?
+}
+
+struct LinearViewPreferencesUpdateResult: Codable, Hashable {
+  var preferences: LinearDisplayPreferences
+  var savedToLinear: Bool
+  var reason: String?
 }
 
 struct LinearIssueSearchResultPageInfo: Codable, Hashable {
@@ -2889,6 +3046,10 @@ struct LinearIssueSearchArgs: Codable, Hashable {
   var first: Int? = nil
   var after: String? = nil
   var includeArchived: Bool? = nil
+  /// Linear `viewOrdering` ("priority", "updatedAt", …). Nil = Linear's
+  /// manual order. An older brain ignores it.
+  var ordering: String? = nil
+  var orderingDirection: String? = nil
 }
 
 struct LinearIssueComment: Codable, Hashable, Identifiable {

@@ -1365,7 +1365,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "fetchIssuesByIds",
     "fetchIssueComments",
     "graphql",
+    "getDocument",
     "getIssuePickerData",
+    "getRailData",
+    "getViewPreferences",
     "getConnectionStatus",
     "getQuickView",
     "getStatus",
@@ -1385,6 +1388,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIssueAssignee",
     "updateIssuePriority",
     "updateIssueState",
+    "updateViewPreferences",
   ],
   github: [
     "clearToken",

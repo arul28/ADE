@@ -24,6 +24,11 @@ import {
   mapLinearQuickViewTeam,
   toNormalizedIssue,
 } from "../linearIssueNormalize";
+import {
+  defaultLinearDisplayPreferences,
+  emptyLinearRailData,
+  linearDisplayFallbackUpdate,
+} from "../linearDisplayPreferences";
 import type {
   CtoGetLinearIssuePickerDataResult,
   CtoLinearCustomView,
@@ -55,6 +60,10 @@ export const ADE_CLOUD_INTEGRATION_WEB_COMMANDS: Readonly<Record<string, { domai
   "cto.getLinearIssue": { domain: "linear_issue_tracker", action: "fetchIssueById" },
   "cto.getLinearIssueComments": { domain: "linear_issue_tracker", action: "fetchIssueComments" },
   "cto.getLinearCustomViews": { domain: "linear_issue_tracker", action: "listCustomViews" },
+  "cto.getLinearViewPreferences": { domain: "linear_issue_tracker", action: "getViewPreferences" },
+  "cto.updateLinearViewPreferences": { domain: "linear_issue_tracker", action: "updateViewPreferences" },
+  "cto.getLinearRailData": { domain: "linear_issue_tracker", action: "getRailData" },
+  "cto.getLinearDocument": { domain: "linear_issue_tracker", action: "getDocument" },
   "jira.getConnectionStatus": { domain: "jira", action: "getConnectionStatus" },
   "jira.listIssues": { domain: "jira", action: "listIssues" },
   "jira.getIssue": { domain: "jira", action: "getIssue" },
@@ -443,6 +452,20 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
         return run(() => linearPickerData(origin));
       case "linear_issue_tracker.listCustomViews":
         return run(() => linearCustomViews(origin));
+      // The account server has no reads for these. Answer here (Linear's
+      // defaults, an empty rail, no document) so the list never wakes a
+      // cloud computer for an extra; a display change stays in ADE.
+      case "linear_issue_tracker.getViewPreferences":
+        return { handled: true, result: defaultLinearDisplayPreferences() };
+      case "linear_issue_tracker.updateViewPreferences":
+        return {
+          handled: true,
+          result: linearDisplayFallbackUpdate(args.patch, "This project has no computer on, so ADE kept the change here only."),
+        };
+      case "linear_issue_tracker.getRailData":
+        return { handled: true, result: emptyLinearRailData() };
+      case "linear_issue_tracker.getDocument":
+        return { handled: true, result: null };
       case "linear_issue_tracker.fetchIssueById": {
         // The desktop sends the id as `arg`; the web sends the IPC args (`{ issueId }`).
         const id = str(request.arg) ?? str(args.issueId);

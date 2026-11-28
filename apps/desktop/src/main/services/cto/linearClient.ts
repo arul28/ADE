@@ -24,6 +24,7 @@ import {
   ISSUE_DETAIL_FIELDS_FRAGMENT,
   ISSUE_FIELDS_FRAGMENT,
   type LinearRateBudget,
+  LinearRequestError,
   type LinearRequestMeter,
   priorityIsValid,
   toNormalizedIssue,
@@ -31,6 +32,7 @@ import {
 import { createLinearIssueSearch } from "./linearIssueSearch";
 import { createLinearQuickView } from "./linearQuickView";
 import { createLinearInbox } from "./linearInbox";
+import { createLinearViewData } from "./linearViewData";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
 const MAX_LINEAR_ID_LENGTH = 128;
@@ -49,6 +51,17 @@ function toAuthorizationHeaderValue(token: string, authMode: "manual" | "oauth" 
   }
   return trimmed;
 }
+
+/** Linear `WorkflowState.position` (order within the team's workflow), or null. */
+function statePosition(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export type LinearGraphQLErrorEntry = {
+  message?: string;
+  path?: Array<string | number>;
+  extensions?: { code?: string };
+};
 
 export type LinearClientArgs = {
   credentials: LinearCredentialService;
@@ -110,6 +123,12 @@ export function createLinearClient(args: LinearClientArgs) {
     operationName?: string | null;
     maxRetries?: number;
     meter?: LinearRequestMeter;
+    /**
+     * Keep the data Linear did return when some fields failed (a missing
+     * scope, one bad section): the errors go here instead of throwing. Auth
+     * and rate-limit errors still take their usual paths.
+     */
+    onPartialErrors?: (errors: LinearGraphQLErrorEntry[]) => void;
   }): Promise<TData> => {
     // Proactively refresh an OAuth token that is at/near expiry before sending.
     await ensureFreshAuth();
@@ -149,19 +168,22 @@ export function createLinearClient(args: LinearClientArgs) {
       readRateHeaders(res, params.meter);
       const payload = await res.json().catch(() => ({})) as {
         data?: TData;
-        errors?: Array<{ message?: string; extensions?: { code?: string } }>;
+        errors?: LinearGraphQLErrorEntry[];
       };
 
-      const message = payload.errors?.[0]?.message ?? null;
-      const errorCode = payload.errors?.[0]?.extensions?.code ?? null;
+      // Classify on every error, not just the first: a field error can come
+      // before the RATELIMITED or AUTHENTICATION_ERROR that decides the retry.
+      const errors = Array.isArray(payload.errors) ? payload.errors : [];
+      const message = errors[0]?.message ?? null;
+      const anyError = (code: string, pattern: RegExp): boolean =>
+        errors.some((entry) => entry?.extensions?.code === code || (typeof entry?.message === "string" && pattern.test(entry.message)));
 
       // Reactive refresh: if the access token was rejected, refresh once and
       // retry with the new token (covers a token already expired by the time
       // the request fired, or one with no recorded expiry).
       const isAuthError =
         res.status === 401 ||
-        errorCode === "AUTHENTICATION_ERROR" ||
-        (message ? /authentication|unauthor|invalid.*token|token.*expired/i.test(message) : false);
+        anyError("AUTHENTICATION_ERROR", /authentication|unauthor|invalid.*token|token.*expired/i);
       if (isAuthError && !didAuthRefresh && args.credentials.getStatus().authMode === "oauth") {
         didAuthRefresh = true;
         await ensureFreshAuth({ force: true });
@@ -170,20 +192,31 @@ export function createLinearClient(args: LinearClientArgs) {
 
       const isRateLimited =
         res.status === 429 ||
-        errorCode === "RATELIMITED" ||
-        (message ? /rate\s*limit|too\s*many\s*requests/i.test(message) : false);
+        anyError("RATELIMITED", /rate\s*limit|too\s*many\s*requests/i);
 
-      if ((!res.ok || payload.errors?.length) && (isRateLimited || res.status >= 500) && attempt <= maxRetries) {
+      if ((!res.ok || errors.length > 0) && (isRateLimited || res.status >= 500) && attempt <= maxRetries) {
         await sleep(backoffMs);
         backoffMs = Math.min(15_000, Math.floor(backoffMs * 2));
         continue;
       }
 
-      if (!res.ok || payload.errors?.length || !payload.data) {
-        const detail = message ?? `Linear GraphQL request failed (HTTP ${res.status})`;
+      if (res.ok && payload.data && errors.length > 0 && params.onPartialErrors && !isRateLimited && !isAuthError) {
+        params.onPartialErrors(errors);
+        return payload.data;
+      }
+
+      if (!res.ok || errors.length > 0 || !payload.data) {
+        const rateLimitMessage = isRateLimited
+          ? errors.find((entry) => entry?.extensions?.code === "RATELIMITED")?.message ?? null
+          : null;
+        const detail = rateLimitMessage ?? message ?? `Linear GraphQL request failed (HTTP ${res.status})`;
         // A Linear sign-in that is gone or was revoked, even after a refresh:
         // the user reconnects Linear in Settings.
-        throw isAuthError ? new AdeExpectedError(detail, "user") : new Error(detail);
+        if (isAuthError) throw new AdeExpectedError(detail, "user");
+        if (isRateLimited) throw new LinearRequestError("rate-limit", detail);
+        // Linear answers a rejected document with errors (HTTP 200 or 400) and no data.
+        if (errors.length > 0 && res.status < 500) throw new LinearRequestError("graphql", detail);
+        throw new LinearRequestError("server", detail);
       }
 
       return payload.data;
@@ -193,6 +226,7 @@ export function createLinearClient(args: LinearClientArgs) {
   const issueSearch = createLinearIssueSearch({ request, logger: args.logger, getRateBudget: () => rateBudget });
   const quickView = createLinearQuickView({ request, searchIssues: issueSearch.searchIssues });
   const inbox = createLinearInbox({ request });
+  const viewData = createLinearViewData({ request, logger: args.logger });
 
   const getViewer = async (): Promise<{ id: string | null; name: string | null }> => {
     const data = await request<{ viewer?: { id?: string; name?: string; displayName?: string } }>({
@@ -546,13 +580,13 @@ export function createLinearClient(args: LinearClientArgs) {
     return results;
   };
 
-  const fetchWorkflowStates = async (teamKey: string): Promise<Array<{ id: string; name: string; type: string; teamId: string; teamKey: string }>> => {
+  const fetchWorkflowStates = async (teamKey: string): Promise<Array<{ id: string; name: string; type: string; teamId: string; teamKey: string; position?: number | null }>> => {
     const data = await request<{
       teams?: {
         nodes?: Array<{
           id?: string;
           key?: string;
-          states?: { nodes?: Array<{ id?: string; name?: string; type?: string }> };
+          states?: { nodes?: Array<{ id?: string; name?: string; type?: string; position?: number }> };
         }>;
       };
     }>({
@@ -567,6 +601,7 @@ export function createLinearClient(args: LinearClientArgs) {
                   id
                   name
                   type
+                  position
                 }
               }
             }
@@ -591,7 +626,7 @@ export function createLinearClient(args: LinearClientArgs) {
         const stateName = asString(entry.name);
         const stateType = asString(entry.type);
         if (!stateId || !stateName || !stateType) return null;
-        return { id: stateId, name: stateName, type: stateType, teamId: id, teamKey: key };
+        return { id: stateId, name: stateName, type: stateType, teamId: id, teamKey: key, position: statePosition(entry.position) };
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry != null);
   };
@@ -606,7 +641,7 @@ export function createLinearClient(args: LinearClientArgs) {
         nodes?: Array<{
           id?: string;
           key?: string;
-          states?: { nodes?: Array<{ id?: string; name?: string; type?: string }> };
+          states?: { nodes?: Array<{ id?: string; name?: string; type?: string; position?: number }> };
         }>;
       };
     }>({
@@ -621,6 +656,7 @@ export function createLinearClient(args: LinearClientArgs) {
                   id
                   name
                   type
+                  position
                 }
               }
             }
@@ -637,7 +673,7 @@ export function createLinearClient(args: LinearClientArgs) {
       if (!id || !key) return [];
       const states = isRecord(teamNode.states) ? asArray(teamNode.states.nodes) : [];
       return states
-        .map((entry) => {
+        .map((entry): LinearCatalogState | null => {
           if (!isRecord(entry)) return null;
           const stateId = asString(entry.id);
           const stateName = asString(entry.name);
@@ -649,6 +685,7 @@ export function createLinearClient(args: LinearClientArgs) {
             type: stateType,
             teamId: id,
             teamKey: key,
+            position: statePosition(entry.position),
           };
         })
         .filter((entry): entry is LinearCatalogState => entry != null);
@@ -1353,6 +1390,14 @@ export function createLinearClient(args: LinearClientArgs) {
   };
 
   return {
+    /** A Linear sign-in is stored (reads with none answer empty, not an error). */
+    isConnected: (): boolean => Boolean(args.credentials.getStatus().tokenStored),
+    /** Linear's latest reported rate budget (extras skip themselves when it runs low). */
+    getRateBudget: (): LinearRateBudget | null => rateBudget,
+    readViewPreferences: viewData.readViewPreferences,
+    writeViewPreferences: viewData.writeViewPreferences,
+    getRailData: viewData.getRailData,
+    getDocument: viewData.getDocument,
     ...issueSearch,
     ...quickView,
     ...inbox,

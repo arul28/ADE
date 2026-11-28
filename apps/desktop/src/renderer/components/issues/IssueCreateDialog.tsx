@@ -73,8 +73,9 @@ import { extractError } from "../../lib/format";
  *   create (`issueCreateDraft.ts`).
  * - Pictures pasted or dropped into the description upload to Linear at once,
  *   or go to GitHub with the issue through `gh --attach`.
- * - Similar open issues ADE already read show under the title, without a
- *   request, so a duplicate is caught before it is filed.
+ * - Similar issues show under the title, so a duplicate is caught before it
+ *   is filed: those ADE already read at once, and for Linear a debounced
+ *   server search once the title has three meaningful words.
  * - An issue started from a chat gets a "Context" footer linking back to it.
  */
 
@@ -151,16 +152,19 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   useEffect(() => {
     rememberIssueProvider(provider);
   }, [provider]);
+  // A group's "+" form is separate and unsaved: it never touches the saved draft.
+  const keepsDraft = initial.keepsDraft;
   useEffect(() => {
+    if (!keepsDraft) return undefined;
     draftRef.current = { title, body, linear, github, jira, formAnswers };
     const timer = window.setTimeout(() => writeIssueDraft(provider, projectRoot, draftRef.current), 400);
     return () => window.clearTimeout(timer);
-  }, [body, formAnswers, github, jira, linear, projectRoot, provider, title]);
+  }, [body, formAnswers, github, jira, keepsDraft, linear, projectRoot, provider, title]);
   // Closing inside the 400 ms window must not lose the last keystrokes. A
   // create clears `draftRef` first, so nothing is written back after it.
   useEffect(() => () => {
-    if (draftRef.current) writeIssueDraft(providerRef.current, projectRoot, draftRef.current);
-  }, [projectRoot]);
+    if (keepsDraft && draftRef.current) writeIssueDraft(providerRef.current, projectRoot, draftRef.current);
+  }, [keepsDraft, projectRoot]);
 
   /* Linear data */
   const catalog = useLinearPickerCatalog();
@@ -344,8 +348,13 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     if (next?.title && !title.trim()) setTitle(next.title);
   };
 
-  /* Similar issues, from what ADE already read */
-  const similar = useSimilarIssues(provider === "linear" ? "linear" : "github", provider === "github" ? repo : null, title);
+  /* Similar issues: what ADE already read, plus a Linear search once the title says enough */
+  const similar = useSimilarIssues(provider === "linear" ? "linear" : "github", provider === "github" ? repo : null, title, {
+    // The same reader machine every Linear call in this dialog (and the Linear pane) uses.
+    pin,
+    // The picker catalog only loads when Linear answers for this project.
+    linearConnected: (catalog?.states.length ?? 0) > 0,
+  });
 
   /* Pictures */
   const insertAtCursor = useCallback((text: string) => {
@@ -408,7 +417,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     setAttachments([]);
     setError(null);
     draftRef.current = null;
-    writeIssueDraft(provider, projectRoot, null);
+    if (keepsDraft) writeIssueDraft(provider, projectRoot, null);
     titleRef.current?.focus();
   };
 
@@ -509,7 +518,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       if (createMore) reset();
       else {
         draftRef.current = null;
-        writeIssueDraft(provider, projectRoot, null);
+        if (keepsDraft) writeIssueDraft(provider, projectRoot, null);
         onClose();
       }
     } catch (cause) {
@@ -602,7 +611,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                 }}
               />
             ) : null}
-            <button type="button" className="kit-icon-btn" aria-label="Close" title="Close (Esc). The draft is kept." onClick={onClose}>
+            <button type="button" className="kit-icon-btn" aria-label="Close" title={keepsDraft ? "Close (Esc). The draft is kept." : "Close (Esc)"} onClick={onClose}>
               <X size={13} />
             </button>
           </span>
@@ -682,13 +691,13 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           />
           {similar.length ? (
             <div className="mt-2 flex flex-col gap-0.5 rounded-md border border-[color:var(--kit-panel-edge)] bg-[color:var(--kit-panel-bg)] px-2 py-1.5">
-              <div className="kit-eyebrow">Similar open issues</div>
+              <div className="kit-eyebrow">{similar.some((entry) => entry.closed) ? "Similar issues" : "Similar open issues"}</div>
               {similar.map((entry) => (
                 <button
                   key={entry.key}
                   type="button"
                   className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left text-[12px] hover:bg-[color:var(--kit-hover)]"
-                  title="Open it. Your draft is kept."
+                  title={keepsDraft ? "Open it. Your draft is kept." : "Open it."}
                   onClick={() => {
                     entry.open();
                     onClose();
@@ -696,7 +705,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                 >
                   {entry.icon}
                   <span className="kit-num shrink-0 text-[11px] text-[color:var(--kit-text-2)]">{entry.label}</span>
-                  <span className="truncate text-fg/85">{entry.title}</span>
+                  <span className={entry.closed ? "truncate text-fg/55" : "truncate text-fg/85"}>{entry.title}</span>
                 </button>
               ))}
             </div>

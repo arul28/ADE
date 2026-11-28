@@ -403,6 +403,8 @@ apps/ios/
 │   │   │                            #   LaneDeeplinkHelpers, LaneMoveSheet,
 │   │   │                            #   LaneEnvInitProgressView
 │   │   ├── Linear/                  # LinearPaneSheet, LinearPaneStore, issue screens,
+│   │   │                            #   LinearIssueListMenus, LinearIssueGrouping,
+│   │   │                            #   LinearIssueListPreviews,
 │   │   │                            #   LinearConnectionScreen, LinearOAuthRunner
 │   │   ├── PersonalChats/           # Hub-only projectless chats
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen (PrDetailView),
@@ -1230,7 +1232,12 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   `POST /cloud/integrations/linear/query` with the account's Linear sign-in.
   A pane load reads at most 2 pages, because the server allows 30 Linear and
   Jira requests a minute. Linear writes still need a computer. iOS has no
-  Jira pane.
+  Jira pane. The issue list groups (status, assignee, project, priority,
+  label, cycle, milestone, team), nests sub-issues inside a group and has a
+  display menu (ordering, fields, hidden groups) that reads and writes
+  Linear's view preferences (`getLinearViewPreferences`,
+  `updateLinearViewPreferences`). Active is Todo and In Progress; Backlog is
+  its own tab.
 - **Settings › ADE Cloud.** With no computer, `CloudPaneStore.reloadDirect`
   (`Views/Cloud/CloudPaneSheet.swift`) reads `/cloud/account`,
   `/cloud/instances` and `/cloud/limits` directly. Limits are written with

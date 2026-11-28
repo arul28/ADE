@@ -21,7 +21,7 @@ import {
   normalizeIssueNodes,
   OPEN_ISSUE_STATE_TYPES,
 } from "./linearClientShared";
-import { buildLinearIssueBaseFilter } from "../../../shared/linearIssueNormalize";
+import { buildLinearIssueBaseFilter, linearIssueSortInput } from "../../../shared/linearIssueNormalize";
 
 export type LinearOpenIssueMatch = {
   id: string;
@@ -118,15 +118,21 @@ export function createLinearIssueSearch(args: {
     after: string | null;
     includeArchived: boolean;
     filter: Record<string, unknown>;
+    /** Linear `sort` (an ordering other than the default). Linear refuses `sort` with `orderBy`. */
+    sort?: Array<Record<string, unknown>> | null;
   }): Promise<IssueTrackerIssueSearchResult> => {
+    const { sort, ...variables } = params;
+    const meter: LinearRequestMeter = { requests: 0, complexity: 0 };
+    // One template: a sorted read passes `sort`, the default keeps `orderBy: updatedAt`.
+    const ordering = sort ? { variable: ", $sort: [IssueSortInput!]", argument: "sort: $sort" } : { variable: "", argument: "orderBy: updatedAt" };
     const data = await request<{ issues?: IssueConnectionData }>({
       query: `
-        query SearchIssues($first: Int!, $after: String, $includeArchived: Boolean!, $filter: IssueFilter) {
+        query ${sort ? "SearchIssuesSorted" : "SearchIssues"}($first: Int!, $after: String, $includeArchived: Boolean!, $filter: IssueFilter${ordering.variable}) {
           issues(
             first: $first,
             after: $after,
             includeArchived: $includeArchived,
-            orderBy: updatedAt,
+            ${ordering.argument},
             filter: $filter
           ) {
             pageInfo { hasNextPage endCursor }
@@ -136,9 +142,12 @@ export function createLinearIssueSearch(args: {
           }
         }
       `,
-      variables: params,
+      variables: sort ? { ...variables, sort } : variables,
       maxRetries: 2,
+      meter,
     });
+    // Linear's own cost for a list page (x-complexity), for the perf budget.
+    args.logger?.debug("linear.search_issues_page", { first: params.first, sorted: Boolean(sort), complexity: meter.complexity });
     return {
       issues: normalizeIssueNodes(data.issues?.nodes),
       pageInfo: {
@@ -219,6 +228,7 @@ export function createLinearIssueSearch(args: {
     const after = params.after?.trim() || null;
     const includeArchived = params.includeArchived === true;
     const baseFilter = await resolveIssueFilter(params);
+    const sort = linearIssueSortInput(params.ordering, params.orderingDirection);
     const term = params.query?.trim();
     if (term) {
       try {
@@ -231,10 +241,11 @@ export function createLinearIssueSearch(args: {
           after: null,
           includeArchived,
           filter: withLegacyTextFilter(baseFilter, term),
+          sort,
         });
       }
     }
-    return fetchIssuesWithFilter({ first, after, includeArchived, filter: baseFilter });
+    return fetchIssuesWithFilter({ first, after, includeArchived, filter: baseFilter, sort });
   };
 
   const COUNT_PAGE_SIZE = 250;

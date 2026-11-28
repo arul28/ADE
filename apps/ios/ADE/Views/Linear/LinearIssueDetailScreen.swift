@@ -29,6 +29,7 @@ struct LinearIssueDetailScreen: View {
         }
         labels
         propertiesCard
+        pullRequests
         subIssues
         activity
       }
@@ -96,13 +97,20 @@ struct LinearIssueDetailScreen: View {
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 6) {
           ForEach(labels, id: \.self) { label in
-            Text(label)
-              .font(.caption2.weight(.medium))
-              .foregroundStyle(ADEColor.textSecondary)
-              .padding(.horizontal, 8)
-              .padding(.vertical, 3)
-              .background(ADEKit.track, in: Capsule())
-              .overlay(Capsule().stroke(ADEKit.edge, lineWidth: 0.5))
+            HStack(spacing: 5) {
+              Circle()
+                .fill(linearHexColor(issue.labelColors?.first { $0.name == label }?.color) ?? ADEColor.textMuted)
+                .frame(width: 7, height: 7)
+              Text(label)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(ADEKit.track, in: Capsule())
+            .overlay(Capsule().stroke(ADEKit.edge, lineWidth: 0.5))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Label \(label)")
           }
         }
       }
@@ -114,8 +122,17 @@ struct LinearIssueDetailScreen: View {
   private var propertiesCard: some View {
     VStack(spacing: 0) {
       LinearPropertyRow(label: "Assignee", value: issue.assigneeName ?? "Unassigned")
+      if let delegate = issue.delegateName, !delegate.isEmpty {
+        LinearPropertyRow(label: "Agent", value: delegate)
+      }
       if let project = issue.projectName {
         LinearPropertyRow(label: "Project", value: project)
+      }
+      if let milestone = issue.projectMilestoneName, !milestone.isEmpty {
+        LinearPropertyRow(label: "Milestone", value: milestone)
+      }
+      if let cycle = issue.cycleName, !cycle.isEmpty {
+        LinearPropertyRow(label: "Cycle", value: cycle)
       }
       if let team = issue.teamName ?? issue.teamKey {
         LinearPropertyRow(label: "Team", value: team)
@@ -133,6 +150,41 @@ struct LinearIssueDetailScreen: View {
       }
     }
     .adeKitCard(padding: 16)
+  }
+
+  // MARK: Pull requests
+
+  @ViewBuilder
+  private var pullRequests: some View {
+    let prs = LinearPrChip.visible(issue.pullRequests)
+    if !prs.isEmpty {
+      VStack(alignment: .leading, spacing: 8) {
+        Text(prs.count == 1 ? "Pull request" : "Pull requests")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        ForEach(Array(prs.enumerated()), id: \.offset) { _, pr in
+          if let url = pr.url.flatMap(URL.init(string:)) {
+            Button {
+              openURL(url)
+            } label: {
+              LinearPullRequestRow(pr: pr)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the pull request")
+          }
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .adeKitCard(padding: 16)
+    }
+  }
+
+  /// Sub-issue progress from the parent's own copy of its sub-issues.
+  private var subIssueProgress: LinearSubIssueProgress? {
+    let children = issue.childIssues ?? []
+    guard !children.isEmpty else { return nil }
+    let done = children.filter { linearIsClosedState($0.stateType) }.count
+    return LinearSubIssueProgress(done: done, total: children.count, capped: children.count >= 25)
   }
 
   // MARK: Relations
@@ -154,9 +206,14 @@ struct LinearIssueDetailScreen: View {
       VStack(alignment: .leading, spacing: 12) {
         ForEach(groups, id: \.title) { group in
           VStack(alignment: .leading, spacing: 8) {
-            Text(group.title)
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.textSecondary)
+            HStack(spacing: 8) {
+              Text(group.title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ADEColor.textSecondary)
+              if group.title == "Sub-issues", let progress = subIssueProgress {
+                LinearProgressRing(progress: progress)
+              }
+            }
             ForEach(group.issues) { related in
               HStack(spacing: 8) {
                 LinearStateIcon(stateType: related.stateType, size: 13)
@@ -272,6 +329,54 @@ struct LinearStatusChip: View {
         .font(.caption.weight(.medium))
         .foregroundStyle(ADEColor.textSecondary)
     }
+  }
+}
+
+/// A linked pull request on the issue detail: state glyph, number and title,
+/// then repository and branch.
+struct LinearPullRequestRow: View {
+  let pr: LinearIssuePullRequest
+
+  var body: some View {
+    let state = linearPrState(pr)
+    let tint = (state == "draft" || state == "unknown") ? ADEColor.textSecondary : prStateColor(state)
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: prStateSymbol(state))
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(tint)
+        .frame(width: 18)
+      VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 6) {
+          if let number = pr.number {
+            Text(verbatim: "#\(number)")
+              .font(.caption.weight(.semibold).monospacedDigit())
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          Text(pr.title?.isEmpty == false ? pr.title! : "Pull request")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+        }
+        let detail = [pr.repo, pr.branch].compactMap { $0 }.filter { !$0.isEmpty }
+        if !detail.isEmpty {
+          Text(detail.joined(separator: " \u{00B7} "))
+            .font(.caption2.monospaced())
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+      }
+      Spacer(minLength: 6)
+      if state != "unknown" {
+        Text(state.capitalized)
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(tint)
+      }
+    }
+    .padding(.vertical, 4)
+    .contentShape(Rectangle())
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(linearPrAccessibilityLabel([pr]) + (pr.title.map { ", \($0)" } ?? ""))
   }
 }
 

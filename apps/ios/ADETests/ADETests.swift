@@ -27805,7 +27805,7 @@ final class LinearPaneTests: XCTestCase {
       makeIssue(id: "2", identifier: "E-2", title: "b", stateId: "s-started", stateName: "In Progress", stateType: "started"),
       makeIssue(id: "3", identifier: "E-3", title: "c", stateId: "s-todo", stateName: "Todo", stateType: "unstarted"),
     ]
-    let groups = linearGroupIssues(issues)
+    let groups = linearBuildIssueGroups(issues, preferences: .linearDefault).groups
     XCTAssertEqual(groups.map(\.stateType), ["started", "unstarted", "backlog"])
     XCTAssertEqual(groups.first?.issues.count, 1)
   }
@@ -27889,7 +27889,7 @@ final class LinearPaneTests: XCTestCase {
 
   func testLinearStatePresetsMatchDesktopIssueBrowser() {
     XCTAssertNil(LinearPaneStore.StatePreset.all.stateTypes)
-    XCTAssertEqual(LinearPaneStore.StatePreset.active.stateTypes, ["backlog", "unstarted", "started"])
+    XCTAssertEqual(LinearPaneStore.StatePreset.active.stateTypes, ["unstarted", "started"])
     XCTAssertEqual(LinearPaneStore.StatePreset.backlog.stateTypes, ["backlog"])
   }
 
