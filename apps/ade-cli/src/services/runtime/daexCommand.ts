@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { ADE_CLI_VIA_CMD_ENV } from "../../../../desktop/src/main/services/cli/windowsCliLauncher";
 
 /**
  * `daex` is the command's name and `ade` its permanent alias.
@@ -35,7 +36,7 @@ export function ensureDaexCommandBesideBinary(
         "@echo off",
         "setlocal",
         "rem cmd.exe ends a command at its first line feed; the CLI reads this marker to warn.",
-        'set "ADE_CLI_VIA_CMD=1"',
+        `set "${ADE_CLI_VIA_CMD_ENV}=1"`,
         '"%~dp0ade.exe" %*',
         "exit /b %ERRORLEVEL%",
         "",
