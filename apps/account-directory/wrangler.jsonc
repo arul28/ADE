@@ -158,6 +158,11 @@
   // Unset or malformed, every `/github/app/*` bearer route answers 503
   // `github_app_not_configured` and nothing else changes.
   "vars": {
+    // Which ADE Cloud server this is. Every computer it makes is tagged
+    // `ade_env` with it, and it adopts only computers tagged as its own, so
+    // this Worker never takes production's computers even if it ever holds
+    // production's provider key (`isOwnEnvironment`, src/cloud/store.ts).
+    "CLOUD_ENVIRONMENT": "development",
     "ONLINE_WINDOW_MS": "150000",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
     // events in). SENTRY_RELEASE is set at deploy, not here. No
@@ -296,6 +301,9 @@
         "DEVICE_PAGE_ORIGIN": "https://ade-app.dev",
         // Where Stripe sends people back after Checkout and the portal.
         "BILLING_RETURN_ORIGIN": "https://account.ade-app.dev",
+        // Restated (vars do not inherit). Unset also reads as production;
+        // computers made before the tag count as production's.
+        "CLOUD_ENVIRONMENT": "production",
         "ONLINE_WINDOW_MS": "150000",
         // Same public DSN as above; vars do not inherit into an environment.
         "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
