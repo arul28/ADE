@@ -74,6 +74,8 @@ import {
   type MacSession,
 } from "./macNomac";
 import { CloudProviderError, TRY_AGAIN_CODE, type CloudCreateInput, type CloudProvider } from "./provider";
+import { syncComputerPrice } from "./adPrice";
+import type { GravityEnv } from "./gravity";
 import { earnedLeftForLimits, extraActiveForLimits, includedMilliOf, logCloud, readSetting, reportCloudFailure, statusChangeStatements, type CloudEnv, type ComputerRow } from "./store";
 import { sha256Hex } from "../sinkUtils";
 
@@ -884,7 +886,17 @@ export async function handleMacWebhook(env: CloudEnv, type: string, data: Record
     return;
   }
   // `mac.ready`, `mac.ending`, `mac.ended`, …: read the Mac it has now.
+  const wasRunning = row.status === "running";
   await syncMac(env, row, now, `webhook_${type.replace(/[^a-z_.]/g, "").slice(0, 24)}`);
+  // Moved to running here, not by the tick: put it on its price now (Pricing v3's ad price; nothing while that is
+  // off), so minute one goes at that price. Its stretch began now, so no whole minute is charged at the old rate.
+  // A failed price sync never fails the delivery or the move; the next tick puts it right.
+  if (wasRunning) return;
+  const after = await env.DB.prepare("select status from cloud_computers where instance_id = ?").bind(instanceId).first<{ status: string }>();
+  if (after?.status !== "running") return;
+  await syncComputerPrice(env as GravityEnv, { instance_id: instanceId, user_id: row.user_id }, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.mac_webhook_price_failed", { instanceId, message: error instanceof Error ? error.message : "unknown" }, "cloud-mac");
+  });
 }
 
 /** The account's Macs, stopped (a tester taken off the list). Their drives stay. */
