@@ -5,9 +5,8 @@
  */
 
 import type { AdeRuntime } from "../../bootstrap";
-import { runGit } from "../../../../desktop/src/main/services/git/git";
 import { classifyGitPushFailure } from "../../../../desktop/src/main/services/git/gitPushFailure";
-import { checkPushForSecrets } from "./cloudPushSecretCheck";
+import { checkPushForSecrets, type PushSecretCheck } from "./cloudPushSecretCheck";
 
 const COMMIT_MESSAGE = "Work saved from ADE Cloud";
 /**
@@ -26,8 +25,9 @@ const FETCH_STEP_TIMEOUT_MS = 60_000;
  * GitHub stopped a `failed` lane's fetch or push, when it did: the free and the
  * delete name that cause instead of "open the lane". `secret_found`: ADE found
  * what looks like a key or a password in what the push would send
- * (`cloudPushSecretCheck.ts`), so it committed and pushed nothing;
- * `secretFiles` names where (at most 5, then `+N more`).
+ * (`cloudPushSecretCheck.ts`), so it pushed nothing (and committed nothing,
+ * unless a commit hook added it); `secretFiles` names where (at most 5, then
+ * `+N more`).
  */
 export type CloudPushWorkLane = {
   laneId: string;
@@ -92,8 +92,9 @@ type PushRuntime = Pick<AdeRuntime, "gitService"> & Partial<Pick<AdeRuntime, "pr
  * Commits a dirty lane, then pushes it; null when both went through. Only the
  * push talks to GitHub, so only its failure carries GitHub's reason: a slow
  * commit hook is the lane's own. Nobody reads an unattended push, so what it
- * would send is read first: a secret in it, or a read that fails, stops the
- * lane before its commit, with its changes unstaged again.
+ * would send is read first, before anything in the lane changes, and the
+ * commit again after its hooks ran: a secret in it, or a read that fails,
+ * stops the lane before its push.
  */
 async function pushLane(
   runtime: PushRuntime,
@@ -102,19 +103,24 @@ async function pushLane(
   message: string,
 ): Promise<{ error: unknown; reason?: CloudPushWorkFailReason; secretFiles?: string[] } | null> {
   const laneId = lane.id;
+  const stopped = (check: Exclude<PushSecretCheck, { ok: true }>) => {
+    if (!check.found) return { error: new Error(check.error) };
+    const secretFiles = check.more > 0 ? [...check.files, `+${check.more} more`] : check.files;
+    return { error: new Error(`ADE found what looks like a secret in ${secretFiles.join(", ")}, so it didn't push this lane.`), reason: "secret_found" as const, secretFiles };
+  };
   try {
     const secretValues = Object.values(runtime.projectSecretService?.valuesForProcess() ?? {});
-    // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
-    if (dirty) await runtime.gitService.stageAll({ laneId, paths: [] });
-    const check = await checkPushForSecrets(lane.worktreePath, secretValues);
-    if (!check.ok) {
-      if (dirty) await runGit(["reset", "-q"], { cwd: lane.worktreePath, timeoutMs: 30_000 }).catch(() => undefined);
-      if (!check.found) return { error: new Error(check.error) };
-      const secretFiles = check.more > 0 ? [...check.files, `+${check.more} more`] : check.files;
-      return { error: new Error(`ADE found what looks like a secret in ${secretFiles.join(", ")}, so it didn't push this lane.`), reason: "secret_found", secretFiles };
+    const before = await checkPushForSecrets(lane.worktreePath, secretValues, dirty ? "uncommitted" : "unpushed");
+    if (!before.ok) return stopped(before);
+    if (dirty) {
+      // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
+      await runtime.gitService.stageAll({ laneId, paths: [] });
+      // A computer with no git identity commits with ADE's (the runtime's `commitIdentityFallback`).
+      await runtime.gitService.commit({ laneId, message });
+      // A commit hook may have changed what the commit holds.
+      const after = await checkPushForSecrets(lane.worktreePath, secretValues, "lastCommit");
+      if (!after.ok) return stopped(after);
     }
-    // A computer with no git identity commits with ADE's (the runtime's `commitIdentityFallback`).
-    if (dirty) await runtime.gitService.commit({ laneId, message });
   } catch (error) {
     return { error };
   }

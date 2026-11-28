@@ -47,6 +47,7 @@ import { prepareCloudComputerToStop } from "./cloudPrepareStop";
 import { CLOUD_COMPUTER_REMOVING_SENTENCE, CLOUD_COMPUTER_SLEEPING_SENTENCE, CLOUD_DELETE_FREEZE_MS, CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS, cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
 import { cloudChatStoppedForRest } from "../cloudChats/cloudChatUploader";
 import { pushCloudComputerWork } from "./cloudPushWork";
+import { checkPushForSecrets } from "./cloudPushSecretCheck";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -1608,17 +1609,57 @@ describe("cloud push-work tally reasons", () => {
     expect(tally.lanes.map((lane) => `${lane.laneId}:${lane.state}:${lane.reason ?? "-"}`)).toEqual(expected);
   });
 
-  it("a lane whose changes hold one of the project's secrets is neither committed nor pushed, and its changes are unstaged again", async () => {
+  it("a lane whose changes hold one of the project's secrets is neither committed nor pushed, and its index is left as it was", async () => {
     const value = "value-of-a-project-secret";
     const work = repo("leaky");
     fs.writeFileSync(path.join(work, "config.ts"), `export const key = "${Buffer.from(value).toString("base64")}";\n`);
     git(work, "add", "-A");
+    fs.writeFileSync(path.join(work, "notes.md"), "not staged\n");
     calls.length = 0;
 
     const tally = await pushCloudComputerWork({ projects: [project({}, "leaky", { API_KEY: value })] });
 
     expect(tally.lanes[1]).toMatchObject({ state: "failed", reason: "secret_found", secretFiles: ["config.ts"] });
     expect(calls).toEqual([]);
-    expect(git(work, "diff", "--cached", "--name-only")).toBe("");
+    expect(git(work, "diff", "--cached", "--name-only")).toBe("config.ts\n");
+  });
+
+  // What a push sends that its plain patch doesn't show. Tokens are built here, so no scanner flags this file.
+  const token = `ghp_${"Q".repeat(36)}`;
+  let caseNo = 0;
+  const conflictedMerge = (work: string, resolution: string) => {
+    fs.writeFileSync(path.join(work, "f.txt"), "a\nb\nc\n");
+    git(work, "add", "-A");
+    git(work, "commit", "-qm", "f");
+    git(work, "update-ref", "refs/remotes/origin/main", "HEAD");
+    git(work, "checkout", "-qb", "side");
+    fs.writeFileSync(path.join(work, "f.txt"), "a\nSIDE\nc\n");
+    git(work, "commit", "-qam", "side");
+    git(work, "checkout", "-q", "-");
+    fs.writeFileSync(path.join(work, "f.txt"), "a\nMAIN\nc\n");
+    git(work, "commit", "-qam", "main");
+    try { git(work, "merge", "-q", "side"); } catch { /* the conflict is the point */ }
+    fs.writeFileSync(path.join(work, "f.txt"), `a\n${resolution}\nc\n`);
+  };
+  it.each<[string, (work: string) => void, "uncommitted" | "lastCommit", string[]]>([
+    ["a merge's own conflict resolution", (work) => {
+      conflictedMerge(work, token);
+      git(work, "commit", "-qam", "merge");
+    }, "uncommitted", ["f.txt"]],
+    ["a file renamed to a key file's name", (work) => git(work, "mv", "README.md", ".env.local"), "uncommitted", [".env.local"]],
+    ["an empty key file", (work) => fs.writeFileSync(path.join(work, ".env.production"), ""), "uncommitted", [".env.production"]],
+    ["a file a commit hook added, read after the commit", (work) => {
+      fs.writeFileSync(path.join(work, ".git", "hooks", "pre-commit"), `#!/bin/sh\necho "${token}" > gen.txt\ngit add gen.txt\n`, { mode: 0o755 });
+      fs.writeFileSync(path.join(work, "a.ts"), "export const a = 1;\n");
+      git(work, "add", "-A");
+      git(work, "commit", "-qm", "work");
+    }, "lastCommit", ["gen.txt"]],
+  ])("the push check finds %s", async (_name, arrange, what, files) => {
+    const work = repo(`case-${(caseNo += 1)}`);
+    arrange(work);
+
+    const check = await checkPushForSecrets(work, [], what);
+
+    expect(check.ok ? [] : "files" in check ? check.files : check.error).toEqual(files);
   });
 });
