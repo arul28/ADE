@@ -83,11 +83,9 @@ export type DashMac = {
   /** "7.4 of 20 GB", or null before its first save. */
   drive: string | null;
   savedAt: number | null;
-  /** The catalog's words for what a stop keeps; null while the catalog has no Mac. */
-  keeps: string | null;
 };
 
-function dashMacOf(machine: CloudLaneMachine, keeps: string | null): DashMac | null {
+function dashMacOf(machine: CloudLaneMachine): DashMac | null {
   if (machine.os !== "mac") return null;
   const phase = cloudMacPhaseOf(machine.mac, machine.status);
   return {
@@ -96,7 +94,6 @@ function dashMacOf(machine: CloudLaneMachine, keeps: string | null): DashMac | n
     sentence: cloudMacSentence(machine.mac),
     drive: cloudMacDriveText(machine.mac),
     savedAt: machine.mac?.drive.savedAt ?? null,
-    keeps,
   };
 }
 
@@ -140,7 +137,7 @@ export function dashLanes(input: {
   const macOffer = cloudMacOfferOf(input.account);
   const withComputer = input.machines
     .map((machine): DashLane => {
-      const mac = dashMacOf(machine, macOffer?.keeps?.trim() || null);
+      const mac = dashMacOf(machine);
       const tier = mac ? null : cloudTierOfMachine(machine, tiers);
       const lastActiveAt = machine.lastActiveAtMs ?? null;
       return {
@@ -152,7 +149,8 @@ export function dashLanes(input: {
         rateLabel: mac
           ? macOffer ? cloudMacRateText(macOffer, words) : null
           : rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
-        diskGb: machine.resources?.diskGb ?? 0,
+        // A Mac's drive isn't plan disk (the server counts it apart).
+        diskGb: mac ? 0 : machine.resources?.diskGb ?? 0,
         state: mac ? MAC_DOT[cloudMacPhaseTone(mac.phase)] : stateOf(machine),
         lastActiveAt,
         old: lastActiveAt != null ? input.now - lastActiveAt >= CLOUD_LANE_OLD_MS : machine.createdAtMs != null && input.now - machine.createdAtMs >= CLOUD_LANE_OLD_MS,
@@ -321,10 +319,10 @@ export const STATE_LABEL: Record<DashLaneState, string> = {
   none: "No computer",
 };
 
-/** Lanes for "Free up space": biggest first, then the longest unused. */
+/** Lanes for "Free up space": biggest first, then the longest unused. A Mac holds no plan disk, so it isn't one. */
 export function cleanupOrder(lanes: readonly DashLane[]): DashLane[] {
   return lanes
-    .filter((lane) => lane.instanceId)
+    .filter((lane) => lane.instanceId && !lane.mac)
     .slice()
     .sort((left, right) => right.diskGb - left.diskGb || (left.lastActiveAt ?? 0) - (right.lastActiveAt ?? 0));
 }

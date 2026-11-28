@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { AppleLogo, ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
-import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, cloudMachineAllows, cloudMacOfferOf, type CloudComputerAction } from "../../../../shared/cloudMac";
-import { useCloudMacFirstStopLine } from "../../cloudLane/useCloudMacFirstStopLine";
+import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, CLOUD_MAC_START_WORDS, cloudMachineAllows, cloudMacOfferOf, type CloudComputerAction } from "../../../../shared/cloudMac";
 import {
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
@@ -261,7 +260,12 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     if (!lane.instanceId) return;
     setBusyKey(lane.key);
     try {
-      await freeCloudLaneWithConfirm({ instanceId: lane.instanceId, laneName: lane.name, onDone: refresh });
+      await freeCloudLaneWithConfirm({
+        instanceId: lane.instanceId,
+        laneName: lane.name,
+        onDone: refresh,
+        mac: lane.mac ? { stopped: lane.mac.phase === "stopped" || lane.mac.phase === "start_failed" } : null,
+      });
     } finally {
       setBusyKey(null);
     }
@@ -636,7 +640,6 @@ function LaneTable({
   menuActions: (lane: DashLane) => MachineAction[];
 }) {
   // A stopped Mac's first stop says once more what a stop keeps (synced, account-wide).
-  const macFirstStop = useCloudMacFirstStopLine(lanes.some((lane) => lane.mac?.phase === "stopped"));
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // The listbox keeps focus itself (`aria-activedescendant`): keys from a
     // row's ⋯ button or its open menu (a portal, so they bubble here) are theirs.
@@ -714,7 +717,7 @@ function LaneTable({
               <span aria-hidden="true" />
             </div>
             {lane.unavailable && !status ? <div className="adecd-row-note" data-tone="warn" role="presentation">{lane.unavailable}</div> : null}
-            {lane.mac && !status ? <MacRowNote mac={lane.mac} now={now} keeps={macFirstStop && lane.mac.phase === "stopped" ? macKeepsOf(lane) : null} /> : null}
+            {lane.mac && !status ? <MacRowNote mac={lane.mac} now={now} /> : null}
             {actions.length ? (
               <span className="adecd-row-menu">
                 <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} />
@@ -770,7 +773,7 @@ function laneMenuActions(lane: DashLane, args: {
     if (allows("resize")) actions.push({ key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning });
     // A lost drive has nothing to push: its saved work is already in Lanes without a computer.
     if (lane.mac?.phase !== "drive_lost") {
-      actions.push({ key: "free", label: "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy });
+      actions.push({ key: "free", label: lane.mac ? "Keep the lane, delete the Mac and its drive" : "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy });
     }
   }
   if (life) {
@@ -781,22 +784,17 @@ function laneMenuActions(lane: DashLane, args: {
 
 const cssId = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "_");
 
-/** The catalog's words for what a Mac's stop keeps, for a Mac row (null while the catalog has no Mac). */
-function macKeepsOf(lane: DashLane): string | null {
-  return lane.mac ? lane.mac.keeps : null;
-}
-
 /**
  * The line under a Mac row: the server's sentence for where it is (nothing
- * while it runs), its drive as the last stop saved it, and once, at its first
- * stop, what a stop keeps.
+ * while it runs) and its drive as the last stop saved it. What a stop keeps is
+ * said once, in the box above the table (`CloudMacExplainer`).
  */
-function MacRowNote({ mac, now, keeps }: { mac: DashMac; now: number; keeps: string | null }) {
+function MacRowNote({ mac, now }: { mac: DashMac; now: number }) {
   const failed = mac.phase === "start_failed" || mac.phase === "drive_lost";
   const drive = mac.phase === "stopped" && mac.drive
     ? `Drive ${mac.drive}${mac.savedAt != null ? `, saved ${formatAgo(mac.savedAt, now)}` : ""}.`
     : null;
-  const parts = [mac.phase === "running" ? null : mac.sentence, drive, keeps].filter(Boolean);
+  const parts = [mac.phase === "running" ? null : mac.sentence, drive].filter(Boolean);
   if (!parts.length) return null;
   return (
     <div className="adecd-row-note" data-tone={failed ? "warn" : undefined} role="presentation">
@@ -811,15 +809,17 @@ function MacRowNote({ mac, now, keeps }: { mac: DashMac; now: number; keeps: str
  * heard of a cloud Mac reads what a stop keeps before it surprises them.
  */
 function CloudMacExplainer({ account, lanes }: { account: CloudAccountState; lanes: readonly DashLane[] }) {
+  const read = useRootAppStore((state) => state.cloudMacExplainerRead);
   const offer = cloudMacOfferOf(account);
-  if (!offer || !lanes.some((lane) => lane.mac)) return null;
-  const start = offer.startSeconds?.max ? ` in about ${offer.startSeconds.max} seconds` : "";
+  // Only while the account has a Mac lane, until a person reads it once (synced, account-wide).
+  if (read || !offer || !lanes.some((lane) => lane.isMac)) return null;
   return (
     <div className="adecd-mac-explainer">
       <AppleLogo size={16} weight="fill" aria-hidden />
       <p>
-        <b>How a {CLOUD_MAC_NAME} works.</b> {offer.keeps} The next message starts a new Mac with the same drive{start}. While it waits for a free Mac, nothing is charged.
+        <b>How a {CLOUD_MAC_NAME} works.</b> {offer.keeps} The next message starts a new Mac with the same drive {CLOUD_MAC_START_WORDS}. While it waits for a free Mac, nothing is charged.
       </p>
+      <button type="button" className="kit-btn" data-size="xs" onClick={() => rootAppStoreApi.getState().setCloudMacExplainerRead(true)}>Got it</button>
     </div>
   );
 }

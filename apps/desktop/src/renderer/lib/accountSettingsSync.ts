@@ -48,7 +48,7 @@ import type {
 } from "../../shared/types/accountSettings";
 import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
 import { CLOUD_DEFAULT_TIER_SETTING_KEY, isCloudTierId } from "../../shared/cloudTiers";
-import { CLOUD_DEFAULT_OS_SETTING_KEY, CLOUD_MAC_STOP_EXPLAINED_SETTING_KEY, CLOUD_MAC_STOP_SEEN_SETTING_KEY } from "../../shared/cloudMac";
+import { CLOUD_DEFAULT_OS_SETTING_KEY, CLOUD_MAC_STOP_EXPLAINED_SETTING_KEY, CLOUD_MAC_STOP_SEEN_SETTING_KEY, CLOUD_MAC_EXPLAINER_READ_SETTING_KEY } from "../../shared/cloudMac";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import { applyAccountHarnessPresets, type AppState } from "../state/appStore";
 import { withUnreadableHarnessPresets } from "./harnessPresetCarry";
@@ -171,6 +171,9 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   }),
   pref(CLOUD_MAC_STOP_SEEN_SETTING_KEY, (state) => state.cloudMacStopSeen, (state, value: unknown) => {
     if (value === true) state.setCloudMacStopSeen(true);
+  }),
+  pref(CLOUD_MAC_EXPLAINER_READ_SETTING_KEY, (state) => state.cloudMacExplainerRead, (state, value: unknown) => {
+    if (value === true) state.setCloudMacExplainerRead(true);
   }),
   // Harness presets are a list rather than a scalar, which the registry handles
   // unchanged: the whole list is one value under one key, so the newer-wins

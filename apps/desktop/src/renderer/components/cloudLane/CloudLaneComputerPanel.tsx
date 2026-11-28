@@ -64,7 +64,8 @@ export function CloudLaneComputerPanel({
   const free = async () => {
     setFreeing(true);
     try {
-      if (await freeCloudLaneWithConfirm({ instanceId: computer.instanceId, laneName, onDone: refreshCloudMachines })) onClose();
+      const mac = computer.os === "mac" ? { stopped: computer.macPhase === "stopped" || computer.macPhase === "start_failed" } : null;
+      if (await freeCloudLaneWithConfirm({ instanceId: computer.instanceId, laneName, onDone: refreshCloudMachines, mac })) onClose();
     } finally {
       setFreeing(false);
     }
@@ -113,14 +114,17 @@ export function CloudLaneComputerPanel({
             <button type="button" className="kit-btn" data-size="sm" onClick={() => void sleepLaneComputer(computer.instanceId, laneName, runningChats)}>Put to sleep</button>
           </ManageRow>
         ) : null}
-        {life ? (
+        {/* A Mac whose drive is lost can't be freed (nothing to push from): the server refuses it. */}
+        {life && computer.macPhase !== "drive_lost" ? (
           <ManageRow
             icon={<Package size={14} />}
-            title="Keep the lane, free its computer"
-            hint={`${BRAND.NAME} pushes its work, then removes the computer. Your next message makes a new one.`}
+            title={mac ? "Keep the lane, delete the Mac and its drive" : "Keep the lane, free its computer"}
+            hint={mac
+              ? `${BRAND.NAME} pushes the lane's work to GitHub, then deletes the Mac and its drive. Your next message starts a new Mac.`
+              : `${BRAND.NAME} pushes its work, then removes the computer. Your next message makes a new one.`}
           >
             <button type="button" className="kit-btn" data-size="sm" disabled={freeing} onClick={() => void free()}>
-              {freeing ? "Freeing…" : "Free computer"}
+              {freeing ? "Freeing…" : mac ? "Delete the Mac" : "Free computer"}
             </button>
           </ManageRow>
         ) : null}

@@ -866,7 +866,8 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
   color: var(--kit-text-2);
 }
 .adecd-mac-explainer svg { flex: none; margin-top: 2px; color: var(--color-fg); opacity: 0.8; }
-.adecd-mac-explainer p { margin: 0; }
+.adecd-mac-explainer p { margin: 0; flex: 1; min-width: 0; }
+.adecd-mac-explainer .kit-btn { flex: none; align-self: center; }
 .adecd-mac-explainer b { color: var(--color-fg); font-weight: 600; }
 .adecd-mac-size {
   display: flex;

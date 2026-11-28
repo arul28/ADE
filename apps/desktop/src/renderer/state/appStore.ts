@@ -1345,6 +1345,8 @@ type PersistedUserPreferences = {
   cloudMacStopExplained: boolean;
   /** That line was shown once more beside a Mac's first stop. Account-wide. */
   cloudMacStopSeen: boolean;
+  /** Settings' "How a DAEX Cloud Mac works" box was read ("Got it"). Account-wide. */
+  cloudMacExplainerRead: boolean;
   /**
    * Saved harness presets — a body (the harness) plus a brain (the model
    * source), named and given a logo. They live in the preferences blob rather
@@ -1437,6 +1439,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       cloudDefaultOs: normalizeCloudDefaultOs(parsed.cloudDefaultOs),
       cloudMacStopExplained: parsed.cloudMacStopExplained === true,
       cloudMacStopSeen: parsed.cloudMacStopSeen === true,
+      cloudMacExplainerRead: parsed.cloudMacExplainerRead === true,
       harnessPresets: readHarnessPresetList(parsed.harnessPresets),
       appleDevice: normalizeAppleDevicePreferences(
         (parsed as { apple?: unknown; appleDevice?: unknown }).apple
@@ -1498,6 +1501,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     cloudDefaultOs: "linux",
     cloudMacStopExplained: false,
     cloudMacStopSeen: false,
+    cloudMacExplainerRead: false,
     harnessPresets: [],
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     androidDevice: { ...DEFAULT_ANDROID_DEVICE_PREFERENCES },
@@ -1546,6 +1550,7 @@ function persistUserPreferencesFrom(state: {
   cloudDefaultOs: CloudComputerOs;
   cloudMacStopExplained: boolean;
   cloudMacStopSeen: boolean;
+  cloudMacExplainerRead: boolean;
   harnessPresets: HarnessPreset[];
   appleDevice: AppleDevicePreferences;
   androidDevice: AndroidDevicePreferences;
@@ -1578,6 +1583,7 @@ function persistUserPreferencesFrom(state: {
     cloudDefaultOs: state.cloudDefaultOs,
     cloudMacStopExplained: state.cloudMacStopExplained,
     cloudMacStopSeen: state.cloudMacStopSeen,
+    cloudMacExplainerRead: state.cloudMacExplainerRead,
     // Stored with the rows this build cannot read; the loader normalizes and
     // sets those aside again, so only storage ever holds them.
     // `PersistedUserPreferences` types the list as read back (normalized), so
@@ -1945,6 +1951,7 @@ export type AppState = {
   cloudDefaultOs: CloudComputerOs;
   cloudMacStopExplained: boolean;
   cloudMacStopSeen: boolean;
+  cloudMacExplainerRead: boolean;
   voiceInputEnabled: boolean;
   codexVoice: CodexVoicePreferences;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
@@ -2143,6 +2150,8 @@ export type AppState = {
   setCloudMacStopExplained: (explained: boolean) => void;
   /** Once true, it stays true: a Mac's first stop said what a stop keeps. */
   setCloudMacStopSeen: (seen: boolean) => void;
+  /** Once true, it stays true: Settings' Mac box was read. */
+  setCloudMacExplainerRead: (read: boolean) => void;
   setPromptClipboardCopyEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
@@ -2684,6 +2693,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   cloudDefaultOs: initialUserPreferences.cloudDefaultOs,
   cloudMacStopExplained: initialUserPreferences.cloudMacStopExplained,
   cloudMacStopSeen: initialUserPreferences.cloudMacStopSeen,
+  cloudMacExplainerRead: initialUserPreferences.cloudMacExplainerRead,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   codexVoice: initialUserPreferences.codexVoice,
   dictationPhase: "idle",
@@ -3449,6 +3459,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, cloudMacStopSeen: true });
       return { cloudMacStopSeen: true };
+    });
+  },
+  setCloudMacExplainerRead: (read) => {
+    if (!read || get().cloudMacExplainerRead) return;
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, cloudMacExplainerRead: true });
+      return { cloudMacExplainerRead: true };
     });
   },
   setVoiceInputEnabled: (enabled) =>

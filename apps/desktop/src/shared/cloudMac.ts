@@ -25,6 +25,15 @@ export const CLOUD_DEFAULT_OS_SETTING_KEY = "cloudDefaultOs";
 export const CLOUD_MAC_STOP_EXPLAINED_SETTING_KEY = "cloudMacStopExplained";
 /** The synced account setting: that line was shown once more beside a Mac's first stop. */
 export const CLOUD_MAC_STOP_SEEN_SETTING_KEY = "cloudMacStopSeen";
+/** The synced account setting: Settings' "How a DAEX Cloud Mac works" box was read. */
+export const CLOUD_MAC_EXPLAINER_READ_SETTING_KEY = "cloudMacExplainerRead";
+
+/**
+ * How long a Mac takes to start, in words, for every sentence that says it.
+ * Stand-in until the contract exports the server's own constant (asked of the
+ * server lane): then this re-exports it.
+ */
+export const CLOUD_MAC_START_WORDS = "in under a minute";
 
 export const CLOUD_MAC_NAME = `${BRAND.CLOUD_NAME} Mac`;
 
@@ -107,7 +116,7 @@ export const CLOUD_MAC_PHASE_LABEL: Readonly<Record<CloudMacPhase, string>> = {
   starting: "Starting",
   running: "On",
   stopping: "Stopping",
-  stopped: "Stopped · drive kept",
+  stopped: "Stopped",
   start_failed: "Couldn't start",
   drive_lost: "Drive lost",
 };
