@@ -54,13 +54,16 @@ export type CloudRateUnit = "hour" | "minute";
 const per = (unit: CloudRateUnit) => (unit === "hour" ? "an hour" : "a minute");
 const shortPer = (unit: CloudRateUnit) => (unit === "hour" ? "/h" : "/min");
 
-function shown(milli: number, words: CloudUnitWords): string {
-  return words.num(Math.max(0, milli));
+/**
+ * A rate's shown number of credits, exact ("8", "2.5"): never rounded down
+ * like a balance (`words.num`), so a rate never reads lower than it is.
+ */
+export function cloudRateNumber(milli: number, words: CloudUnitWords): string {
+  return words.count(Math.max(0, milli) / 1000).split(" ")[0]!;
 }
 
 function creditsPer(milli: number, words: CloudUnitWords, unit: CloudRateUnit): string {
-  const number = shown(milli, words);
-  return `${number} ${number === "1" ? "credit" : "credits"} ${per(unit)}`;
+  return `${words.count(Math.max(0, milli) / 1000)} ${per(unit)}`;
 }
 
 /**
@@ -87,9 +90,9 @@ export function cloudRateText(
   if (!view || !view.available || ad == null || ad === full) return single;
   if (leadAd) {
     if (ad === 0) return `Free with ads · ${full === 0 ? "Free" : creditsPer(full, words, unit)} with no ads`;
-    return `${creditsPer(ad, words, unit)} with ads · ${shown(full, words)} with no ads`;
+    return `${creditsPer(ad, words, unit)} with ads · ${cloudRateNumber(full, words)} with no ads`;
   }
-  return `${single} · ${ad === 0 ? "Free" : shown(ad, words)} with ads`;
+  return `${single} · ${ad === 0 ? "Free" : cloudRateNumber(ad, words)} with ads`;
 }
 
 /** The compact form for narrow places: "8/h with ads", "10/h", "Free", "4/min with ads". */
@@ -105,7 +108,7 @@ export function cloudRateCompact(
   const withAds = Boolean(view?.available && ad != null && ad !== full && leadAd);
   const value = withAds ? ad! : full;
   if (value === 0) return withAds ? "Free with ads" : "Free";
-  return `${shown(value, words)}${shortPer(unit)}${withAds ? " with ads" : ""}`;
+  return `${cloudRateNumber(value, words)}${shortPer(unit)}${withAds ? " with ads" : ""}`;
 }
 
 /** A catalog size's two prices. */

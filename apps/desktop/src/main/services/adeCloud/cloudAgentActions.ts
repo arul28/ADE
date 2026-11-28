@@ -96,7 +96,7 @@ import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import type { CloudDiskGrowAnswer, CloudDiskGrowHost } from "./cloudDiskGrowHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierOfShape, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTierId } from "../../../shared/cloudTiers";
-import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudCreditScaleOf, cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
 import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
@@ -1241,10 +1241,11 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
      * friends joined, rewards paid and left, hours earned, whether a code can
      * still be entered. No code or link is ever logged.
      */
-    async referral(): Promise<CloudReferralSummary> {
-      const summary = await deps.machines.referral();
+    async referral(): Promise<CloudReferralSummary & { creditScale: number }> {
+      // The account read beside it gives Pricing v3's credit scale, so a terminal shows credits as the app does.
+      const [summary, account] = await Promise.all([deps.machines.referral(), readAccount()]);
       if (!summary) throw new Error(`${BRAND.CLOUD_NAME} isn't available on this account yet.`);
-      return summary;
+      return { ...summary, creditScale: cloudCreditScaleOf(account) };
     },
 
     /**

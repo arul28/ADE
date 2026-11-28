@@ -379,7 +379,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                     <li title={onSizes || undefined}><Clock size={13} /><span><b className="kit-num" data-face="ui">{words.num(column.facts.includedMilli)}</b> credits a month{onSizes ? <small className="adecd-plancard-sizes">{onSizes}</small> : null}</span></li>
                   )}
                   {cents == null ? (
-                    <li data-quiet="true" title="Bigger computers and the iPhone stop until your credits reset; Small computers keep working"><Lightning size={13} /><span>No {words.extra.toLowerCase()}</span></li>
+                    <li data-quiet="true" title={column.id === "free" && priced ? `Bigger computers and the iPhone stop until your credits reset; ${freeSmallWithAds ? "Small computers keep working in chats with ads" : "so do Small computers"}` : "Bigger computers and the iPhone stop until your credits reset; Small computers keep working"}><Lightning size={13} /><span>No {words.extra.toLowerCase()}</span></li>
                   ) : (
                     <li title={`Only if you turn ${words.extra.toLowerCase()} on`}><Lightning size={13} /><span>{words.scale === 1 ? <><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra {words.one}</> : <>Extra: <b className="kit-num" data-face="ui">{words.extraPrice(cents)}</b></>}</span></li>
                   )}

@@ -136,7 +136,9 @@ export function formatCloudStatus(value: unknown): string {
   if (hours) {
     const resets = typeof hours.resetsAt === "string" ? hours.resetsAt.slice(0, 10) : "—";
     const extra = isRecord(hours.extraHours) && hours.extraHours.enabled === true ? ` · ${words.extra.toLowerCase()} on` : "";
-    const out = hours.state === "zero" ? " · out: bigger computers and the iPhone stop, Small keeps working" : "";
+    const out = hours.state !== "zero" ? ""
+      : pricing ? " · out: bigger computers and the iPhone stop; Small keeps working on paid plans, and on Free in chats with ads"
+      : " · out: bigger computers and the iPhone stop, Small keeps working";
     rows.push([words.Noun, `${creditsText(hours.left)} of ${creditsText(hours.included)} left · resets ${resets}${extra}${out}`]);
   }
   // Pricing v3: the account's one ads switch (a person changes it in the app, never a terminal).
@@ -236,9 +238,8 @@ export function formatCloudStatus(value: unknown): string {
       `${words.extra.toLowerCase()}: ${typeof plan.extraHourCents === "number" ? pricing ? words.extraPrice(plan.extraHourCents) : `${plan.extraHourCents}¢ each` : "none"}`,
       plan.outsideAgents === false ? "no outside agents" : "outside agents ok",
     ])));
-    if (pricing) {
-      // Pricing v3: each rate is on its size row; no credit sentence.
-    } else if (typeof hours?.unit === "string") lines.push(`  ${hours.unit}`);
+    // Pricing v3 has no credit sentence: each rate is on its size row.
+    if (!pricing && typeof hours?.unit === "string") lines.push(`  ${hours.unit}`);
   }
   return lines.join("\n");
 }

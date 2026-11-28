@@ -24,7 +24,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import { cloudUnitWords } from "../../desktop/src/shared/cloudUnitWords";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
@@ -5278,10 +5278,10 @@ ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List mach
   the rest run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
 
-  Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud credits, and
-  so do you once their first chat runs on ${BRAND.CLOUD_NAME} (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
+  Invites: a friend who enters your link gets extra free cloud credits (daex cloud invite says how many), and
+  so do you once their first chat runs on ${BRAND.CLOUD_NAME} (${CLOUD_REFERRAL_REWARD_LIMIT} invites at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
-  Earned credits never expire; they are used after the plan's credits and before
+  Credits from invites never expire; they are used after the plan's credits and before
   extra credits. The free plan is given once per computer and once per GitHub
   account, which must be at least 30 days old (or add a card, no charge).
 
@@ -22379,10 +22379,12 @@ function formatCloudInvite(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const referral = readCloudReferralSummary(raw);
   if (!referral) return JSON.stringify(raw, null, 2);
+  // Pricing v3: the account's credit scale (an older brain sends none: 1).
+  const scale = isRecord(raw) && typeof raw.creditScale === "number" && raw.creditScale > 0 ? raw.creditScale : 1;
   const lines = [
     `Your invite link: ${referral.link}`,
-    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud credits, and so do you once their first chat runs on ${BRAND.CLOUD_NAME}.`,
-    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} invites used, ${formatCloudHours(referral.hoursEarnedMilli)} credits from invites.`,
+    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli, scale)} extra free cloud credits, and so do you once their first chat runs on ${BRAND.CLOUD_NAME}.`,
+    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} invites used, ${formatCloudHours(referral.hoursEarnedMilli, scale)} credits from invites.`,
   ];
   if (referral.canEnterCode && referral.enterCodeUntil != null) {
     lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);

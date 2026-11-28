@@ -50,7 +50,7 @@ import { BRAND } from "../../../../shared/brand";
  *
  * Never mounted in a subagent view, a CLI terminal, the Work list, or a
  * notification; on the person's own machine (no ADE Cloud lane for its pin)
- * only for an ADE Free Models chat, or under Pricing v3 a chat holding the
+ * only for a DAEX Free Models chat, or under Pricing v3 a chat holding the
  * cloud iPhone.
  */
 

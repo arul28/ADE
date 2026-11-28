@@ -11,8 +11,6 @@ import {
   CLOUD_INVITE_REFUSAL_REASONS,
   CLOUD_REFERRAL_ENTER_DAYS,
   CLOUD_REFERRAL_REWARD_LIMIT,
-  CLOUD_REFERRAL_REWARD_MILLI,
-  formatCloudHours,
 } from "../../../shared/adeCloud";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
 import { PROVIDER_CONTEXT_PROVIDER_IDS } from "../../../shared/types/providerContext";
@@ -253,7 +251,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex cloud hours --text",
     },
     referral: {
-      description: `The account's DAEX Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} credits, and so does this account when the friend's first chat runs on DAEX Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Medium-hour.`,
+      description: `The account's DAEX Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState, creditScale}. A friend who enters the link gets rewardMilli's worth of credits, and so does this account when the friend's first chat runs on DAEX Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} invites at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Medium-hour; credits are milli / 1000 x creditScale (10 under Pricing v3, else 1).`,
       input: "no input",
       example: "daex cloud invite --text",
     },

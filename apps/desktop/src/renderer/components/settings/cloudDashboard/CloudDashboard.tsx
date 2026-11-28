@@ -342,8 +342,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
       <CloudSizes account={account} />
       <CloudPlans account={account} onChanged={refresh} newPlanId={moment?.planId ?? null} />
 
-      {/* Sign-ins on the left; the shorter agent limits and the invite card
-          stack on the right, so the two columns end near one height (B14-2). */}
+      {/* Two columns of about the same height: sign-ins with the invite card
+          under them, then agent limits with DAEX Free Models (B14-2). */}
       {/* With no computer of the person's own (ADE Web), the sign-ins show as
           "Providers on ADE Cloud" below this page instead. The web app reads
           the agent limits from the account; on a server without that route
@@ -351,7 +351,6 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
       <CloudSavedLaneWorkCard shownLaneIds={shownLaneIds} />
       {ownComputer ? (
         <div className="adecd-pair">
-          {/* Two columns of about the same height: the invite card sits under the sign-ins. */}
           <div className="adecd-stack">
             <CloudSignIns />
             <CloudInviteCard account={account} onChanged={refresh} />

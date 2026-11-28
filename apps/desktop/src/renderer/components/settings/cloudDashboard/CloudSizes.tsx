@@ -3,7 +3,7 @@ import { Cpu } from "@phosphor-icons/react";
 import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../../shared/adeCloud";
 import { cloudTierFacts, cloudTierHoursAt, cloudTiers } from "../../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
-import { cloudAdsViewOf, cloudPricingOf, cloudTierRatePair, type CloudRatePair } from "../../../../shared/cloudAdPriceWords";
+import { cloudAdsViewOf, cloudPricingOf, cloudRateNumber, cloudTierRatePair, type CloudRatePair } from "../../../../shared/cloudAdPriceWords";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
 import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
@@ -108,11 +108,9 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
   const cell = (row: Row, column: Column) => {
     const milli = column === "ad" ? row.pair.adMilli ?? row.pair.fullMilli : column === "full" ? row.pair.fullMilli : rateNow(row.pair);
     if (milli <= 0) return "Free";
-    // The long form, and a short one ("8/h") a narrow page shows instead (CSS picks one).
-    const amount = words.count(milli / 1000);
-    const long = `${amount} ${row.unit === "hour" ? "an hour" : "a minute"}`;
-    // The exact number (2.5 stays 2.5), without the noun.
-    const short = `${amount.split(" ")[0]}/${row.unit === "hour" ? "h" : "min"}`;
+    // The long form, and a short one ("8/h") a narrow page shows instead (CSS picks one). Exact: 2.5 stays 2.5.
+    const long = `${words.count(milli / 1000)} ${row.unit === "hour" ? "an hour" : "a minute"}`;
+    const short = `${cloudRateNumber(milli, words)}/${row.unit === "hour" ? "h" : "min"}`;
     return <><span className="adecd-sizetable-long">{long}</span><span className="adecd-sizetable-short" aria-hidden="true">{short}</span></>;
   };
   const head = (column: Column) => (column === "ad" ? "With ads" : column === "full" ? "No ads" : "Price");
