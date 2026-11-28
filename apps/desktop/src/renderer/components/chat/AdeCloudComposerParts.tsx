@@ -5,7 +5,7 @@ import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties }
 
 import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
-import { cloudRateText, cloudTierRatePair, type CloudAdsView } from "../../../shared/cloudAdPriceWords";
+import { cloudRateText, cloudTierRateNowMilli, cloudTierRatePair, type CloudAdsView } from "../../../shared/cloudAdPriceWords";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -55,6 +55,7 @@ export function CloudSizeButton({
   hoursLeftMilli = null,
   words = CLOUD_CREDIT_WORDS,
   priced = null,
+  fullPrice = false,
   macOffer = null,
   os = "linux",
   onChooseOs,
@@ -71,12 +72,16 @@ export function CloudSizeButton({
   words?: CloudUnitWords;
   /** Pricing v3 (the account has `pricing`): each size's two prices under its row. Null shows today's menu. */
   priced?: { view: CloudAdsView | null } | null;
+  /** The start pays the full price whatever the ads (a CLI session): time left counts at it. */
+  fullPrice?: boolean;
   /** The DAEX Cloud Mac offer: with it, the menu starts with Linux | Mac and the button says which. */
   macOffer?: CloudMacOffer | null;
   os?: CloudComputerOs;
   onChooseOs?: (os: CloudComputerOs) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // The ads that price this start's time left: none for a start that pays the full price.
+  const startView = fullPrice ? null : priced?.view ?? null;
   const priceOf = (tier: CloudTier) => (priced ? cloudRateText(cloudTierRatePair(tier), priced.view, words) : null);
   const macShown = Boolean(macOffer && onChooseOs);
   const mac = macShown && os === "mac" && macOffer ? macOffer : null;
@@ -165,8 +170,8 @@ export function CloudSizeButton({
                 <span className="shrink-0 text-[11.5px] font-medium text-fg/90">{mac.label || "Mac"}</span>
                 <span className="min-w-0 flex-1 truncate text-[10.5px] tabular-nums text-muted-fg/60">{cloudMacShapeText(mac)}</span>
                 {hoursLeftMilli != null ? (
-                  <span className="shrink-0 text-right text-[10.5px] font-medium tabular-nums text-fg/80" title={`Your ${words.noun} last ${cloudMacTimeAt(mac, hoursLeftMilli, priced?.view ?? null)} on a Mac.`}>
-                    {cloudMacTimeAt(mac, hoursLeftMilli, priced?.view ?? null)}
+                  <span className="shrink-0 text-right text-[10.5px] font-medium tabular-nums text-fg/80" title={`Your ${words.noun} last ${cloudMacTimeAt(mac, hoursLeftMilli, startView)} on a Mac.`}>
+                    {cloudMacTimeAt(mac, hoursLeftMilli, startView)}
                   </span>
                 ) : null}
               </div>
@@ -191,8 +196,10 @@ export function CloudSizeButton({
               const shape = `${tier.cpu} CPU · ${tier.memoryGb} GB`;
               const runs = facts.full ? `Full computer: ${facts.runs}` : facts.runs;
               // Hours as time at this size (Small reads "Unlimited", never a multiplier); a bigger size waits for the account.
-              const usesHours = cloudTierUsesHours(tier);
-              const hoursAt = usesHours && hoursLeftMilli == null ? null : cloudTierHoursAt(tier, hoursLeftMilli ?? 0);
+              // At the price this start pays now: a size free with ads now (Free's Small) reads "Unlimited" and claims no time.
+              const rateNow = { multiplierMilli: cloudTierRateNowMilli(tier, startView) };
+              const usesHours = cloudTierUsesHours(rateNow);
+              const hoursAt = usesHours && hoursLeftMilli == null ? null : cloudTierHoursAt(rateNow, hoursLeftMilli ?? 0);
               const price = priceOf(tier);
               const about = `${facts.specs.join(", ")}. ${runs}. ${price ?? facts.rateLine}.${usesHours && hoursAt ? ` Your ${words.noun} last ${hoursAt} here.` : ""}`;
               const aboutId = `${idBase}-${tier.id}`;

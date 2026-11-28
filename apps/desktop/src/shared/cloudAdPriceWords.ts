@@ -116,6 +116,17 @@ export function cloudTierRatePair(tier: { multiplierMilli: number; adMultiplierM
   return { fullMilli: tier.multiplierMilli, adMilli: tier.adMultiplierMilli ?? null };
 }
 
+/**
+ * A size's credits an hour (thousandths) at the price paid now: its price
+ * with ads while ads are on here (Settings' size table and its "Left at this
+ * size"), else the full price. A start that always pays the full price (a CLI
+ * session, an automation, an outside agent) passes no `view`.
+ */
+export function cloudTierRateNowMilli(tier: { multiplierMilli: number; adMultiplierMilli?: number | null }, view: CloudAdsView | null): number {
+  const pair = cloudTierRatePair(tier);
+  return view?.available === true && view.on && pair.adMilli != null ? pair.adMilli : pair.fullMilli;
+}
+
 /** A computer's or the iPhone's price now, as its two prices (`rateMilli` is now, `otherRateMilli` the other). */
 export function cloudPriceNowPair(price: Pick<CloudPrice, "now" | "rateMilli" | "otherRateMilli">): CloudRatePair {
   return price.now === "ad"

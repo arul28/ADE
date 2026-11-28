@@ -12,7 +12,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
-import { cloudAdsViewOf, cloudPricingOf } from "../../../shared/cloudAdPriceWords";
+import { cloudAdsViewOf, cloudPricingOf, cloudTierRateNowMilli } from "../../../shared/cloudAdPriceWords";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -140,6 +140,7 @@ export function useAdeCloudDraft({
   enabled,
   originUrl,
   savedOs = true,
+  fullPrice = false,
 }: {
   /** The draft's launch controls show. */
   enabled: boolean;
@@ -151,6 +152,11 @@ export function useAdeCloudDraft({
    * person picks a Mac there.
    */
   savedOs?: boolean;
+  /**
+   * The start pays the full price whatever the ads (a CLI session): the Run on
+   * line counts time at it. A chat's start gets the price with ads while ads are on.
+   */
+  fullPrice?: boolean;
 }) {
   const cloudEnabled = useAdeCloudEnabled();
   const access = useAdeCloudAccess();
@@ -209,20 +215,23 @@ export function useAdeCloudDraft({
   const words = useMemo(() => cloudUnitWords(account), [account]);
   // Pricing v3: the size menu shows each size's two prices (the account's ads decide which leads).
   const priced = useMemo(() => (cloudPricingOf(account) ? { view: cloudAdsViewOf(account) } : null), [account]);
+  // The ads that price this start: none for a start that pays the full price.
+  const startView = fullPrice ? null : priced?.view ?? null;
   const runOnLine = useMemo(() => {
     if (os === "mac" && macOffer && account) {
       if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `Mac · no ${words.noun} left`;
-      return `Mac · ${cloudMacTimeAt(macOffer, hoursLeftMilli ?? 0, priced?.view ?? null)} left`;
+      return `Mac · ${cloudMacTimeAt(macOffer, hoursLeftMilli ?? 0, startView)} left`;
     }
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
     // Small never uses hours: it stays unlimited, also at 0 hours left (`cloudTierHoursAt` says so).
     if (!cloudTierUsesHours(tier)) return `${tier.label} · ${cloudTierHoursAt(tier, 0).toLowerCase()}`;
     // Pricing v3: free with ads on here (Free's Small), whatever credits are left.
-    if (priced?.view?.available && priced.view.on && tier.adMultiplierMilli === 0) return `${tier.label} · free with ads`;
+    if (startView?.available && startView.on && tier.adMultiplierMilli === 0) return `${tier.label} · free with ads`;
     if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no ${words.noun} left`;
-    return `${tier.label} · ${cloudTierHoursAt(tier, hoursLeftMilli ?? 0)} left at this size`;
-  }, [account, hoursLeftMilli, macOffer, os, priced, tierId, tiers, words]);
+    // Time at the price this start pays now (Settings' "Left at this size" for a chat).
+    return `${tier.label} · ${cloudTierHoursAt({ multiplierMilli: cloudTierRateNowMilli(tier, startView) }, hoursLeftMilli ?? 0)} left at this size`;
+  }, [account, hoursLeftMilli, macOffer, os, startView, tierId, tiers, words]);
 
   return {
     /**
