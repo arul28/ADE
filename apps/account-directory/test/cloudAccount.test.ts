@@ -5567,9 +5567,18 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     chat("mk_source", "c1", "lane-1");
     chat("mk_before_move", "c2", "lane-1");
     chat("mk_before_move", "c3", "lane-2");
+    // An older computer of the lane left only its saved @ menu; another lane's computer keeps its own.
+    seedComputer(harness, { instance_id: "oldbox1234", machine_key: "mk_old", lane_id: "lane-1", deleted_at: clock });
+    for (const machineKey of ["mk_old", "mk_other"]) {
+      harness.exec(
+        "insert into cloud_mention_snapshots (user_id, machine_key, project_key, instance_id, sealed, saved_at, updated_at) values (?, ?, 'github.com/acme/web', null, 'sealed', ?, ?)",
+        OWNER, machineKey, clock, clock,
+      );
+    }
     expect((await harness.send(OWNER, "DELETE", "/cloud/lanes/without-computer/lane-1")).status).toBe(200);
     expect(await keptLanes()).toEqual([]);
     expect(harness.rows("select chat_id from cloud_chat_copies where user_id = ? order by chat_id", OWNER)).toEqual([{ chat_id: "c3" }]);
+    expect(harness.rows("select machine_key from cloud_mention_snapshots")).toEqual([{ machine_key: "mk_other" }]);
   });
 
   it("a watched free goes on with each read of its record, with no cron", async () => {
