@@ -73,7 +73,7 @@ Context sent to an AI provider is a bounded export (lite lane exports plus a
 ## Proposals
 
 `ConflictProposal` (`source: "subscription" | "local"`, `status: pending |
-applied | rejected | superseded`). A prepared preview lives 20 minutes
+applied | rejected`). A prepared preview lives 20 minutes
 (`PREPARED_TTL_MS`). Apply (`unstaged | staged | commit`) runs
 `git apply --3way` and records an operation; undo runs `git apply -R`. Details
 in [simulation.md](./simulation.md).
@@ -88,7 +88,7 @@ in [simulation.md](./simulation.md).
 
 ## IPC surface
 
-- Prediction: `ade.conflicts.getLaneStatus`, `listOverlaps`, `getRiskMatrix`, `runPrediction`, and the `ade.conflicts.event` stream (`prediction-progress`, `prediction-complete` with chip deltas, `prediction-updated`, `rebase-started`, `rebase-completed`).
+- Prediction: `ade.conflicts.getLaneStatus`, `listOverlaps`, `getRiskMatrix`, `runPrediction`, and the `ade.conflicts.event` stream (`prediction-progress`, `prediction-complete` with chip deltas, `rebase-started`, `rebase-completed`, `rebase-needs-updated`).
 - `getBatchAssessment` and `simulateMerge` have no IPC channel: use the `conflicts.*` runtime actions or the CTO `simulateMerge` tool.
 - Proposals: `listProposals`, `prepareProposal`, `requestProposal` (uses the Conflict Proposals model from Settings; with none chosen it throws "Choose a Conflict Proposals model in Settings" instead of guessing), `applyProposal`, `undoProposal`.
 - Rebase needs: `scanRebaseNeeds`, `getRebaseNeed`, `rebaseLane` (`daex git rebase --lane`); the Lanes tab reads them through `window.ade.rebase.*`. The comparison ref comes from `resolveLaneRebaseTarget` (open PR base, else the default branch), the same resolver the lane rebase uses.
