@@ -1,36 +1,10 @@
 # Files and Editor
 
-An IDE-style file explorer and Monaco editor in ADE: shared workspace
+An IDE-style file explorer and Monaco editor in DAEX: shared workspace
 selection, atomic writes, file watching with reference-counted
 subscriptions, Monaco model reuse, streamed large-file previews, and diff and
 conflict modes. Context packs use it to find docs, chat links open files in
 it, and lanes show their files through it.
-
-## Where this runs
-
-File listing, atomic writes, the file-name index, content search and the file
-watcher run inside the **active runtime** of the window's project binding:
-the local ADE daemon for a local window, the remote runtime for a remote
-window. Monaco runs only in the renderer. Every byte it reads or writes goes
-through `window.ade.files.*` (`apps/desktop/src/preload/preload.ts`): the
-remote-runtime route first, then the strict local-runtime route. The legacy
-in-process IPC handlers answer only when no runtime route exists (before a
-project binding, or in tests). Watcher events arrive on the runtime event
-stream (category `"runtime"`) through the same preload pump as lane, PTY and
-process events. A remote window therefore browses and edits the remote
-worktree.
-
-Every `window.ade.files.*` method takes an optional trailing **machine pin**
-(`OpenProjectBinding | null`). See
-[Which machine answers a file call](#which-machine-answers-a-file-call).
-
-An ADE Cloud lane whose computer is at rest is read from GitHub, with no
-computer awake. See [With no computer awake](#with-no-computer-awake).
-
-Git ignore lookups split paths at submodules and query each submodule, so one
-nested path does not discard the rest of a batch. Failed lookups are not
-cached. Chat editor links that use `cursor://` or `vscode://` open the file in
-ADE.
 
 ## Source file map
 
@@ -84,7 +58,7 @@ Main process and runtime:
 - `main/services/lanes/laneService.ts`: `getFilesWorkspaces`,
   `resolveWorkspaceById`.
 
-ADE Cloud reads (no computer awake):
+DAEX Cloud reads (no computer awake):
 
 - `shared/adeCloud/accountReader.ts`: answers file calls for an
   account-answered pin from GitHub (`listContents`, `getFileContent` at the
@@ -178,6 +152,85 @@ iOS (`apps/ios/ADE/Views/Files/`): `FilesRootScreen.swift` (workspace picker,
 tree, search button, action gating), `FilesSearchScreen.swift` (one query for
 names and contents), `FilesDetailScreen.swift` and `FilesRootComponents.swift`.
 
+## Gotchas
+
+- The tree lists with `includeIgnored: true`, so dotfiles show, but volatile
+  `.ade` paths (worktrees, cache, transcripts, secrets, the database) are
+  filtered. Watcher refcounts are per mode: pair each start with its stop in
+  the same mode. Search defaults to `includeIgnored: false`.
+- While a machine pin is active, the workbench publishes **nothing** to the
+  dirty-buffer map. The map is keyed by absolute path with no machine, and one
+  person's two computers often share a path, so a local agent would read (and
+  write back) the remote machine's unsaved text. After the pin clears,
+  publishing waits until the roster is listed again for the tab's own machine.
+- HTML preview is inert: `srcDoc` in an empty-sandbox iframe with a strict CSP
+  and no referrer. Scripts, forms, navigation, downloads and remote fetches
+  stay off; large HTML streams as large text.
+- `listTree` and `listTreeChildren` must share filtering and order: skip
+  `.git` and volatile `.ade` paths, honor `includeIgnored`, folders first, and
+  page with `nextOffset`.
+- Expanding a folder fetches one `TREE_PAGE_SIZE` (2,000) page and shows
+  "Load more…" for the rest. Watcher refreshes re-list only the loaded window
+  (`loadedDirectoryChildrenCount`). Path reveals page up to
+  `REVEAL_MAX_CHILDREN`.
+- The roster and tree caches (`v2/filesTreeCache.ts`) are bounded LRUs.
+  Mounted workbenches pin their tree, and warm project eviction in `App.tsx`
+  releases a project's caches. The cache holds tree structure only, never
+  Monaco models, dirty buffers or tabs.
+- Monaco models are reused per path and disposed on tab close, rename or
+  delete, workspace switch or unmount. Do not dispose them on tab switches,
+  theme changes, read-only toggles or group moves.
+- `writeTextAtomic` needs write permission on the target's directory; without
+  it the editor tab gets the error.
+- Runtime-bound file calls are strict: a timeout or connection failure shows
+  in the tab and never retries against the main process. A pinned call has no
+  fallback at all.
+- Files are freely editable on a computer: no "Enable editing" step and no
+  edit-protection gate. `is_edit_protected` only governs lane deletion.
+  `FilesWorkspace.isReadOnlyByDefault` is `false` on a computer and `true` only
+  for an account-answered lane.
+- Switching workspace is navigation, not a discard. Dirty tabs stay open and
+  published under their own root.
+- `listWorkspaces` failures retry with backoff (1 s, 2 s, 5 s, 10 s, then
+  steady), so a Files tab opened before a remote runtime connects fills in.
+  `WORKSPACE_LIST_RETRY_DELAYS_MS` holds the steps.
+- Watcher subscriptions are per sender; closing a window calls
+  `stopAllForSender`.
+- Lane worktrees resolve through `laneService`, never straight from
+  `.ade/worktrees/`. A lane deleted out of band leaves the list on the next
+  refresh.
+- Remote **Open in** uses SSH URLs. Do not spawn `code` on a remote path, and
+  do not widen `openExternalUrl` to editor schemes.
+- On an account-answered lane, do not enable New file or New folder and do not
+  add "Report…" to the read-failure banner: the reader's sentences are the
+  expected states, not bugs.
+
+## Where this runs
+
+File listing, atomic writes, the file-name index, content search and the file
+watcher run inside the **active runtime** of the window's project binding:
+the local DAEX daemon for a local window, the remote runtime for a remote
+window. Monaco runs only in the renderer. Every byte it reads or writes goes
+through `window.ade.files.*` (`apps/desktop/src/preload/preload.ts`): the
+remote-runtime route first, then the strict local-runtime route. The legacy
+in-process IPC handlers answer only when no runtime route exists (before a
+project binding, or in tests). Watcher events arrive on the runtime event
+stream (category `"runtime"`) through the same preload pump as lane, PTY and
+process events. A remote window therefore browses and edits the remote
+worktree.
+
+Every `window.ade.files.*` method takes an optional trailing **machine pin**
+(`OpenProjectBinding | null`). See
+[Which machine answers a file call](#which-machine-answers-a-file-call).
+
+A DAEX Cloud lane whose computer is at rest is read from GitHub, with no
+computer awake. See [With no computer awake](#with-no-computer-awake).
+
+Git ignore lookups split paths at submodules and query each submodule, so one
+nested path does not discard the rest of a batch. Failed lookups are not
+cached. Chat editor links that use `cursor://` or `vscode://` open the file in
+DAEX.
+
 ## Detail docs
 
 - [file-watcher-and-trust.md](./file-watcher-and-trust.md): the watcher, path
@@ -220,12 +273,12 @@ and a watcher could stay on a remote host with nothing to stop it.
 The workspace picker groups lanes by machine. Picking a lane on another
 machine pins the workbench to it without rebinding the tab. The machine chip
 and a way back stay visible. An offline owner stays identifiable while its
-file actions are unavailable. On an ADE Cloud tab, a lane that the account
+file actions are unavailable. On a DAEX Cloud tab, a lane that the account
 workspace list already has shows once, not again under its computer.
 
 ## With no computer awake
 
-An ADE Cloud tab, or a lane pin of a cloud computer this window has no
+A DAEX Cloud tab, or a lane pin of a cloud computer this window has no
 connection to (`cloud-saved:<machineKey>`), is an **account-answered pin**
 (`isAccountAnsweredPin`). Its file calls go to the account reader, never to a
 computer, so a read never wakes one:
@@ -238,9 +291,9 @@ computer, so a read never wakes one:
   are the files on GitHub. Wake the lane's computer to change them." The empty
   tree hides its New file link.
 - A read failure is the reader's sentence in the error banner, with Refresh
-  and dismiss and no "Report…": "Connect GitHub to your ADE account to see
+  and dismiss and no "Report…": "Connect GitHub to your DAEX account to see
   this repository's files with no computer on.", "This lane has no branch on
-  GitHub yet…", "The branch … isn't on GitHub yet…", or "ADE reads files with
+  GitHub yet…", "The branch … isn't on GitHub yet…", or "DAEX reads files with
   no computer on only for repositories on GitHub."
 - The explorer shows "Loading files…" while the root lists, and "Couldn't load
   the files" with Retry when it fails, never an empty tree.
@@ -317,11 +370,11 @@ after `git.getBranchChanges` answers (the `diff` action domain,
 `diff.getBranchChanges` on the web); iOS checks the advertised command. The
 Git pane (`LaneGitActionsPane`) shows **Uncommitted changes**, **Committed on
 this branch** (hidden on a host without branch diffs) and **History**. CLI:
-`ade diff changes --lane <id> --mode branch --text`.
+`daex diff changes --lane <id> --mode branch --text`.
 
 ## Atomic saves
 
-`fileService.writeTextAtomic` (`secureWriteTextAtomicWithinRoot`) writes a
+`fileService.writeTextAtomic` (`secureWriteAtomicWithinRoot`) writes a
 temp file in the target's directory, then renames it onto the target, so a dev
 server never sees a partial file. `writeText` writes directly. Both resolve
 through `resolvePathWithinRoot`: no writes outside the workspace root and none
@@ -381,7 +434,7 @@ The renderer listens on `ade.files.change` (`created`, `modified`, `deleted`,
 
 ## Quick open and content search
 
-`FileSearchIndexService` keeps a flat list of file paths per
+`fileSearchIndexService.ts` (`createFileSearchIndexService`) keeps a flat list of file paths per
 `workspaceId::mode` (`default` or `all`). It builds lazily on the first quick
 open and follows the watcher: `add`, `unlink` and `rename` update it;
 `addDir` and `unlinkDir` invalidate the subtree.
@@ -588,7 +641,7 @@ Files panel or a chat attachment:
 - A document: a page at its own size and margins (Letter with 1" margins when
   it has none), headings, run formatting, lists, tables with merged cells,
   raster pictures, links, page breaks, an Outline rail, and Fit / 100% / zoom.
-  Links open in ADE's browser (http, https, mailto only). An external picture
+  Links open in DAEX's browser (http, https, mailto only). An external picture
   is never fetched.
 
 The readers (`viewers/office/`) cost nothing until a file opens:
@@ -627,59 +680,6 @@ one.
 
 A pin from router state is untrusted input: `FilesTab` accepts only a
 well-formed `OpenProjectBinding`.
-
-## Gotchas
-
-- The tree lists with `includeIgnored: true`, so dotfiles show, but volatile
-  `.ade` paths (worktrees, cache, transcripts, secrets, the database) are
-  filtered. Watcher refcounts are per mode: pair each start with its stop in
-  the same mode. Search defaults to `includeIgnored: false`.
-- While a machine pin is active, the workbench publishes **nothing** to the
-  dirty-buffer map. The map is keyed by absolute path with no machine, and one
-  person's two computers often share a path, so a local agent would read (and
-  write back) the remote machine's unsaved text. After the pin clears,
-  publishing waits until the roster is listed again for the tab's own machine.
-- HTML preview is inert: `srcDoc` in an empty-sandbox iframe with a strict CSP
-  and no referrer. Scripts, forms, navigation, downloads and remote fetches
-  stay off; large HTML streams as large text.
-- `listTree` and `listTreeChildren` must share filtering and order: skip
-  `.git` and volatile `.ade` paths, honor `includeIgnored`, folders first, and
-  page with `nextOffset`.
-- Expanding a folder fetches one `TREE_PAGE_SIZE` (2,000) page and shows
-  "Load more…" for the rest. Watcher refreshes re-list only the loaded window
-  (`loadedDirectoryChildrenCount`). Path reveals page up to
-  `REVEAL_MAX_CHILDREN`.
-- The roster and tree caches (`v2/filesTreeCache.ts`) are bounded LRUs.
-  Mounted workbenches pin their tree, and warm project eviction in `App.tsx`
-  releases a project's caches. The cache holds tree structure only, never
-  Monaco models, dirty buffers or tabs.
-- Monaco models are reused per path and disposed on tab close, rename or
-  delete, workspace switch or unmount. Do not dispose them on tab switches,
-  theme changes, read-only toggles or group moves.
-- `writeTextAtomic` needs write permission on the target's directory; without
-  it the editor tab gets the error.
-- Runtime-bound file calls are strict: a timeout or connection failure shows
-  in the tab and never retries against the main process. A pinned call has no
-  fallback at all.
-- Files are freely editable on a computer: no "Enable editing" step and no
-  edit-protection gate. `is_edit_protected` only governs lane deletion.
-  `FilesWorkspace.isReadOnlyByDefault` is `false` on a computer and `true` only
-  for an account-answered lane.
-- Switching workspace is navigation, not a discard. Dirty tabs stay open and
-  published under their own root.
-- `listWorkspaces` failures retry with backoff (1 s, 2 s, 5 s, 10 s, then
-  steady), so a Files tab opened before a remote runtime connects fills in.
-  `WORKSPACE_LIST_RETRY_DELAYS_MS` holds the steps.
-- Watcher subscriptions are per sender; closing a window calls
-  `stopAllForSender`.
-- Lane worktrees resolve through `laneService`, never straight from
-  `.ade/worktrees/`. A lane deleted out of band leaves the list on the next
-  refresh.
-- Remote **Open in** uses SSH URLs. Do not spawn `code` on a remote path, and
-  do not widen `openExternalUrl` to editor schemes.
-- On an account-answered lane, do not enable New file or New folder and do not
-  add "Report…" to the read-failure banner: the reader's sentences are the
-  expected states, not bugs.
 
 ## Cross-links
 

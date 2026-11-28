@@ -148,7 +148,7 @@ picker chrome and preselects the active lane worktree. Switching workspaces:
 
 The main-process file service remains the source of truth for path
 safety and workspace roots. On a computer every resolved workspace is
-editable. The one read-only case is an account-answered lane (an ADE Cloud
+editable. The one read-only case is an account-answered lane (a DAEX Cloud
 lane at rest, read from GitHub): New file and New folder do nothing and say
 why (`FilesExplorer` `readOnlyReason`); see
 [README.md](./README.md#with-no-computer-awake). Otherwise whether a tab shows
@@ -181,10 +181,7 @@ Context-menu actions are built in `FilesWorkbench` and rendered by
 
 The explorer owns the search *field* but not the search: it renders whatever
 the workbench passes as `searchResults` in place of the tree while the query is
-non-empty, and skips its own flatten/filter pass entirely. The old
-`onOpenQuickOpen` / `onOpenContentSearch` / `onSearchSubmit` /
-`singleRowHeader` props are gone along with the separate Quick Open and Content
-Search buttons.
+non-empty, and skips its own flatten/filter pass entirely.
 
 ## Editor Groups
 
@@ -204,7 +201,7 @@ branch, and dirty state.
 
 ## Monaco Model Lifecycle
 
-### ADE's own Monaco themes
+### DAEX's own Monaco themes
 
 `monacoLoader.ts` defines `ade-dark` and `ade-light` (`ADE_MONACO_DARK_THEME` /
 `ADE_MONACO_LIGHT_THEME`, selected by `adeMonacoTheme(theme)`) rather than using

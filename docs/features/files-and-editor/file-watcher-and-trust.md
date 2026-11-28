@@ -5,7 +5,7 @@ gated, how one watcher is shared across subscriptions, and how external
 changes propagate to open editor tabs without racing against user
 edits.
 
-The canonical file services run inside the **active ADE runtime**
+The canonical file services run inside the **active DAEX runtime**
 (local machine runtime for local-bound windows, SSH-attached remote runtime for
 remote-bound windows). The desktop main process also hosts the same
 services as fallback targets for the legacy IPC path; both code paths
@@ -65,7 +65,7 @@ primitives:
 - `resolvePathWithinRoot(rootPath, candidate, { allowMissing? })` —
   throws `Path escapes root` if the resolved path is not inside the
   root; optionally permits missing targets (used for create flows).
-- `secureWriteTextAtomicWithinRoot(rootPath, relPath, text)` — atomic
+- `secureWriteAtomicWithinRoot(rootPath, relPath, text)` — atomic
   write via temp file + rename, guarded by the same resolution.
 - `secureWriteFileWithinRoot(rootPath, relPath, buffer, encoding)` —
   non-atomic variant.
@@ -85,7 +85,7 @@ file-writing feature should go through the same primitives.
 - `node_modules/`
 - `.ade/`
 
-Even with `includeIgnored: true` the watcher filters volatile ADE
+Even with `includeIgnored: true` the watcher filters volatile DAEX
 subpaths so background rewrites do not spam the renderer (see below).
 
 ## Watcher service
@@ -173,7 +173,7 @@ is emitted to the callback.
 ### Volatile path filter
 
 Even in `includeIgnored` mode, these paths are always filtered to
-avoid ADE watching its own transcripts and cache:
+avoid DAEX watching its own transcripts and cache:
 
 - `.ade/artifacts/`
 - `.ade/cache/`
@@ -279,7 +279,7 @@ Remote-bound windows start their runtime event pump with
 `replay: false`. The runtime acknowledges that subscription with its
 current cursor, and `preload.ts` uses that cursor for the next poll
 before it resumes ordinary replay. This keeps a newly opened Files tab
-on the live edge of a remote worktree, so a file created by an ADE CLI
+on the live edge of a remote worktree, so a file created by a DAEX CLI
 session on the remote machine refreshes the loaded tree instead of
 waiting behind older runtime events.
 
@@ -296,7 +296,7 @@ lanes.
 
 ## IPC surface
 
-The primary route is the ADE runtime's `file` action domain.
+The primary route is the DAEX runtime's `file` action domain.
 `preload.ts` routes through the remote runtime first and then through
 `callLocalProjectActionStrictIfBound("file", …)` for local-bound
 windows. A bound runtime failure is returned to the caller; the
