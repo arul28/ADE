@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { AppleLogo, ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { CLOUD_MAC_NAME, cloudMachineAllows, cloudMacOfferOf, type CloudComputerAction } from "../../../../shared/cloudMac";
+import { useCloudMacFirstStopLine } from "../../cloudLane/useCloudMacFirstStopLine";
 import {
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
@@ -68,6 +70,7 @@ import {
   removedReasonText,
   prefersReducedMotion,
   type DashLane,
+  type DashMac,
 } from "./cloudDashboardModel";
 import { clearCloudLaneCaches, cloudLaneChangesAvailable, cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
 import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
@@ -308,6 +311,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         </header>
         <div className="kit-card-body" data-flush="true" ref={tableRef}>
           {computersUnread ? <ComputersUnreadNotice onRetry={refresh} /> : null}
+          {!inside ? <CloudMacExplainer account={account} lanes={lanes} /> : null}
           {inside ? (
             <LookInside lane={inside} now={now} busy={busyKey === inside.key} onBack={() => setInsideKey(null)} onClear={() => void clearCaches(inside)} />
           ) : (
@@ -631,6 +635,8 @@ function LaneTable({
   /** The row's actions, behind its ⋯ button at the right end (B14-22). */
   menuActions: (lane: DashLane) => MachineAction[];
 }) {
+  // A stopped Mac's first stop says once more what a stop keeps (synced, account-wide).
+  const macFirstStop = useCloudMacFirstStopLine(lanes.some((lane) => lane.mac?.phase === "stopped"));
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // The listbox keeps focus itself (`aria-activedescendant`): keys from a
     // row's ⋯ button or its open menu (a portal, so they bubble here) are theirs.
@@ -682,7 +688,8 @@ function LaneTable({
               onDoubleClick={() => onOpen(lane.key)}
             >
               <span className="adecd-name">
-                {lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
+                {lane.mac ? <AppleLogo size={15} weight="fill" className="adecd-mac-mark" aria-label="Mac" />
+                  : lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
                 <span className="adecd-name-text">{lane.name}</span>
                 {/* One mark at most, so the name keeps its room: the idle cleanup's warning, no lane, then unused, then safe to delete. */}
                 {lane.idle ? <IdleTag lane={lane} now={now} />
@@ -691,16 +698,20 @@ function LaneTable({
                   : lane.safe ? <span className="kit-tag" data-tone="ok" title="Its pull request is merged and nothing is unpushed">Safe to delete</span>
                   : null}
               </span>
-              <span className="adecd-tsize">{lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}</span>
+              <span className="adecd-tsize">
+                {lane.mac ? <>Mac{lane.rateLabel ? <em className="kit-num">{lane.rateLabel}</em> : null}</>
+                  : lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}
+              </span>
               {status ? (
                 <span className="adecd-state" data-state={status.state} title={status.title ?? undefined}><i />{status.label}</span>
               ) : (
-                <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
+                <span className="adecd-state" data-state={lane.state} title={lane.mac?.label}><i />{lane.mac?.label ?? STATE_LABEL[lane.state]}</span>
               )}
               <span className="adecd-when" title={removedReasonText(lane) ?? undefined}>{lastRunText(lane, now)}</span>
               {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
               <span aria-hidden="true" />
             </div>
+            {lane.mac && !status ? <MacRowNote mac={lane.mac} now={now} keeps={macFirstStop && lane.mac.phase === "stopped" ? macKeepsOf(lane) : null} /> : null}
             {actions.length ? (
               <span className="adecd-row-menu">
                 <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} />
@@ -745,14 +756,19 @@ function laneMenuActions(lane: DashLane, args: {
 }): MachineAction[] {
   if (!lane.instanceId) return [];
   const life = cloudLaneChangesAvailable();
-  const actions: MachineAction[] = [
-    { key: "disk", label: "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside },
-  ];
+  // What the server refuses on this computer (`unsupported`) is not offered at all.
+  const allows = (action: CloudComputerAction) => cloudMachineAllows(lane.machine, action);
+  const actions: MachineAction[] = [];
+  // A Mac's drive is measured only when it reports one.
+  if (!lane.mac || lane.usage) {
+    actions.push({ key: "disk", label: lane.mac ? "What uses the drive" : "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside });
+  }
   if (life && !lane.noLane) {
-    actions.push(
-      { key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning },
-      { key: "free", label: "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy },
-    );
+    if (allows("resize")) actions.push({ key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning });
+    // A lost drive has nothing to push: its saved work is already in Lanes without a computer.
+    if (lane.mac?.phase !== "drive_lost") {
+      actions.push({ key: "free", label: "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy });
+    }
   }
   if (life) {
     actions.push({ key: "delete", label: lane.noLane ? "Delete computer" : "Delete lane", icon: <Trash size={13} />, onSelect: args.onDelete, disabled: args.busy, danger: true });
@@ -761,6 +777,49 @@ function laneMenuActions(lane: DashLane, args: {
 }
 
 const cssId = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "_");
+
+/** The catalog's words for what a Mac's stop keeps, for a Mac row (null while the catalog has no Mac). */
+function macKeepsOf(lane: DashLane): string | null {
+  return lane.mac ? lane.mac.keeps : null;
+}
+
+/**
+ * The line under a Mac row: the server's sentence for where it is (nothing
+ * while it runs), its drive as the last stop saved it, and once, at its first
+ * stop, what a stop keeps.
+ */
+function MacRowNote({ mac, now, keeps }: { mac: DashMac; now: number; keeps: string | null }) {
+  const failed = mac.phase === "start_failed" || mac.phase === "drive_lost";
+  const drive = mac.phase === "stopped" && mac.drive
+    ? `Drive ${mac.drive}${mac.savedAt != null ? `, saved ${formatAgo(mac.savedAt, now)}` : ""}.`
+    : null;
+  const parts = [mac.phase === "running" ? null : mac.sentence, drive, keeps].filter(Boolean);
+  if (!parts.length) return null;
+  return (
+    <div className="adecd-row-note" data-tone={failed ? "warn" : undefined} role="presentation">
+      {parts.join(" ")}
+    </div>
+  );
+}
+
+/**
+ * How a DAEX Cloud Mac works, in two sentences above the table while the
+ * account has a Mac lane: the catalog's own words, so a person who never
+ * heard of a cloud Mac reads what a stop keeps before it surprises them.
+ */
+function CloudMacExplainer({ account, lanes }: { account: CloudAccountState; lanes: readonly DashLane[] }) {
+  const offer = cloudMacOfferOf(account);
+  if (!offer || !lanes.some((lane) => lane.mac)) return null;
+  const start = offer.startSeconds?.max ? ` in about ${offer.startSeconds.max} seconds` : "";
+  return (
+    <div className="adecd-mac-explainer">
+      <AppleLogo size={16} weight="fill" aria-hidden />
+      <p>
+        <b>How a {CLOUD_MAC_NAME} works.</b> {offer.keeps} The next message starts a new Mac with the same drive{start}. While it waits for a free Mac, nothing is charged.
+      </p>
+    </div>
+  );
+}
 
 /** The idle cleanup's mark on a lane row: when it is deleted, or that ADE kept it after a failed save. */
 function IdleTag({ lane, now }: { lane: DashLane; now: number }) {

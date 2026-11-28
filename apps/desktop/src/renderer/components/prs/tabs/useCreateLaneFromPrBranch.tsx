@@ -125,6 +125,8 @@ export function useCreateLaneFromPrBranch({
   const [target, setTarget] = React.useState<LaneMachine | null>(null);
   /** The open dialog creates on ADE Cloud, on a new computer of this size. */
   const [cloudSize, setCloudSize] = React.useState<CloudTierId | null>(null);
+  // Linux or a DAEX Cloud Mac, as the person picked in the machine picker.
+  const [cloudOs, setCloudOs] = React.useState<"linux" | "mac">("linux");
   /** Shown in the dialog whenever there was a machine to choose. */
   const [machineName, setMachineName] = React.useState<string | null>(null);
   const [preflight, setPreflight] = React.useState<CreateLaneFromPrBranchPreflightResult | null>(null);
@@ -174,6 +176,7 @@ export function useCreateLaneFromPrBranch({
       setItem(next);
       setTarget(null);
       setCloudSize(chosen.sizeId);
+      setCloudOs(chosen.os === "mac" ? "mac" : "linux");
       setMachineName(ADE_CLOUD_NAME);
       setPreflight({ preflight: cloudPreflight, lane: null, pr: null });
       setError(adeCloudPrProblem(next, cloudPreflight));
@@ -255,6 +258,7 @@ export function useCreateLaneFromPrBranch({
           },
         },
         sizeId,
+        ...(cloudOs === "mac" ? { os: "mac" as const } : {}),
         originUrl: originUrlForBinding(tabBinding),
         binding: tabBinding,
       });
@@ -337,7 +341,7 @@ export function useCreateLaneFromPrBranch({
         console.warn("create_lane_from_pr.follow_up_failed", err);
       }
     })();
-  }, [appStore, close, cloudSize, item, navigate, preflight, projectRoot, stillHereRef, tabBinding, tabScopeKey, target]);
+  }, [appStore, close, cloudOs, cloudSize, item, navigate, preflight, projectRoot, stillHereRef, tabBinding, tabScopeKey, target]);
 
   const element = (
     <>

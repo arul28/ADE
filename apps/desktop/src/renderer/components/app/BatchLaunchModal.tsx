@@ -7,6 +7,7 @@ import { ADE_CLOUD_MACHINE_ID, type AdeCloudLaneChoice } from "../lanes/useAdeCl
 import { CloudSizeButton } from "../chat/AdeCloudComposerParts";
 import { adeCloudCapacityProblem } from "../chat/launch/adeCloudLaunch";
 import type { CloudTierId } from "../../../shared/cloudTiers";
+import { cloudMacRateText } from "../../../shared/cloudMac";
 import {
   getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
@@ -207,7 +208,7 @@ export type BatchLaunchMachine = {
   /** Null for the tab's machine (the unpinned path), and for ADE Cloud. */
   pin: OpenProjectBinding | null;
   /** The batch goes to ADE Cloud: a new computer of this size for each lane. */
-  adeCloud?: { sizeId: CloudTierId; originUrl: string | null } | null;
+  adeCloud?: { sizeId: CloudTierId; os?: "linux" | "mac"; originUrl: string | null } | null;
 };
 
 /** A batch of CLI sessions can't start on ADE Cloud: the composer starts that one. */
@@ -248,7 +249,8 @@ export function BatchLaunchModal({
   onLaunch: (entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => void;
 }) {
   // Always asks where the batch goes; one choice for every lane in it.
-  const machineChoice = useLaneMachineChoice(open);
+  // A batch never starts Macs from a saved pick: Linux until the person picks a Mac here.
+  const machineChoice = useLaneMachineChoice(open, { savedOs: false });
   // The tab's copy holds the project's default prompt.
   const tabCopyPin = useTabCopyPin();
   const tabCopyPinRef = useRef(tabCopyPin);
@@ -509,12 +511,12 @@ export function BatchLaunchModal({
       onLaunch(entries, {
         machineId: ADE_CLOUD_MACHINE_ID,
         pin: null,
-        adeCloud: { sizeId: adeCloud.tierId, originUrl: machineChoice.repoOriginUrl },
+        adeCloud: { sizeId: adeCloud.tierId, os: adeCloud.os, originUrl: machineChoice.repoOriginUrl },
       });
       return;
     }
     onLaunch(entries, { machineId: selectedMachineId, pin: targetPin });
-  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig, selectedMachineId, targetPin, harnessPresets, adeCloudPicked, adeCloud.tierId, machineChoice.repoOriginUrl]);
+  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig, selectedMachineId, targetPin, harnessPresets, adeCloudPicked, adeCloud.tierId, adeCloud.os, machineChoice.repoOriginUrl]);
 
   if (!issues.length) return null;
 
@@ -526,7 +528,7 @@ export function BatchLaunchModal({
     return (multiIssue ? state?.sessionType : defaultConfig.sessionType) === "cli";
   });
   const adeCloudProblem = adeCloudPicked
-    ? adeCloudCapacityProblem(adeCloud.account, adeCloud.tierId) ?? (cliOnAdeCloud ? ADE_CLOUD_NO_CLI_BATCH : null)
+    ? adeCloudCapacityProblem(adeCloud.account, adeCloud.tierId, adeCloud.os) ?? (cliOnAdeCloud ? ADE_CLOUD_NO_CLI_BATCH : null)
     : null;
   const adeCloudChoice: AdeCloudLaneChoice | null = adeCloud.offered
     ? {
@@ -853,9 +855,15 @@ export function BatchLaunchModal({
                 onChoose={adeCloud.chooseTier}
                 onSetDefault={adeCloud.setDefaultTier}
                 words={adeCloud.words}
+                macOffer={adeCloud.macOffer}
+                os={adeCloud.os}
+                onChooseOs={adeCloud.chooseOs}
               />
               <span>
-                A new {adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for each lane.
+                {adeCloud.os === "mac" && adeCloud.macOffer
+                  // Macs run by the minute: say what the whole batch uses before it starts.
+                  ? `A new Mac for each lane: ${launchCount} ${launchCount === 1 ? "Mac" : "Macs"} at ${cloudMacRateText(adeCloud.macOffer, adeCloud.words)} each while they run, ${cloudMacRateText({ creditMilliPerMinute: adeCloud.macOffer.creditMilliPerMinute * launchCount }, adeCloud.words)} together.`
+                  : `A new ${adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for each lane.`}
               </span>
             </div>
           ) : null}

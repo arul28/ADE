@@ -111,7 +111,7 @@ try {
 
 function signature(computers: readonly AdeCloudLaneComputer[], cloudComputers: readonly AdeCloudComputerId[]): string {
   return [
-    ...computers.map((computer) => [computer.instanceId, computer.laneId, computer.laneName, computer.projectOrigin ?? "", computer.machineKey ?? "", computer.state].join("\u0001")),
+    ...computers.map((computer) => [computer.instanceId, computer.laneId, computer.laneName, computer.projectOrigin ?? "", computer.machineKey ?? "", computer.state, computer.os ?? "", computer.macPhase ?? "", computer.unsupported?.join(",") ?? ""].join("\u0001")),
     ...cloudComputers.map((computer) => `box\u0001${computer.instanceId}\u0001${computer.machineKey ?? ""}\u0001${computer.hasLane ? "lane" : ""}`),
   ].join("\u0002");
 }

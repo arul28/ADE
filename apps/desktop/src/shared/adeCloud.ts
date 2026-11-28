@@ -1,4 +1,7 @@
 import type {
+  CloudComputerAction,
+  CloudComputerOs,
+  CloudMacState,
   CloudAccountState,
   CloudCatalog,
   CloudComputerActivityReport,
@@ -569,6 +572,12 @@ export type CloudMachine = {
   laneWork?: CloudLaneWork | null;
   /** The files git ignores on it, as it last read them: a delete loses them. Null before its first read. */
   ignoredFiles?: CloudIgnoredFiles | null;
+  /** What runs it (`CloudInstance.os`); absent is Linux. */
+  os?: CloudComputerOs;
+  /** A DAEX Cloud Mac's own state (queue, start, drive); null on Linux. */
+  mac?: CloudMacState | null;
+  /** What the server refuses on it (`CloudInstance.unsupported`): hide those controls. */
+  unsupported?: CloudComputerAction[];
 };
 
 /**

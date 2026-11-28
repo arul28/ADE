@@ -15,6 +15,16 @@ import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../../../../sha
 import { cloudTierHoursAt, cloudTierOfMachine, cloudTierRank, cloudTiers, type CloudTier } from "../../../../shared/cloudTiers";
 import { cloudUnitWords, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { formatAgo } from "../../../lib/format";
+import {
+  CLOUD_MAC_PHASE_LABEL,
+  cloudMacDriveText,
+  cloudMacOfferOf,
+  cloudMacPhaseOf,
+  cloudMacPhaseTone,
+  cloudMacRateText,
+  cloudMacSentence,
+  type CloudMacPhase,
+} from "../../../../shared/cloudMac";
 
 /**
  * The ADE Cloud dashboard's facts, from reads already in memory (the account's
@@ -57,7 +67,37 @@ export type DashLane = {
   noLane: boolean;
   /** The idle cleanup's warning for its computer (or its kept-after-a-failed-save state), else null. */
   idle: CloudIdleCleanupEntry | null;
+  /** A DAEX Cloud Mac's own state, from the server's `mac` (null on Linux). */
+  mac: DashMac | null;
 };
+
+/** A Mac row's state: the word, the server's sentence, and its drive as the last stop saved it. */
+export type DashMac = {
+  phase: CloudMacPhase;
+  label: string;
+  sentence: string | null;
+  /** "7.4 of 20 GB", or null before its first save. */
+  drive: string | null;
+  savedAt: number | null;
+  /** The catalog's words for what a stop keeps; null while the catalog has no Mac. */
+  keeps: string | null;
+};
+
+function dashMacOf(machine: CloudLaneMachine, keeps: string | null): DashMac | null {
+  if (machine.os !== "mac") return null;
+  const phase = cloudMacPhaseOf(machine.mac, machine.status);
+  return {
+    phase,
+    label: CLOUD_MAC_PHASE_LABEL[phase],
+    sentence: cloudMacSentence(machine.mac),
+    drive: cloudMacDriveText(machine.mac),
+    savedAt: machine.mac?.drive.savedAt ?? null,
+    keeps,
+  };
+}
+
+/** A Mac phase as the State column's dot. */
+const MAC_DOT: Readonly<Record<ReturnType<typeof cloudMacPhaseTone>, DashLaneState>> = { on: "awake", busy: "starting", off: "asleep", bad: "failed" };
 
 function stateOf(machine: CloudMachine): DashLaneState {
   if (machine.update?.state === "updating") return "updating";
@@ -93,9 +133,11 @@ export function dashLanes(input: {
   const words = cloudUnitWords(input.account);
   const idle = new Map((input.account?.dueForDeletion ?? []).map((entry) => [entry.instanceId, entry]));
   // Every computer the account pays for: a lane's own, and one that holds no lane.
+  const macOffer = cloudMacOfferOf(input.account);
   const withComputer = input.machines
     .map((machine): DashLane => {
-      const tier = cloudTierOfMachine(machine, tiers);
+      const mac = dashMacOf(machine, macOffer?.keeps?.trim() || null);
+      const tier = mac ? null : cloudTierOfMachine(machine, tiers);
       const lastActiveAt = machine.lastActiveAtMs ?? null;
       return {
         key: machine.instanceId,
@@ -103,9 +145,11 @@ export function dashLanes(input: {
         name: machine.lane?.laneName ?? noLaneName(machine),
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
-        rateLabel: rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
+        rateLabel: mac
+          ? macOffer ? cloudMacRateText(macOffer, words) : null
+          : rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
         diskGb: machine.resources?.diskGb ?? 0,
-        state: stateOf(machine),
+        state: mac ? MAC_DOT[cloudMacPhaseTone(mac.phase)] : stateOf(machine),
         lastActiveAt,
         old: lastActiveAt != null ? input.now - lastActiveAt >= CLOUD_LANE_OLD_MS : machine.createdAtMs != null && input.now - machine.createdAtMs >= CLOUD_LANE_OLD_MS,
         usage: machine.diskUsage ?? null,
@@ -115,6 +159,7 @@ export function dashLanes(input: {
         without: null,
         noLane: !machine.lane,
         idle: idle.get(machine.instanceId) ?? null,
+        mac,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -141,6 +186,7 @@ export function dashLanes(input: {
         without: lane,
         noLane: false,
         idle: null,
+        mac: null,
       };
     });
   // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.

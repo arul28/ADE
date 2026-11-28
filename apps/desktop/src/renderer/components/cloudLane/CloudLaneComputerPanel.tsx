@@ -13,7 +13,8 @@ import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
 import { keepLaneComputer, sleepLaneComputer } from "./CloudLaneHeaderButton";
 import { cloudLaneChangesAvailable, cloudLaneComputerOfLane, cloudLaneMovesAvailable } from "./cloudLaneActions";
 import { CLOUD_MACHINE_STATE_TEXT } from "./CloudLaneConnectionRow";
-import { cloudLanePowerOfState } from "./cloudLaneStatus";
+import { cloudLanePower, cloudLanePowerText } from "./cloudLaneStatus";
+import { CLOUD_MAC_NAME, cloudMachineAllows, cloudMacOfferOf } from "../../../shared/cloudMac";
 import { freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import "./cloudLane.css";
 import "./cloudLaneStatus.css";
@@ -57,6 +58,7 @@ export function CloudLaneComputerPanel({
   }
   const life = cloudLaneChangesAvailable();
   const awake = computer.state === "running";
+  const mac = computer.os === "mac";
   const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
 
   const free = async () => {
@@ -72,11 +74,18 @@ export function CloudLaneComputerPanel({
     <div className="adecl-manage">
       <div className="adecl-manage-head">
         <CloudMark size={16} brand />
-        <span>{BRAND.CLOUD_NAME} computer</span>
+        <span>{mac ? CLOUD_MAC_NAME : `${BRAND.CLOUD_NAME} computer`}</span>
         {/* "Deleting" is on its way out, not in trouble: the going-to-sleep mark. */}
-        <span className="adecl-status-state" data-power={computer.state === "deleting" ? "stopping" : cloudLanePowerOfState(computer.state)}>
+        <span
+          className="adecl-status-state"
+          data-power={computer.state === "deleting"
+            ? "stopping"
+            : cloudLanePower({ state: computer.state, waking: false, resting: false, online: false, macPhase: computer.macPhase ?? null })}
+        >
           <i aria-hidden />
-          {CLOUD_MACHINE_STATE_TEXT[computer.state]}
+          {mac && computer.state !== "deleting" && computer.macPhase
+            ? cloudLanePowerText(cloudLanePower({ state: computer.state, waking: false, resting: false, online: false, macPhase: computer.macPhase }), computer.macPhase)
+            : CLOUD_MACHINE_STATE_TEXT[computer.state]}
         </span>
       </div>
       <ul className="adecl-manage-rows">
@@ -90,12 +99,16 @@ export function CloudLaneComputerPanel({
             <button type="button" className="kit-btn" data-size="sm" onClick={() => void keepLaneComputer(computer.instanceId, laneName)}>Keep it</button>
           </ManageRow>
         ) : null}
-        {life || cloudLaneMovesAvailable() ? (
+        {(life || cloudLaneMovesAvailable()) && cloudMachineAllows(computer, "resize") ? (
           <ManageRow icon={<Cpu size={14} />} title="Size" hint="More CPU and memory use credits faster.">
             <button type="button" className="kit-btn" data-size="sm" onClick={() => setSizing(true)}>Change size</button>
           </ManageRow>
         ) : null}
-        {awake ? (
+        {mac ? (
+          <ManageRow icon={<Moon size={14} />} title="Stops on its own" hint={cloudMacOfferOf(account)?.keeps ?? "A Mac stops 5 minutes after work ends. Only its drive is kept."}>
+            <span />
+          </ManageRow>
+        ) : awake ? (
           <ManageRow icon={<Moon size={14} />} title="Sleep" hint="A sleeping computer uses no credits. A message wakes it.">
             <button type="button" className="kit-btn" data-size="sm" onClick={() => void sleepLaneComputer(computer.instanceId, laneName, runningChats)}>Put to sleep</button>
           </ManageRow>
@@ -111,7 +124,7 @@ export function CloudLaneComputerPanel({
             </button>
           </ManageRow>
         ) : null}
-        <ManageRow icon={<ArrowSquareOut size={14} />} title="Disk and credits" hint="What uses its disk, and the account's credits.">
+        <ManageRow icon={<ArrowSquareOut size={14} />} title={mac ? "Drive and credits" : "Disk and credits"} hint={mac ? "Its drive, and the account's credits." : "What uses its disk, and the account's credits."}>
           <button
             type="button"
             className="kit-btn kit-btn-ghost"

@@ -1,5 +1,7 @@
 import { useMemo } from "react";
-import { Cpu } from "@phosphor-icons/react";
+import { AppleLogo, Cpu } from "@phosphor-icons/react";
+import { cloudMacOfferOf, cloudMacRateText, cloudMacShapeText, cloudMacTimeAt } from "../../../../shared/cloudMac";
+import { rootAppStoreApi } from "../../../state/appStore";
 import { cloudCatalogOf, cloudHoursLeftMilli, cloudSmallHoursSentence, cloudSmallRateMilli, type CloudAccountState } from "../../../../shared/adeCloud";
 import { cloudTiers } from "../../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
@@ -22,12 +24,20 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
   const words = cloudUnitWords(account);
   // The Small card already says it is unlimited; the note names Small's rate only when it has one.
   const smallNote = cloudSmallRateMilli(catalog) > 0 ? ` ${cloudSmallHoursSentence(catalog, words)}` : "";
+  // The DAEX Cloud Mac, only while the catalog offers one: its one shape, and what new lanes a person starts run on.
+  const mac = cloudMacOfferOf(account);
+  const defaultOs = useRootAppStore((state) => state.cloudDefaultOs);
+  const onMac = Boolean(mac) && defaultOs === "mac";
   return (
     <section id="cloud-sizes" className="kit-card adecd-card" aria-label="Sizes">
       <header className="kit-card-head">
         <Cpu size={14} />
         Sizes
-        <span className="adecd-head-note">New cloud lanes start on {current?.label ?? "Small"}; each can change size later. Every size has a desktop screen the agent can use.{smallNote}</span>
+        <span className="adecd-head-note">
+          {onMac
+            ? "New cloud lanes you start begin on a Mac. Agents and automations start on Linux unless they ask for a Mac."
+            : `New cloud lanes start on ${current?.label ?? "Small"}; each can change size later. Every size has a desktop screen the agent can use.${smallNote}`}
+        </span>
       </header>
       <div className="kit-card-body">
         <CloudSizeCards
@@ -40,6 +50,29 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
           ariaLabel="Size for new cloud lanes"
           words={words}
         />
+        {mac ? (
+          <div className="adecd-mac-size" data-picked={onMac || undefined}>
+            <AppleLogo size={22} weight="fill" aria-hidden />
+            <div className="adecd-mac-size-text">
+              <b>Mac</b>
+              <span className="kit-num" data-face="ui">{cloudMacShapeText(mac)} · {cloudMacRateText(mac, words)}</span>
+              <small>{mac.summary} {mac.keeps}</small>
+            </div>
+            <div className="adecd-mac-size-side">
+              <b className="kit-num" data-face="ui">{cloudMacTimeAt(mac, leftMilli)}</b>
+              <span>left on a Mac</span>
+              <button
+                type="button"
+                className="kit-btn"
+                data-size="sm"
+                aria-pressed={onMac}
+                onClick={() => rootAppStoreApi.getState().setCloudDefaultOs(onMac ? "linux" : "mac")}
+              >
+                {onMac ? `Start new lanes on Linux` : "Start new lanes on a Mac"}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );

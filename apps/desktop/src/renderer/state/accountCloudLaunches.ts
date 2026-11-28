@@ -390,6 +390,8 @@ export type StartAccountCloudChat = {
   /** Left out, the server picks Small. */
   sizeId?: CloudLaunchStartRequest["sizeId"];
   sizeChoice?: CloudLaunchStartRequest["sizeChoice"];
+  /** `mac`: a DAEX Cloud Mac (the catalog offers one and the person picked it). Left out, Linux. */
+  os?: CloudLaunchStartRequest["os"];
   /** Left out, a new lane named from the first message. */
   lane?: CloudLaunchStartRequest["lane"];
   /** The launch as the app set it up (`cloudLaunchAppArgs`), for `CloudServerLaunchRequest.launch`. */
@@ -456,7 +458,7 @@ export async function startAccountCloudChat(input: StartAccountCloudChat): Promi
     // The server reads the origin from the account's project when there is one.
     project: input.accountProjectId ? { accountProjectId: input.accountProjectId } : { origin: input.origin },
     ...(input.sizeId ? { sizeId: input.sizeId } : {}),
-    ...(input.sizeChoice ? { sizeChoice: input.sizeChoice } : {}),
+    ...(input.os === "mac" ? { os: "mac" as const } : input.sizeChoice ? { sizeChoice: input.sizeChoice } : {}),
     ...(input.lane ? { lane: input.lane } : {}),
     chat: {
       provider: input.provider,

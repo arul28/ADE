@@ -16,7 +16,7 @@ import type {
   ChatLaunchStageStatus,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
-import { cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_MAC_SHAPE, cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
 import type {
   CloudLaunchAttachment,
   CloudLaunchRecord,
@@ -143,6 +143,8 @@ export function createCloudLaneComputerStages(
   const tierWords = (tier: CloudTier | null): string | null => (tier ? `${tier.label} · ${tier.cpu} CPU, ${tier.memoryGb} GB` : null);
   /** The computer row's words: its size, and why it is bigger than the size asked for. */
   const computerWords = (record: CloudLaneLaunchRecord): string | null => {
+    // A DAEX Cloud Mac has one shape, and no size note.
+    if (record.snapshot.cloud.os === "mac") return `Mac · ${CLOUD_MAC_SHAPE.cpu} CPU, ${CLOUD_MAC_SHAPE.memoryGb} GB`;
     const words = tierWords(record.tier);
     const note = record.snapshot.cloud.sizeNote?.trim();
     return note ? (words ? `${words}. ${note}` : note) : words;
@@ -235,7 +237,10 @@ export function createCloudLaneComputerStages(
       // A CLI launch goes as the lane (`cli` stays in `launch.kind`): a server or computer before it runs the lane alone.
       kind: kind === "cli" ? "lane" : kind,
       sizeId: snapshot.cloud.sizeId as CloudServerLaunchRequest["sizeId"],
-      ...(snapshot.cloud.sizeChoice ? { sizeChoice: snapshot.cloud.sizeChoice } : {}),
+      // A Mac has one size: `sizeId` still goes (the server ignores it) and the choice is `picked`.
+      ...(snapshot.cloud.os === "mac"
+        ? { os: "mac" as const }
+        : snapshot.cloud.sizeChoice ? { sizeChoice: snapshot.cloud.sizeChoice } : {}),
       project: { origin: record.project.identity },
       lane: { id: snapshot.laneId, ...cloudLaunchLaneFields(snapshot.laneName, launch.laneConfig) },
       ...(kind === "chat" && create && launch.chat
@@ -327,7 +332,9 @@ export function createCloudLaneComputerStages(
     const repository = record.project.identity.replace(/^github\.com\//i, "");
     const state = server.state;
     const computerMade = Boolean(server.instanceId) && state !== "making";
-    show("computer", computerMade ? "done" : "running", computerWords(record));
+    // A Mac waits in the server's queue, then starts: the row says the server's sentence while it does.
+    const macWaiting = !computerMade && server.os === "mac" ? server.mac?.message?.trim() || null : null;
+    show("computer", computerMade ? "done" : "running", macWaiting ?? computerWords(record));
     if (!computerMade) return;
     // Waiting on a sign-in comes after the join: the computer is in the account already.
     const joined = state === "joined" || state === "waiting_for_sign_in" || state === "running" || state === "done" || reported.get("join")?.status === "done";

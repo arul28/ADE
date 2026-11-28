@@ -64,6 +64,9 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     diskUsage: instance.diskUsage ?? null,
     laneWork: instance.laneWork ?? null,
     ignoredFiles: instance.ignoredFiles ?? null,
+    // The DAEX Cloud Mac: an older server leaves these out (Linux, nothing refused).
+    ...(instance.os === "mac" ? { os: "mac" as const, mac: instance.mac ?? null } : {}),
+    ...(instance.unsupported?.length ? { unsupported: [...instance.unsupported] } : {}),
     ...(lane ? { lane } : {}),
     replacesInstanceId: instance.metadata.ade_moved_from ?? instance.metadata.ade_copied_from ?? null,
   };

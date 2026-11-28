@@ -46,6 +46,7 @@ export function adeCloudOptimisticSnapshot(
     }),
     cloud: {
       sizeId,
+      ...(args.cloud?.os === "mac" ? { os: "mac" as const } : {}),
       projectOrigin,
       instanceId: null,
       machineKey: null,
@@ -66,7 +67,7 @@ export function adeCloudLaunchProblem(input: {
   originUrl: string | null;
   account: CloudAccountState | null;
 }): string | null {
-  return cloudLaneStartBlock(input.account, { newLane: true, sizeId: input.args.cloud?.sizeId ?? null })?.message
+  return cloudLaneStartBlock(input.account, { newLane: true, sizeId: input.args.cloud?.sizeId ?? null, os: input.args.cloud?.os ?? null })?.message
     ?? cloudLaneLaunchStartRefusal({ args: input.args, originUrl: input.originUrl })?.message
     ?? null;
 }
@@ -77,8 +78,8 @@ export function adeCloudLaunchProblem(input: {
  * all the plan's computers in use, or no hours for a size that uses them.
  * Unknown (no account read yet) is never a block: main still refuses each.
  */
-export function adeCloudCapacityProblem(account: CloudAccountState | null, sizeId: string | null = null): string | null {
-  return cloudLaneStartBlock(account, { newLane: true, sizeId })?.message ?? null;
+export function adeCloudCapacityProblem(account: CloudAccountState | null, sizeId: string | null = null, os: "linux" | "mac" | null = null): string | null {
+  return cloudLaneStartBlock(account, { newLane: true, sizeId, os })?.message ?? null;
 }
 
 /**
@@ -141,6 +142,8 @@ export function startAdeCloudLaunch(input: {
   sizeId: string;
   /** `default` when nobody picked the size for this launch (`ChatLaunchCloudTarget.sizeChoice`); left out, it stays. */
   sizeChoice?: "default" | "picked";
+  /** `mac` only when the person picked a Mac for this start (`cloudLaunchOs`). */
+  os?: "linux" | "mac";
   originUrl: string | null;
   binding: OpenProjectBinding;
   draftSnapshot?: ChatLaunchLocalRecord["draftSnapshot"];
@@ -156,6 +159,7 @@ export function startAdeCloudLaunch(input: {
     cloud: {
       sizeId: input.sizeId,
       ...(input.sizeChoice ? { sizeChoice: input.sizeChoice } : {}),
+      ...(input.os === "mac" ? { os: "mac" as const } : {}),
       ...(input.originUrl?.trim() ? { originUrl: input.originUrl.trim() } : {}),
     },
   };

@@ -119,7 +119,7 @@ import {
   type ChatReactionEmoji,
 } from "../../../shared/types/chat";
 import { musePermissionModeFromLegacyPermissionMode, nativePermissionToCliMode, resolveModelPermissionValue } from "../../../shared/modelPermissions";
-import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import { providerDisplayLabel, providerDisplayName } from "../../../shared/pendingInputLabels";
 import {
   PENDING_INPUT_SEND_BLOCKED_MESSAGE,
   isDismissiblePendingRequest,
@@ -14948,7 +14948,7 @@ export function AgentChatPane({
    */
   const launchDraftIntoAccountCloud = useCallback((
     snapshot: DraftLaunchSnapshot,
-    cloud: { sizeId: string; sizeChoice: "default" | "picked"; originUrl: string | null },
+    cloud: { sizeId: string; sizeChoice: "default" | "picked"; os?: "linux" | "mac"; originUrl: string | null },
     configuredLane: NewLaneDraftConfig | null,
   ): boolean => {
     const origin = normalizeGitRemoteIdentity(cloud.originUrl);
@@ -14989,6 +14989,7 @@ export function AgentChatPane({
         laneConfig: withCloudLaneColor(configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null, listedProjectLanesNow(lanesRef.current)),
         sizeId: cloud.sizeId,
         sizeChoice: cloud.sizeChoice,
+        os: cloud.os,
       }),
       ...(files.length ? { files } : {}),
     })
@@ -15024,6 +15025,8 @@ export function AgentChatPane({
     cloud: {
       sizeId: string;
       sizeChoice?: "default" | "picked";
+      /** `mac`: the person picked a DAEX Cloud Mac for this start. */
+      os?: "linux" | "mac";
       originUrl: string | null;
       launchId?: string;
       lane?: { laneId: string; laneName: string; branchRef: string };
@@ -15100,6 +15103,7 @@ export function AgentChatPane({
         args: { ...cloudArgs, laneId: newLaneId, laneName, laneConfig: withCloudLaneColor(laneConfig, listedProjectLanesNow(lanesRef.current), existingLane?.laneId) },
         sizeId: cloud.sizeId,
         ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
+        ...(cloud.os === "mac" ? { os: "mac" as const } : {}),
         originUrl: cloud.originUrl,
         binding: launchBinding,
         draftSnapshot: snapshot,
@@ -15350,6 +15354,8 @@ export function AgentChatPane({
     if (cloudSend) {
       // Send is off while the label above the box shows; this is the guard.
       if (cloudSend.notice) return;
+      // A send on a Mac counts as having read what its stop keeps (account-wide).
+      if (cloudSend.os === "mac") rootAppStoreApi.getState().setCloudMacStopExplained(true);
       const cloudLane = cloudSend.lane;
       const cloudRequestKey = `ade-cloud:${cloudLane?.laneId ?? "new"}:${draftLaunchRequestKey({
         kind,
@@ -15391,7 +15397,7 @@ export function AgentChatPane({
           // ADE Web: the account server starts the lane; its notice keeps a CLI draft off.
           const started = kind === "chat" && launchDraftIntoAccountCloud(
             snapshot,
-            { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, originUrl: cloudSend.originUrl },
+            { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, os: cloudSend.os, originUrl: cloudSend.originUrl },
             draftNewLaneConfig,
           );
           draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
@@ -15408,7 +15414,7 @@ export function AgentChatPane({
           draftNewLaneConfig,
           // Main owns every ADE Cloud launch; there is no older path to fall back to.
           () => setError({ message: `This ${BRAND.NAME} can't start a ${BRAND.CLOUD_NAME} lane. Update ${BRAND.NAME}, then send again.`, kind: "status" }),
-          { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, originUrl: cloudSend.originUrl },
+          { sizeId: cloudSend.tierId, sizeChoice: cloudSend.sizeChoice, os: cloudSend.os, originUrl: cloudSend.originUrl },
           newDraftMarkAtSend,
         );
         draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
@@ -19378,6 +19384,7 @@ export function AgentChatPane({
     selectedLane: adeCloudSelectedLane,
     newLane: adeCloudNewLane,
     notice: adeCloudNotice,
+    info: adeCloudInfo,
     openSettings: openAdeCloudSettings,
     recheckSendBlock: recheckAdeCloudSendBlock,
   } = useAdeCloudComposer({
@@ -19389,6 +19396,7 @@ export function AgentChatPane({
     parallelChatMode,
     isCliDraft: isWorkCliLaunchDraft,
     provider: sessionProvider ?? null,
+    providerLabel: sessionProvider ? providerDisplayName(sessionProvider) : null,
     attachments,
     newLaneConfig: draftNewLaneConfig,
     laneConfigOf: chatLaunchLaneConfigFromDraft,
@@ -20489,7 +20497,9 @@ export function AgentChatPane({
     selectedSessionId && renderedSessionId === selectedSessionId ? selectedEvents : EMPTY_CHAT_EVENTS,
   );
   const composerAboveSlot = useMemo(() => {
-    const cloudTray = adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : null;
+    // A refusal holds Send; the Mac's one-time line (`adeCloudInfo`) never does.
+    const trayNotice = adeCloudNotice ?? adeCloudInfo;
+    const cloudTray = trayNotice ? <AdeCloudTray notice={trayNotice} onAction={openAdeCloudSettings} /> : null;
     // The chat's ADE Cloud lane job (`chatLaneJob`, from the chat's own binding and lane), the one its Send reads too.
     const laneStatus = selectedSessionId && chatLaneJob ? <CloudLaneChatStatus job={chatLaneJob} /> : null;
     const tierRequests = selectedSessionId && cloudTierRequestCards.length > 0
@@ -20505,7 +20515,7 @@ export function AgentChatPane({
         {aboveComposer}
       </>
     );
-  }, [aboveComposer, adeCloudNotice, chatLaneJob, cloudTierRequestCards, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
+  }, [aboveComposer, adeCloudInfo, adeCloudNotice, chatLaneJob, cloudTierRequestCards, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -23654,6 +23664,9 @@ export function AgentChatPane({
                                   disabled={shellLaunchBusy}
                                   hoursLeftMilli={adeCloud.hoursLeftMilli}
                                   words={adeCloud.words}
+                                  macOffer={adeCloud.macOffer}
+                                  os={adeCloud.os}
+                                  onChooseOs={adeCloud.chooseOs}
                                 />
                               ) : null}
                               {cursorCloudMode && !parallelChatMode ? (

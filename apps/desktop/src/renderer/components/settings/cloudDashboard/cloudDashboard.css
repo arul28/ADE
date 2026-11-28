@@ -839,3 +839,48 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
   box-shadow: 0 6px 18px -10px rgba(139, 92, 246, 0.8);
 }
 .kit-btn.kit-btn-primary.adecd-brandbtn:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* The DAEX Cloud Mac: a row's line under it, and the explainer above the table. */
+.adecd-mac-mark { color: var(--color-fg); opacity: 0.82; flex: none; }
+.adecd-row-note {
+  padding: 0 16px 9px 42px;
+  margin-top: -4px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--kit-text-3);
+}
+.adecd-row-note[data-tone="warn"] { color: color-mix(in srgb, var(--kit-crit) 80%, var(--kit-text-2)); }
+.adecd-mac-explainer {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 12px 16px 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--kit-rule);
+  border-radius: var(--radius-md, 8px);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--kit-text-2);
+}
+.adecd-mac-explainer svg { flex: none; margin-top: 2px; color: var(--color-fg); opacity: 0.8; }
+.adecd-mac-explainer p { margin: 0; }
+.adecd-mac-explainer b { color: var(--color-fg); font-weight: 600; }
+.adecd-mac-size {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--kit-rule);
+  border-radius: var(--radius-lg, 10px);
+}
+.adecd-mac-size[data-picked] { border-color: color-mix(in srgb, var(--adec-400) 60%, var(--kit-rule)); }
+.adecd-mac-size > svg { flex: none; color: var(--color-fg); opacity: 0.85; }
+.adecd-mac-size-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.adecd-mac-size-text b { font-size: 13px; }
+.adecd-mac-size-text span { font-size: 12px; color: var(--kit-text-2); }
+.adecd-mac-size-text small { font-size: 11.5px; color: var(--kit-text-3); line-height: 1.45; }
+.adecd-mac-size-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; text-align: right; }
+.adecd-mac-size-side b { font-size: 18px; }
+.adecd-mac-size-side span { font-size: 11px; color: var(--kit-text-3); }

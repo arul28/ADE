@@ -1,4 +1,4 @@
-import { CaretDown, Check, GearSix, Info, SlidersHorizontal, Warning } from "@phosphor-icons/react";
+import { AppleLogo, CaretDown, Check, GearSix, Info, SlidersHorizontal, Warning } from "@phosphor-icons/react";
 import { useSponsoredCardOnScreen } from "./sponsored/sponsoredOnScreen";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
@@ -22,6 +22,7 @@ import type { AdeCloudTrayAction, AdeCloudTrayNotice } from "./useAdeCloudDraft"
 import { LaneMoveControl } from "../laneMove/LaneMoveControl";
 import type { LaneMoveSource } from "../laneMove/laneMoveModel";
 import { BRAND } from "../../../shared/brand";
+import { cloudMacRateText, cloudMacShapeText, cloudMacTimeAt, type CloudComputerOs, type CloudMacOffer } from "../../../shared/cloudMac";
 
 
 /**
@@ -43,6 +44,9 @@ export function CloudSizeButton({
   disabled = false,
   hoursLeftMilli = null,
   words = CLOUD_CREDIT_WORDS,
+  macOffer = null,
+  os = "linux",
+  onChooseOs,
 }: {
   tiers: readonly CloudTier[];
   tierId: CloudTierId;
@@ -54,8 +58,14 @@ export function CloudSizeButton({
   hoursLeftMilli?: number | null;
   /** The account's words (`cloudUnitWords`). */
   words?: CloudUnitWords;
+  /** The DAEX Cloud Mac offer: with it, the menu starts with Linux | Mac and the button says which. */
+  macOffer?: CloudMacOffer | null;
+  os?: CloudComputerOs;
+  onChooseOs?: (os: CloudComputerOs) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const macShown = Boolean(macOffer && onChooseOs);
+  const mac = macShown && os === "mac" && macOffer ? macOffer : null;
   const portalContainer = usePortalContainer();
   const idBase = useId();
   const current = tiers.find((tier) => tier.id === tierId) ?? null;
@@ -65,8 +75,11 @@ export function CloudSizeButton({
     <DropdownMenu.Root open={open} onOpenChange={setOpen} modal={false}>
       <SmartTooltip
         forceEnabled
-        content={{
-          label: `Computer size: ${label}`,
+        content={mac ? {
+          label: "Computer: Mac",
+          description: `${cloudMacShapeText(mac)}. ${capitalize(cloudMacRateText(mac, words))}. ${mac.keeps}`,
+        } : {
+          label: macShown ? `Computer: Linux · ${label}` : `Computer size: ${label}`,
           description: current && currentFacts
             ? `${currentFacts.specs.join(", ")}. ${currentFacts.rateLine}.`
             : `The size of the new ${BRAND.CLOUD_NAME} computer.`,
@@ -76,7 +89,7 @@ export function CloudSizeButton({
           <button
             type="button"
             data-ade-cloud-size
-            aria-label={`Computer size, ${label}`}
+            aria-label={mac ? "Computer, Mac" : macShown ? `Computer, Linux ${label}` : `Computer size, ${label}`}
             disabled={disabled}
             onPointerDown={(event) => event.preventDefault()}
             onClick={() => setOpen((value) => !value)}
@@ -89,15 +102,16 @@ export function CloudSizeButton({
               disabled && "cursor-not-allowed opacity-45",
             )}
           >
-            <CloudSizeIcon tier={tierId} size={15} />
-            <span>{label}</span>
+            {mac ? <AppleLogo size={14} weight="fill" aria-hidden /> : <CloudSizeIcon tier={tierId} size={15} />}
+            {/* While a Mac is offered the button says what the computer is, not only its size. */}
+            <span className="whitespace-nowrap">{mac ? "Mac" : macShown ? `Linux · ${label}` : label}</span>
             <CaretDown size={9} weight="bold" className={cn("shrink-0 transition-transform duration-150", open && "rotate-180")} aria-hidden />
           </button>
         </DropdownMenu.Trigger>
       </SmartTooltip>
       <DropdownMenu.Portal container={portalContainer ?? undefined}>
         <DropdownMenu.Content
-          aria-label="Computer size"
+          aria-label={macShown ? "Computer" : "Computer size"}
           className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[340px] p-1 font-sans text-[11px] text-fg/82")}
           style={{ zIndex: portalContainer ? Z_LAYERS.dialogPopover : Z_LAYERS.popover }}
           side="bottom"
@@ -105,7 +119,50 @@ export function CloudSizeButton({
           sideOffset={4}
           collisionPadding={8}
         >
-          <div className="adec-menu-label" aria-hidden>Size of the new computer</div>
+          <div className="adec-menu-label" aria-hidden>{macShown ? "The new computer" : "Size of the new computer"}</div>
+          {macShown && macOffer && onChooseOs ? (
+            <div role="radiogroup" aria-label="Linux or Mac" className="mx-1 mb-1.5 mt-0.5 grid grid-cols-2 gap-0.5 rounded-md bg-fg/[0.05] p-0.5">
+              {(["linux", "mac"] as const).map((choice) => (
+                <DropdownMenu.Item
+                  key={choice}
+                  role="radio"
+                  aria-checked={os === choice}
+                  data-ade-cloud-os={choice}
+                  // The menu stays open: the rows under the switch change with it.
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    onChooseOs(choice);
+                  }}
+                  className={cn(
+                    "flex h-6 cursor-pointer items-center justify-center gap-1 rounded-[5px] text-[11px] font-medium outline-none transition-colors",
+                    os === choice ? "bg-card text-fg/90 shadow-sm" : "text-muted-fg/70 hover:text-fg/85 data-[highlighted]:text-fg/85",
+                  )}
+                >
+                  {choice === "mac" ? <AppleLogo size={11} weight="fill" aria-hidden /> : null}
+                  {choice === "mac" ? "Mac" : "Linux"}
+                </DropdownMenu.Item>
+              ))}
+            </div>
+          ) : null}
+          {mac ? (
+            <div className="mx-1 mb-1 rounded-md bg-fg/[0.035] px-2.5 py-2" data-ade-cloud-mac-offer>
+              <div className="flex items-center gap-2">
+                <AppleLogo size={13} weight="fill" className="shrink-0 text-fg/80" aria-hidden />
+                <span className="shrink-0 text-[11.5px] font-medium text-fg/90">{mac.label || "Mac"}</span>
+                <span className="min-w-0 flex-1 truncate text-[10.5px] tabular-nums text-muted-fg/60">{cloudMacShapeText(mac)}</span>
+                {hoursLeftMilli != null ? (
+                  <span className="shrink-0 text-right text-[10.5px] font-medium tabular-nums text-fg/80" title={`Your ${words.noun} last ${cloudMacTimeAt(mac, hoursLeftMilli)} on a Mac.`}>
+                    {cloudMacTimeAt(mac, hoursLeftMilli)}
+                  </span>
+                ) : null}
+              </div>
+              {mac.summary ? <p className="m-0 mt-1.5 text-[10.5px] leading-snug text-muted-fg/70">{mac.summary}</p> : null}
+              <p className="m-0 mt-1 text-[10.5px] leading-snug text-muted-fg/70">
+                <span className="font-medium text-fg/80">{capitalize(cloudMacRateText(mac, words))}</span>, by the whole minute. {mac.keeps}
+              </p>
+            </div>
+          ) : null}
+          {mac ? null : (
           <DropdownMenu.RadioGroup
             value={tierId}
             onValueChange={(value) => {
@@ -150,8 +207,13 @@ export function CloudSizeButton({
               );
             })}
           </DropdownMenu.RadioGroup>
+          )}
           <DropdownMenu.Separator className="my-1 h-px bg-fg/[0.06]" />
-          {tierId !== defaultTier ? (
+          {mac ? (
+            <div className="px-2 py-1.5 text-[10.5px] leading-snug text-muted-fg/60">
+              New lanes you start begin on a Mac. Agents and automations start on Linux unless they ask for a Mac.
+            </div>
+          ) : tierId !== defaultTier ? (
             <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "text-[11px] text-fg/75")} onSelect={() => onSetDefault(tierId)}>
               <span className="inline-flex h-[16px] w-[16px] shrink-0 items-center justify-center"><GearSix size={12} className="text-muted-fg/75" aria-hidden /></span>
               <span className="min-w-0 flex-1 truncate">Start every new lane on {label}</span>
@@ -167,6 +229,8 @@ export function CloudSizeButton({
   );
 }
 
+const capitalize = (text: string): string => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
+
 /** The tray's icon size and flex gap, in px (cloudBrand.css .adec-tray). */
 const TRAY_ICON_PX = 14;
 const TRAY_GAP_PX = 8;
@@ -178,6 +242,7 @@ export const TRAY_ACTION_LABEL: Record<AdeCloudTrayAction, string> = {
   settings: "Open settings",
   github: "Connect GitHub",
   "computer-limit": "See your options",
+  "mac-stop-read": "Got it",
 };
 
 /**

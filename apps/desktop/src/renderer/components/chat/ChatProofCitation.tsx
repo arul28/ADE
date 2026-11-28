@@ -353,11 +353,11 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
       );
     }
     const text = reach
-      ? `${chatMachineMediaSentence(reach, "proof", scope.machineName, machine.error)}${reach === "waking" ? "" : cited}`
+      ? `${chatMachineMediaSentence(reach, "proof", scope.machineName, machine.error, machine.mac)}${reach === "waking" ? "" : cited}`
       : `Couldn't load this proof from ${scope.isRemote ? scope.machineName : "this computer"}.${cited}`;
     // The person's click wakes the chat's own machine; once it is online, read again.
     const action = reach === "asleep"
-      ? { label: "Wake", run: () => void machine.wakeThen(retry) }
+      ? { label: machine.mac ? "Start" : "Wake", run: () => void machine.wakeThen(retry) }
       : reach == null ? { label: "Retry", run: retry } : null;
     return (
       <CitationPlaceholder tone="warning">

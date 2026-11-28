@@ -17,7 +17,9 @@ import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
 import { cloudLaneChangesAvailable, cloudLaneMovesAvailable } from "./cloudLaneActions";
 import { cloudLaneJobFor, openCloudLaneJobBar, useCloudLaneJobs } from "./cloudLaneStores";
-import { CLOUD_LANE_POWER_TEXT, cloudLanePower, cloudLaneStatusModel, type CloudLanePower, type CloudLaneStatusLine } from "./cloudLaneStatus";
+import { cloudLanePower, cloudLanePowerText, cloudLaneStatusModel, type CloudLanePower, type CloudLaneStatusLine } from "./cloudLaneStatus";
+import { useCloudMacFirstStopLine } from "./useCloudMacFirstStopLine";
+import { CLOUD_MAC_NAME, cloudMachineAllows, cloudMacPhaseOf, type CloudComputerAction } from "../../../shared/cloudMac";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
 import { forgetCloudComputerStatus, useCloudComputerStatus } from "./useCloudComputerStatus";
 import "../remoteTargets/cloudBrand.css";
@@ -59,9 +61,12 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
     waking: machine.waking,
     resting: machine.resting,
     online: scope.isRemote && scope.online,
+    macPhase: computer.macPhase ?? null,
   });
+  const powerText = cloudLanePowerText(power, computer.macPhase);
+  const noun = computer.os === "mac" ? CLOUD_MAC_NAME : `${BRAND.CLOUD_NAME} computer`;
   const title = [
-    `${BRAND.CLOUD_NAME} computer · ${CLOUD_LANE_POWER_TEXT[power]}`,
+    `${noun} · ${powerText}`,
     idle ? (idle.held ? `It wasn't deleted: ${BRAND.NAME} couldn't save its work` : `It will be ${idleCleanupWhen(idle.deletesAt, Date.now())} because it isn't used`) : null,
   ].filter(Boolean).join(". ");
 
@@ -89,7 +94,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning }: { laneId: string 
         {...menu.triggerProps}
         type="button"
         className={WORK_HEADER_ICON_BUTTON_CLASS}
-        aria-label={`${BRAND.CLOUD_NAME} computer of ${name}: ${CLOUD_LANE_POWER_TEXT[power]}`}
+        aria-label={`${noun} of ${name}: ${powerText}`}
         title={title}
       >
         <span className="adecl-power">
@@ -155,8 +160,13 @@ function CloudLaneStatusMenu({
   // A size change or move of this lane: its step now, a way to its steps, and no sleep countdown.
   const jobs = useCloudLaneJobs();
   const job = cloudLaneJobFor(jobs, { instanceId: computer.instanceId, laneId: computer.laneId });
-  const model = cloudLaneStatusModel({ power, box, status, account, now, job });
+  const mac = computer.os === "mac" || box?.os === "mac";
+  const macPhase = box?.os === "mac" ? cloudMacPhaseOf(box.mac, box.status) : computer.macPhase ?? null;
+  const macFirstStop = useCloudMacFirstStopLine(mac && macPhase === "stopped" && box != null);
+  const model = cloudLaneStatusModel({ power, box, status, account, now, job, macFirstStop });
   const life = cloudLaneChangesAvailable();
+  // What the server refuses on this computer (`unsupported`); a Mac shows none of it before the list read says.
+  const allows = (action: CloudComputerAction) => cloudMachineAllows(box ?? computer, action);
 
   const { run } = menu;
 
@@ -179,7 +189,15 @@ function CloudLaneStatusMenu({
       remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}${model.job ? 1 : 0}`}
     >
       <div ref={menu.menuRef} style={{ display: "contents" }}>
-        {power === "asleep" ? (
+        {mac ? (
+          // A Mac starts again with its drive; a lost drive can't (its saved work is in Lanes without a computer).
+          power === "asleep" || macPhase === "start_failed" ? (
+            <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onWake)}>
+              <span className="ade-cx-menu-icon"><SunHorizon size={13} /></span>
+              {macPhase === "start_failed" ? "Couldn't start · Try again" : "Stopped · Start the Mac"}
+            </button>
+          ) : null
+        ) : power === "asleep" ? (
           <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onWake)}>
             <span className="ade-cx-menu-icon"><SunHorizon size={13} /></span>
             Asleep · Wake now
@@ -188,7 +206,7 @@ function CloudLaneStatusMenu({
         <div className="adecl-status-head" role="presentation">
           <div className="adecl-status-title">
             <b title={name}>{name}</b>
-            {power !== "asleep" ? (
+            {power !== "asleep" || mac ? (
               <span className="adecl-status-state" data-power={power}>
                 <i aria-hidden="true" />
                 <span className="kit-num" data-face="ui">{model.stateText}</span>
@@ -217,7 +235,7 @@ function CloudLaneStatusMenu({
         {power === "waking" ? (
           <button type="button" role="menuitem" className="ade-cx-menu-item" disabled>
             <span className="ade-cx-menu-icon"><SunHorizon size={13} /></span>
-            Waking…
+            {mac ? `${cloudLanePowerText(power, macPhase)}…` : "Waking…"}
           </button>
         ) : null}
         {idle && window.ade.cloud?.keepIdleComputer ? (
@@ -247,13 +265,14 @@ function CloudLaneStatusMenu({
               {job.kind === "move" ? "Show the move's steps" : "Show the change's steps"}
             </button>
           ) : null}
-          {(life || cloudLaneMovesAvailable()) && !model.changing ? (
+          {(life || cloudLaneMovesAvailable()) && !model.changing && allows("resize") ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onSize)}>
               <span className="ade-cx-menu-icon"><Cpu size={13} /></span>
               Change size
             </button>
           ) : null}
-          {power === "awake" && !model.changing ? (
+          {/* A Mac stops on its own 5 minutes after work ends. */}
+          {power === "awake" && !model.changing && !mac ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(sleepNow)}>
               <span className="ade-cx-menu-icon"><Moon size={13} /></span>
               Sleep now

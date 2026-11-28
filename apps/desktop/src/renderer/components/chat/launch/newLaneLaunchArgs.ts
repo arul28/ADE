@@ -71,6 +71,8 @@ export function buildAccountCloudDraftStart(input: {
   laneConfig: ChatLaunchLaneConfig | null;
   sizeId: string;
   sizeChoice: "default" | "picked";
+  /** `mac` only when the person picked a Mac for this start. */
+  os?: "linux" | "mac";
 }): StartAccountCloudChat {
   const { create, message } = input.chat;
   const { instanceId: _instanceId, presetId: _presetId, presetSnapshot: _presetSnapshot, credentialId: _credentialId, ...portable } = create;
@@ -98,6 +100,7 @@ export function buildAccountCloudDraftStart(input: {
     prompt: message.text ?? "",
     ...(isCloudTierId(input.sizeId) ? { sizeId: input.sizeId } : {}),
     sizeChoice: input.sizeChoice,
+    ...(input.os === "mac" ? { os: "mac" as const } : {}),
     lane: cloudLaunchLaneFields(input.laneName, input.laneConfig),
     launch,
   };

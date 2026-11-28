@@ -48,6 +48,7 @@ import type {
 } from "../../shared/types/accountSettings";
 import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
 import { CLOUD_DEFAULT_TIER_SETTING_KEY, isCloudTierId } from "../../shared/cloudTiers";
+import { CLOUD_DEFAULT_OS_SETTING_KEY, CLOUD_MAC_STOP_EXPLAINED_SETTING_KEY, CLOUD_MAC_STOP_SEEN_SETTING_KEY } from "../../shared/cloudMac";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import { applyAccountHarnessPresets, type AppState } from "../state/appStore";
 import { withUnreadableHarnessPresets } from "./harnessPresetCarry";
@@ -159,6 +160,17 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // read (a newer ADE's) keeps the local choice.
   pref(CLOUD_DEFAULT_TIER_SETTING_KEY, (state) => state.cloudDefaultTier, (state, value: unknown) => {
     if (isCloudTierId(value)) state.setCloudDefaultTier(value);
+  }),
+  // Linux or Mac for a new lane a person starts; a word this build can't read keeps the local pick.
+  pref(CLOUD_DEFAULT_OS_SETTING_KEY, (state) => state.cloudDefaultOs, (state, value: unknown) => {
+    if (value === "linux" || value === "mac") state.setCloudDefaultOs(value);
+  }),
+  // Read once on any machine is read on every machine and the phone.
+  pref(CLOUD_MAC_STOP_EXPLAINED_SETTING_KEY, (state) => state.cloudMacStopExplained, (state, value: unknown) => {
+    if (value === true) state.setCloudMacStopExplained(true);
+  }),
+  pref(CLOUD_MAC_STOP_SEEN_SETTING_KEY, (state) => state.cloudMacStopSeen, (state, value: unknown) => {
+    if (value === true) state.setCloudMacStopSeen(true);
   }),
   // Harness presets are a list rather than a scalar, which the registry handles
   // unchanged: the whole list is one value under one key, so the newer-wins

@@ -76,6 +76,7 @@ import {
 } from "../theme/appearanceSchedule";
 import { captureError } from "../../shared/sentry/capture";
 import { isCloudTierId, type CloudTierId } from "../../shared/cloudTiers";
+import type { CloudComputerOs } from "../../../../account-directory/src/cloud/contract";
 import {
   AppearanceStoreContext,
   USER_PREFERENCES_STORAGE_KEY,
@@ -1335,6 +1336,16 @@ type PersistedUserPreferences = {
    */
   cloudDefaultTier: CloudTierId;
   /**
+   * What a new DAEX Cloud lane a person starts runs on: `linux` or `mac`
+   * (only while the catalog offers a Mac). Agents, automations and the CLI
+   * without `--os` always start Linux, whatever this says.
+   */
+  cloudDefaultOs: CloudComputerOs;
+  /** The person dismissed (or sent past) the line that says what a Mac's stop keeps. Account-wide. */
+  cloudMacStopExplained: boolean;
+  /** That line was shown once more beside a Mac's first stop. Account-wide. */
+  cloudMacStopSeen: boolean;
+  /**
    * Saved harness presets — a body (the harness) plus a brain (the model
    * source), named and given a logo. They live in the preferences blob rather
    * than in their own store because they are an account preference like any
@@ -1392,6 +1403,10 @@ function normalizeCloudDefaultTier(value: unknown): CloudTierId {
   return isCloudTierId(value) ? value : DEFAULT_CLOUD_TIER;
 }
 
+function normalizeCloudDefaultOs(value: unknown): CloudComputerOs {
+  return value === "mac" ? "mac" : "linux";
+}
+
 function readUnifiedUserPreferences(): PersistedUserPreferences | null {
   try {
     const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
@@ -1419,6 +1434,9 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatUserBubbleFill: normalizeChatUserBubbleFill(parsed.chatUserBubbleFill),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
       cloudDefaultTier: normalizeCloudDefaultTier(parsed.cloudDefaultTier),
+      cloudDefaultOs: normalizeCloudDefaultOs(parsed.cloudDefaultOs),
+      cloudMacStopExplained: parsed.cloudMacStopExplained === true,
+      cloudMacStopSeen: parsed.cloudMacStopSeen === true,
       harnessPresets: readHarnessPresetList(parsed.harnessPresets),
       appleDevice: normalizeAppleDevicePreferences(
         (parsed as { apple?: unknown; appleDevice?: unknown }).apple
@@ -1477,6 +1495,9 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatUserBubbleFill: "gradient",
     chatShellGeometry: "default",
     cloudDefaultTier: DEFAULT_CLOUD_TIER,
+    cloudDefaultOs: "linux",
+    cloudMacStopExplained: false,
+    cloudMacStopSeen: false,
     harnessPresets: [],
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     androidDevice: { ...DEFAULT_ANDROID_DEVICE_PREFERENCES },
@@ -1522,6 +1543,9 @@ function persistUserPreferencesFrom(state: {
   chatUserBubbleFill: ChatUserBubbleFill;
   chatShellGeometry: ChatShellGeometry;
   cloudDefaultTier: CloudTierId;
+  cloudDefaultOs: CloudComputerOs;
+  cloudMacStopExplained: boolean;
+  cloudMacStopSeen: boolean;
   harnessPresets: HarnessPreset[];
   appleDevice: AppleDevicePreferences;
   androidDevice: AndroidDevicePreferences;
@@ -1551,6 +1575,9 @@ function persistUserPreferencesFrom(state: {
     chatUserBubbleFill: state.chatUserBubbleFill,
     chatShellGeometry: state.chatShellGeometry,
     cloudDefaultTier: state.cloudDefaultTier,
+    cloudDefaultOs: state.cloudDefaultOs,
+    cloudMacStopExplained: state.cloudMacStopExplained,
+    cloudMacStopSeen: state.cloudMacStopSeen,
     // Stored with the rows this build cannot read; the loader normalizes and
     // sets those aside again, so only storage ever holds them.
     // `PersistedUserPreferences` types the list as read back (normalized), so
@@ -1915,6 +1942,9 @@ export type AppState = {
   launchPromptClipboardNoticeEnabled: boolean;
   draftsButtonEnabled: boolean;
   cloudDefaultTier: CloudTierId;
+  cloudDefaultOs: CloudComputerOs;
+  cloudMacStopExplained: boolean;
+  cloudMacStopSeen: boolean;
   voiceInputEnabled: boolean;
   codexVoice: CodexVoicePreferences;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
@@ -2107,6 +2137,12 @@ export type AppState = {
   setSmartTooltipsEnabled: (enabled: boolean) => void;
   /** Sync calls this too; a person's pick is counted in `lib/cloudDefaultTier.ts`. */
   setCloudDefaultTier: (tier: CloudTierId) => void;
+  /** The person's Linux or Mac pick for new lanes they start (sync calls this too). */
+  setCloudDefaultOs: (os: CloudComputerOs) => void;
+  /** Once true, it stays true: the Mac's stop was explained to this account. */
+  setCloudMacStopExplained: (explained: boolean) => void;
+  /** Once true, it stays true: a Mac's first stop said what a stop keeps. */
+  setCloudMacStopSeen: (seen: boolean) => void;
   setPromptClipboardCopyEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
@@ -2645,6 +2681,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   draftsButtonEnabled: initialUserPreferences.draftsButtonEnabled,
   cloudDefaultTier: initialUserPreferences.cloudDefaultTier,
+  cloudDefaultOs: initialUserPreferences.cloudDefaultOs,
+  cloudMacStopExplained: initialUserPreferences.cloudMacStopExplained,
+  cloudMacStopSeen: initialUserPreferences.cloudMacStopSeen,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   codexVoice: initialUserPreferences.codexVoice,
   dictationPhase: "idle",
@@ -3387,6 +3426,29 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, cloudDefaultTier: next });
       return { cloudDefaultTier: next };
+    });
+  },
+  setCloudDefaultOs: (os) => {
+    const next = normalizeCloudDefaultOs(os);
+    if (get().cloudDefaultOs === next) return;
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, cloudDefaultOs: next });
+      return { cloudDefaultOs: next };
+    });
+  },
+  setCloudMacStopExplained: (explained) => {
+    // Read once is read: an older value from another machine never takes it back.
+    if (!explained || get().cloudMacStopExplained) return;
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, cloudMacStopExplained: true });
+      return { cloudMacStopExplained: true };
+    });
+  },
+  setCloudMacStopSeen: (seen) => {
+    if (!seen || get().cloudMacStopSeen) return;
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, cloudMacStopSeen: true });
+      return { cloudMacStopSeen: true };
     });
   },
   setVoiceInputEnabled: (enabled) =>
