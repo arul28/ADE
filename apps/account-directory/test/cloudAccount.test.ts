@@ -7765,6 +7765,11 @@ describe("Pricing v3's ad price", () => {
         const call = `${init?.method ?? "GET"} ${url.replace("https://nomac.app/api/v1", "")}`;
         if (call === "GET /mac/sessions/ses_mac") return new Response(JSON.stringify({ session }), { status: 200 });
         if (call.startsWith("GET /mac/sessions?")) return new Response(JSON.stringify({ sessions: [session] }), { status: 200 });
+        // A stop: the session ends.
+        if (call === "DELETE /mac/sessions/ses_mac?confirm=true") {
+          Object.assign(session, { state: "ended", shutdown_at: new Date(clock).toISOString() });
+          return new Response(JSON.stringify({ session }), { status: 200 });
+        }
         return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 });
       });
     });
@@ -7789,11 +7794,17 @@ describe("Pricing v3's ad price", () => {
     /** NoMac ends the session at `at`; the next tick hears it. */
     const endAt = (at: number) => Object.assign(session, { state: "ended", shutdown_at: new Date(at).toISOString() });
 
-    it.each([
-      ["no ads (the full price): 5 credits a minute", false, 500],
-      ["with ads (a person's message in its window): 4 credits a minute", true, 400],
-    ])("a Mac minute %s, through the computers' own rate and stretch code", async (_label, ads, perMinute) => {
+    // How it ends: NoMac ends it, the person stops it, or DAEX's zero stop. Each logs its own reason (the launch end
+    // and the owner report read it) and settles the stretch once.
+    it.each<[string, boolean, number, "nomac" | "user" | "out_of_hours", string]>([
+      ["no ads (the full price): 5 credits a minute, NoMac ends it", false, 500, "nomac", "seen_by_tick"],
+      ["with ads (a person's message in its window): 4 credits a minute, NoMac ends it", true, 400, "nomac", "seen_by_tick"],
+      ["no ads, the person stops it", false, 500, "user", "user"],
+      ["no ads, its credits run out (the zero stop)", false, 500, "out_of_hours", "out_of_hours"],
+    ])("a Mac minute %s, through the computers' own rate and stretch code", async (_label, ads, perMinute, end, reason) => {
       seedMac();
+      // The zero stop: exactly ten minutes of credits left.
+      if (end === "out_of_hours") harness.exec("update cloud_accounts set used_milli = included_milli - ? where user_id = ?", 10 * perMinute, OWNER);
       const before = usedMilli(harness);
       if (ads) {
         saveChat("chat-mac", MAC, "mk-mac");
@@ -7802,12 +7813,20 @@ describe("Pricing v3's ad price", () => {
       }
       await tickAt(t0 + 5 * MINUTE);
       expect(priced(MAC)).toEqual(ads ? { rate: 400 * 60, adFull: 500 * 60 } : { rate: 500 * 60, adFull: null });
-      // NoMac ends it 10 minutes in: ten whole minutes, settled at its stop.
-      endAt(t0 + 10 * MINUTE);
-      await tickAt(t0 + 11 * MINUTE);
+      // Ten minutes in: ten whole minutes, settled at its stop.
+      if (end === "nomac") {
+        endAt(t0 + 10 * MINUTE);
+        await tickAt(t0 + 11 * MINUTE);
+      } else if (end === "user") {
+        clock = t0 + 10 * MINUTE;
+        expect((await fromHome("POST", `/cloud/instances/${MAC}/stop`)).status).toBe(200);
+      } else {
+        await tickAt(t0 + 10 * MINUTE);
+      }
       expect(computer(harness, MAC)).toMatchObject({ status: "stopped", awake_since: null });
       expect(usedMilli(harness) - before).toBe(10 * perMinute);
       expect(meteredMilli(harness, MAC)).toBe(10 * perMinute);
+      expect(harness.rows("select reason from cloud_power_log where instance_id = ? and action = 'stop'", MAC)).toEqual([{ reason }]);
     });
 
     it("a move between the prices inside a stretch charges every minute once: the minute begun goes on at the new price", async () => {

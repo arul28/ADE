@@ -424,7 +424,7 @@ async function stopAll(env: CloudEnv, provider: CloudProvider, computers: TickCo
 async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number, reason: string): Promise<boolean> {
   for (let attempt = 0; attempt < STOP_RETRIES; attempt += 1) {
     try {
-      const status = await provider.stopInstance(computer.instance_id);
+      const status = await provider.stopInstance(computer.instance_id, reason);
       const statements = statusChangeStatements(env, computer, status, now, reason);
       if (statements.length) await env.DB.batch(statements);
       return true;
@@ -488,7 +488,7 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
     && (joining ? !joining.has(computer.instance_id) : computer.last_seen_at != null);
   await Promise.all(unseen.filter(sleeps).map(async (computer) => {
     try {
-      const status = await provider.sleepInstance(computer.instance_id);
+      const status = await provider.sleepInstance(computer.instance_id, "no_check_in");
       const statements = statusChangeStatements(env, computer, status, now, "no_check_in");
       if (statements.length) await env.DB.batch(statements);
       logCloud("cloud.slept_no_check_in", { instanceId: computer.instance_id });

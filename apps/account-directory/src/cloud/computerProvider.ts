@@ -85,10 +85,12 @@ export function createComputerProvider(env: CloudEnv, fetcher: typeof fetch = fe
       await deleteMac(env, row, Date.now());
       rows.delete(id);
     },
-    async sleepInstance(id) {
+    // A Mac's stop writes its own status and power log (`stopMac`), so the caller's reason goes with it: the caller's
+    // own status write then finds the row stopped and logs nothing. Without one, the action's own word.
+    async sleepInstance(id, reason) {
       const row = await fresh(id);
       if (!row) return L().sleepInstance(id);
-      const status = await stopMac(env, row, Date.now(), "sleep");
+      const status = await stopMac(env, row, Date.now(), reason ?? "sleep");
       rows.delete(id);
       return status;
     },
@@ -101,10 +103,10 @@ export function createComputerProvider(env: CloudEnv, fetcher: typeof fetch = fe
       rows.delete(id);
       return status;
     },
-    async stopInstance(id) {
+    async stopInstance(id, reason) {
       const row = await fresh(id);
       if (!row) return L().stopInstance(id);
-      const status = await stopMac(env, row, Date.now(), "stop");
+      const status = await stopMac(env, row, Date.now(), reason ?? "stop");
       rows.delete(id);
       return status;
     },
