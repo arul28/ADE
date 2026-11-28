@@ -1,249 +1,137 @@
-# Automations tab — UI redesign
+# Automations tab: UI
 
-Rebuild the `/automations` surface from a dense off-token prototype into a Linear-grade
-automations builder. Local-first Electron+React+TS. Palette moves off the bespoke
-`#0F0D14`/`#152235`/`#7DD3FC` blues onto the app's semantic theme tokens
-(`bg-bg`, `text-fg`, `text-muted-fg`, `text-accent`, `border-border`, `bg-card`, `shadow-card`)
-plus `lanes/laneDialogTokens.ts` form tokens and `lanes/laneDesignTokens.ts` `COLORS`.
+The `/automations` surface is a master/detail builder on the app's semantic
+theme tokens (`bg-bg`, `text-fg`, `text-muted-fg`, `text-accent`,
+`border-border`, `bg-card`) plus the lane form tokens
+(`lanes/laneDialogTokens.ts`, `lanes/laneDesignTokens.ts`). Files are under
+`apps/desktop/src/renderer/components/automations/`.
 
-## Information architecture
+## Layout
 
-Two routes (both already wired in App.tsx; keep export names + `data-testid`s):
+- `/automations` → `AutomationsPage` → `AutomationsWorkspace`:
+  - **Left rail:** header (title, New, Templates, refresh), search, ingress
+    strip, rule rows as sentences. Empty → flagship template cards.
+  - **Right pane:** Builder (default) or History for the selected rule, by a
+    segmented control.
+- `/automations/templates` is a view of the same page (`templatesOpen` in
+  `AutomationsPage.tsx`) showing `templates/TemplateGallery`.
+- On a DAEX Cloud tab the page shows the read-only `AutomationsAccountList`.
 
-- `/automations` → `AutomationsPage` → master/detail:
-  - **Left rail (list):** header (title, New, Templates, refresh) + search + ingress status strip
-    + rule rows rendered as readable sentences. Empty → flagship-template pitch.
-  - **Right pane:** `Builder` (default) or `History` for the selected rule, chosen by a
-    segmented control in the pane header.
-- `/automations/templates` → `AutomationsTemplatesPage` → grouped `TemplateGallery`.
-
-## Component tree (all under components/automations/)
+## Component map
 
 ```
-AutomationsPage.tsx            shell + AutomationsProductionGate (gate KEPT verbatim)
-AutomationsTemplatesPage.tsx   templates route shell
-AutomationsComingSoon.tsx      disabled-build screen (re-skinned to tokens)
-designTokens.ts                REWRITE → semantic token class strings (input/select/label/card/section)
-automationCopy.ts              rule-sentence grammar + trigger/action/disposition labels
-cronDescribe.ts                cron → human gloss ("Every weekday at 9:00am") [+unit test]
-triggerCatalog.ts              trigger sources → events → filter kind (incl lane.merged)
-actionCatalog.ts               step kinds + add-menu data (incl delete-lane)
-variableCatalog.ts             {{trigger.*}} variables grouped per trigger source
-localAutomationConfig.ts       string consts for not-yet-landed types (lane.merged/delete-lane/alwaysRun)
-list/
-  RuleList.tsx                 left rail: header, search, ingress strip, provenance
-                               filter (All / By CTO / Handoffs), rows, empty state
-  RuleRow.tsx                  one sentence row: toggle, status glyph, next/last run, hover
-                               actions, CTO origin pill, scope + one-shot provenance line
-  RuleSentence.tsx             renders trigger→steps clauses
-  AutomationsEmptyState.tsx    first-visit: 3 flagship template cards; also
-                               AutomationsFilterEmptyState for a filter that matches nothing
-builder/
-  RuleBuilder.tsx              header (Run now / Test ▾ / Save + status) + vertical step stack
-  TestRunControls.tsx          Test split button (Preview / Safe test / Live test) + Test dialog:
-                               event picker, plan, start
-  TriggerCard.tsx              pinned card: source picker → event → filter rows
-  ScheduleEditor.tsx           cron field + live gloss + presets
-  triggerFilters/*             GitHub/Linear/Git/File/Lane/Webhook filter panels (logic reused, reskinned)
-  StepStack.tsx                stacked step cards + "+" inserters + terminal cleanup zone
-  StepCard.tsx                 step chrome: index, label, alwaysRun badge, move/remove;
-                               run-command Time limit (default 5 min, max 12 h)
-  AgentStepEditor.tsx          prompt + ModelPicker + ReasoningEffortPicker + permission + lane targeting
-                               + collapsible Limits row (Stop after / Stop when idle for; collapsed
-                               row reads "No limits · runs until it finishes" or the limits set)
-  MinutesInput.tsx             whole-minutes field shared by Limits and Time limit
-  AdeActionEditor.tsx          moved here, reskinned (schemas data source untouched)
-  RunCommandFields / RunTestsField / DeleteLaneFields
-  LaneTargeting.tsx            "Run in": new lane (name template) / existing lane / no lane
-  VariableMenu.tsx             {} inserter button → variable list (insert-at-cursor)
-  VariableInput.tsx / VariableTextarea.tsx  input + trailing {} menu
-history/
-  RuleHistory.tsx              runs list + detail
-  RunRow.tsx                   status glyph, duration, trigger reason
-  RunDetail.tsx                per-step results, deep links (lane/chat/PR), queue/verify state
-templates/
-  TemplateGallery.tsx          grouped gallery + "what you'll configure"
-  TemplateCard.tsx             one card
-  templateData.ts              grouped templates (4 flagship + reworked existing)
-settings/
-  IngressStatusStrip.tsx       GitHub path (App/relay/polling) + Linear connect/status; dismissible
-templates/
-  TemplateSourceChip.tsx       SourceIconBadge + "Source · Event" chip, both source-accented
-linearIngressApi.ts            defensive window.ade.automations.linearIngress probe (shared)
+AutomationsPage.tsx            shell + AutomationsProductionGate, templates view, cloud list
+AutomationsWorkspace.tsx       master/detail, draft restore, newer-version banners
+AutomationsAccountList.tsx     read-only list from the account (no computer awake)
+AutomationsComingSoon.tsx      disabled-build screen
+designTokens.ts                semantic token class strings
+automationCopy.ts              rule-sentence grammar, trigger/action/disposition labels
+cronDescribe.ts                cron → human gloss
+triggerCatalog.ts              sources → events → filter kinds; per-source accent
+actionCatalog.ts               step kinds + add-menu; per-step accent
+variableCatalog.ts             {{trigger.*}} variables per source
+localAutomationConfig.ts       lane.merged / delete-lane / alwaysRun constants and readers
+ruleSync.ts                    account-sync lines (ruleSyncLine, ruleElsewhereReason)
+automationDraftStore.ts        unsaved draft per repository in local storage
+automationFeatureGate.ts       what the rule's machine can run
+GitHubTriggerFilters.tsx, LinearTriggerFilters.tsx, RulePermissionPicker.tsx
+AdeActionEditor.tsx, adeActionSchemas.ts   DAEX action step editor and its schemas
+WebhookOverview.tsx, webhookSurface.ts, notifyLink.ts
+list/      RuleList, RuleRow, RuleSentence, AutomationsEmptyState
+builder/   RuleBuilder, TriggerCard, ScheduleEditor, StepStack, StepCard,
+           AgentStepEditor, NotifyStepEditor, MinutesInput, LaneTargeting,
+           ChatTargetField, RuleMachineField, RuleCloudField, VariableMenu,
+           TestRunControls, WebhookTriggerPanel, WebhookDeliveries, draftBridge
+history/   RuleHistory, RunRow, RunDetail, runPresentation, testRunInfo
+templates/ TemplateGallery, TemplateCard, TemplateSourceChip, templateData, templateIcons
+settings/  IngressStatusStrip
 ```
 
-Kept as-is: `adeActionSchemas.ts`, `permissionControls.ts`. `shared.ts` keeps
-`extractError`/`parseList`; drops the blue `INPUT_CLS` alias.
+`builder/draftBridge.ts` is the `AutomationRuleDraft` ⇆ built-in actions ⇆
+agent-session bridge (solo-agent collapse, lane-mode strip, legacy create-lane
+migration). It is intricate; change it with care.
+
+Template prompts (`templates/templateData.ts`) name the CLI through
+`BRAND.CLI` (`daex prs checks`, `daex prs comments`, `daex prs create`, …) and
+the `daex-*` skill names; old saved prompts that say `ade` or `ade-*` still
+work through the aliases.
 
 ## Rule-sentence grammar
 
-`buildRuleSentence(rule) → { trigger: string, steps: string[] }`, rendered as
-`When <trigger> → <step> → <step> …` with a muted `→` between clauses.
+`buildRuleSentence(rule) → { trigger, steps[] }`, rendered as `When <trigger>
+→ <step> → …`.
 
-Trigger clause (concrete, sentence case, no jargon):
-- schedule → cron gloss: `Every weekday at 9:00am`
-- github.issue_opened +label bug → `A GitHub issue is opened labeled bug`
-- github.pr_merged base main → `A GitHub PR is merged into main`
-- linear.issue_created team ENG → `A Linear issue is created in ENG`
-- linear.issue_labeled → `A Linear issue is labeled`
-- lane.merged pattern feature/* → `A lane matching feature/* is merged`
-- git.push branch main → `A push lands on main`
-- file.change paths → `A file changes in src/**`
-- session-end → `An agent session ends`
-- session.limit_reached / .failed / .ended_without_pr → `This chat hits its usage
-  limit` / `A claude session fails` / `An agent session ends with no PR`. The
-  subject is chosen by `sessionSubject`: a rule scoped to one chat says
-  `This chat`, otherwise the provider filter narrows it, and a rule with neither
-  covers every session in the project.
-- webhook → `A webhook fires`
-- manual → `Run manually`
+Trigger clauses: schedule → cron gloss (`Every weekday at 9:00am`);
+`github.issue_opened` + label → `A GitHub issue is opened labeled bug`;
+`github.pr_merged` + base → `A GitHub PR is merged into main`;
+`linear.issue_created` + team → `A Linear issue is created in ENG`;
+`lane.merged` + pattern → `A lane matching feature/* is merged`; `git.push` →
+`A push lands on main`; `file.change` → `A file changes in src/**`;
+`session-end` → `An agent session ends`; `session.limit_reached` / `.failed` /
+`.ended_without_pr` use `sessionSubject` (`This chat` for a chat-scoped rule,
+else the provider filter, else every session); `webhook` → `A webhook fires`;
+`manual` → `Run manually`.
 
-Step clause:
-- new-lane execution → `create a lane`; agent-session → `run an agent`
-- run-tests → `run tests`; run-command → `run a command`; predict-conflicts → `predict conflicts`
-- ade-action → friendly map (pr.addComment→`comment on the PR`, issue.setLabels→`label the issue`,
-  issue.close→`close the issue`, linear_sync.*→`sync Linear`) else `run {domain}.{action}`
-- delete-lane / cleanup → `clean up the lane`
-- handoff → `hand off to Claude Sonnet 5` (or `fork the chat to …`) — the model's
-  display name resolved through the registry, never the raw id
-- disposition open-pr-draft → append `open a draft PR`
+Step clauses: new lane → `create a lane`; agent-session → `run an agent`;
+`run-tests`, `run-command`, `predict-conflicts`; `ade-action` → a friendly map
+(`pr.addComment` → `comment on the PR`, …) else `run {domain}.{action}`;
+`delete-lane` → `clean up the lane`; `handoff` → `hand off to <model display
+name>`; `open-pr-draft` disposition → `open a draft PR`.
 
-## Wireframes
+## Brand accents and delivery callouts
 
-Rule row (left rail):
-```
-┌───────────────────────────────────────────────┐
-│ ● Triage new issues                    [ⁿᵉˣᵗ] ⏻│   ● = last-run glyph, ⏻ = switch
-│ When a GitHub issue is opened → run an agent   │   sentence, muted, 2-line clamp
-│ ✓ 2h ago · next on event         ⧗ ▶ ⋯ (hover) │   status + schedule + hover run/history/delete
-└───────────────────────────────────────────────┘
-```
+Each trigger source and step kind has an `accent` hex in `triggerCatalog.ts` /
+`actionCatalog.ts`; the source picker, row schedule hint, template cards,
+ingress strip and step icons tint from it (`sourceAccent`, `accentTint`).
 
-Builder:
-```
-[Triage new issues]              ● enabled  ▷ Run now  ⚗ Test ▾  ⌘S Save
-────────────────────────────────────────────────────────────────────
-┌ Trigger ─────────────────────────────────┐   pinned card
-│ Source: [GitHub ▾]  Event: [Issue opened ▾]│
-│ Filters: label [bug ×]  repo [owner/repo] │
-└───────────────────────────────────────────┘
-              +  (inserter)
-┌ Step 1 · Run an agent ────────────────────┐
-│ Prompt … [{}]                              │
-│ Model [Sonnet ▾] Effort [MED] Perm [auto] │
-│ Run in: (•) new lane  name [{{...}} {}]    │
-└───────────────────────────────────────────┘
-              +
-┌ Cleanup (always runs) ────────────────────┐   terminal zone = trailing delete-lane+alwaysRun
-│ Delete the lane  after [30] min  ☐ branch │
-└───────────────────────────────────────────┘
-```
+Delivery state shows only when a path is missing: `TriggerCard` renders an amber
+`TriggerDeliveryCallout` (the `setupError` plus Open GitHub settings / Connect
+Linear / Open Linear settings) when `ingressStatus.delivery[key].ready` is
+false; `RuleRow` shows an amber glyph for an enabled rule with no ready path.
 
-## Copy deck (key strings)
+## Drafts and capabilities
 
-- Left header: title `Automations`; buttons `New`, `Templates`; search placeholder `Search automations`.
-- Empty state: `No automations yet` / `Start from a flagship, or build your own.`
-- Builder header: `Run now`, `Test`, `Save`; unsaved dot tooltip `Unsaved changes`.
-- Test menu: `Preview` / `Safe test` / `Live test`, each with its one-line hint; dialog actions `Run safe test`, `Run live test`, `Close`.
-- History: badge `Safe test` / `Live test`; notice `This was a safe test.`; action `Clean up the lane` / `Clean up N lanes`.
-- Trigger: `Trigger`, `Source`, `Event`, `Filters`. Manual hint `Runs only when you press Run now.`
-- Schedule gloss prefix: none — show gloss verbatim, e.g. `Runs every weekday at 9:00am`.
-- Lane targeting: `Run in`, options `New lane each run` / `An existing lane` / `No lane`.
-  New-lane name field label `Lane name`, hint `Auto-numbered if a name repeats.`
-- Cleanup: `Cleanup` badge `Always runs`, `Delete the lane`, `after N minutes`, `Also delete branch`.
-- Variables menu: `Insert variable`.
-- Ingress strip: `GitHub events` + state (`via App` / `via relay` / `polling` / `Not receiving`);
-  `Linear events` + `Connect` button / `Connected` / `last event 5m ago`.
-- History: `No runs yet` / `Trigger it manually or wait for the next event.`
-  Run reason line uses the trigger sentence; deep links `Open lane`, `Open thread`, `View PR`.
+The unsaved draft is kept in local storage per repository tab id
+(`automationDraftStore.ts`) with its "Runs on" choice, restored with a banner
+(Discard). Save and Discard clear it. It never syncs. Writes are throttled
+(300 ms) and flushed on unload. The stored draft names its rule and machine by
+id; a window removes it only when it wrote or restored it. A run link
+(`/automations?rule=&run=`) shows first, and the draft comes back after.
 
-## Brand identity & delivery callouts
+`automations.getCapabilities` on the rule's machine (cached per machine and
+brain version) says which triggers, step types, lane modes, DAEX actions and
+DAEX Cloud lanes it supports. Older brains are judged by
+`shared/automationFeatureVersions.ts` against the brain's version. Missing
+features are greyed out with "Needs DAEX X on <machine>"; Save on a draft that
+uses one asks "<machine> can't run this rule yet." with **Save anyway**. A
+`null` or failed answer is asked again every 15 s, up to 4 times. The brain also
+refuses an uncallable DAEX action step in `validateDraft` / `saveDraft`
+(`action_not_callable`).
 
-Each trigger source and each step kind carries a brand `accent` hex in `triggerCatalog.ts` /
-`actionCatalog.ts` (GitHub grey, Linear indigo via `LinearMark`/`LINEAR_BRAND`, Git orange,
-Lanes violet, Files/Schedule/webhook hues, agent purple, ADE-action blue, delete red). The
-source picker, rule-row schedule hint, template cards/chips, ingress strip Linear row, and step
-icons all tint from that accent (`sourceAccent`/`accentTint` for source tints) instead of the
-single `text-accent` token — so a rule reads its source at a glance.
+## Where a rule lives
 
-Delivery state is surfaced only when a path is missing, never as a green "all good" badge:
-- `TriggerCard` renders a `TriggerDeliveryCallout` (amber, the delivery `setupError`, plus an
-  `Open GitHub settings` / `Connect Linear` / `Open Linear settings` action) only when the
-  selected source's `ingressStatus.delivery[key].ready` is false. `Connect Linear` calls
-  `linearIngress.setup()` in place, then `onIngressChanged` re-fetches status.
-- `RuleRow` shows a small amber warning glyph (titled with the `setupError`) when an enabled
-  rule's source has no ready delivery path.
+From `ruleSync.ts`, shown once per place:
 
-## Contracts & graceful degradation
+- **Row:** a cloud glyph for a synced rule (with the home's name only when this
+  window can't reach it); an amber glyph for a rule kept on this computer for a
+  reason (too large, signed out, another account, no remote); an amber glyph by
+  the title for a rule made with a newer DAEX (toggle off). Run now and History
+  are disabled with the reason when the rule runs elsewhere.
+- **Runs on:** an unreachable home reads "<name> (not connected to this
+  window)". One line under it: "Synced · runs only on this computer", "Moving
+  here · starts by <time>", "Paused here · can't reach your DAEX account", or
+  the kept-here reason. Moving a synced rule says the new home starts it
+  `AUTOMATION_HOME_HANDOVER_MINUTES` (12) minutes after saving.
+- **Banners:** "Made with a newer DAEX" (Save, Test and Run now disabled) and
+  "This computer is missing something this automation needs" listing each gap.
 
-Code against the documented contracts; guard every new IPC with optional chaining so the UI
-degrades if a method is missing at runtime:
-- Existing `window.ade.automations.*` (list/toggle/deleteRule/triggerManually/simulate/
-  validateDraft/saveDraft/getHistory/listRuns/getRunDetail/getIngressStatus/onEvent).
-- New (optional): `automations.linearIngress?.{getStatus,setup,teardown,pollNow}`,
-  `automations.listScheduledCleanups?()`, `automations.cancelScheduledCleanup?(id)`.
-- Not-yet-landed shared types → `localAutomationConfig.ts` string consts + `as any` at the
-  draft boundary: trigger `lane.merged` (filter namePattern), action `delete-lane`
-  (`laneDeleteOptions?`, `afterMinutes?`), per-action `alwaysRun?`. Builder reads/writes them
-  through helpers so a later type landing is a one-line switch.
+## Copy
 
-Test = `planTest` / `runTest` / `cleanUpTestRun` (see README, Test runs). Run now =
-`triggerManually({ id })` (lane picker only when lane mode requires one, existing behavior
-preserved).
-
-The unsaved draft is kept in this computer's local storage per repository (`automationDraftStore.ts`,
-keyed by the repository tab's id, so every copy of the repository shares one draft), with the
-"Runs on" choice it had. Leaving the tab, switching project, the tab moving to another copy, or
-restarting ADE keeps it; a banner says it was restored and offers Discard. Save and Discard clear
-it. It never syncs: an unfinished edit belongs to the computer it was typed on. Writes are
-throttled (300 ms) and flushed on unload.
-
-The rule's machine says what it can run (`automations.getCapabilities`: triggers, step types, lane
-modes, the ADE actions a step may call, ADE Cloud lanes), asked once per machine and brain version
-(`automationFeatureGate.ts`). A brain older than that call is judged by the version table in
-`shared/automationFeatureVersions.ts`, compared with the **brain's** version, not the app's. What
-the machine lacks is greyed out in the builder (trigger list, step menu, "Run in", "Runs on: ADE
-Cloud", the notification test) with "Needs ADE X on <machine>". A draft that already has such a
-feature shows the warning banner, and Save asks "<machine> can't run this rule yet." with **Save
-anyway**; for an ADE action step on a machine that answered `getCapabilities`, Save names the step
-instead, since that machine would refuse it. **This run's history** needs a sender that answers
-`getCapabilities` (an older one drops a link it cannot parse), so it is greyed out on an older
-machine. An answer from a brain still starting (`adeActions: null`) is not kept; it, or a failed
-read (offline, a timeout), is asked again every 15 s, up to 4 times, while that machine stays
-selected. The stored draft
-names its rule by id and machine, and its target machine by id even when it is the tab's own,
-so a draft restored on another checkout keeps its rule and its computer. The stored draft is shared by every window on the
-repository, and a window removes it only when it wrote or restored it. A run link
-(`/automations?rule=&run=`) goes before a stored draft: History shows the run once, and the draft
-comes back when the run is left. The brain also refuses, in `validateDraft`/`saveDraft`, an ADE action step it cannot
-call. An `action_not_callable` error from an older machine is shown in the same plain words.
-
-## Where a rule lives (account sync)
-
-Rules follow the ADE account per repository and run on one computer
-(see README, Rules follow the account). The UI says so in one place each,
-from `ruleSync.ts` (`ruleSyncLine`, `ruleElsewhereReason`):
-
-- **Row.** A quiet cloud glyph in the footer for a synced rule, with the home's
-  name only when it runs on a computer this window can't reach (a machine chip
-  already names it otherwise). An amber glyph for a rule kept on this computer
-  for a reason worth a glance (too large, signed out, another account, no
-  remote). An amber cloud-down glyph by the title for a rule made with a newer
-  ADE; its toggle is off. Run now and History are disabled, with the reason as
-  the tooltip, when the rule runs elsewhere.
-- **Runs on.** The picker names an unreachable home as "<name> (not connected
-  to this window)". One line under it: "Synced · runs only on this computer",
-  "Moving here · starts by 10:23 PM", "Paused here · can't reach your ADE
-  account" (the lease ran out), or the kept-here reason, which wins over the
-  synced line. Picking another machine for a synced rule says the new one
-  starts it `AUTOMATION_HOME_HANDOVER_MINUTES` (12) minutes after saving, once
-  the old one has surely stopped; the confirm dialog uses the same constant.
-- **Banners** (inline, over the builder): "Made with a newer ADE" (Save, Test
-  and Run now disabled) and "This computer is missing something this
-  automation needs" with each gap on its own line.
-
-## Preserved logic
-
-The `AutomationRuleDraft` ⇆ built-in-actions ⇆ agent-session bridge (solo-agent collapse,
-laneMode strip, legacy create-lane migration) is intricate and correct — port it verbatim into
-`builder/draftBridge.ts`; only the presentation changes.
+- Header: `Automations`, `New`, `Templates`; search `Search automations`.
+- Empty: `No automations yet` / `Start from a flagship, or build your own.`
+- Builder: `Run now`, `Test`, `Save`; Test menu `Preview` / `Safe test` / `Live test`.
+- Lane targeting: `Run in`: `New lane each run` / `An existing lane` / `No lane`.
+- Cleanup: `Always runs`, `Delete the lane`, `after N minutes`, `Also delete branch`.
+- Ingress strip: `GitHub events` (`via App` / `via relay` / `polling` / `Not
+  receiving`); `Linear events` (`Connect` / `Connected` / `last event 5m ago`).
+- History: `No runs yet`; badges `Safe test` / `Live test`; `Clean up the lane`.

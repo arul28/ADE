@@ -35,9 +35,9 @@ The complete surface of triggers the automation runtime listens for, and the act
 Canonical trigger names are `github.*`. The older `git.pr_*` names still work (see `LEGACY_GITHUB_PR_TRIGGER_ALIASES`) but are aliased to the canonical ones at dispatch.
 
 - `github.pr_opened` / `github.pr_updated` / `github.pr_closed` / `github.pr_merged` — PR lifecycle. Filters: `branch`, `targetBranch`, `draftState: "draft" | "ready" | "any"`, `labels`, `authors`, `repo`, `titleRegex`, `bodyRegex`, `keywords`. `authors` compares logins case-insensitively and ignores a leading `@` and a `[bot]` suffix, so `dependabot` matches the `dependabot[bot]` account. The builder offers Dependabot and Renovate as one-click authors, and the **Dependabot PR → its branch + agent** template pairs that filter with `laneMode: "pr-branch"`.
-- `github.pr_commented` — a comment was added to a PR. Filters: `authors`, `keywords`, `titleRegex`/`bodyRegex`, `repo`. `bodyRegex` reads the new comment's text, not the PR description, on every ingress path (poller, local webhook, relay). A comment webhook names no branch: the relay fills `branch`/`targetBranch` from the PR row ADE tracks, and a comment on an untracked PR stays branchless, so a branch-filtered comment rule skips it.
+- `github.pr_commented` — a comment was added to a PR. Filters: `authors`, `keywords`, `titleRegex`/`bodyRegex`, `repo`. `bodyRegex` reads the new comment's text, not the PR description, on every ingress path (poller, local webhook, relay). A comment webhook names no branch: the relay fills `branch`/`targetBranch` from the PR row DAEX tracks, and a comment on an untracked PR stays branchless, so a branch-filtered comment rule skips it.
 - `github.pr_review_submitted` — a review was submitted on a PR. `bodyRegex` reads the review's text, not the PR description.
-- `github.pr_checks_failed` — a PR's checks turned failing. Comes from ADE's own PR poller (the PR tab's data), not a GitHub webhook, so it works without the relay. Fires once per head commit: a re-run that fails again on the same commit stays quiet, a new push that fails fires again, and a PR first seen already failing does not fire. A new head counts once a second poll still sees it failing, since its first poll can carry the previous commit's checks. Filters: `branch` (the PR's head branch), `repo`, `titleRegex`, `keywords`, `draftState`. The PR poller does not see the author, labels or body, so the rule editor offers no filters on them.
+- `github.pr_checks_failed` — a PR's checks turned failing. Comes from DAEX's own PR poller (the PR tab's data), not a GitHub webhook, so it works without the relay. Fires once per head commit: a re-run that fails again on the same commit stays quiet, a new push that fails fires again, and a PR first seen already failing does not fire. A new head counts once a second poll still sees it failing, since its first poll can carry the previous commit's checks. Filters: `branch` (the PR's head branch), `repo`, `titleRegex`, `keywords`, `draftState`. The PR poller does not see the author, labels or body, so the rule editor offers no filters on them.
 - `github.issue_opened` / `github.issue_edited` / `github.issue_closed` — issue lifecycle. Filters: `labels`, `authors`, `titleRegex`, `bodyRegex`, `keywords`, `repo`.
 - `github.issue_labeled` — label added to an issue. Filters: `labels` (the label(s) that must have been added), `repo`.
 - `github.issue_commented` — comment on an issue.
@@ -56,7 +56,7 @@ GitHub triggers are emitted by three ingress paths: a real webhook (`github-webh
 
 ### Chat-lifecycle
 
-- `session-end` — an ADE chat session ended. Useful for post-run summaries.
+- `session-end` — a DAEX chat session ended. Useful for post-run summaries.
 - `session.limit_reached` — the provider reported a usage limit for the session.
 - `session.failed` — the provider or its API failed the session.
 - `session.ended_without_pr` — the session ended and its lane has no open PR.
@@ -71,7 +71,7 @@ Two filters apply to these triggers:
 
 `session.limit_reached` and `session.failed` arrive through a host callback: the chat runtime calls `automationService.onSessionSignal({ kind, sessionId, provider?, modelId?, laneId?, resetAt?, summary? })` once it has decided a turn hit a limit or failed. Automations never inspect chat events themselves.
 
-`session.settled` comes from the session service. The host that declares the settle reports it after the settle lands, by `automationService.onSessionSettled({ sessionId, laneId, provider? })`. It carries no `modelId`. It fires one time for the chat that was settled, by a person, by an agent, or by a merged PR. It fires only for an ADE chat: a settled shell or tracked CLI session does not fire it. A subagent that follows its settled parent does not fire it. A host with no automation service (an embedded runtime, or a build with automations off) reports nothing. The lane can still hold other open chats, so a cleanup command on this trigger can remove files that a second chat uses; use `lane.archived` for cleanup of the whole lane.
+`session.settled` comes from the session service. The host that declares the settle reports it after the settle lands, by `automationService.onSessionSettled({ sessionId, laneId, provider? })`. It carries no `modelId`. It fires one time for the chat that was settled, by a person, by an agent, or by a merged PR. It fires only for a DAEX chat: a settled shell or tracked CLI session does not fire it. A subagent that follows its settled parent does not fire it. A host with no automation service (an embedded runtime, or a build with automations off) reports nothing. The lane can still hold other open chats, so a cleanup command on this trigger can remove files that a second chat uses; use `lane.archived` for cleanup of the whole lane.
 
 `session.ended_without_pr` is derived inside the service. `onSessionEnded` first dispatches `session-end`, then reads the local PR projection for the lane and dispatches the narrower trigger only when the lane has no `open`/`draft` PR. An unreadable projection is treated as "has a PR", so a lookup failure can never fire the trigger wrongly.
 
@@ -80,7 +80,7 @@ Two filters apply to these triggers:
 - `webhook` — a custom webhook URL any service can call ("Any service" in the builder). The trigger carries `webhook: AutomationWebhookTriggerConfig`:
   - `hookId` — the stable id in the URL (`wh-…`). The **token** that makes the URL secret is not in config: it lives in the machine-local `automation_webhook_hooks` table of the machine that made the URL, so a copied project config cannot receive on it.
   - `preset` — `github`, `stripe`, `linear`, `sentry` or `generic`. Drives the builder's paste instructions, the signature defaults, the sample used by **Send test**, and the event label in the delivery log (`shared/automationWebhooks.ts`).
-  - `signature` — optional. `scheme: "hmac"` is HMAC-SHA256 of the raw body in `header`, with `prefix` and `encoding` (`hex`/`base64`); this covers GitHub (`x-hub-signature-256`, `sha256=`), Linear (`linear-signature`), Sentry (`sentry-hook-signature`) and most senders. `scheme: "stripe"` verifies Stripe's `t=…,v1=…` header over `<t>.<body>` with a 5-minute tolerance measured from when the request reached ADE (relay hold time does not fail it). `secretName` names a **project secret**; the value is never in config and never leaves the machine.
+  - `signature` — optional. `scheme: "hmac"` is HMAC-SHA256 of the raw body in `header`, with `prefix` and `encoding` (`hex`/`base64`); this covers GitHub (`x-hub-signature-256`, `sha256=`), Linear (`linear-signature`), Sentry (`sentry-hook-signature`) and most senders. `scheme: "stripe"` verifies Stripe's `t=…,v1=…` header over `<t>.<body>` with a 5-minute tolerance measured from when the request reached DAEX (relay hold time does not fail it). `secretName` names a **project secret**; the value is never in config and never leaves the machine.
   - `filters` — "only run when" conditions on `body.*`, `headers.*` or `query.*` (`equals`, `not_equals`, `contains`, `exists`, `matches`), all of which must pass. `matches` is a case-insensitive regex run over at most the first 10,000 characters of the field, because the sender writes that text. Checked before anything starts, so noise never costs a run.
   - `maxAgeMinutes` — skip deliveries the relay held longer than this.
   - Placeholders: `{{trigger.body.a.b}}`, `{{trigger.headers.x-github-event}}`, `{{trigger.query.env}}`, `{{trigger.method}}`, and `{{trigger.body}}` for the whole body. Every webhook-started prompt is prefixed with `WEBHOOK_UNTRUSTED_NOTICE`, which tells the agent that text from the request is data, not instructions.
@@ -93,9 +93,9 @@ Deleting a rule retires the URLs its webhook triggers used (unless another rule 
 
 #### How a custom webhook delivery is handled
 
-`customWebhookService.ts` receives every request, whether it came straight to this machine (`/hooks/:hookId/:token` on the local listener, or through the user's own public gateway) or was held by ADE's relay and drained. Checks run cheapest and least revealing first: token (direct requests only; the relay already checked its hash) → a saved rule uses this hook → 1 MiB size cap → 60 requests/minute per hook → max age → signature → rule enabled → filters → duplicate (sender delivery ids such as `x-github-delivery`, `svix-id`, Stripe `evt_…`, else the relay's id) → run. A wrong token and an unknown hook both answer `404` and are not logged. The service replies `202` before the run starts. If the automation then starts nothing (its other conditions, such as active hours, do not match), the row becomes `filtered`; a failed start becomes `error`. Only a `ran` row keeps its duplicate key, so the sender's redelivery of an event that never ran is allowed to run. A relay request over the per-minute limit is neither logged nor acknowledged: it stays held on the relay and the drain retries that hook about a minute later.
+`customWebhookService.ts` receives every request, whether it came straight to this machine (`/hooks/:hookId/:token` on the local listener, or through the user's own public gateway) or was held by DAEX's relay and drained. Checks run cheapest and least revealing first: token (direct requests only; the relay already checked its hash) → a saved rule uses this hook → 1 MiB size cap → 60 requests/minute per hook → max age → signature → rule enabled → filters → duplicate (sender delivery ids such as `x-github-delivery`, `svix-id`, Stripe `evt_…`, else the relay's id) → run. A wrong token and an unknown hook both answer `404` and are not logged. The service replies `202` before the run starts. If the automation then starts nothing (its other conditions, such as active hours, do not match), the row becomes `filtered`; a failed start becomes `error`. Only a `ran` row keeps its duplicate key, so the sender's redelivery of an event that never ran is allowed to run. A relay request over the per-minute limit is neither logged nor acknowledged: it stays held on the relay and the drain retries that hook about a minute later.
 
-An accepted delivery survives a restart. Its `automation_ingress_events` row is written before `receive` returns (before the `202` and before the relay is acknowledged), and the row's `run_claim` is set only when its run's turn in the rule's queue comes. When the webhook service starts, `resumeInterruptedDeliveries` finds the `ran` deliveries whose ingress row is still unclaimed (ADE stopped while they waited behind a long run, or before they were matched) and dispatches each once more with `resume: true`, which reuses the same row and key. A live delivery passes `resume: true` too, so a sender's resend of an event that never started runs it. Both paths claim with a per-dispatch token, so a still-queued original and its replay can never both start a run. A run that did start is never replayed, even if ADE died in the middle of it. A delivery whose body was truncated, or whose automation changed or was removed, is marked `error` instead, with its duplicate key cleared so the sender can resend it. Rows written before claims existed are backfilled as claimed (`legacy`), so an upgrade replays nothing.
+An accepted delivery survives a restart. Its `automation_ingress_events` row is written before `receive` returns (before the `202` and before the relay is acknowledged), and the row's `run_claim` is set only when its run's turn in the rule's queue comes. When the webhook service starts, `resumeInterruptedDeliveries` finds the `ran` deliveries whose ingress row is still unclaimed (DAEX stopped while they waited behind a long run, or before they were matched) and dispatches each once more with `resume: true`, which reuses the same row and key. A live delivery passes `resume: true` too, so a sender's resend of an event that never started runs it. Both paths claim with a per-dispatch token, so a still-queued original and its replay can never both start a run. A run that did start is never replayed, even if DAEX died in the middle of it. A delivery whose body was truncated, or whose automation changed or was removed, is marked `error` instead, with its duplicate key cleared so the sender can resend it. Rows written before claims existed are backfilled as claimed (`legacy`), so an upgrade replays nothing.
 
 Every other outcome is written to the machine-local `automation_webhook_deliveries` table — newest 50 per hook, plus any still waiting for their run to start, headers (authorization/cookies hidden) and up to 64 KB of body — with one plain sentence explaining it (`ran`, `no_rule`, `disabled`, `filtered`, `bad_signature`, `missing_signature`, `duplicate`, `expired`, `rate_limited`, `too_large`, `error`). A rate-limit storm logs only its first rejection per window. A `ran` row also stores the filled-in prompt and links to its run through `ingress_event_id`. **Run it again** replays a logged delivery against the rule as it is now, with no duplicate check and keeping the signature state it arrived with. A delivery whose signature did not match or was absent cannot be replayed: it may be forged, so the sender has to send it again. One that arrived before the signing secret was saved (signature state `unchecked`) can be replayed once the secret is in place. **Send test** signs a sample exactly as the configured sender would and posts it to the real URL, so a relay URL is exercised end to end. The test carries a one-time `x-ade-test` nonce; only a nonce this machine issued in the last 10 minutes logs the delivery as `via: "test"`, and that row hides the signature header. Agents test the rule as saved: the RPC layer drops the builder's draft `config` for anyone but a user client or the CTO, so an agent cannot choose which project secret signs the test.
 
@@ -176,7 +176,7 @@ Label normalization helper `normalizeLabels` accepts either string arrays or obj
 
 `PUBLISH_CAPABLE_TOOL_FAMILIES` — `github`, `linear`, `browser` — are the families that can publish outputs externally. Guardrails apply specifically to these.
 
-Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedTools()` plus ADE CLI actions available to terminal-capable agents. For targeted, typed access to ADE services from a built-in rule, prefer the `ade-action` action type over a shell call.
+Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedTools()` (`ai/tools/workerSandboxDefaults.ts`) plus the `daex` CLI for terminal-capable agents. For targeted, typed access to DAEX services from a built-in rule, prefer the `ade-action` action type over a shell call.
 
 ## Action catalog (built-in)
 
@@ -204,7 +204,7 @@ Action types (`AutomationActionType`):
   - `laneDeleteOptions` — optional `deleteBranch`, `deleteRemoteBranch`, and `force` booleans forwarded to `laneService.delete`.
   - `afterMinutes` — omitted or `0` deletes immediately. A positive value writes a durable scheduled-cleanup row and returns a succeeded action result whose JSON output includes `status: "scheduled"`, cleanup id, lane id, and due time.
 - `run-command` — shell command. `command` + optional `cwd`. Cwd validated via `validateAutomationCwd` + `resolvePathWithinRoot`; must stay inside the target lane worktree or project root.
-- `run-tests` — invokes the ADE test runner for `suiteId`.
+- `run-tests` — invokes the DAEX test runner for `suiteId`.
 - `predict-conflicts` — runs the conflicts service's prediction for the target lane; no extra config.
 - `agent-session` — embeds an agent-session step inside a built-in chain. `prompt` + optional `sessionTitle`; the rule's tool palette applies.
 - `handoff` — hands the trigger's chat to another model. Calls the same `handoffSession` the registry allowlists as `chat.handoffSession`. Fields:
@@ -221,7 +221,7 @@ Action types (`AutomationActionType`):
   - `reasoningEffort` — optional reasoning tier for the new chat. Omitted inherits the source session's.
 
   The action needs a trigger that carries a chat session, so pair it with a `session.*` trigger; a trigger without one fails the step with a clear message. On success the new session id lands in three places: the action's JSON output, the run's `chatSessionId`, and `handoffSessionId` on the emitted `runs-updated` event. The event is the load-bearing one — `HandoffLaunchJob` is a renderer-only type, so the main process never builds one; it publishes the id and the renderer builds the job.
-- `ade-action` — dispatches a registered ADE action. `adeAction: RunAdeActionConfig`:
+- `ade-action` — dispatches a registered DAEX action. `adeAction: RunAdeActionConfig`:
   - `domain` — one of the allowlisted `AdeActionDomain` values (`lane`, `git`, `pr`, `issue`, `chat`, `linear_sync`, `file`, `pty`, `automations`, etc.).
   - `action` — an entry on that domain's allowlist (e.g. `pr.addComment`, `issue.close`, `linear_sync.runSyncNow`).
   - `args` — object or array passed to the domain method. Strings may contain `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time.
@@ -235,10 +235,10 @@ not special. `args` are `title` (up to 64 characters), optional `body` (up to
 for example `PR {{trigger.pr.number}} is ready to merge`.
 
 The editor builds `open` for the user instead of asking for a link. **When
-tapped, open** offers what the phone opens itself (just ADE, Activity on one
+tapped, open** offers what the phone opens itself (just DAEX, Activity on one
 column, a chat, a pull request, a Linear issue) and what it hands to the
 computer through its "Send to your computer" card (a lane, a file, a commit, a
-branch, proof), plus **Paste a link** for any ADE link, `https://ade-app.dev/open`
+branch, proof), plus **Paste a link** for any DAEX link, `https://ade-app.dev/open`
 forms included. Each choice has a **Choose** list of this project's chats,
 pull requests, lanes or branches and one-click **From the trigger** values
 (the PR, chat, lane or branch that started the run). Two more one-click values
@@ -246,8 +246,8 @@ point at what the run itself makes, which does not exist when the rule is
 written. They sit first, under **From this run**: **The chat this run started**
 (`{{run.chatSessionId}}`, set when an `agent-session` step creates its chat),
 **The lane this run used** (`{{run.laneId}}`, which falls back to the run's
-trigger lane, except on an ADE Cloud run, whose lane is on its own computer)
-and **This run's history** (`ade://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}`:
+trigger lane, except on a DAEX Cloud run, whose lane is on its own computer)
+and **This run's history** (`daex://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}`, `RUN_HISTORY_LINK` in `notifyLink.ts`:
 the computer opens the run in Automations, the phone opens its chat or offers
 the run to the computer). A new step starts on the first of these that fits:
 the run's chat when an agent step comes before it, else the trigger's PR or
@@ -261,15 +261,15 @@ the test.
 Saving checks the step (`sendNotificationStepProblem` in
 `automationPlannerService.ts`): a title is required, and text and links without
 `{{…}}` values must be within limits and openable. At run time the push goes to
-every phone on the ADE account, skipping phones with notifications off, in
+every phone on the DAEX account, skipping phones with notifications off, in
 quiet hours, or muting this machine; an account may send 60 an hour, and past
 that the step fails with the time to wait. A link that resolves to something
-ADE cannot open (a trigger value that was empty makes `ade://pr/`) is left off
+DAEX cannot open (a trigger value that was empty makes `daex://pr/`) is left off
 and named in the step's `linkSkipped` output, so the notification still
 arrives. A `{{run.*}}` value the run never filled (the agent step failed
 before its chat existed) leaves an empty id, so that link is left off the
 same way. An `agent-session` step can do the same from its shell with
-`ade notify`. See
+`daex notify`. See
 [Custom notifications](../sync-and-multi-device/push-notifications.md#custom-notifications).
 
 `isAllowedAdeAction(domain, action)` gates every `ade-action` dispatch; `listAllowedAdeActionNames(domain, service)` powers the picker in `AdeActionEditor`. The full allowlist lives in `apps/desktop/src/main/services/adeActions/actionPolicy.ts`.
@@ -286,7 +286,7 @@ The outcome is appended to the originating run as a new `delete-lane` row in `au
 
 ## Rule provenance
 
-Four fields record where a rule came from. They are optional on disk and additive: a project config with none of them loads and behaves exactly as before.
+These fields record where a rule came from. They are optional on disk and additive: a project config with none of them loads and behaves exactly as before.
 
 - `origin` — `"user"` (default), `"cto"`, or `"chat-menu"`. `normalizeRuntimeRule` rebuilds provenance rather than passing it through, so an unrecognized value falls back to `"user"`.
 - `scope` — `{ sessionId, sessionTitle }` for a rule that belongs to one chat. `sessionTitle` is stored on the rule, not looked up, so the label survives the chat being deleted. A scope with a blank session id is dropped.
@@ -302,15 +302,15 @@ The two retirement fields answer different questions and are enforced independen
 
 `maxRuns` is a hard ceiling on how many times the rule may run at all, success or failure, and is **not** gated on `oneShot`: the chat menu writes `maxRuns` on every auto-handoff rule including the unscoped "every chat" ones, which are not one-shot and would otherwise retry forever. A one-shot rule saved with no value is capped at `ONE_SHOT_DEFAULT_MAX_RUNS` (3); a rule carrying neither field is unlimited, exactly as before these fields existed.
 
-The run count lives in `kv`, keyed by project and rule id, so pruning run history cannot hand a rule a fresh budget, and deleting a rule clears it so a later rule reusing the id starts over.
+The run count lives in `kv`, keyed by project and rule id (for a rule that follows the account, also in `automations.runs.<id>` so a new home counts on), so pruning run history cannot hand a rule a fresh budget, and deleting a rule clears it so a later rule reusing the id starts over.
 
-Deletion runs after the run finishes and its `runs-updated` event is emitted. It re-reads the config immediately before the write and removes the rule only if it is still there, so a concurrent config write is either preserved or was already the deletion. Shared rules are never self-deleted; like `deleteRule`, they must be removed from the shared project config.
+Deletion runs after the run finishes and its `runs-updated` event is emitted. It re-reads the config immediately before the write and removes the rule only if it is still there, so a concurrent config write is either preserved or was already the deletion.
 
 ## Natural-language rule authoring
 
 `automationPlannerService.ts` exposes:
 
-- `parseNaturalLanguage({ text, projectContext })` — runs a planner subprocess (Claude CLI or Codex CLI; resolved via `resolveClaudeCodeExecutable` / `resolveCodexExecutable`). Returns `AutomationParseNaturalLanguageResult` with a candidate `AutomationRuleDraft`, `ambiguities`, and `confirmationRequirements`.
+- `parseNaturalLanguage({ text, projectContext })` — runs a planner subprocess (Claude CLI or Codex CLI; resolved via `resolveClaudeCodeExecutable` / `resolveCodexExecutable`). Returns `AutomationParseNaturalLanguageResult`: the candidate `AutomationRuleDraft`, its normalized form, a confidence, `ambiguities`, `resolutions` and `issues`.
 - `validateDraft({ draft })` — static validation: `AutomationValidateDraftResult` with `issues[]`.
 - `saveDraft({ draft, resolution })` — saves after resolution of ambiguities. Returns `AutomationSaveDraftResult`.
 - `simulate({ rule, trigger })` — lint a draft against a synthetic trigger. `AutomationSimulateResult` lists the actions that would fire. The builder does not call it; it uses test runs (see the README's Test runs).
@@ -322,15 +322,15 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 - **Cron field order is 5 fields** (minute hour day-of-month month day-of-week). Adding a seconds field breaks parsing.
 - **`file.change` watchers are scoped per lane.** Moving a watched root requires tearing down the old watcher — don't mutate `WatchedFileRoot` in place.
 - **Webhook payloads must be normalized before matching.** Rules match `eventKey`, not raw payload shape.
-- **Relay draining is page-durable.** The WebSocket is only a wake-up hint. Drain repo events with `order=asc&limit=100`, process pages in returned order, persist `nextCursor` after the page's events are all attempted, and immediately continue while `hasMore` is true; otherwise a burst can be skipped or replayed. Accumulate linked PR ids only after their page cursor commits, then issue one targeted reconciliation for the completed drain; if a later page fails, reconcile ids from already committed pages before returning the error. A per-event ingest/dispatch failure is caught and the cursor advances past it (a poison event can't freeze the repo); only a page fetch/transport failure or non-advancing cursor leaves the durable cursor at the prior page for replay. The drain yields to the event loop after each event: ingest is synchronous SQLite, so without the yield one page held the brain for 1–3 s on a fresh ADE Cloud computer during lane setup and socket reads such as `lane.list` timed out. A project's first drain (no saved cursor: a new ADE Cloud computer, a new install) skips the relay's history: it reads the newest cursor (`limit=1`, newest first), runs `reconcileGithubStacks` as a cursor expiry does, saves the cursor once that repair finished (a failed or superseded repair leaves no cursor, so the next drain skips and repairs again; a repair that fails on 3 drains in one service run saves the cursor anyway, with the warn `automations.github_relay_history_repair_failed` and a Sentry problem, so a GitHub that keeps refusing the stacks read never stops ingest), and drains from there (`automations.github_relay_history_skipped`). Those events predate this machine having the project: its PR poller reads every PR from GitHub on its first tick, and their rules ran on the machines that had the project then. The read happens once per service run, so a repo with no events yet costs one extra request.
+- **Relay draining is page-durable.** The WebSocket is only a wake-up hint. Drain repo events with `order=asc&limit=100`, process pages in returned order, persist `nextCursor` after the page's events are all attempted, and immediately continue while `hasMore` is true; otherwise a burst can be skipped or replayed. Accumulate linked PR ids only after their page cursor commits, then issue one targeted reconciliation for the completed drain; if a later page fails, reconcile ids from already committed pages before returning the error. A per-event ingest/dispatch failure is caught and the cursor advances past it (a poison event can't freeze the repo); only a page fetch/transport failure or non-advancing cursor leaves the durable cursor at the prior page for replay. The drain yields to the event loop after each event: ingest is synchronous SQLite, so without the yield one page held the brain for 1–3 s on a fresh DAEX Cloud computer during lane setup and socket reads such as `lane.list` timed out. A project's first drain (no saved cursor: a new DAEX Cloud computer, a new install) skips the relay's history: it reads the newest cursor (`limit=1`, newest first), runs `reconcileGithubStacks` as a cursor expiry does, saves the cursor once that repair finished (a failed or superseded repair leaves no cursor, so the next drain skips and repairs again; a repair that fails on 3 drains in one service run saves the cursor anyway, with the warn `automations.github_relay_history_repair_failed` and a Sentry problem, so a GitHub that keeps refusing the stacks read never stops ingest), and drains from there (`automations.github_relay_history_skipped`). Those events predate this machine having the project: its PR poller reads every PR from GitHub on its first tick, and their rules ran on the machines that had the project then. The read happens once per service run, so a repo with no events yet costs one extra request.
 - **Direct GitHub polling is demand-gated.** The rule predicate is checked every tick, so enabling or disabling the last `github.*` rule takes effect without restarting the runtime.
 - **External triggers must have a viable ingress capability before enable.** Readiness is computed per source class by `computeDeliveryStatuses` (`automationService.ts`), which returns an `AutomationIngressDelivery` map keyed by `github`, `githubWebhook`, `webhook`, and `linear`; `triggerDeliveryKeyForType` maps a trigger type to its key. Canonical `github.*` accepts direct polling, relay, local webhook, or a ready public gateway; `github-webhook`, custom `webhook`, and `linear.*` use their narrower checks. `getIngressSetupError` returns the first not-ready source's `setupError`. See the automations [README](README.md#webhook-relay-and-polling-ingress) for the full model.
 - **The main process cannot build a `HandoffLaunchJob`.** It is a renderer-only type. A `handoff` action publishes the new session id on `runs-updated` (`handoffSessionId`) and the renderer builds the job from that. Do not import the renderer type into main to shortcut this.
 - **`session.*` rules scoped to a chat must set `trigger.sessionId`.** Without it the rule fires for every chat in the project, which is rarely what a chat-menu rule means.
 - **Built-in shell actions validate cwd.** Don't pass absolute paths that escape the allowed roots — `validateAutomationCwd` rejects them.
-- **ADE actions are allowlisted at compile time.** A `(domain, action)` pair must appear in `ADE_ACTION_ALLOWLIST`. Adding an internal service method doesn't expose it to automations until the allowlist is updated; this is intentional — the allowlist is the audit surface.
+- **DAEX actions are allowlisted at compile time.** A `(domain, action)` pair must appear in `ADE_ACTION_ALLOWLIST`. Adding an internal service method doesn't expose it to automations until the allowlist is updated; this is intentional — the allowlist is the audit surface.
 - **`{{trigger.*}}` placeholders only interpolate from the current trigger context.** There is no cross-run state. A string that is one whole placeholder keeps the raw value (a number stays a number) and stays as written when the value is missing; a placeholder inside longer text becomes an empty string when missing. `{{trigger.lane.id}}` and `{{trigger.lane.name}}` read the run's lane (the context keeps it as `laneId` / `laneName`), and `{{date}}` / `{{time}}` resolve in step arguments and prompts as they do in lane names. Prefer explicit `resolvers` when a placeholder is load-bearing.
-- **`{{run.*}}` values fill in as the run goes.** `run.id` and `run.automationId` exist from the first step, `run.laneId` / `run.laneName` read the run's lane, and `run.chatSessionId` exists only after an `agent-session` step made its chat. On an ADE Cloud run the lane and chat live on the lane's own computer: `run.laneName` is filled, `run.laneId` and `run.chatSessionId` stay empty (the run's history link still opens the run). Use them in steps after the step that makes the thing.
+- **`{{run.*}}` values fill in as the run goes.** `run.id` and `run.automationId` exist from the first step, `run.laneId` / `run.laneName` read the run's lane, and `run.chatSessionId` exists only after an `agent-session` step made its chat. On a DAEX Cloud run the lane and chat live on the lane's own computer: `run.laneName` is filled, `run.laneId` and `run.chatSessionId` stay empty (the run's history link still opens the run). Use them in steps after the step that makes the thing.
 - **Planner JSON extraction is lossy on malformed output.** Budget extra validation on fields the planner set; rely on `validateDraft` rather than trusting raw output.
 
 ## Cross-links
