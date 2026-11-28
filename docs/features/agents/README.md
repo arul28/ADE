@@ -153,7 +153,7 @@ To carry unmerged commits, spawn from a lane created with
 copies uncommitted changes too). Runtime mechanics live in
 [Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting).
 
-## Agent download and sign-in from a chat
+## Agent download & auth from chat
 
 DAEX runs its own pinned copy of every agent and downloads it on demand
 ([agent tools cache](../onboarding-and-settings/agent-tools-cache.md)). When the
