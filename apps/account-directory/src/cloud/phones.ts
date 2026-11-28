@@ -38,7 +38,7 @@
  */
 
 import { isCloudBlocked, sendOwnerAlert } from "./blocks";
-import { PHONE_CREDIT_MILLI_PER_MINUTE, PHONE_RATE_SQL, accountWithUnsettledPhones, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
+import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, phoneChargeSql, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
 import { PHONE_MILLI_PER_MINUTE_V3 } from "./plans";
 import { settlePhoneAtEnd } from "./adPrice";
 import type { GravityEnv } from "./gravity";
@@ -139,6 +139,10 @@ export type PhoneRow = {
   ad_saved_milli?: number;
   /** Pricing v3: the start of its running ad minutes, or null on the full price. */
   ad_mark_at?: number | null;
+  /** Pricing v3 (migration 0075): where the minutes taken off end, kept on the full price; only grows. */
+  ad_paid_until?: number | null;
+  /** Pricing v3: the lowest ad rate a minute any minute was taken off at; its charge's floor (`credits.ts`). */
+  ad_rate_milli?: number | null;
 };
 
 /**
@@ -200,7 +204,7 @@ const PHONE_MERGE_SQL = `
   updated_at = excluded.updated_at`;
 
 /** A credits phone's billed minutes in thousandths of a credit, as SQL on its `cloud_phones` row. */
-const BILLED_CREDIT_MILLI_SQL = `max(0, ((billed_seconds + 59) / 60) * ${PHONE_RATE_SQL} - ad_saved_milli)`;
+const BILLED_CREDIT_MILLI_SQL = phoneChargeSql("(billed_seconds + 59) / 60");
 
 /**
  * A credits phone's newly billed minutes into its account's credits

@@ -9,6 +9,8 @@ import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MA
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
+import { settlePhoneAtEnd } from "../src/cloud/adPrice";
+import { phoneCreditMilliOf } from "../src/cloud/credits";
 import { smallCloudLookAlarms, syncAllSmallRates } from "../src/cloud/sponsoredSmall";
 import { expireAccountTests } from "../src/cloud/ownerAccounts";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
@@ -4730,6 +4732,18 @@ describe("ADE Cloud iPhone", () => {
     return handleNomacWebhook(new Request("https://directory.test/cloud/nomac/webhook", { method: "POST", headers: { "nomac-signature": `t=${t},v1=${v1}` }, body: raw }), harness.env, clock);
   }
 
+  it("a phone's charge is never below its billed minutes at its lowest ad rate, whatever its row says its ad minutes took off", async () => {
+    seedPhoneAccount();
+    const startedAt = clock - 5 * 60_000;
+    // Pricing v3: 500 a minute, minutes taken off at 400; a row that says far more was taken off than 5 minutes can.
+    seedPhone("ses_floor", 0, startedAt, "live", true, { rate_milli: 500, ad_saved_milli: 50_000, ad_rate_milli: 400 });
+    const usedBefore = Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli);
+    expect((await nomacDelivery("ses_floor", startedAt, "phone.ended", { state: "ended", ended_at: new Date(clock).toISOString(), cost: { billed_seconds: 300, accrued_microunits: "0" } })).status).toBe(200);
+    // Its final charge: 5 minutes at 400, into the balance once.
+    expect(Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli)).toBe(usedBefore + 2_000);
+    expect(phoneCreditMilliOf({ ...harness.row("select * from cloud_phones where phone_id = 'ses_floor'"), state: "live", ready_at: startedAt } as never, clock)).toBe(2_000);
+  });
+
   it("a phone found with no row (its start's answer was lost) is billed in credits", async () => {
     seedPhoneAccount();
     expect((await nomacDelivery("ses_lost", clock - 9 * 60_000)).status).toBe(200);
@@ -7184,5 +7198,43 @@ describe("Pricing v3's ad price", () => {
     // A home network: counts, no alert.
     expect(await sent({ messageId: "m-4" })).toEqual({ counted: true });
     expect(alerts("ad_cloud_network")).toBe(1);
+  });
+
+  it("a cloud iPhone's minute is taken off at most once, however often its price moves inside it", async () => {
+    // A live v3 phone (500 a minute, 400 with ads: 100 off a minute) with a proof in its window.
+    const readyAt = clock;
+    harness.insert("cloud_phones", {
+      phone_id: "ses_ad", user_id: OWNER, device: "iphone", state: "live", created_at: readyAt, ready_at: readyAt, billed_seconds: 0,
+      cost_micros: 0, free: 0, updated_at: readyAt, credits: 1, credited_milli: 0, rate_milli: 500,
+    });
+    harness.insert("cloud_ad_targets", { target: "phone:ses_ad", user_id: OWNER, proof_at: clock, updated_at: clock });
+    const saved = () => Number(harness.row("select ad_saved_milli from cloud_phones where phone_id = 'ses_ad'").ad_saved_milli);
+    await harness.tick();
+    expect(saved()).toBe(100);
+    // Ads off and on again, many times inside its first minute.
+    for (let n = 0; n < 5; n += 1) {
+      expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
+      expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    }
+    // Pricing v3 off and on again.
+    setting("pricing_v3", "off");
+    await harness.tick();
+    setting("pricing_v3", "all");
+    await harness.tick();
+    expect(saved()).toBe(100);
+    // Its second minute, then its end inside it: one more minute off, no more.
+    clock += 90_000;
+    await harness.tick();
+    await settlePhoneAtEnd(harness.env, "ses_ad", clock);
+    expect(saved()).toBe(200);
+    harness.exec("update cloud_phones set state = 'ended', ended_at = ?, billed_seconds = 120 where phone_id = 'ses_ad'", clock);
+    expect(phoneCreditMilliOf(harness.row("select * from cloud_phones where phone_id = 'ses_ad'") as never, clock)).toBe(800);
+  });
+
+  it("answers about sponsored cards have their own hourly limit per account", async () => {
+    for (let n = 0; n < 20; n += 1) expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: n % 2 ? "granted" : "declined", confirmed: true })).status).toBe(200);
+    expect(await codeOf(await fromHome("PUT", "/cloud/sponsored/consent", { consent: "declined" }))).toEqual([429, "rate_limited"]);
+    clock += HOUR;
+    expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
   });
 });

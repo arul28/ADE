@@ -2216,7 +2216,11 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   // Sponsored cards and the Index (`gravity.ts`): rows and Gravity only, no provider.
   if (path.startsWith("/cloud/sponsored/")) {
     // A person's messages have their own minute (one each, on every device): a proof never waits on a card's.
-    if (!await takeRequest(env, caller.userId, path === CLOUD_PATHS.sponsoredSent ? "sponsored_sent" : "sponsored", now)) return tooManyRequests();
+    // Answers about cards have their own hour.
+    const bucket = path === CLOUD_PATHS.sponsoredSent ? "sponsored_sent" : path === CLOUD_PATHS.sponsoredConsent ? "sponsored_consent" : "sponsored";
+    if (!await takeRequest(env, caller.userId, bucket, now)) {
+      return tooManyRequests(bucket === "sponsored_consent" ? "Too many answers about sponsored cards from this account in the last hour. Try again later." : undefined);
+    }
     const sponsored = await routeSponsored(request, path, env, caller.userId, now, waitUntil);
     if (sponsored) return sponsored;
   }

@@ -409,7 +409,7 @@ export async function syncPhonePricesInTick(env: GravityEnv, now: number): Promi
   try {
     const switches = await pricingSwitches(env);
     if (switches.mode !== "off") await syncPhonePrices(env, null, null, now, switches);
-    else await env.DB.prepare("update cloud_phones set ad_mark_at = null where ad_mark_at is not null").run();
+    else await env.DB.prepare("update cloud_phones set ad_paid_until = max(coalesce(ad_paid_until, 0), ad_mark_at), ad_mark_at = null where ad_mark_at is not null").run();
   } catch (error) {
     reportCloudFailure("cloud.ad_price.phone_tick_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
@@ -434,7 +434,24 @@ async function contextsFor(env: GravityEnv, switches: PricingSwitches, userIds: 
 
 /* ---- The cloud iPhone ---- */
 
-type PhonePriceRow = { phone_id: string; user_id: string; rate_milli: number | null; ad_mark_at: number | null; ad_saved_milli: number };
+type PhonePriceRow = { phone_id: string; user_id: string; rate_milli: number | null; ad_mark_at: number | null; ad_paid_until: number | null };
+
+/** One phone's move: credits its ad minutes take off (at `adMilli` a minute), its new mark, and where its minutes taken off end. */
+type PhoneMove = { addMilli: number; adMilli: number; markAt: number | null; paidUntil: number };
+
+const PHONE_PRICE_COLUMNS = "phone_id, user_id, rate_milli, ad_mark_at, ad_paid_until";
+
+/**
+ * A phone's move, written only over the mark and end it was read with (a
+ * move raced by another writes nothing). `ad_paid_until` only grows, and
+ * `ad_rate_milli` keeps the lowest ad rate a minute was taken off at: the
+ * floor of its charge (`credits.ts`).
+ */
+const phoneMoveStatement = (env: GravityEnv, phone: PhonePriceRow, move: PhoneMove, live: boolean): D1PreparedStatement =>
+  env.DB.prepare(`update cloud_phones set ad_saved_milli = ad_saved_milli + ?, ad_mark_at = ?, ad_paid_until = max(coalesce(ad_paid_until, 0), ?),
+      ad_rate_milli = case when ? > 0 then min(coalesce(ad_rate_milli, ?), ?) else ad_rate_milli end
+    where phone_id = ? and ad_mark_at is ? and ad_paid_until is ?${live ? " and state = 'live'" : ""}`)
+    .bind(move.addMilli, move.markAt, move.paidUntil, move.addMilli, move.adMilli, move.adMilli, phone.phone_id, phone.ad_mark_at, phone.ad_paid_until);
 
 /**
  * The live v3 phones (`rate_milli` set) of these accounts (null: all), each
@@ -443,7 +460,7 @@ type PhonePriceRow = { phone_id: string; user_id: string; rate_milli: number | n
  * write per phone that moved.
  */
 async function syncPhonePrices(env: GravityEnv, userIds: readonly string[] | null, known: Map<string, AdContext> | null, now: number, switches?: PricingSwitches): Promise<number> {
-  const rows = await env.DB.prepare(`select phone_id, user_id, rate_milli, ad_mark_at, ad_saved_milli from cloud_phones where state = 'live' and credits = 1 and rate_milli is not null${userIds ? " and user_id in (select value from json_each(?))" : ""}`)
+  const rows = await env.DB.prepare(`select ${PHONE_PRICE_COLUMNS} from cloud_phones where state = 'live' and credits = 1 and rate_milli is not null${userIds ? " and user_id in (select value from json_each(?))" : ""}`)
     .bind(...(userIds ? [JSON.stringify(userIds)] : [])).all<PhonePriceRow>();
   const phones = rows.results ?? [];
   if (phones.length === 0) return 0;
@@ -455,8 +472,7 @@ async function syncPhonePrices(env: GravityEnv, userIds: readonly string[] | nul
     if (!ctx) continue;
     const move = phoneMoveAt(phone, targets.get(phoneTarget(phone.phone_id)) ?? null, ctx, now);
     if (!move) continue;
-    statements.push(env.DB.prepare("update cloud_phones set ad_saved_milli = ad_saved_milli + ?, ad_mark_at = ? where phone_id = ? and state = 'live' and ad_mark_at is ?")
-      .bind(move.addMilli, move.markAt, phone.phone_id, phone.ad_mark_at));
+    statements.push(phoneMoveStatement(env, phone, move, true));
   }
   if (statements.length) await env.DB.batch(statements);
   return statements.length;
@@ -467,8 +483,8 @@ async function syncPhonePrices(env: GravityEnv, userIds: readonly string[] | nul
  * no longer reaching it: the mark clears with nothing more (the minute begun
  * at the last move is in already; after it, the full price).
  */
-function phoneMoveAt(phone: PhonePriceRow, target: AdTargetRow | null, ctx: AdContext, at: number): { addMilli: number; markAt: number | null } | null {
-  if (!ctx.v3) return phone.ad_mark_at == null ? null : { addMilli: 0, markAt: null };
+function phoneMoveAt(phone: PhonePriceRow, target: AdTargetRow | null, ctx: AdContext, at: number): PhoneMove | null {
+  if (!ctx.v3) return phone.ad_mark_at == null ? null : { addMilli: 0, adMilli: 0, markAt: null, paidUntil: phone.ad_mark_at };
   const decision = decidePrice(target, ctx, null, at);
   return phoneAdMove(phone, decision, phoneRatesMilli(phone.rate_milli, ctx.discountPct), adWindow(target, ctx, false).until, ctx, at);
 }
@@ -481,13 +497,14 @@ function phoneMoveAt(phone: PhonePriceRow, target: AdTargetRow | null, ctx: AdCo
  */
 export async function settlePhoneAtEnd(env: GravityEnv, phoneId: string, endedAt: number): Promise<void> {
   try {
-    const phone = await env.DB.prepare("select phone_id, user_id, rate_milli, ad_mark_at, ad_saved_milli from cloud_phones where phone_id = ? and ad_mark_at is not null")
+    const phone = await env.DB.prepare(`select ${PHONE_PRICE_COLUMNS} from cloud_phones where phone_id = ? and ad_mark_at is not null`)
       .bind(phoneId).first<PhonePriceRow>();
-    if (!phone) return;
+    if (phone?.ad_mark_at == null) return;
     const ctx = (await contextsFor(env, await pricingSwitches(env), [phone.user_id])).get(phone.user_id);
     const move = ctx ? phoneMoveAt(phone, (await targetsOf(env, [phoneTarget(phoneId)])).get(phoneTarget(phoneId)) ?? null, ctx, endedAt) : null;
-    await env.DB.prepare("update cloud_phones set ad_saved_milli = ad_saved_milli + ?, ad_mark_at = null where phone_id = ? and ad_mark_at is ?")
-      .bind(move?.addMilli ?? 0, phoneId, phone.ad_mark_at).run();
+    // Still on the ad price at its end: the minutes begun up to it go in all the same.
+    const ended = move?.markAt != null ? { ...move, markAt: null } : move;
+    await phoneMoveStatement(env, phone, ended ?? { addMilli: 0, adMilli: 0, markAt: null, paidUntil: phone.ad_mark_at }, false).run();
   } catch (error) {
     reportCloudFailure("cloud.ad_price.phone_end_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
@@ -495,24 +512,30 @@ export async function settlePhoneAtEnd(env: GravityEnv, phoneId: string, endedAt
 
 /**
  * Pure: a phone's ad minutes. The phone bills every minute it began, so a
- * minute begun at the ad price is taken off whole: `ad_mark_at` is where the
- * minutes already taken off end. On the ad price the minutes begun since the
- * mark go in and the mark moves past them (no mark: the minute begun now).
- * Back on the full price, the minutes begun before the window's end go in and
- * the mark clears. Null when nothing changes.
+ * minute begun at the ad price is taken off whole: `ad_mark_at` (on the ad
+ * price) and `ad_paid_until` (kept on the full price) are where the minutes
+ * already taken off end, so none is taken off twice. On the ad price the
+ * minutes begun since the mark go in and the mark moves past them (no mark:
+ * the minute begun now, unless it is taken off already). Back on the full
+ * price, the minutes begun before the window's end go in and the mark clears.
+ * Null when nothing changes.
  */
-export function phoneAdMove(phone: Pick<PhonePriceRow, "ad_mark_at">, decision: PriceDecision, rates: V3Rate, adUntil: number | null, ctx: Pick<AdContext, "windowChangedAt">, now: number): { addMilli: number; markAt: number | null } | null {
+export function phoneAdMove(phone: Pick<PhonePriceRow, "ad_mark_at" | "ad_paid_until">, decision: PriceDecision, rates: V3Rate, adUntil: number | null, ctx: Pick<AdContext, "windowChangedAt">, now: number): PhoneMove | null {
   const perMinute = Math.max(0, rates.fullMilli - rates.adMilli);
   const begun = (from: number, to: number) => (to > from ? Math.ceil((to - from) / 60_000) : 0);
+  const taken = (from: number, minutes: number): PhoneMove => ({ addMilli: minutes * perMinute, adMilli: rates.adMilli, markAt: from + minutes * 60_000, paidUntil: from + minutes * 60_000 });
   if (decision.now === "ad") {
-    if (phone.ad_mark_at == null) return { addMilli: perMinute, markAt: now + 60_000 };
+    if (phone.ad_mark_at == null) {
+      const paid = phone.ad_paid_until ?? 0;
+      return paid > now ? taken(paid, 0) : taken(now, 1);
+    }
     const minutes = begun(phone.ad_mark_at, now);
-    return minutes > 0 ? { addMilli: minutes * perMinute, markAt: phone.ad_mark_at + minutes * 60_000 } : null;
+    return minutes > 0 ? taken(phone.ad_mark_at, minutes) : null;
   }
   if (phone.ad_mark_at == null) return null;
   // Up to the window's end when it ended (whatever the reason now), else now.
   const end = adUntil != null && adUntil <= now ? fullPriceEdge(adUntil, ctx, phone.ad_mark_at, now) : now;
-  return { addMilli: begun(phone.ad_mark_at, end) * perMinute, markAt: null };
+  return { ...taken(phone.ad_mark_at, begun(phone.ad_mark_at, end)), markAt: null };
 }
 
 /* ---- Proofs ---- */

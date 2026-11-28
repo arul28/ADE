@@ -369,7 +369,7 @@ Chats on the person's own machines never get a card.
 ### The ad price (Pricing v3, behind a switch)
 
 `adPrice.ts` (the price), `adProof.ts` (a message's proof), migrations
-`0073_ad_price` and `0074_ad_price_outside`. Under Pricing v3 every plan can turn ads on, and
+`0073_ad_price`, `0074_ad_price_outside` and `0075_phone_ad_minutes`. Under Pricing v3 every plan can turn ads on, and
 a computer or the DAEX Cloud iPhone used with ads costs less. All of it is behind
 the setting `pricing_v3` (`off`, `testers`, `all`; held under the deploy var
 `PRICING_V3`, unset is a hard off). At `off` no answer and no number changes.
@@ -388,7 +388,9 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
 - **Where ads are**: on to start in the US outside California; asked first in
   California, Canada, the UK and Australia; nowhere else. No ad before the
   account saw the notice (`notice_seen_at`, sent as `noticeSeen` on
-  `PUT /cloud/sponsored/consent`; one answer on every device).
+  `PUT /cloud/sponsored/consent`; one answer on every device). Answers have
+  their own rate bucket (`sponsored_consent`, 20 an hour per account), since
+  each one moves the account's prices.
 - **What makes a minute cost the ad price** (`decidePrice`, in this order):
   ads off (and no live DAEX Free Models proof) is full; full-price work is
   full; otherwise a proof inside the window is the ad price, and no proof is
@@ -490,7 +492,10 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   per row (`cloud_phones.rate_milli`; one started before Pricing v3 keeps 1,000
   a minute with no ad price until it ends, and its stop time follows its own
   rate) and subtracts `ad_saved_milli`: every minute begun at the ad price,
-  settled before the phone's final charge, stopped at `off`. Under
+  settled before the phone's final charge, stopped at `off`. A minute is
+  taken off once however often the price moves inside it (`ad_paid_until`,
+  which only grows), and a phone's charge is never below its minutes at the
+  lowest ad rate any was taken off at (`ad_rate_milli`). Under
   Pricing v3 this replaces the 7-day Small rule.
 - **What apps read**: `CloudAccountState.pricing` (only with the request header
   `X-ADE-Pricing: 3`): the ads state for this request's country, and each

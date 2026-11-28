@@ -23,10 +23,10 @@ import { liveUsedMilli, type AccountRow, type CloudEnv, type ComputerRow } from 
 export const PHONE_CREDIT_MILLI_PER_MINUTE = 1000;
 
 /** A credits phone's row, as the balance reads it. */
-type CreditPhone = Pick<PhoneRow, "user_id" | "billed_seconds" | "ready_at" | "credited_milli" | "created_at" | "state" | "rate_milli" | "ad_saved_milli">;
+type CreditPhone = Pick<PhoneRow, "user_id" | "billed_seconds" | "ready_at" | "credited_milli" | "created_at" | "state" | "rate_milli" | "ad_saved_milli" | "ad_rate_milli">;
 
 /** The running credits phones (the partial index on live phones keeps this a short read). */
-const LIVE_CREDIT_PHONES_SQL = "select user_id, billed_seconds, ready_at, credited_milli, created_at, state, rate_milli, ad_saved_milli from cloud_phones where state = 'live' and credits = 1";
+const LIVE_CREDIT_PHONES_SQL = "select user_id, billed_seconds, ready_at, credited_milli, created_at, state, rate_milli, ad_saved_milli, ad_rate_milli from cloud_phones where state = 'live' and credits = 1";
 
 /**
  * A phone's full rate a minute: its row's (Pricing v3 phones, `adPrice.ts`:
@@ -36,17 +36,30 @@ export const phoneRateOf = (row: Partial<Pick<PhoneRow, "rate_milli">>): number 
 export const PHONE_RATE_SQL = `coalesce(rate_milli, ${PHONE_CREDIT_MILLI_PER_MINUTE})`;
 
 /**
+ * A phone's charge for `minutes`: its rate less what its ad minutes took off
+ * (Pricing v3, `adPrice.ts`), never below the minutes at the lowest ad rate
+ * any was taken off at. SQL twin: `phoneChargeSql`.
+ */
+function phoneChargeMilli(minutes: number, row: Partial<Pick<PhoneRow, "rate_milli" | "ad_saved_milli" | "ad_rate_milli">>): number {
+  const rate = phoneRateOf(row);
+  return Math.max(0, minutes * rate - (row.ad_saved_milli ?? 0), minutes * Math.min(rate, row.ad_rate_milli ?? rate));
+}
+
+/** `phoneChargeMilli` as SQL on a `cloud_phones` row, for `minutes` (an SQL expression, read twice: bind its parameters twice). */
+export const phoneChargeSql = (minutes: string): string =>
+  `max(0, (${minutes}) * ${PHONE_RATE_SQL} - ad_saved_milli, (${minutes}) * min(${PHONE_RATE_SQL}, coalesce(ad_rate_milli, ${PHONE_RATE_SQL})))`;
+
+/**
  * A credits phone's use so far (thousandths): its provider's billed minutes,
  * or while it runs its time so far (whole minutes, up; never past one phone's
  * longest), whichever is more.
  */
-export function phoneCreditMilliOf(row: Pick<PhoneRow, "billed_seconds" | "ready_at" | "state"> & Partial<Pick<PhoneRow, "rate_milli" | "ad_saved_milli">>, now: number): number {
+export function phoneCreditMilliOf(row: Pick<PhoneRow, "billed_seconds" | "ready_at" | "state"> & Partial<Pick<PhoneRow, "rate_milli" | "ad_saved_milli" | "ad_rate_milli">>, now: number): number {
   const billed = Math.ceil(row.billed_seconds / 60);
   const running = row.state === "live" && row.ready_at != null
     ? Math.min(CLOUD_PHONE_MAX_MINUTES, Math.ceil(Math.max(0, now - row.ready_at) / 60_000))
     : 0;
-  // Its minutes at the ad price took `ad_saved_milli` off (Pricing v3).
-  return Math.max(0, Math.max(billed, running) * phoneRateOf(row) - (row.ad_saved_milli ?? 0));
+  return phoneChargeMilli(Math.max(billed, running), row);
 }
 
 /**
@@ -115,8 +128,9 @@ export async function accountWithUnsettledPhones(env: Pick<CloudEnv, "DB">, user
 }
 
 /**
- * SQL for one credits phone row's use so far, in thousandths, at `?` (now):
- * `phoneCreditMilliOf` in SQL, for the period's turn (`startFreshPeriod`).
+ * SQL for one credits phone row's use so far, in thousandths, at now (bound
+ * twice, `?, ?`): `phoneCreditMilliOf` in SQL, for the period's turn
+ * (`startFreshPeriod`).
  */
-export const PHONE_CREDIT_MILLI_AT_SQL = `max(0, max((billed_seconds + 59) / 60,
-  case when state = 'live' and ready_at is not null then min(${CLOUD_PHONE_MAX_MINUTES}, (max(0, cast(? as integer) - ready_at) + 59999) / 60000) else 0 end) * ${PHONE_RATE_SQL} - ad_saved_milli)`;
+export const PHONE_CREDIT_MILLI_AT_SQL = phoneChargeSql(`max((billed_seconds + 59) / 60,
+  case when state = 'live' and ready_at is not null then min(${CLOUD_PHONE_MAX_MINUTES}, (max(0, cast(? as integer) - ready_at) + 59999) / 60000) else 0 end)`);

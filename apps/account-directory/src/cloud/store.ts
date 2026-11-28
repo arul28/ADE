@@ -379,15 +379,31 @@ const REQUESTS_PER_MINUTE = {
   free_models_seen: 60,
 } as const;
 
-export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE;
+/** Requests one account may make in an hour, per bucket (`takeRequest`). */
+const REQUESTS_PER_HOUR = {
+  /**
+   * Answers about sponsored cards (`PUT /cloud/sponsored/consent`): a person
+   * answers a few times at most. Each answer moves the account's prices
+   * (Pricing v3), restarting each running computer's stretch.
+   */
+  sponsored_consent: 20,
+} as const;
+
+export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE | keyof typeof REQUESTS_PER_HOUR;
+
+const requestLimitOf = (bucket: CloudRequestBucket): { limit: number; windowMs: number } =>
+  bucket in REQUESTS_PER_HOUR
+    ? { limit: REQUESTS_PER_HOUR[bucket as keyof typeof REQUESTS_PER_HOUR], windowMs: 60 * 60_000 }
+    : { limit: REQUESTS_PER_MINUTE[bucket as keyof typeof REQUESTS_PER_MINUTE], windowMs: 60_000 };
 
 /**
- * Counts one request against the account's minute for `bucket`. True when it
- * is within the bucket's limit. One row per account and bucket
- * (`cloud_request_windows`); a new minute resets it.
+ * Counts one request against the account's minute (or hour) for `bucket`.
+ * True when it is within the bucket's limit. One row per account and bucket
+ * (`cloud_request_windows`); a new window resets it.
  */
 export async function takeRequest(env: CloudDb, userId: string, bucket: CloudRequestBucket, now: number): Promise<boolean> {
-  const windowStart = Math.floor(now / 60_000) * 60_000;
+  const { limit, windowMs } = requestLimitOf(bucket);
+  const windowStart = Math.floor(now / windowMs) * windowMs;
   const row = await env.DB.prepare(`
     insert into cloud_request_windows (user_id, bucket, window_start, count) values (?, ?, ?, 1)
     on conflict (user_id, bucket) do update set
@@ -395,9 +411,9 @@ export async function takeRequest(env: CloudDb, userId: string, bucket: CloudReq
       window_start = excluded.window_start
     returning count
   `).bind(userId, bucket, windowStart).first<{ count: number }>();
-  if ((row?.count ?? 1) <= REQUESTS_PER_MINUTE[bucket]) return true;
-  // Once a minute per bucket, at the first refused request.
-  if (row?.count === REQUESTS_PER_MINUTE[bucket] + 1) logCloud("cloud.rate_limited", { bucket });
+  if ((row?.count ?? 1) <= limit) return true;
+  // Once a window per bucket, at the first refused request.
+  if (row?.count === limit + 1) logCloud("cloud.rate_limited", { bucket });
   return false;
 }
 
@@ -1551,12 +1567,12 @@ async function startFreshPeriod(
       where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
     ), 0)
     where user_id = ? and period_start = ?
-  `).bind(now, ...phonePeriod, ...phonePeriod));
+  `).bind(now, now, ...phonePeriod, ...phonePeriod));
   statements.push(env.DB.prepare(`
     update cloud_phones set credited_milli = max(credited_milli, ${PHONE_CREDIT_MILLI_AT_SQL})
     where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
       and exists (select 1 from cloud_accounts where user_id = ? and period_start = ?)
-  `).bind(now, ...phonePeriod, ...phonePeriod));
+  `).bind(now, now, ...phonePeriod, ...phonePeriod));
   // After the settles above, before `used_milli` resets below; both columns read the row as it was.
   statements.push(env.DB.prepare(`
     update cloud_accounts set earned_used_milli = earned_used_milli + ${EARNED_DRAW_SQL}
