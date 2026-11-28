@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowSquareOut, CheckCircle, Clock, Cloud, Cpu, ListChecks, Moon, Pulse, SunHorizon, Trash, Warning } from "@phosphor-icons/react";
 import { idleCleanupWhen, type CloudIdleCleanupEntry } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
@@ -126,8 +126,11 @@ export function CloudLaneHeaderButton({ laneId, turnRunning, runningKind = "chat
  * row's pin; null for the tab's own machine), so the menu's Wake connects the
  * session's machine, never the tab's. Nothing for a lane that isn't on
  * ADE Cloud, and nothing is mounted (no scope, no watch) until it is.
+ *
+ * Sleep asks first while the session is open: its output-based state reads
+ * idle during a quiet build, so only an ended session skips the question.
  */
-export function SessionCloudLaneButton({ session, runtimePin }: { session: Pick<TerminalSessionSummary, "laneId" | "status" | "runtimeState">; runtimePin: OpenProjectBinding | null }) {
+export function SessionCloudLaneButton({ session, runtimePin }: { session: Pick<TerminalSessionSummary, "laneId" | "status">; runtimePin: OpenProjectBinding | null }) {
   const laneId = session.laneId ?? null;
   const computer = useCloudLaneComputer(laneId);
   const boundBinding = useAppStore((state) => state.projectBinding);
@@ -135,15 +138,29 @@ export function SessionCloudLaneButton({ session, runtimePin }: { session: Pick<
   return (
     <ChatRuntimeScopeProvider pin={runtimePin} binding={runtimePin ?? boundBinding} laneId={laneId} sessionId={null}>
       <ChatMachineWakeProvider>
+        <SessionWakeFailureToast name={computer.laneName || "this lane"} />
         {/* What this computer costs now (a later change) shows here, next to its cloud button. */}
-        <CloudLaneHeaderButton
-          laneId={laneId}
-          turnRunning={session.status === "running" && session.runtimeState === "running"}
-          runningKind="session"
-        />
+        <CloudLaneHeaderButton laneId={laneId} turnRunning={session.status === "running"} runningKind="session" />
       </ChatMachineWakeProvider>
     </ChatRuntimeScopeProvider>
   );
+}
+
+/**
+ * A terminal has no wake banner (`ChatMachineWakeBanner` is a chat's), so a
+ * wake of the session's machine that fails says why in a toast. A failure
+ * already standing when the header mounts is not told again.
+ */
+function SessionWakeFailureToast({ name }: { name: string }) {
+  const { error } = useChatMachineWake();
+  const toldRef = useRef(error);
+  useEffect(() => {
+    if (error && error !== toldRef.current) {
+      showToast({ tone: "warning", title: `Couldn't wake ${name}'s computer`, message: error });
+    }
+    toldRef.current = error;
+  }, [error, name]);
+  return null;
 }
 
 /** How often the menu's relative times ("up 42m", "sleeps in ~2 min") move while it is open. */

@@ -255,7 +255,8 @@ struct CloudLaneHeaderStateButton: View {
   let fleetKey: String?
   /// On the side rail's toolbar (a labelled item), not the glass header.
   var inToolbar = false
-  /// In a terminal's top bar: a message there doesn't wake the computer.
+  /// In a terminal's top bar: a message there doesn't wake the computer, and
+  /// no state lines show a failed wake or a refusal, so the button does.
   var inTerminal = false
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = AccountCloudStore.shared
@@ -264,7 +265,10 @@ struct CloudLaneHeaderStateButton: View {
   private struct Shown {
     let word: String
     let symbol: String
+    /// Offers Wake now.
     let asleep: Bool
+    /// The server's sentence for a failed wake or a refusal (terminal only).
+    var problem: String? = nil
   }
 
   private var shown: Shown? {
@@ -272,6 +276,10 @@ struct CloudLaneHeaderStateButton: View {
     case .asleep?: return Shown(word: "Asleep", symbol: "moon.zzz", asleep: true)
     case .waking?: return Shown(word: "Waking", symbol: "sun.horizon", asleep: false)
     case .awake?: return Shown(word: "Awake", symbol: "icloud", asleep: false)
+    case .wakeFailed(let message)? where inTerminal:
+      return Shown(word: "Couldn't wake", symbol: "exclamationmark.icloud", asleep: true, problem: message)
+    case .refused(let message)? where inTerminal:
+      return Shown(word: "Refused", symbol: "exclamationmark.icloud", asleep: false, problem: message)
     default: return nil
     }
   }
@@ -288,7 +296,18 @@ struct CloudLaneHeaderStateButton: View {
 
   private func menu(_ shown: Shown, fleetKey: String) -> some View {
     Menu {
-      if shown.asleep {
+      if let problem = shown.problem {
+        Section(problem) {
+          if shown.asleep {
+            Button {
+              ADEHaptics.light()
+              wake(fleetKey)
+            } label: {
+              Label("Try again", systemImage: "arrow.clockwise")
+            }
+          }
+        }
+      } else if shown.asleep {
         Section(inTerminal ? "Asleep · wake it to use this terminal." : "Asleep · you're reading the saved copy. Sending a message wakes it too.") {
           Button {
             ADEHaptics.light()

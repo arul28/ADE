@@ -54,6 +54,7 @@ import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { SceneFrost } from "../../scene/SceneFrost";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
+import { SessionCloudLaneButton } from "../cloudLane/CloudLaneHeaderButton";
 import { CliActionsScope, CliActionsSidePane, CliActionsToggle, CliPromptSlot } from "./CliAgentPane";
 import { CliInputModeToggle, WorkCliInputBox } from "./WorkCliInputBox";
 import { isTrackedAgentCliToolType } from "../../../shared/types";
@@ -1022,7 +1023,7 @@ function SessionSurfaceBody({
     );
   }
   // A CLI or shell of an ADE Cloud computer at rest: its saved text, read-only.
-  if (isSavedTerminalSession(session)) return <SavedTerminalCopyView session={session} />;
+  if (isSavedTerminalSession(session)) return <SavedTerminalCopyView session={session} runtimePin={runtimePin ?? null} />;
   if (isRunningPtySession(session)) {
     if (isAgentCliSession(session)) {
       return (
@@ -1136,6 +1137,8 @@ function SessionSurfaceBody({
               )}
             </div>
           </div>
+          {/* The lane's cloud button, as a live session's header has it. */}
+          <SessionCloudLaneButton session={session} runtimePin={runtimePin ?? null} />
         </div>
 
         {/* Summary */}

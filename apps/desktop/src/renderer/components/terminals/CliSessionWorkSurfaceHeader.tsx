@@ -5,8 +5,6 @@ import type { LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "..
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { formatToolTypeLabel, primarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
-import { sessionStatusDot } from "../../lib/terminalAttention";
-import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { SessionCloudLaneButton } from "../cloudLane/CloudLaneHeaderButton";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -45,22 +43,6 @@ function statusForCacheBadgeGate(
     status: session.runtimeState === "idle" ? "idle" : "active",
     awaitingInput: session.runtimeState === "waiting-input",
   };
-}
-
-/** Small runtime-state dot (running / awaiting input / ended) shared across CLI session headers. */
-function SessionStatusDot({ session }: { session: TerminalSessionSummary }) {
-  const dot = sessionStatusDot(session);
-  return (
-    <span
-      aria-hidden
-      title={dot.label}
-      className={cn(
-        "h-1.5 w-1.5 shrink-0 rounded-full",
-        dot.cls,
-        dot.spinning && "animate-spin",
-      )}
-    />
-  );
 }
 
 /** Red stop button — only rendered while a PTY-backed session is actually running. */
@@ -191,45 +173,11 @@ export function CliSurfaceTrailingActions({
 }
 
 /**
- * Consolidated action cluster for a CLI session's grid tile. The grid tile's
- * lane-colored FloatingPane header now carries everything the old secondary
- * header did, so this folds those controls into a single row in order:
- * PR chip → Stop → status dot → Info → kebab.
- */
-export function GridTileSessionHeaderActions({
-  session,
-  stopping = false,
-  onInfoClick,
-  onContextMenu,
-  onStopRunningSession,
-  runtimePin = null,
-}: {
-  session: TerminalSessionSummary;
-  stopping?: boolean;
-  onInfoClick?: SessionMouseHandler;
-  onContextMenu?: SessionMouseHandler;
-  onStopRunningSession?: (session: TerminalSessionSummary) => void;
-  /** See `ChatGitToolbar.runtimePin`. */
-  runtimePin?: OpenProjectBinding | null;
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      {session.laneId ? <ChatGitToolbar laneId={session.laneId} sessionId={session.id} runtimePin={runtimePin} /> : null}
-      <StopSessionButton session={session} stopping={stopping} onStopRunningSession={onStopRunningSession} />
-      <SessionStatusDot session={session} />
-      <SessionInfoButton session={session} onInfoClick={onInfoClick} />
-      <SessionActionsButton session={session} onContextMenu={onContextMenu} />
-    </div>
-  );
-}
-
-/**
  * Adapts a TerminalSessionSummary into the unified WorkSurfaceHeader. Replaces
  * the legacy WorkCliSessionHeader so CLI surfaces and ADE chats share the same
  * visual shell (title + lane chip + cache badge + git toolbar) and only diverge
- * in their trailing actions. In grid view this header is consolidated into the
- * tile's FloatingPane header (see GridTileSessionHeaderActions); the standard
- * (tabs) surface still renders it inline.
+ * in their trailing actions. Grid tiles and the standard (tabs) surface both
+ * render it inline.
  */
 export function CliSessionWorkSurfaceHeader({
   session,
