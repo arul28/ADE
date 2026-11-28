@@ -387,10 +387,13 @@ struct CloudMachineSizeCard: View {
 
   /// "4 credits an hour now → 1 credit an hour on Medium. 418 credits last about 418 h on Medium."
   private func rates(current: CloudPhoneTier, tier: CloudPhoneTier) -> String {
-    // Pricing v3: the rates the account pays now (the ad price while ads are on).
+    // Pricing v3: this computer's own price now, and both prices of the new size.
     let pricing = cloudPricing()
     let hours = store.hoursLeftMilli.flatMap { store.words.hoursOn(tier.atPriceNow(pricing), leftMilli: $0) }
-    return "\(store.words.changeRates(from: current.atPriceNow(pricing), to: tier.atPriceNow(pricing))).\(hours.map { " \($0)" } ?? "")"
+    let line = CloudAdPriceWords(AccountCloudStore.shared.account)?
+      .changeRates(nowMilli: pricing?.computer(machine.id)?.rateMilli, to: tier, words: store.words)
+      ?? store.words.changeRates(from: current.atPriceNow(pricing), to: tier.atPriceNow(pricing))
+    return "\(line).\(hours.map { " \($0)" } ?? "")"
   }
 
   private func confirmTitle(current: CloudPhoneTier) -> String {

@@ -407,6 +407,10 @@ struct CloudPhoneAccount: Decodable, Equatable {
     /// Pricing v3: shown credits = milli / 1000 x `creditScale`. Nil: the old unit.
     let creditScale: Int?
     let phone: PhoneRates?
+    /// Pricing v3: Free's Small full rate an hour for this account, whatever
+    /// the viewer's plan (the Free plan card's Small line); 0 while Small on
+    /// Free is free. Nil from older servers.
+    let freeSmallMilli: Int?
   }
 
   let plan: String

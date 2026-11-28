@@ -184,6 +184,8 @@ final class AccountCloudStore: ObservableObject {
   private func keepSavedAnswers(_ next: inout CloudPhoneAccount, sponsoredSavesAtStart: Int, providerSavesAtStart: Int) {
     if sponsoredSavesAtStart != sponsoredSaves {
       next.sponsored = savedSponsoredPending ? savedSponsored : account?.sponsored
+      // Pricing v3: the answer moved the prices too; a read begun before it keeps the newer ones.
+      next.pricing = account?.pricing
     } else {
       savedSponsoredPending = false
     }

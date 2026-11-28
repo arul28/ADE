@@ -877,7 +877,8 @@ struct CloudSizesCard: View {
         Text("An iPhone simulator for your agents")
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
-        Text(adWords.rate(pair, unit: .minute))
+        // A live phone's own price (the one the minutes count), else the catalog's.
+        Text(adWords.pricing.phone.map { adWords.priceNow($0, unit: .minute) } ?? adWords.rate(pair, unit: .minute))
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)

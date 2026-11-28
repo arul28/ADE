@@ -338,9 +338,11 @@ struct WorkCloudTierRequestCard: View {
     let words = CloudBalanceWords(accountCloud.account)
     guard let to = tiers.first(where: { $0.id == facts.toSizeId }) else { return facts.rateText }
     let from = facts.fromSizeId.flatMap { id in tiers.first { $0.id == id } }
-    // Pricing v3: the rates the account pays now (the ad price while ads are on).
+    // Pricing v3: the computer's own price now, and both prices of the new size.
     let pricing = cloudPricing()
-    let line = words.changeRates(from: from?.atPriceNow(pricing), to: to.atPriceNow(pricing))
+    let line = CloudAdPriceWords(accountCloud.account)?
+      .changeRates(nowMilli: pricing?.computer(facts.instanceId)?.rateMilli, to: to, words: words)
+      ?? words.changeRates(from: from?.atPriceNow(pricing), to: to.atPriceNow(pricing))
     let hours = accountCloud.account.flatMap { words.hoursOn(to.atPriceNow(pricing), leftMilli: $0.hoursLeftMilli) }
     return hours.map { "\(line). \($0)" } ?? line
   }

@@ -353,6 +353,20 @@ private func cloudHoursCount(_ hours: Int) -> String {
   hours.formatted(.number.locale(Locale(identifier: "en_US")))
 }
 
+extension CloudAdPriceWords {
+  /// A size change while two prices show: this computer's own price now (the
+  /// server's row, which is the full price while a CLI runs or no chat is in
+  /// use), then both prices of the new size: "10 credits an hour now → Large:
+  /// 16 credits an hour with ads · 20 with no ads". Nil with one price; with
+  /// no row for the computer, only the new size.
+  func changeRates(nowMilli: Int?, to: CloudPhoneTier, words: CloudBalanceWords) -> String? {
+    guard pricing.showsTwoPrices else { return nil }
+    let target = "\(to.label): \(rate(to.ratePair))"
+    guard let nowMilli else { return target }
+    return "\(cloudCapitalized(words.hourly(milli: nowMilli))) now → \(target)"
+  }
+}
+
 /// "for an hour", "for 30 minutes", "for 2 hours", "for a day"; nil for a
 /// window with no words of its own (the line then says "lately").
 func cloudAdWindowPhrase(_ minutes: Int) -> String? {

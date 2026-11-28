@@ -70,7 +70,11 @@ struct CloudPlansCard: View {
   /// exist under Pricing v3 (today: unlimited with sponsored cards in the US).
   private func smallFact(_ column: Column) -> String {
     guard column.id == "free" else { return "Unlimited Small" }
-    if let adWords { return adWords.pricing.ads.available ? "Free Small computers with ads" : "Small uses \(words.unit)" }
+    if let adWords {
+      if adWords.pricing.ads.available { return "Free Small computers with ads" }
+      // No ads here: Small on Free charges unless the server says it is free for now.
+      return (accountStore.account ?? account).catalog?.freeSmallMilli == 0 ? "Free Small computers" : "Small uses \(words.unit)"
+    }
     return freeSmallNeedsCards ? "Unlimited Small with cards (US)" : "Unlimited Small"
   }
 

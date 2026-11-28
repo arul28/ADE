@@ -475,8 +475,11 @@ struct WorkSessionDestinationView: View {
   /// `followRemoteRosterTitle`).
   @State private var remoteRosterTitleSeen: String?
   /// Pricing v3: the live cloud iPhone this chat holds (`cloudHeldPhoneId`), read
-  /// again when the account's live phone changes; nil with none.
+  /// again when the account's live phone changes and after each turn (a turn
+  /// is when a chat takes the phone); nil with none.
   @State var sponsoredHeldPhoneId: String?
+  /// Counts this chat's finished turns, so the held phone is read again after each.
+  @State private var sponsoredTurnsEnded = 0
   // Last non-nil summary this mounted instance ever observed. The composer's
   // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
   // momentary nil summary would blank those controls mid-session. This latch
@@ -2054,6 +2057,7 @@ struct WorkSessionDestinationView: View {
         // status (which downgrades a stale-active row to idle via the fresher
         // liveTurnActiveHint) so the belt still fires when the row lags.
         guard previous == "active", current != "active" else { return }
+        sponsoredTurnsEnded += 1
         Task { await reconcileOptimisticSteersAfterTurnEnd() }
       }
       .task(id: sessionRowObservationKey) {
@@ -2090,8 +2094,9 @@ struct WorkSessionDestinationView: View {
       .task(id: session?.laneId ?? initialSession?.laneId ?? "") {
         await syncLanePresence()
       }
-      // Pricing v3: whether this chat holds the account's live cloud iPhone (one read per phone).
-      .task(id: "\(sessionId)|\(accountCloud.account?.pricing?.phone?.phoneId ?? "")") {
+      // Pricing v3: whether this chat holds the account's live cloud iPhone (one
+      // read per phone and per finished turn; none while the account has no live phone).
+      .task(id: "\(sessionId)|\(accountCloud.account?.pricing?.phone?.phoneId ?? "")|\(sponsoredTurnsEnded)") {
         sponsoredHeldPhoneId = await cloudHeldPhoneId(sessionId: sessionId)
       }
       .task(id: headerMenuPrLookupKey) {
@@ -3349,6 +3354,8 @@ struct WorkSessionDestinationView: View {
         localEchoMessages.removeAll { $0.id == echo.id }
       }
       errorMessage = nil
+      // The opener a person typed on the new-chat screen counts like a composer send.
+      noteAdProofSent(echo.id)
     } catch {
       ADEHaptics.error()
       localEchoMessages.removeAll { $0.id == echo.id }

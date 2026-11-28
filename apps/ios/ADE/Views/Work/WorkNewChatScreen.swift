@@ -995,6 +995,16 @@ struct WorkNewChatScreen: View {
     return CloudAdPriceWords(AccountCloudStore.shared.account)?.cliStartNotice
   }
 
+  /// Pricing v3: the opening message a person sent here is that new chat's
+  /// proof, like a message from its composer (`noteAdProofSent`), when the
+  /// chat runs on a DAEX Cloud computer. Only where this screen sends the
+  /// opener itself: an opener left for the chat screen counts there.
+  private func noteOpeningMessageSent(chatId: String) {
+    let machineKey = selectedMachineKey ?? syncService.focusedMachineKey
+    guard syncService.isCloudFleetKey(machineKey), let instanceId = syncService.cloudServerInstance(fleetKey: machineKey)?.id else { return }
+    cloudNoteMessageSent(instanceId: instanceId, sessionId: chatId, messageId: "\(chatId):opening")
+  }
+
   private var screenBody: some View {
     // The header scrolls edge to edge; the lane bubble and the composer float
     // over it in a bottom safe-area inset that draws no background of its own,
@@ -2275,6 +2285,7 @@ struct WorkNewChatScreen: View {
       }
       ADEHaptics.success()
       busy = false
+      if launchSessionMode == .chat { noteOpeningMessageSent(chatId: snapshot.launchId) }
       await onLaunchStarted(snapshot)
       return true
     }
@@ -2486,6 +2497,7 @@ struct WorkNewChatScreen: View {
           // switch exhaustive.
           deliveryState = nil
         }
+        noteOpeningMessageSent(chatId: summary.sessionId)
         await onStarted(summary, chatOpener, true, deliveryState, attachmentRefs)
       }
       if let createdLaneId, let autoCreatedFallbackName {
