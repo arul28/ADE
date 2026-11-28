@@ -93,7 +93,7 @@ export async function enforceBlockOnComputer(env: CloudEnv, provider: CloudProvi
   if (computer.status === "stopped") return;
   let status: string;
   try {
-    status = await provider.stopInstance(computer.instance_id);
+    status = await provider.stopInstance(computer.instance_id, "blocked");
   } catch (error) {
     // Gone already: nothing left to stop.
     if (error instanceof CloudProviderError && error.status === 404) return;

@@ -339,7 +339,8 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
       await api("DELETE", instancePath(id));
     },
 
-    async sleepInstance(id: string): Promise<string> {
+    /** `_reason`: why it sleeps, for a computer whose provider writes its own status (a Mac, `computerProvider.ts`). */
+    async sleepInstance(id: string, _reason?: string): Promise<string> {
       return statusOf(await api("POST", instancePath(id, "sleep"), undefined, LIFECYCLE_TIMEOUT_MS), "sleeping");
     },
 
@@ -347,7 +348,8 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
       return statusOf(await api("POST", instancePath(id, "start"), undefined, LIFECYCLE_TIMEOUT_MS), "running");
     },
 
-    async stopInstance(id: string): Promise<string> {
+    /** `_reason`: why it stops, for a computer whose provider writes its own status (a Mac, `computerProvider.ts`). */
+    async stopInstance(id: string, _reason?: string): Promise<string> {
       return statusOf(await api("POST", instancePath(id, "stop"), undefined, LIFECYCLE_TIMEOUT_MS), "stopped");
     },
 

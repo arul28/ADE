@@ -1255,7 +1255,7 @@ async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: C
   const prepare: SleepPrepare = person ? await prepareForPersonSleep(provider, computer) : { reportId: backupReportId, frozen: false, answeredAt: Date.now() };
   try {
     // While wakes are refused a sleeping computer would still wake on any request, so it stops instead.
-    const status = blocked ? await provider.stopInstance(computer.instance_id) : await provider.sleepInstance(computer.instance_id);
+    const status = blocked ? await provider.stopInstance(computer.instance_id, reason) : await provider.sleepInstance(computer.instance_id, reason);
     // The person's Sleep: only while the computer's freeze still held when it slept.
     const inFreeze = !person || Date.now() - prepare.answeredAt <= SLEEP_MARK_WITHIN_MS;
     await recordStatus(env, computer, status, now, reason);
@@ -1310,7 +1310,7 @@ async function handleStart(request: Request, env: CloudEnv, computer: ComputerRo
 }
 
 async function handleStop(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
-  const status = await provider.stopInstance(computer.instance_id);
+  const status = await provider.stopInstance(computer.instance_id, "user");
   await recordStatus(env, computer, status, now, "user");
   return json({ status });
 }
