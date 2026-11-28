@@ -42,7 +42,7 @@ defensively (`parseStructuredObject`, `extractDiffPatchFromText`).
 `staged` (`--index`) or `commit`, always with `git apply --3way` so partial
 conflicts become markers. Each apply records an operation with pre/post HEAD.
 **Undo** (`undoProposal`) runs `git apply -R` on the stored patch, records
-`conflict-proposal-undo`, and marks the proposal `rejected`. Patches live in
+an operation of kind `conflict_proposal_undo`, and marks the proposal `rejected`. Patches live in
 `<worktree>/.ade/tmp/conflict-proposals/` and are deleted after apply or undo.
 
 ## Configuration
