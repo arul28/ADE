@@ -1,6 +1,6 @@
 # Account test tool and instant switches
 
-One owner-only tool for testing ADE Cloud as any plan, and for flipping the
+One owner-only tool for testing DAEX Cloud as any plan, and for flipping the
 server switches without a deploy. Every change takes effect on the account's
 next read (a few seconds in the apps). Nothing here touches Stripe.
 
@@ -13,11 +13,11 @@ next read (a few seconds in the apps). Nothing here touches Stripe.
 
 ## Who can use it
 
-Anyone holding `CLOUD_OWNER_TOKEN`: the owner, and agents through ADE's
-secrets. Agents never print the token:
+Anyone holding `CLOUD_OWNER_TOKEN`: the owner, and agents through DAEX's
+secrets (`daex secrets exec`; the old `ade secrets exec` is the same command). Agents never print the token:
 
 ```bash
-ade secrets exec --env CLOUD_OWNER_TOKEN -- node scripts/cloud-owner.mjs show you@example.com
+daex secrets exec --env CLOUD_OWNER_TOKEN -- node scripts/cloud-owner.mjs show you@example.com
 ```
 
 An account's own sign-in never reaches these routes. Every change is written
@@ -31,8 +31,8 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 |---|---|
 | `show <account>` | The real plan, the test, what is in force now, and the last changes |
 | `act-as <account> free\|plus\|pro\|max` | The account acts as that plan: computer limit, outside agents, sponsored cards and their notices. Its credits are that plan's, or its own when it has more |
-| `limits <account> --computers N --hours N` | Its own computer limit and monthly credits this period, on top of the plan (`limits <account>` with no options clears both). The ADE Cloud iPhone draws from those credits, one a minute: there is no separate iPhone limit |
-| `phone <account> on\|off` | On the ADE Cloud iPhone's beta list, or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access). A tester picks their own phones' provider (`auto`, NoMac or Revyl) in an ADE beta build or with `ade cloud phone-provider`; the owner no longer sets it |
+| `limits <account> --computers N --hours N` | Its own computer limit and monthly credits this period, on top of the plan (`limits <account>` with no options clears both). The DAEX Cloud iPhone draws from those credits, one a minute: there is no separate iPhone limit |
+| `phone <account> on\|off` | On the DAEX Cloud iPhone's beta list, or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access). A tester picks their own phones' provider (`auto`, NoMac or Revyl) in a DAEX beta build or with `daex cloud phone-provider` |
 | `tester <account> on\|off` | On or off the sponsored testers list |
 | `ad-format <account> below_reply\|above_prompt\|inline\|switch` | Where this account's sponsored cards show: under the reply, docked above the prompt box, or one linked sentence at the end of the reply (`switch`: whatever `gravity_format` says). Not a test: it stays until changed |
 | `ab [--days N]` | The format A/B scoreboard (default 14 days): per format its weight, accounts held to it, how many said yes or no, cards asked and filled, hides per card, and Gravity's views, clicks, CTR and revenue for that format's placements |
@@ -43,8 +43,8 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 clears it. The testers list has no end date: take an account off it with
 `tester <account> off`.
 
-A userId names an account ADE Cloud already has (a typo is refused); an email
-Clerk verified may be one that never used ADE Cloud, which then starts on
+A userId names an account DAEX Cloud already has (a typo is refused); an email
+Clerk verified may be one that never used DAEX Cloud, which then starts on
 Free.
 
 ### What a test changes, and what it never does
@@ -123,7 +123,7 @@ no cards to show there, so Small keeps using hours.
 
 In `GRAVITY_DEFAULT_ON_COUNTRIES` (default `US`; set it empty to ask
 everywhere), Free accounts are not asked first. The first cloud chat (or
-Settings › ADE Cloud) tells the person sponsored cards are on, with **Turn
+Settings › DAEX Cloud) tells the person sponsored cards are on, with **Turn
 off** beside it, and saves that as a yes of its own kind (`source = notice`),
 so Small is free from then on. This is the opt-out model US privacy laws
 allow; the UK's needs a yes first, so every other country is asked.
@@ -153,7 +153,7 @@ Every answer records where it was given (`country`).
 ### Countries
 
 Cards go only to viewers in `GRAVITY_COUNTRIES` (default `US,CA,GB,AU`, where Gravity fills real ads), read from
-Cloudflare's `cf.country` for the viewer's own connection; where the ADE Cloud
+Cloudflare's `cf.country` for the viewer's own connection; where the DAEX Cloud
 computer runs does not matter. While ads are test ads (`gravity_live` off), an
 account on the testers list skips that check for cards, so the owner can test
 from anywhere. Real ads keep it for everyone, and so does the Index: it has no
@@ -171,7 +171,7 @@ Small keeps working to an account whose Small uses hours.
 
 1. `tester <you> on`, then `act-as <you> free` (a paid account sees no cards).
 2. `set gravity_ads testers`.
-3. Open a chat on one of your ADE Cloud computers, finish a reply, answer the
+3. Open a chat on one of your DAEX Cloud computers, finish a reply, answer the
    one-time question (from the US: read the notice that cards are on).
    Gravity's test ads say "Sponsored · test".
 4. Optional: answer no to see the Free rule's notices. On a paid account
