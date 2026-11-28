@@ -147,7 +147,6 @@ ln -sf ade "$HOME/drive/.daex/ade/bin/daex"
 cp -a "$stage/home/.ade/runtime/$target" "$HOME/drive/.daex/ade/runtime/$target"
 . "$HOME/drive/.daex/env.sh"
 DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 "$daex_bin" --version
-DO_NOT_TRACK=1 ADE_SENTRY_DISABLED=1 ADE_TEMPLATE_CHECK=1 "$HOME/drive/.daex/ade/bin/daex" --version
 rm -rf "$stage"
 `;
 // The branch's runtime in place of the release's, laid out as install.sh lays a release out.
