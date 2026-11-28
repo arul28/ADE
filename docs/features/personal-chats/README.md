@@ -181,8 +181,8 @@ model and thinking level per machine.
 
 ```bash
 daex chat list --personal --text
-daex chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Help me plan a trip"
-daex chat create --personal --provider claude --model anthropic/claude-opus-5 \
+daex chat create --personal --provider codex --model openai/gpt-6.2-sol --prompt "Help me plan a trip"
+daex chat create --personal --provider claude --model anthropic/claude-opus-5-5 \
   --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
 daex chat send <session-id> --personal --text "Make it a three-day itinerary"
 ```
