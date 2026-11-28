@@ -3,9 +3,9 @@ name: daex-pr-workflows
 description: "Before you open a PR or write its description, and for PR tab data, stacked PRs, checks and comments, rebase conflicts, CI fixes or merging (`daex prs`)."
 ---
 
-# Daex PR workflows
+# DAEX PR workflows
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 ## Start with typed PR commands
 
@@ -20,14 +20,14 @@ Use `daex help prs` and `daex help git rebase` before guessing PR or rebase flag
 
 ## Open a PR with `daex prs create`
 
-`daex prs create` is the best way to open a pull request from a Daex lane. It
+`daex prs create` is the best way to open a pull request from a DAEX lane. It
 links the PR to the lane and to your chat, so the person who reads it can reach
 you from the PR, it uploads the proof you cite, and it tells you what a reader
 will miss in your text. Use `gh pr create` only when `daex prs create` fails
 after a real attempt. A project's own instructions about PRs come first.
 
 It pushes the branch for you. When this computer's git has no GitHub sign-in,
-the push retries with Daex's GitHub credential (GitHub CLI or the personal
+the push retries with DAEX's GitHub credential (GitHub CLI or the personal
 access token in Settings), so it works where a bare `git push` or `gh` fails.
 Push later commits with `daex git push --lane <lane>` for the same reason.
 
@@ -45,7 +45,7 @@ minutes, did not see your work, and must decide if the change is safe.
 The title says what is different for the person who uses the product, in plain
 words: `fix(web): new chats no longer spike CPU`.
 
-The text has these parts, with these headings. Daex's PR view draws each one;
+The text has these parts, with these headings. DAEX's PR view draws each one;
 GitHub shows them as ordinary text.
 
 ```markdown
@@ -121,7 +121,7 @@ caption: The description is now a Brief.
 ````
 
 `daex prs create` and `daex prs body` upload each cited file to GitHub and
-rewrite the citation, so GitHub shows the picture in place and Daex shows it
+rewrite the citation, so GitHub shows the picture in place and DAEX shows it
 side by side. An item that cannot go up (no file on this machine, over
 GitHub's size limit) keeps its citation, and the command says so. To run the
 upload again on a PR that exists:
@@ -144,19 +144,19 @@ it, unless the user asks:
 | The user says | Run |
 | --- | --- |
 | Nothing more | Nothing. Stop. |
-| "Keep an eye on it", "fix CI when it fails" | `daex prs watch <pr>`: Daex wakes you on a failed check, checks passing, new comments, a conflict, or merge/close |
+| "Keep an eye on it", "fix CI when it fails" | `daex prs watch <pr>`: DAEX wakes you on a failed check, checks passing, new comments, a conflict, or merge/close |
 | "Land it", "ship it", "get it merged" | `daex prs ship <pr>`: a watch plus standing orders to fix what comes up and merge once CI and review bots pass |
 
 `daex prs unwatch <pr>` stops either; `daex prs watch-status` lists this chat's
 watches. Never sleep and re-check a PR.
 
-`<pr>` is a PR number, URL, or Daex PR id; the watch is for your own chat. Each
-wake lists exactly what changed; act on it and end your turn — Daex wakes you
+`<pr>` is a PR number, URL, or DAEX PR id; the watch is for your own chat. Each
+wake lists exactly what changed; act on it and end your turn — DAEX wakes you
 on the next change. Comments you post through `daex prs` never wake you.
 
 ## Close out every review thread you handle
 
-Daex's PR view shows each open review thread under "Needs you", as work that
+DAEX's PR view shows each open review thread under "Needs you", as work that
 waits for a person. A thread you fixed and left open is a false alarm for
 every person who opens the PR after you. So, in the same turn that you handle
 a thread:
@@ -181,7 +181,7 @@ the PR is ready.
 
 ## GitHub stacked PRs
 
-A stack is two or more dependency-ordered, independently reviewable PRs. Daex
+A stack is two or more dependency-ordered, independently reviewable PRs. DAEX
 creates and tracks them through built-in commands; users and agents do not need
 the `gh-stack` extension:
 
@@ -193,7 +193,7 @@ daex prs stacks add --stack 8 --pulls 123 --text
 daex prs stacks unstack --stack 8 --text
 ```
 
-Mechanics specific to Daex stacks:
+Mechanics specific to DAEX stacks:
 
 1. Order the layers bottom to top and keep foundations below their consumers.
 2. Create one deliberate branch and PR per layer. By default one agent keeps
@@ -206,8 +206,8 @@ Mechanics specific to Daex stacks:
 5. Report readiness bottom to top from one stack progress view.
 
 GitHub owns stack membership, review requirements, rebases performed on GitHub,
-merge queue state, and final merging. Daex enforces this: `daex prs land` (the
-`pr.land` action) refuses any PR that Daex knows is in a GitHub stack, failing
+merge queue state, and final merging. DAEX enforces this: `daex prs land` (the
+`pr.land` action) refuses any PR that DAEX knows is in a GitHub stack, failing
 with `github_stack_requires_github_merge` and "PR #N is in GitHub Stack #M.
 Review and merge the stack on GitHub." For an unstacked PR, `land` still merges
 directly via `gh pr merge`. So send review and merge decisions for a stacked PR
@@ -216,8 +216,8 @@ to GitHub.
 ## PR creation closeout links
 
 When you create or adopt a GitHub PR, include both the GitHub URL
-(`githubUrl` / `html_url`) and the Daex PR link in your final handoff. The
-`adeUrl` printed by `daex prs create` is the Daex link; for a PR adopted through
+(`githubUrl` / `html_url`) and the DAEX PR link in your final handoff. The
+`adeUrl` printed by `daex prs create` is the DAEX link; for a PR adopted through
 another path, mint it as described in the **daex-deeplinks** skill, which is also
 where the HTTPS-vs-`ade://` guidance lives.
 
@@ -231,7 +231,7 @@ daex proof publish --pr <number or URL> <artifact-id> <artifact-id> --heading "P
 ```
 
 - One command posts one comment. Each picture and video goes up as a GitHub
-  attachment under its caption; Daex hosts nothing and pushes no proof branch.
+  attachment under its caption; DAEX hosts nothing and pushes no proof branch.
 - Each posted item gets a `github_pr` link, and the proof drawer shows a
   "PR #N" chip on it.
 - It needs `gh` 2.99.0 or later. An older `gh` is refused with the upgrade
@@ -241,7 +241,7 @@ daex proof publish --pr <number or URL> <artifact-id> <artifact-id> --heading "P
   100 MB on paid plans. A larger item is skipped and the output says why.
 - Post only what shows the change. Do not post every capture.
 - Posting again (the change moved after a review)? Add `--replace`: the new
-  comment goes up, then your earlier Daex proof comments on the PR are deleted.
+  comment goes up, then your earlier DAEX proof comments on the PR are deleted.
   Delete the stale items from the drawer too (`daex proof rm`).
 
 ## Use actions for niche surfaces

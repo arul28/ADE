@@ -821,13 +821,13 @@ export function cloudHoursLeftMilli(account: Pick<CloudAccountState, "hours" | "
   return account.hours.leftMilli + Math.max(0, cloudEarnedHoursOf(account).leftMilli);
 }
 
-/** The name Daex shows for a computer it made with no lane name (`cloudMachineCreator`). */
+/** The name DAEX shows for a computer it made with no lane name (`cloudMachineCreator`). */
 export const CLOUD_MACHINE_DEFAULT_NAME = `${BRAND.CLOUD_NAME} computer`;
 
 /** The same default under the old product name, as computers made before the rename are stored. */
 export const LEGACY_CLOUD_MACHINE_DEFAULT_NAME = `${BRAND.FORMER_NAME} Cloud computer`;
 
-/** True for the name Daex gives a computer with no lane name, under either product name. */
+/** True for the name DAEX gives a computer with no lane name, under either product name. */
 export function isCloudMachineDefaultName(name: string | null | undefined): boolean {
   const trimmed = name?.trim();
   return trimmed === CLOUD_MACHINE_DEFAULT_NAME || trimmed === LEGACY_CLOUD_MACHINE_DEFAULT_NAME;

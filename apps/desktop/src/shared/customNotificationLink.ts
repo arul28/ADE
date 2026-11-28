@@ -26,7 +26,7 @@ export type CustomNotificationLinkResult =
   | { ok: false; problem: string };
 
 /**
- * Accepts any link Daex can open — the `daex://` or `ade://` form, sent as
+ * Accepts any link DAEX can open — the `daex://` or `ade://` form, sent as
  * `daex://`, or the shareable `https://ade-app.dev/open?…` form, which is
  * converted to `daex://` because the relay sends only the custom scheme — and
  * says what is wrong with anything else.

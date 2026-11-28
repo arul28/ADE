@@ -103,7 +103,7 @@ function cloudSignInFailureReason(output: string): string | null {
  */
 function isTransientCloudSignInFailure(reason: string | null): boolean {
   if (!reason) return false;
-  return /device service (?:could not be reached|timed out)|fetch failed|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH)\b|Failed to initialize the (?:ADE|Daex) brain/i.test(reason);
+  return /device service (?:could not be reached|timed out)|fetch failed|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH)\b|Failed to initialize the (?:ADE|DAEX) brain/i.test(reason);
 }
 
 /** The card's sentence when a computer's sign-in didn't start, with the computer's own reason. */
@@ -140,7 +140,7 @@ async function startCloudBoxSignIn(
     exitCode: started.exitCode,
     reason: userCode ? null : cloudSignInFailureReason(output),
     // A newer image's `ade login` retries an unreachable account service itself and says so.
-    retriedOnItsOwn: !userCode && /\b(?:ADE|Daex) kept trying\b/.test(output),
+    retriedOnItsOwn: !userCode && /\b(?:ADE|DAEX) kept trying\b/.test(output),
   };
 }
 

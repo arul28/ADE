@@ -281,7 +281,7 @@ function connectWithTimeout(socketPath) {
     const client = net.createConnection(socketPath);
     const timeout = setTimeout(() => {
       client.destroy();
-      reject(new Error("Timed out connecting to Daex Cursor policy gate."));
+      reject(new Error("Timed out connecting to DAEX Cursor policy gate."));
     }, 2000);
     client.once("connect", () => {
       clearTimeout(timeout);
@@ -298,7 +298,7 @@ async function main() {
   const socketPath = parseArg("--socket") || process.env.ADE_CURSOR_SDK_SOCKET || "";
   const adeSession = process.env.ADE_CURSOR_SDK_SESSION_ID || process.env.ADE_CURSOR_SDK_LANE_ROOT;
   if (!socketPath) {
-    if (adeSession) deny("Daex Cursor policy gate is unavailable.");
+    if (adeSession) deny("DAEX Cursor policy gate is unavailable.");
     else allow();
     return;
   }
@@ -330,7 +330,7 @@ async function main() {
       const waited = minutes < 120
         ? minutes + " minute" + (minutes === 1 ? "" : "s")
         : Math.round(minutes / 60) + " hours";
-      reject(new Error("No answer to Daex's approval request for this tool call within " + waited + ", so it was not run."));
+      reject(new Error("No answer to DAEX's approval request for this tool call within " + waited + ", so it was not run."));
     }, responseTimeoutMs);
     function settle(fn, value) {
       if (settled) return;
@@ -348,7 +348,7 @@ async function main() {
         try {
           settle(resolve, JSON.parse(line));
         } catch (error) {
-          settle(reject, new Error("Daex could not parse the Cursor hook decision."));
+          settle(reject, new Error("DAEX could not parse the Cursor hook decision."));
         } finally {
           client.end();
         }
@@ -356,7 +356,7 @@ async function main() {
     });
     client.once("error", (error) => settle(reject, error));
     client.once("close", () => {
-      if (!responseText.includes("\\n")) settle(reject, new Error("Daex Cursor policy gate closed without a decision."));
+      if (!responseText.includes("\\n")) settle(reject, new Error("DAEX Cursor policy gate closed without a decision."));
     });
   });
   writeDecision(decision);

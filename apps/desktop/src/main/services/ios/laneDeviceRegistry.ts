@@ -299,7 +299,7 @@ function appleLaneExtraDeviceLimit(): number {
 /**
  * The lane device's name.
  *
- * `Daex · <lane>` is the locked pattern: the separator makes a Daex device
+ * `DAEX · <lane>` is the locked pattern: the separator makes a DAEX device
  * obvious in Xcode's own device list, which is the list a user reaches for when
  * something looks wrong. A collision gets a numeric suffix rather than being
  * refused — two lanes can legitimately carry the same display name.

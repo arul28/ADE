@@ -4,7 +4,7 @@
 
 To run tests, a build, or a CLI signed in only there, keep this chat where it
 is and run the command there. It runs in **your code there**: a copy of this
-chat's code that Daex keeps on that machine (not a lane), at your commit with
+chat's code that DAEX keeps on that machine (not a lane), at your commit with
 your uncommitted changes applied. Nothing is installed for you; install deps
 there yourself when a command needs them, and they stay for the next run.
 

@@ -92,8 +92,8 @@ try {
         "create",
         "-volname",
         // The mounted disk's shown name only; the app inside stays ADE.app
-        // (docs/brand/desktop-packaging.md). Daex is BRAND.NAME.
-        "Daex",
+        // (docs/brand/desktop-packaging.md). DAEX is BRAND.NAME.
+        "DAEX",
         "-srcfolder",
         stagingDir,
         "-ov",

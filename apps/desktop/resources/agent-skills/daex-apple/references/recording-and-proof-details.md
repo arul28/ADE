@@ -6,7 +6,7 @@
 The difference is not the picture, it is the owner. An `daex apple` capture is
 filed against the lane and the asking chat, so it appears in the drawer the
 human is looking at. A picture you take with `simctl` and then hand to
-`daex proof attach` is filed against whatever Daex can work out about your shell,
+`daex proof attach` is filed against whatever DAEX can work out about your shell,
 and a shell with no chat session — every OpenCode agent has one, because a
 single `opencode serve` is shared across chats — used to produce a record owned
 by nothing, invisible to everyone, while every command reported success. That
@@ -28,7 +28,7 @@ When it stops, the recording becomes a demo: still time is cut, waits play
 faster, tap rings are drawn, and the file ends under 10 MB. The camera does not zoom on a phone; pass
 `record-start --zoom` only when the user asks for zoom, or hold on one
 region with `daex proof step --focus`. Mark each step with `daex proof step "<what happens
-next>"`: a caption in the video and a chapter in Daex's player.
+next>"`: a caption in the video and a chapter in DAEX's player.
 `record-stop` reports `durationMs` (the demo), `wallDurationMs` (real time)
 and `idleCutMs`. Pass `--plain` only when the user asks for the recording
 as it was recorded.

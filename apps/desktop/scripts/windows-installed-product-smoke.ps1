@@ -7,7 +7,7 @@ param(
   [string]$ProductName = $(if ($PackageChannel -eq "stable") { "ADE" } else { "ADE " + (Get-Culture).TextInfo.ToTitleCase($PackageChannel) }),
   # The Start menu shortcut and installed apps name (nsis.shortcutName and
   # uninstallDisplayName from run-electron-builder.mjs). ProductName stays ADE.
-  [string]$DisplayName = $(if ($PackageChannel -eq "stable") { "Daex" } else { "Daex " + (Get-Culture).TextInfo.ToTitleCase($PackageChannel) }),
+  [string]$DisplayName = $(if ($PackageChannel -eq "stable") { "DAEX" } else { "DAEX " + (Get-Culture).TextInfo.ToTitleCase($PackageChannel) }),
   [string]$CompanionInstallerPath = "",
   # Proof runs only: install and uninstall this many times first, counting
   # installer crashes without retrying, to measure the installer's crash rate.
@@ -343,7 +343,7 @@ try {
     if (-not (Test-Path -LiteralPath $companion -PathType Leaf)) {
       throw "Windows side-by-side smoke is missing the Beta installer: $companion"
     }
-    & $PSCommandPath -InstallerPath $companion -PackageChannel beta -ProductName "ADE Beta" -DisplayName "Daex Beta"
+    & $PSCommandPath -InstallerPath $companion -PackageChannel beta -ProductName "ADE Beta" -DisplayName "DAEX Beta"
     Assert-InstalledProduct "Stable after Beta side-by-side lifecycle"
     $mdDefault = [string](Get-Item -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Classes\.md" -ErrorAction Stop).GetValue("")
     if ($mdDefault -ne $fileClass) {

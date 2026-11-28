@@ -71,7 +71,7 @@ function buildLaneAndroidDeviceLines(
   const { cli, variable } = androidCli(options.shell ?? "posix");
   const besideApple = options.besideApple === true;
   return [
-    `This lane's Android emulator is ${avdName}, shown live in the Daex tools pane. Drive it with \`${cli} <command>\` (skill \`daex-android\`; \`${cli} --help\`)${besideApple ? "." : `; \`${variable}\` is the Daex that launched you.`}`,
+    `This lane's Android emulator is ${avdName}, shown live in the DAEX tools pane. Drive it with \`${cli} <command>\` (skill \`daex-android\`; \`${cli} --help\`)${besideApple ? "." : `; \`${variable}\` is the DAEX that launched you.`}`,
     `Start it with \`${cli} start --text\`. Build, install and open the app: \`${cli} launch --gradle --text\` (or \`--apk <path>\`). Read the screen with \`${cli} snapshot --text\`, then \`tap-element\`, \`fill-element\`, \`wait-for-element\`, \`assert-visible\` (\`--label\`, \`--text\`, \`--identifier\`). Logs: \`${cli} log --package <pkg> --text\`.`,
     `Video proof: \`${cli} record-start --text\`, then \`${cli} record-stop --text\` (files to this chat's proof drawer). Screenshot: \`${cli} screenshot --text\`.`,
     "Never run `emulator -avd`, `adb kill-server` or `adb emu kill`, and never make an AVD with `avdmanager`: this lane has its emulator.",

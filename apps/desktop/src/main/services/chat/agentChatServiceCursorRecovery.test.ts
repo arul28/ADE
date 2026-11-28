@@ -376,7 +376,7 @@ describe("createAgentChatService", () => {
       }, { awaitDispatch: true });
       await cursorSendsReached(2);
 
-      const continuityHeader = "System context (Daex continuity, do not echo verbatim):";
+      const continuityHeader = "System context (DAEX continuity, do not echo verbatim):";
       const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
       expect(retryPrompt.split(continuityHeader).length - 1).toBe(1);
       expect(retryPrompt).toContain(CROSS_PROVIDER_REPLAY_HEADER);
@@ -778,7 +778,7 @@ describe("createAgentChatService", () => {
       const errorEvents = events.filter((event) => event.event.type === "error");
       expect(errorEvents).toHaveLength(1);
       expect(errorEvents[0]?.event).toMatchObject({
-        message: "Cursor's session expired. Daex reconnected and retried, but Cursor rejected the request "
+        message: "Cursor's session expired. DAEX reconnected and retried, but Cursor rejected the request "
           + "again — sign in to Cursor again in Settings, then resend.",
         errorInfo: { category: "auth", provider: "Cursor" },
       });
@@ -1948,7 +1948,7 @@ describe("createAgentChatService", () => {
         expect(cancelNotices).toHaveLength(1);
         expect(cancelNotices[0]?.event).toMatchObject({
           type: "system_notice",
-          message: "Queued message cancelled because Daex recycled the Cursor thread — resend it if still needed.",
+          message: "Queued message cancelled because DAEX recycled the Cursor thread — resend it if still needed.",
         });
       } finally {
         vi.useRealTimers();
@@ -2352,7 +2352,7 @@ describe("createAgentChatService", () => {
         text: "Inspect the mobile files tab parity work.",
       });
       const firstPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
-      const laneGuidanceCount = (prompt: string): number => (prompt.match(/^## Daex$/gm) ?? []).length;
+      const laneGuidanceCount = (prompt: string): number => (prompt.match(/^## DAEX$/gm) ?? []).length;
       expect(laneGuidanceCount(firstPrompt)).toBe(1);
 
       await service.runSessionTurn({
@@ -2389,7 +2389,7 @@ describe("createAgentChatService", () => {
       // turn itself stays deduped — but the rotated agent is brand new, so the
       // lane execution directive must be re-emitted on the following turn
       // instead of staying suppressed by lastLaneDirectiveKey.
-      expect(promptText).not.toContain("[Daex launch directive]");
+      expect(promptText).not.toContain("[DAEX launch directive]");
       // The replay to the rotated thread already contains the original lane
       // guidance once; the next ordinary turn must not add another copy.
       expect(laneGuidanceCount(promptText)).toBe(1);
@@ -2399,7 +2399,7 @@ describe("createAgentChatService", () => {
       });
       const postRotationPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
       expect(laneGuidanceCount(postRotationPrompt)).toBe(0);
-      expect(postRotationPrompt).toContain("[Daex launch directive]");
+      expect(postRotationPrompt).toContain("[DAEX launch directive]");
       // One staged replay, consumed exactly once: the rotation stage is durable,
       // so a turn that did not trigger a rotation must not replay it again.
       expect(postRotationPrompt).not.toContain("verbatim replay");

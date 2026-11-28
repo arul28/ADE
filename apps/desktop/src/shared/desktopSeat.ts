@@ -60,16 +60,16 @@ export const WINDOWS_DESKTOP_SHARED_SEAT_DESCRIPTION =
  * The `ade screen start --shared …` asks keep the old command word on
  * purpose: the CLI on another machine, older releases included, cuts that
  * exact phrase out of a remote hint (`withoutSharedDesktopAsk`), and `ade`
- * still runs Daex's CLI.
+ * still runs DAEX's CLI.
  */
 export const WINDOWS_DESKTOP_NEXT_STEP: Record<WindowsDesktopPrivateUnavailableReason | "consent", string> = {
   setup_required:
-    "Ask the user to set up Windows Desktop once (the setup card in the Windows Desktop pane, or `daex screen setup --allow-prompt` from a trusted Daex client). An agent cannot do this step.",
+    "Ask the user to set up Windows Desktop once (the setup card in the Windows Desktop pane, or `daex screen setup --allow-prompt` from a trusted DAEX client). An agent cannot do this step.",
   locked: "Ask the user to unlock the PC, then retry the same command (daex screen start --text when the lane has no screen yet).",
   held:
     "Ask the user to take over the private screen (Take over in the Windows Desktop pane), or ask for their main desktop: ade screen start --shared --reason \"<what for>\" --text",
   not_console_session:
-    "The private screen needs Daex's brain in the PC's console session, and it is running in another one (Remote Desktop or SSH). Ask the user to sign in at the PC, or ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
+    "The private screen needs DAEX's brain in the PC's console session, and it is running in another one (Remote Desktop or SSH). Ask the user to sign in at the PC, or ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
   unsupported_platform:
     "This Windows edition has no private screens. Ask for the main desktop instead: ade screen start --shared --reason \"<what for>\" --text",
   consent:
@@ -120,7 +120,7 @@ export const LINUX_DESKTOP_SEAT_DESCRIPTION =
  * point at.
  */
 export const LINUX_DESKTOP_SETUP_USER_STEP =
-  "Linux Desktop setup installs the lane screen's system packages on that machine, and only its user can run it. Ask the user to run `daex screen setup --allow-prompt` from a trusted Daex client, or to run the `install with` line `daex screen status --text` prints. An agent cannot do this step.";
+  "Linux Desktop setup installs the lane screen's system packages on that machine, and only its user can run it. Ask the user to run `daex screen setup --allow-prompt` from a trusted DAEX client, or to run the `install with` line `daex screen status --text` prints. An agent cannot do this step.";
 
 export function describeDesktopSeat(
   status: Pick<MacDesktopStatus, "supported" | "display" | "windowsDesktop" | "linuxDesktop"> & {
@@ -150,7 +150,7 @@ export function describeDesktopSeat(
       nextStep: !status.supported
         ? null
         : install && !display
-          ? `Ask the user to install what a Linux lane screen needs (daex screen setup --allow-prompt from a trusted Daex client, or on this machine: ${install}). An agent cannot do this step.`
+          ? `Ask the user to install what a Linux lane screen needs (daex screen setup --allow-prompt from a trusted DAEX client, or on this machine: ${install}). An agent cannot do this step.`
           : !display ? "daex screen start --text" : null,
     };
   }

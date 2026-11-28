@@ -285,7 +285,7 @@ describe("restartRecoveryStopAttribution", () => {
       selfSocketPath: "/tmp/ade-secondary.sock",
     })).toEqual({
       stopSource: "foreign-brain",
-      stopReason: "another Daex brain took over this chat",
+      stopReason: "another DAEX brain took over this chat",
     });
   });
 
@@ -295,7 +295,7 @@ describe("restartRecoveryStopAttribution", () => {
       selfSocketPath: "/tmp/ade.sock",
     })).toEqual({
       stopSource: "system",
-      stopReason: "the Daex brain restarted",
+      stopReason: "the DAEX brain restarted",
     });
   });
 
@@ -308,7 +308,7 @@ describe("restartRecoveryStopAttribution", () => {
         selfSocketPath: String.raw`\\.\pipe\ade`,
       })).toEqual({
         stopSource: "system",
-        stopReason: "the Daex brain restarted",
+        stopReason: "the DAEX brain restarted",
       });
     } finally {
       Object.defineProperty(process, "platform", { value: previousPlatform, configurable: true });

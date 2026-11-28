@@ -515,7 +515,7 @@ function buildHarnessEndpointEnv(args: {
       if (args.writeConfig) {
         ensurePrivateDirectory(args.configHome, args.security);
         writePrivateFile(path.join(args.configHome, "config.toml"), [
-          "# Written by Daex for a Custom provider. Edits here are overwritten on launch.",
+          "# Written by DAEX for a Custom provider. Edits here are overwritten on launch.",
           `default_model = ${tomlString(alias)}`,
           "",
           `[providers.${KIMI_ROUTE_PROVIDER_ID}]`,
@@ -638,8 +638,8 @@ export function codexRouteConfigToml(args: {
   subagent?: HarnessSubagentLaunch;
 }): string {
   const lines = [
-    "# Written by Daex for a routed launch. Edits here are overwritten on launch.",
-    "# Daex never writes to ~/.codex/config.toml; CODEX_HOME points Codex here.",
+    "# Written by DAEX for a routed launch. Edits here are overwritten on launch.",
+    "# DAEX never writes to ~/.codex/config.toml; CODEX_HOME points Codex here.",
     'model_provider = "ade"',
   ];
   if (args.limits.contextWindow) lines.push(`model_context_window = ${Math.floor(args.limits.contextWindow)}`);
@@ -647,7 +647,7 @@ export function codexRouteConfigToml(args: {
   lines.push(
     "",
     "[model_providers.ade]",
-    `name = ${tomlString(args.label || "Daex")}`,
+    `name = ${tomlString(args.label || "DAEX")}`,
     `base_url = ${tomlString(args.baseUrl.replace(/\/+$/, ""))}`,
     'wire_api = "responses"',
     `env_key = ${tomlString(ROUTE_KEY_ENV)}`,
@@ -676,8 +676,8 @@ export function grokRouteConfigToml(args: {
   subagent?: HarnessSubagentLaunch;
 }): string {
   const lines = [
-    "# Written by Daex for a routed launch. Edits here are overwritten on launch.",
-    "# Daex never writes to ~/.grok; GROK_HOME points Grok here.",
+    "# Written by DAEX for a routed launch. Edits here are overwritten on launch.",
+    "# DAEX never writes to ~/.grok; GROK_HOME points Grok here.",
     "[models]",
     `default = ${tomlString(args.model)}`,
     "",

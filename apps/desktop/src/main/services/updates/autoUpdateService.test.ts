@@ -1027,7 +1027,7 @@ describe("createAutoUpdateService", () => {
         status: "error",
         currentVersion: "1.2.2",
         version: "1.2.3",
-        error: "Not enough space to update Daex.",
+        error: "Not enough space to update DAEX.",
         errorDetails: {
           kind: "insufficient_space",
           phase: "download",

@@ -31,7 +31,7 @@ emulator, by name; it does not take an id.)
 
 ## Your code there
 
-A device on another machine runs your code from a copy Daex keeps there,
+A device on another machine runs your code from a copy DAEX keeps there,
 made on first use. Push your commit first. A build (`daex apple launch`,
 `daex android install --gradle`, `daex app-control launch`) brings that copy up
 to your checkout, uncommitted changes included. Taps, screenshots and status
@@ -54,7 +54,7 @@ A build or boot there can take minutes. The command waits (as long as it would
 on that machine, plus a minute) and prints `still running …` every 30 s. Do
 not run it again while it waits.
 
-When your turn ends, Daex releases what you hold there (the device's claim,
+When your turn ends, DAEX releases what you hold there (the device's claim,
 the screen's input). The simulator or emulator stays on for your next turn.
 Turn it off with `daex apple stop` or `daex android stop` (add `--machine
 <name>` if you did not pick it with `use`).
@@ -74,9 +74,9 @@ For more than a few commands there, start a subagent on that machine
 (`daex chat create --machine …`, see daex-cli-control-plane). Let one agent
 drive a device; other agents hand it work.
 
-## Daex Cloud iPhone
+## DAEX Cloud iPhone
 
-`ios@cloud` is an iPhone in the cloud that runs for the Daex account, so it works
+`ios@cloud` is an iPhone in the cloud that runs for the DAEX account, so it works
 from any machine. `daex devices` lists it only when the account has it.
 
 ```bash

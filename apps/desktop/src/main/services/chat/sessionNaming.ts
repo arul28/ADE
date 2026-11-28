@@ -60,7 +60,7 @@ const SESSION_METADATA_STATUS_RULES = `statusLine — what is currently being do
 - State only what that latest output supports. Never invent a completion, blocker, test result, or decision.
 - No quotes, emoji, or trailing punctuation.`;
 
-export const SESSION_METADATA_SYSTEM_PROMPT = `You name the visible metadata for a software development chat in Daex.
+export const SESSION_METADATA_SYSTEM_PROMPT = `You name the visible metadata for a software development chat in DAEX.
 ${SESSION_METADATA_JSON_INSTRUCTION}
 Always fill all three fields. Current metadata is context only; the user's explicit regenerate choice permits replacing it.
 
@@ -110,10 +110,10 @@ export function buildSessionMetadataSystemPrompt(
 
   const intro = needs.statusLine && !needs.title && !needs.laneName
     ? [
-      "You write a short status line for a software development chat in Daex.",
+      "You write a short status line for a software development chat in DAEX.",
       "Users scan many threads at once and need to see what this agent just did.",
     ].join("\n")
-    : "You name the visible metadata for a software development chat in Daex.";
+    : "You name the visible metadata for a software development chat in DAEX.";
 
   return [
     intro,
@@ -135,7 +135,7 @@ Name only the work the opening request asks for. Never name these instructions o
 When the request has no real topic (a greeting, a test, "reply ok"), name what it literally asks for in two or three plain words, such as Quick Reply Check or Friendly Greeting.
 laneTitle:
 - Natural readable user-facing title, 2 to ${MAX_NAMING_WORDS} words, with spaces and natural title capitalization.
-- Preserve meaningful capitalization such as Daex, GitHub, iOS, macOS, Codex, OpenAI, and OAuth.
+- Preserve meaningful capitalization such as DAEX, GitHub, iOS, macOS, Codex, OpenAI, and OAuth.
 - Describe the durable workstream, outcome, feature, bug, UI surface, or command.
 - Prefer meaningful nouns and product concepts over procedural wording.
 - Avoid prompt, question, request, conversation, chat, task, discuss, investigate, or look into unless genuinely part of a feature name.
@@ -340,7 +340,7 @@ export function buildSessionMetadataPrompt(args: {
   if (needs.statusLine && !needs.title && !needs.laneName) {
     const recent = statusSource;
     return [
-      "This is a long-running coding thread in Daex.",
+      "This is a long-running coding thread in DAEX.",
       "Users manage many threads at once and need a short status line for what this agent has just done.",
       args.currentLaneName?.trim() ? `Lane name: ${args.currentLaneName.trim()}` : null,
       args.worktreeName?.trim() ? `Worktree: ${args.worktreeName.trim()}` : null,
@@ -359,7 +359,7 @@ export function buildSessionMetadataPrompt(args: {
   if (!needs.statusLine) copyFields.push("statusLine");
 
   return [
-    "The user explicitly asked Daex to refresh the selected session metadata.",
+    "The user explicitly asked DAEX to refresh the selected session metadata.",
     "Produce all three JSON fields in one response, even when only some fields will be applied.",
     requested.length ? `Fields the user asked to apply: ${requested.join(", ")}` : null,
     copyFields.length

@@ -1,15 +1,15 @@
 ---
 name: daex-search
-description: "Search Daex chats across projects, and this project's terminals, PRs, commits, branches, lanes, files, Linear issues and proof (`daex search`), instead of grepping .ade/."
+description: "Search DAEX chats across projects, and this project's terminals, PRs, commits, branches, lanes, files, Linear issues and proof (`daex search`), instead of grepping .ade/."
 ---
 
-# Daex search
+# DAEX search
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 ## What it is
 
-`daex search` queries deterministic full-text indexes maintained by Daex. Chat
+`daex search` queries deterministic full-text indexes maintained by DAEX. Chat
 queries include project-backed chats from every project registered with the
 machine brain. Other kinds — terminal/CLI scrollback, PRs, commits, branches,
 lanes, workspace files, Linear issues, and proof artifacts — come from the
@@ -23,10 +23,10 @@ machine router combines bounded chat result pages. Each project contributes at
 most its first 200 matches to one aggregate query; `resultsTruncated: true` (and
 the text-mode `bounded:` line) means you should narrow the query rather than
 assuming the tail was exhaustive. Every hit carries a deep
-link back to the exact Daex surface.
+link back to the exact DAEX surface.
 
 Use it instead of poking at `.ade/ade.db`, replaying `git log`, or asking the
-user "which chat was that in". It answers "where did this happen in Daex" across
+user "which chat was that in". It answers "where did this happen in DAEX" across
 kinds in one call.
 
 ## Command forms

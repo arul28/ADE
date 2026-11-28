@@ -92,7 +92,7 @@ export function joinAdeAgentSkillRoots(roots: readonly string[]): string {
 
 /**
  * The Claude plugin the bundled skills ship as (`.claude-plugin/plugin.json`
- * `name`), so Claude names them `daex:<skill>`. Builds before the Daex rename
+ * `name`), so Claude names them `daex:<skill>`. Builds before the DAEX rename
  * shipped the plugin as `ade`, so saved prompts and transcripts say
  * `ade:ade-<skill>`; {@link canonicalBundledAgentSkillName} maps those.
  */
@@ -101,7 +101,7 @@ export const LEGACY_BUNDLED_AGENT_SKILL_PLUGIN = "ade";
 
 /**
  * Every bundled skill folder under `apps/desktop/resources/agent-skills`, by
- * its Daex name. `adeBundledAgentSkills` (prompt order) and the packaging
+ * its DAEX name. `adeBundledAgentSkills` (prompt order) and the packaging
  * roster mirror this set; bundledAgentSkills.test.ts binds them to the disk.
  */
 export const BUNDLED_AGENT_SKILL_NAMES = [
@@ -129,7 +129,7 @@ export type BundledAgentSkillName = (typeof BUNDLED_AGENT_SKILL_NAMES)[number];
 const bundledAgentSkillNameSet: ReadonlySet<string> = new Set(BUNDLED_AGENT_SKILL_NAMES);
 
 /**
- * Old bundled skill name → the Daex skill that answers it now. Every skill was
+ * Old bundled skill name → the DAEX skill that answers it now. Every skill was
  * `ade-<x>` before the rename (now `daex-<x>`); two names were already retired
  * aliases with no folder of their own. These names are never listed to an
  * agent; ADE accepts them wherever it resolves a skill by name (`ade skill
@@ -148,7 +148,7 @@ export const LEGACY_BUNDLED_AGENT_SKILL_NAMES: ReadonlySet<string> = new Set(Obj
 
 /**
  * A skill name as someone may type it (`ade-browser`, `/ade:ade-browser`,
- * `daex:daex-browser`, `$daex-browser`), as the bundled Daex name when it
+ * `daex:daex-browser`, `$daex-browser`), as the bundled DAEX name when it
  * names a bundled skill, else the bare name unchanged (lowercased, without a
  * leading `/` or `$`). Callers that look a skill up by name try the exact
  * name first, so a project skill that happens to carry an old name still wins.
@@ -174,7 +174,7 @@ export function isAgentSkillNamed(name: string, skills: readonly string[]): bool
 
 /**
  * A message that opens with an old bundled-skill command, sent under the
- * Daex name: `/ade:ade-browser go` → `/daex:daex-browser go` (Claude's plugin
+ * DAEX name: `/ade:ade-browser go` → `/daex:daex-browser go` (Claude's plugin
  * form) and `/ade-browser go` → `/daex-browser go` (the bare form Codex,
  * Copilot and the `/` menus use). Saved prompts, automations and muscle memory
  * still type the old names, and no provider knows them any more. Any other
@@ -194,7 +194,7 @@ export function rewriteLegacyBundledSkillCommand(text: string, ownSkillExists?: 
 }
 
 /**
- * A withheld list with each bundled skill under both its Daex and its old
+ * A withheld list with each bundled skill under both its DAEX and its old
  * name, so a root that still carries an old folder (an older brain's
  * `agent-skills` on another machine, an `ADE_AGENT_SKILLS_DIRS` from an older
  * build) is filtered the same, and callers that still check an old name
@@ -229,7 +229,7 @@ const ALWAYS_WITHHELD_AGENT_SKILLS: readonly string[] = [
  */
 const MAC_ONLY_AGENT_SKILLS: readonly string[] = withLegacyAgentSkillNames(["daex-apple"]);
 
-/** The Daex Cloud skill, under both names: held back until the account is on the access list. */
+/** The DAEX Cloud skill, under both names: held back until the account is on the access list. */
 const CLOUD_AGENT_SKILL_NAMES: readonly string[] = withLegacyAgentSkillNames(["daex-cloud"]);
 
 /**
@@ -499,7 +499,7 @@ export function formatAdeAgentSkillRootsForPrompt(roots: readonly string[]): str
     .map((root) => normalizePathEntry(root))
     .filter((root): root is string => Boolean(root));
   if (!normalized.length) {
-    return "The exact agent skill roots are exposed as `ADE_AGENT_SKILLS_DIRS` when Daex launches this CLI; inspect that env var if your runtime does not auto-list skills.";
+    return "The exact agent skill roots are exposed as `ADE_AGENT_SKILLS_DIRS` when DAEX launches this CLI; inspect that env var if your runtime does not auto-list skills.";
   }
   return `Agent skill root${normalized.length === 1 ? "" : "s"} for this session: ${normalized.join(", ")}. Read \`<root>/<skill-name>/SKILL.md\` on demand when a named skill is relevant.`;
 }

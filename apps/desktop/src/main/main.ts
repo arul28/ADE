@@ -10865,7 +10865,7 @@ app.whenReady().then(async () => {
         fallback,
       );
     };
-    // The shown name ("Daex", "Daex Alpha"). Not `ADE_DESKTOP_APP_NAME`: that
+    // The shown name ("DAEX", "DAEX Alpha"). Not `ADE_DESKTOP_APP_NAME`: that
     // names the installed app on disk (ADE.app, ADE.exe), which keeps its old
     // name so existing installs stay put (docs/brand/desktop-packaging.md).
     const menuProductName = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL) === "alpha"

@@ -7,7 +7,7 @@
   (at most 2). It comes up booted; reach it from any command with
   `--device <udid|name>` (`rotate`, `screenshot`, `snapshot`, `relaunch`,
   `tap-element`, …). Without `--device` every command still drives the lane's
-  own device. Daex deletes it with the lane; `device-delete --device <udid>`
+  own device. DAEX deletes it with the lane; `device-delete --device <udid>`
   deletes it now. `boot --device <udid>` boots an extra that is off and
   answers only once `simctl` lists it Booted.
 - An extra cannot stream, record, `launch` or run tests. To put the lane's
@@ -41,24 +41,24 @@ A new device has no sign-ins, so the app starts at its first-run state.
 ## Device lifecycle
 
 - `device-create` and `device-attach` never boot (`device-create --extra` does). `device-delete` removes the
-  lane's Daex device and refuses an attached device unless `--force`, which only
+  lane's DAEX device and refuses an attached device unless `--force`, which only
   detaches. Like `stop`, it is refused while another chat is driving the device.
 - `device-detach` gives the device up without deleting it now. A simulator
-  the user attached stays installed. A device Daex made becomes a leftover,
+  the user attached stays installed. A device DAEX made becomes a leftover,
   and the cleanup pass deletes it 5 to 20 minutes later; the answer prints
   the time. To keep it, `device-attach --simulator <udid>` before then.
   When the user wants it kept as a free simulator, `device-detach --keep`:
   nothing deletes it then, and the user deletes it from the picker.
-- Daex deletes the lane's own device, with all its data and the lane's build
+- DAEX deletes the lane's own device, with all its data and the lane's build
   cache, when the lane is archived or deleted. An attached device is powered
-  off and loses only the apps Daex installed. Daex never deletes a simulator it
+  off and loses only the apps DAEX installed. DAEX never deletes a simulator it
   did not create.
-- A Daex device that nothing uses for 30 minutes is powered off, extras too
-  (`ADE_APPLE_IDLE_POWER_OFF_MINUTES` in Daex's environment changes the
+- A DAEX device that nothing uses for 30 minutes is powered off, extras too
+  (`ADE_APPLE_IDLE_POWER_OFF_MINUTES` in DAEX's environment changes the
   minutes; `0` turns it off). Every command that names a device counts as
-  use, and so do a boot or an app install outside Daex (a raw `simctl boot` or
+  use, and so do a boot or an app install outside DAEX (a raw `simctl boot` or
   `simctl install`) and a device still booting. Prefer `apple install
-  --device` and `boot --device` anyway. `status` and `device-list` then say so, for example `note: Daex powered
+  --device` and `boot --device` anyway. `status` and `device-list` then say so, for example `note: DAEX powered
   iPad Air 11 off after 31 min idle at 10:12; the next --device command boots
   it again.` `start` boots the lane's device again, and the next `--device`
   command boots an extra. Do not `simctl boot` it yourself.

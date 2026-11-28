@@ -242,7 +242,7 @@ export function buildChatContextAttachmentPrompt(
   if (linear.length) {
     sections.push([
       "Attached issue context:",
-      "Daex already stores any local Linear credentials; do not ask the user for a Linear API key. Use the identifiers below, and refresh from Daex/Linear tooling only if current state matters.",
+      "DAEX already stores any local Linear credentials; do not ask the user for a Linear API key. Use the identifiers below, and refresh from DAEX/Linear tooling only if current state matters.",
       ...linear.map((attachment, index) => [
         `Linear issue ${index + 1}:`,
         formatLinearIssueContext(attachment.issue),
@@ -252,7 +252,7 @@ export function buildChatContextAttachmentPrompt(
   if (github.length) {
     sections.push([
       "Attached GitHub issue context:",
-      "Daex already stores any local GitHub credentials; do not ask the user for a GitHub token. Use the identifiers below, and refresh from Daex/GitHub tooling only if current state matters.",
+      "DAEX already stores any local GitHub credentials; do not ask the user for a GitHub token. Use the identifiers below, and refresh from DAEX/GitHub tooling only if current state matters.",
       ...github.map((attachment, index) => [
         `GitHub issue ${index + 1}:`,
         formatGitHubIssueContext(attachment.issue),
@@ -262,7 +262,7 @@ export function buildChatContextAttachmentPrompt(
   if (jira.length) {
     sections.push([
       "Attached Jira issue context:",
-      "Daex stores Jira credentials on the connected Daex host; do not ask the user for an API token. Use the identifiers below, and refresh through Daex Jira tools only if current state matters.",
+      "DAEX stores Jira credentials on the connected DAEX host; do not ask the user for an API token. Use the identifiers below, and refresh through DAEX Jira tools only if current state matters.",
       ...jira.map((attachment, index) => [
         `Jira issue ${index + 1}:`,
         formatJiraIssueContext(attachment.issue),

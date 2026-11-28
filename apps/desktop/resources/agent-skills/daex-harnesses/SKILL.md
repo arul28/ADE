@@ -3,21 +3,21 @@ name: daex-harnesses
 description: "Run a chat, CLI session or subagent on a chosen setup: any model in any harness (`--via`), a saved Custom provider (`--custom-provider`), one provider account (`--instance`), or one stored API key (`--credential`); `daex harness routes`, `providers`, `test` and `env`. Every launch passes `--model`."
 ---
 
-# Daex harnesses: picking what a session runs on
+# DAEX harnesses: picking what a session runs on
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 Two words, kept apart:
 
-- **Harness**: the agent program Daex runs. It is the `--provider` value:
+- **Harness**: the agent program DAEX runs. It is the `--provider` value:
   `claude` (Claude Code), `codex`, `opencode`, `droid`, `pi`, `cursor`, …
-- **Where the model runs**: the harness's own sign-in, or a source Daex routes
+- **Where the model runs**: the harness's own sign-in, or a source DAEX routes
   it to with `--via`: a provider signed in to OpenCode (OpenCode Go, Zen, or
   any provider connected there), a stored API key, or a Claude, Codex, Grok,
-  Kimi, Devin or Muse sign-in already on this machine, which Daex's proxy runs
+  Kimi, Devin or Muse sign-in already on this machine, which DAEX's proxy runs
   in any other harness.
 
-**Every launch passes `--model <id>`.** Daex never picks a model for an agent;
+**Every launch passes `--model <id>`.** DAEX never picks a model for an agent;
 a launch without one is refused with the command that lists the ids.
 
 ## See what this machine can run
@@ -31,7 +31,7 @@ daex harness providers --text                  # saved Custom providers, with th
 daex providers accounts list --text            # Claude/Codex accounts on this machine
 ```
 
-Rows tagged `via Daex proxy` are translated (the proxy starts on demand).
+Rows tagged `via DAEX proxy` are translated (the proxy starts on demand).
 Check one pairing with a one-token request before relying on it. The verdict
 is remembered, so later launches route around a protocol the model refused:
 
@@ -42,7 +42,7 @@ daex harness test --provider claude --via opencode-go --model deepseek-v4.1-flas
 ## Launch on a specific setup
 
 Use at most one of `--via`, `--custom-provider` and `--credential`: each says
-where the model runs, so Daex refuses two of them together.
+where the model runs, so DAEX refuses two of them together.
 
 | you want | flags |
 |---|---|

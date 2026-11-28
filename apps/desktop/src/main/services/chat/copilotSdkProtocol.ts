@@ -108,7 +108,7 @@ export type CopilotSdkWaiterType = "permission_request" | "exit_plan_request" | 
  */
 export const COPILOT_SDK_WAITERS = {
   permission_request: { respondType: "respond_permission", payloadKey: "result", fallback: { kind: "reject" } },
-  exit_plan_request: { respondType: "respond_exit_plan", payloadKey: "result", fallback: { approved: false, feedback: "Daex could not review this plan; the chat was interrupted or closed." } },
+  exit_plan_request: { respondType: "respond_exit_plan", payloadKey: "result", fallback: { approved: false, feedback: "DAEX could not review this plan; the chat was interrupted or closed." } },
   user_input_request: { respondType: "respond_user_input", payloadKey: "response", fallback: { answer: "", wasFreeform: true } },
   mcp_auth_request: { respondType: "respond_mcp_auth", payloadKey: "result", fallback: { kind: "cancelled" } },
   auto_mode_switch_request: { respondType: "respond_auto_mode_switch", payloadKey: "result", fallback: "no" },

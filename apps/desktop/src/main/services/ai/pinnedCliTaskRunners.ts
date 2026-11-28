@@ -126,7 +126,7 @@ export async function runKimiTask(args: ProviderTaskRunnerArgs): Promise<Provide
   fs.writeFileSync(agentPath, [
     "---",
     "name: ade-metadata",
-    "description: Daex metadata task with no tool access.",
+    "description: DAEX metadata task with no tool access.",
     "tools: []",
     "---",
     "Return only the requested metadata. Do not use tools.",

@@ -67,7 +67,7 @@ export function buildMessagesDomain(deps: {
       if (!status.sendWithoutAsking) {
         const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId : "";
         if (!chatSessionId || !deps.requestChatInput) {
-          throw new AdeExpectedError("Sending a text needs the person's approval in a chat. Run `daex messages send` from inside a Daex chat.", "user");
+          throw new AdeExpectedError("Sending a text needs the person's approval in a chat. Run `daex messages send` from inside a DAEX chat.", "user");
         }
         const response = await deps.requestChatInput({
           chatSessionId,

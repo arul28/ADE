@@ -172,7 +172,7 @@ export default [
     rules: adeUiRecommendedRules,
   },
   {
-    // The product is Daex; "ADE" is the former name. User-facing copy reads
+    // The product is DAEX; "ADE" is the former name. User-facing copy reads
     // the name from shared/brand.ts (`BRAND.NAME`, `BRAND.CLOUD_NAME`). Warning
     // only, ratcheted by lint-baseline.json like the rules above. Guide:
     // docs/brand/README.md.

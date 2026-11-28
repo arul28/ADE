@@ -1,15 +1,15 @@
 ---
 name: daex-proof-artifacts
-description: "Proof, a demo, screenshots, video, an image to show in your answer, something to post or show off, test evidence, computer-use captures, or work for Daex's proof drawer. Read it before capturing anything a person will see."
+description: "Proof, a demo, screenshots, video, an image to show in your answer, something to post or show off, test evidence, computer-use captures, or work for DAEX's proof drawer. Read it before capturing anything a person will see."
 ---
 
-# Daex proof and artifacts
+# DAEX proof and artifacts
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 ## Rule
 
-When the user asks to capture, send, attach, or provide proof, create evidence with the relevant tool, then register it through Daex so it appears in the proof drawer for the active chat or lane.
+When the user asks to capture, send, attach, or provide proof, create evidence with the relevant tool, then register it through DAEX so it appears in the proof drawer for the active chat or lane.
 
 **Attach, then confirm.** A filing command is not done until you have read its
 confirmation. Run the attach, check that the last line says
@@ -94,9 +94,9 @@ How to write it:
   a partial state, a step you could not check.
 - Cite as many items as your claims need. There is no limit. Choose the items
   that show the claim; do not paste every capture.
-- Prefer proof that Daex captured or recorded over a file you made yourself.
+- Prefer proof that DAEX captured or recorded over a file you made yourself.
 
-A citation of an id Daex does not have shows "Daex has no proof with the id …".
+A citation of an id DAEX does not have shows "DAEX has no proof with the id …".
 Copy the id from the `cite:` line; do not type it.
 
 ## Put proof on the PR
@@ -135,7 +135,7 @@ daex screen record stop --text
 daex app-control proof --caption "Settings saved" --text
 daex app-control record start --caption "Settings save the API key" --text
 daex app-control record stop --text
-# Daex browser (daex browser)
+# DAEX browser (daex browser)
 daex browser proof --tab <tab-id> --caption "Verified" --text
 daex browser proof --browser-session <session-id> --caption "Verified" --text
 daex browser record start --tab <tab-id> --caption "Checkout flow" --text
@@ -147,7 +147,7 @@ up, zoom to where the actions happen (a phone only with `--zoom`, or any
 surface with `daex proof step --focus`), a pointer and click rings, under
 10 MB (GitHub's limit for a PR video). Only `daex proof step` captions show,
 at the bottom, or at the top when the action is low; each is also a chapter
-in Daex's player.
+in DAEX's player.
 `record start --plain` keeps a recording as it was recorded; use it only when
 the user asks. A recording stops itself after
 5 minutes, or after 2 minutes with no action, so record the flow that proves
@@ -205,12 +205,12 @@ Only a proof-named command files a drawer entry. Taking a screenshot is not the 
 Artifacts worth filing:
 
 - Screenshot or video of the UI state.
-- App Control, iOS Simulator, or Daex browser capture.
+- App Control, iOS Simulator, or DAEX browser capture.
 - Test output or log bundle when visual proof is not the right artifact.
 
 ## Proof must be new
 
-Proof shows what you did for this request. Daex checks:
+Proof shows what you did for this request. DAEX checks:
 
 - An attach whose bytes are already proof (an earlier recording copied to a
   new name, say) fails with `PROOF_DUPLICATE` and names the earlier proof.
@@ -219,9 +219,9 @@ Proof shows what you did for this request. Daex checks:
 - An attached MP4/MOV whose own creation time is before this request still
   files, but prints `warning: This video was recorded at …, before this
   request.` and the drawer marks it older. Repeat that warning to the user.
-- The drawer says where each proof came from: recorded by Daex, captured by
-  Daex, or attached by the agent. `daex proof attach` of a fresh, unchanged Daex
-  capture keeps Daex's label; any other file is "attached by the agent",
+- The drawer says where each proof came from: recorded by DAEX, captured by
+  DAEX, or attached by the agent. `daex proof attach` of a fresh, unchanged DAEX
+  capture keeps DAEX's label; any other file is "attached by the agent",
   whatever label you pass.
 
 ## Keep the drawer clean
@@ -242,7 +242,7 @@ delete what is stale; cite only what stays.
 
 ## Gotchas
 
-- Do not leave proof as an unregistered local file when the user expects Daex to show it.
+- Do not leave proof as an unregistered local file when the user expects DAEX to show it.
 - Do not report "proof attached" from a command whose output you did not read. Six attaches in a row once failed silently in a loop; the confirmation line and `daex proof list --text` are the check that catches it.
 - Browser observations are scratch state, not proof; promote only reviewer-facing checkpoints with `daex browser proof ...` or `daex proof attach`. The **daex-browser** skill documents where those scratch files live and how aggressively they prune.
 - Include enough context in the artifact name/description to understand what was verified.

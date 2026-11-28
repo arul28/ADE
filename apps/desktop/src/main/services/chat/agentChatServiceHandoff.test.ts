@@ -450,7 +450,7 @@ describe("createAgentChatService", () => {
         params?: { input?: Array<{ text?: unknown }> };
       };
       const inputText = turnStartRequest.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
-      expect(inputText).toContain("This message was injected automatically by Daex during a chat handoff.");
+      expect(inputText).toContain("This message was injected automatically by DAEX during a chat handoff.");
       expect(inputText).toContain("No Machine State Polish");
       expect(mockState.sessions.get(result.session.id)?.goal ?? null).toBeNull();
     });
@@ -1074,7 +1074,7 @@ describe("createAgentChatService", () => {
         && entry.event.type === "user_message"
         && (entry.event as { text?: string }).text === "Continue from the replay.")).toHaveLength(1);
       expect(claudeNoticeMessages(events).some((message) =>
-        /^That was too long for .+\. Daex is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
+        /^That was too long for .+\. DAEX is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
         .toBe(true);
       // One coarse product fact when the retry lands, and only then.
       await vi.waitFor(() => {
@@ -1190,7 +1190,7 @@ describe("createAgentChatService", () => {
       expect(retryPrompt).toContain("verbatim replay");
       expect(send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
       expect(claudeNoticeMessages(events).some((message) =>
-        /^That was too long for .+\. Daex is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
+        /^That was too long for .+\. DAEX is sending your message again with the newest \d+ turns? of the handoff\.$/.test(message)))
         .toBe(true);
       // One automatic retry, not a loop.
       expect(send.mock.calls
@@ -1576,7 +1576,7 @@ describe("createAgentChatService", () => {
       // conversation back so the next message still carries it.
       await vi.waitFor(() => {
         expect(claudeNoticeMessages(events).some((message) =>
-          /^The handoff transcript is too long for .+\. Daex kept the newest \d+ turns?\. Send your message again\.$/.test(message)))
+          /^The handoff transcript is too long for .+\. DAEX kept the newest \d+ turns?\. Send your message again\.$/.test(message)))
           .toBe(true);
       }, { timeout: 5_000 });
       await vi.waitFor(() => {
@@ -2001,7 +2001,7 @@ describe("createAgentChatService", () => {
         } | undefined;
       const inputText = turnStartRequest?.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(inputText).toContain("Start by checking the current test failure, then continue.");
-      expect(inputText).not.toContain("This message was injected automatically by Daex during a chat handoff.");
+      expect(inputText).not.toContain("This message was injected automatically by DAEX during a chat handoff.");
     });
 
     it.each([
@@ -2539,7 +2539,7 @@ describe("createAgentChatService", () => {
         expect(setPermissionMode).toHaveBeenCalledWith("plan");
       });
       await vi.waitFor(() => {
-        expect(send).toHaveBeenCalledWith(expect.stringContaining("This message was injected automatically by Daex during a chat handoff."));
+        expect(send).toHaveBeenCalledWith(expect.stringContaining("This message was injected automatically by DAEX during a chat handoff."));
       });
     });
 
@@ -2615,7 +2615,7 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(result.session.id).sdkSessionId).toBeTruthy();
       expect(readPersistedChatState(result.session.id).forkFromSdkSessionId).toBe(sourceSdkSessionId);
       for (const send of [sourceSend, targetWarmupSend, forkWarmupSend]) {
-        expect(send).not.toHaveBeenCalledWith(expect.stringContaining("This message was injected automatically by Daex during a chat handoff."));
+        expect(send).not.toHaveBeenCalledWith(expect.stringContaining("This message was injected automatically by DAEX during a chat handoff."));
       }
     });
 
@@ -3361,7 +3361,7 @@ describe("createAgentChatService", () => {
           behindBy: 3,
         });
         expect(result.warnings).toContain(
-          "Destination lane 'Primary' is 3 commits behind — Daex can fast-forward it.",
+          "Destination lane 'Primary' is 3 commits behind — DAEX can fast-forward it.",
         );
       });
 

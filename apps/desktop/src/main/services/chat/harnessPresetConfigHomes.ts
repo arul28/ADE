@@ -409,13 +409,13 @@ export function buildCodexPresetConfigToml(
 ): string {
   const resolved = (baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
   const lines = [
-    "# Written by Daex for a harness preset. Edits here are overwritten on launch.",
-    "# Daex never writes to ~/.codex/config.toml; CODEX_HOME points Codex at this",
+    "# Written by DAEX for a harness preset. Edits here are overwritten on launch.",
+    "# DAEX never writes to ~/.codex/config.toml; CODEX_HOME points Codex at this",
     "# directory instead, so the user's own Codex sign-in is untouched.",
     'model_provider = "ade"',
     "",
     "[model_providers.ade]",
-    'name = "Daex"',
+    'name = "DAEX"',
     `base_url = "${resolved}"`,
     'wire_api = "responses"',
     'env_key = "ADE_PRESET_OPENAI_API_KEY"',
@@ -430,8 +430,8 @@ export function buildCodexProxyConfigToml(
   subagent?: HarnessSubagentLaunch,
 ): string {
   const lines = [
-    "# Written by Daex for a harness preset borrowing a subscription through",
-    "# Daex's proxy. Edits here are overwritten on launch. Daex never writes to",
+    "# Written by DAEX for a harness preset borrowing a subscription through",
+    "# DAEX's proxy. Edits here are overwritten on launch. DAEX never writes to",
     "# ~/.codex/config.toml; CODEX_HOME points Codex at this directory instead.",
     'model_provider = "ade-proxy"',
     "",

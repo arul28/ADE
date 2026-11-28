@@ -521,7 +521,7 @@ export function isAdeProbeSession(session: { preview?: string | null; messageCou
  * A session that starts this way is ADE's own work, not the user's.
  */
 export function isAdeContinuityPrompt(text: string | null | undefined): boolean {
-  return /^\s*System context \((?:CTO reconstruction|(?:ADE|Daex) continuity), do not echo verbatim\)/u.test(text ?? "");
+  return /^\s*System context \((?:CTO reconstruction|(?:ADE|DAEX) continuity), do not echo verbatim\)/u.test(text ?? "");
 }
 
 /**
@@ -537,7 +537,7 @@ export function cleanExternalSessionUserText(raw: string): string | null {
     .replace(/<timestamp>[\s\S]*?<\/timestamp>/giu, " ");
   // Cursor marks each attached image as `[Image]` before its `<image_files>` note.
   text = text.replace(/\[Image\]/gu, " ");
-  const hasKnownAdePreamble = /\[(?:ADE|Daex) launch directive\]|## (?:ADE|Daex) CLI primer|## Project agent rules|(?:ADE|Daex) session guidance|# AGENTS\.md instructions|## Computer Use\nYou have computer-use capabilities available/iu.test(text);
+  const hasKnownAdePreamble = /\[(?:ADE|DAEX) launch directive\]|## (?:ADE|DAEX) CLI primer|## Project agent rules|(?:ADE|DAEX) session guidance|# AGENTS\.md instructions|## Computer Use\nYou have computer-use capabilities available/iu.test(text);
 
   const queryMatches = Array.from(text.matchAll(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/giu));
   const lastQueryMatch = queryMatches.at(-1);
@@ -548,10 +548,10 @@ export function cleanExternalSessionUserText(raw: string): string | null {
 
   text = text
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, " ")
-    .replace(/\[(?:ADE|Daex) launch directive\][\s\S]*?(?=\n\n|$)/giu, " ")
-    .replace(/## (?:ADE|Daex) CLI primer[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
+    .replace(/\[(?:ADE|DAEX) launch directive\][\s\S]*?(?=\n\n|$)/giu, " ")
+    .replace(/## (?:ADE|DAEX) CLI primer[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
     .replace(/## Project agent rules[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
-    .replace(/(?:ADE|Daex) session guidance[\s\S]*?(?=\n\n|$)/giu, " ")
+    .replace(/(?:ADE|DAEX) session guidance[\s\S]*?(?=\n\n|$)/giu, " ")
     .replace(/# AGENTS\.md instructions[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ")
     // ADE's computer-use directive (`agentChatService` builds it) runs up to the request.
     .replace(/## Computer Use\nYou have computer-use capabilities available[\s\S]*?(?=User request:|<\/user_query>|$)/giu, " ");

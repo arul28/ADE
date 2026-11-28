@@ -2,7 +2,7 @@
 
 ## Lane branch drift
 
-A lane's worktree HEAD can drift from the branch Daex recorded (someone runs
+A lane's worktree HEAD can drift from the branch DAEX recorded (someone runs
 `git checkout` inside it). While drifted, PR matching is paused, because a PR
 created from that lane would target the wrong branch.
 
@@ -18,7 +18,7 @@ advertising the old branch. Actions: `lane.getBranchDrift`, `lane.resolveBranchD
 
 ## Archived lanes, chats, and shells
 
-Archiving hides an item; Daex never deletes anything on its own. Archived chats
+Archiving hides an item; DAEX never deletes anything on its own. Archived chats
 and shells are left out of `daex chat list`, `daex terminal list`, and `daex search`
 by default. Pass `--include-archived` to see them in a list. A known id still
 works: `daex chat read <id>`, `daex chat show <id>`, `daex terminal read <id>`.

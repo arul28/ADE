@@ -3,12 +3,12 @@ name: daex-app-control
 description: "Run or drive a local Electron/desktop app via `daex app-control`: launch or attach to its renderer, read its logs, answer its terminal prompts, click and type, record video, file proof, show it to the user, pull screenshot-backed DOM/source context."
 ---
 
-# Daex App Control
+# DAEX App Control
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 App Control drives a desktop app you are building. Today that means an
-Electron app. Daex launches it (or attaches to one that is running) through a
+Electron app. DAEX launches it (or attaches to one that is running) through a
 Chrome DevTools Protocol (CDP) port. Then you observe it, act on it, record it
 and file proof from it. It works in the background: no cursor, no focus
 stealing, and it captures the app's own window, not the user's screen.
@@ -30,16 +30,16 @@ between `daex apple`, `daex screen`, `daex app-control` and `daex browser`.
   typed into the old shell or the old app would not exit.) Pass `--new-shell`
   only when you truly need a separate terminal.
 - **Check each step before you report it.** An act that returns `ok` only
-  means Daex sent the input. Read the `hit:` and `effect:` lines and the new
+  means DAEX sent the input. Read the `hit:` and `effect:` lines and the new
   observation. Report only what you confirmed.
 - **`ade: Unknown command 'app-control'` means your shell found an older
   `daex`.** Run the same command as `"$ADE_CLI_PATH" app-control ...`
   (PowerShell: `& $env:ADE_CLI_PATH app-control ...`) and keep using it for
   the rest of the task.
-- **App Control needs the running Daex brain.** A session lives in the brain,
+- **App Control needs the running DAEX brain.** A session lives in the brain,
   so `--headless` is refused. If a command says no brain answered, you are
   running the wrong `daex`: use `$ADE_CLI_PATH`. Never start, stop or install a
-  brain or service, and never `npm install` in the user's repo to fix Daex.
+  brain or service, and never `npm install` in the user's repo to fix DAEX.
   Report the error instead.
 
 ## Common tasks
@@ -75,14 +75,14 @@ daex app-control connect --cdp-port 9222 --text             # an app that is alr
 ```
 
 `launch` runs the command in a visible terminal that belongs to your chat.
-Daex sets `ADE_APP_CONTROL_CDP_PORT` and `ADE_APP_CONTROL_DEBUG_FLAGS` in its
+DAEX sets `ADE_APP_CONTROL_CDP_PORT` and `ADE_APP_CONTROL_DEBUG_FLAGS` in its
 environment. It forwards the debug flags on its own for npm, pnpm, yarn and bun
 scripts and for a direct `electron` command. `--cwd` resolves a relative path
 from the directory you run `daex` in.
 
 An installed Electron app (Slack, a packaged build of the app you work on) is
 launched the same way: name its binary and add `$ADE_APP_CONTROL_DEBUG_FLAGS`,
-which Daex fills in itself, so it works in zsh too. The app must not already be
+which DAEX fills in itself, so it works in zsh too. The app must not already be
 running; quit the user's copy only if they say so.
 
 ```bash
@@ -102,7 +102,7 @@ daex app-control observe --no-dom --text     # screenshot only
 ```
 
 An observation gives you a screenshot and numbered elements with handles
-(`obs-…:e:7`). A handle is valid only for recent observations. Daex keeps the
+(`obs-…:e:7`). A handle is valid only for recent observations. DAEX keeps the
 newest 3 per session, so observe again when a handle is refused as expired.
 **Act by handle or by label, not by coordinates.** A point is a guess that the
 layout did not move.
@@ -136,8 +136,8 @@ Targets are `--handle`, `--selector`, `--text-match`, `--test-id`,
 Every act answers with two lines and a fresh observation:
 
 - `hit:` — the element the command actually hit.
-- `effect:` — `observed` (Daex saw the app change), `unconfirmed` (Daex looked
-  and saw no change), or `not_checked` (Daex did not look).
+- `effect:` — `observed` (DAEX saw the app change), `unconfirmed` (DAEX looked
+  and saw no change), or `not_checked` (DAEX did not look).
 
 When the effect is `unconfirmed`, observe again before you act again or
 report the step. Do not repeat the action blindly. If the change takes time,
@@ -163,7 +163,7 @@ animation, a retry. Use a **still** (`proof`) when one screen proves the claim.
   click rings, under 10 MB. `--plain` keeps it as recorded; use it only when
   the user asks.
 - Mark each step while recording with `daex proof step "<what happens next>"`.
-  Each step is a caption in the video and a chapter in Daex's player.
+  Each step is a caption in the video and a chapter in DAEX's player.
 - A recording stops itself after 5 minutes of real time, or after 2 minutes
   with no action. `--max-seconds <n>` sets a shorter limit. Record the flow
   that shows the claim, not the whole task.
@@ -198,7 +198,7 @@ daex app-control show --floating --text   # the floating card over the chat
 `daex ui show app-control` and `daex ui show floating-app-control` do the same.
 The answer says what really happened: `shown`, `held` (the user is not on your
 chat yet; it opens when they go there), or `no_desktop` (exit 1; nothing was
-shown, so tell the user). The user can also watch the session live from Daex on
+shown, so tell the user). The user can also watch the session live from DAEX on
 the web or the phone.
 
 ### 6. Stop
@@ -207,9 +207,9 @@ the web or the phone.
 daex app-control stop --text
 ```
 
-`stop` quits an app Daex launched, with its whole process tree. It only detaches
+`stop` quits an app DAEX launched, with its whole process tree. It only detaches
 from an app you attached with `connect`; that app keeps running. Save anything
-that matters first. Daex also releases the session when your chat ends and when
+that matters first. DAEX also releases the session when your chat ends and when
 the lane is archived or deleted.
 
 ## Optional: keep the app off the user's screen
@@ -268,7 +268,7 @@ Control terminal is active.
   a dev script that starts Electron itself) must pass
   `ADE_APP_CONTROL_DEBUG_FLAGS` through to Electron, or read
   `ADE_APP_CONTROL_CDP_PORT` and pass `--remote-debugging-port`. You can also
-  put the placeholder in the command, and Daex substitutes it:
+  put the placeholder in the command, and DAEX substitutes it:
   `daex app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}" --text`.
   Read `daex app-control logs --text` to see what the app printed.
 - **A browser (Chrome, Edge) never opens the port.** It needs its own profile
@@ -290,9 +290,9 @@ Control terminal is active.
 - **`launch` refused: the lane already has a session.** Run `status`. Reuse
   it, `stop` it, or pass `--force` to replace it.
 
-## Launching Daex itself from inside Daex
+## Launching DAEX itself from inside DAEX
 
-If you run inside one Daex (Beta or stable) and need the Daex dev app under App
+If you run inside one DAEX (Beta or stable) and need the DAEX dev app under App
 Control, the dev launcher is isolated and safe:
 
 ```bash
@@ -314,7 +314,7 @@ anyway. Run one at a time, check `memory_pressure | tail -1` first and wait
 while free memory is under ~30%, and `stop` it when you are done.
 
 `npm run dev` uses its own runtime socket (`/tmp/ade-runtime-dev.sock`) and its
-own Electron profile (`ade-desktop-dev`), so it does not collide with the Daex
+own Electron profile (`ade-desktop-dev`), so it does not collide with the DAEX
 that hosts you. `daex runtime status --text` tells you which socket the CLI uses.
 The `dev-desktop` launcher accepts App Control's `{ADE_APP_CONTROL_DEBUG_FLAGS}`
 placeholder (and the `ADE_APP_CONTROL_CDP_PORT` it exports) and passes the CDP

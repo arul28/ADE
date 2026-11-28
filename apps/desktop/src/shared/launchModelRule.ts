@@ -25,7 +25,7 @@ function askFor(spelling: LaunchModelSpelling): string {
 
 /** The refusal for a launch with no model. */
 export function launchModelRequiredMessage(provider?: string | null, spelling: LaunchModelSpelling = "--model"): string {
-  return `${askFor(spelling)}: Daex never picks a model for an agent. ${unknownModelHint(provider)}`;
+  return `${askFor(spelling)}: DAEX never picks a model for an agent. ${unknownModelHint(provider)}`;
 }
 
 /**

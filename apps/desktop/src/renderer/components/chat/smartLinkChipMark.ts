@@ -20,7 +20,7 @@ const GITHUB_PATH =
 // Linear mark reuses the canonical path exported from lanes/linearBrand.tsx so
 // LinearMark and this imperative renderer stay in lockstep.
 
-// Daex mark: the app icon's "æ" glyph (assets/brand/daex/glyph-mask.png)
+// DAEX mark: the app icon's "æ" glyph (assets/brand/daex/glyph-mask.png)
 // drawn as two round-capped strokes, which reads cleaner at chip size than a
 // traced outline. One stroke runs from the top-left arch down through the
 // crossing into the e's tail; the other draws the a's bowl, the diagonal, the

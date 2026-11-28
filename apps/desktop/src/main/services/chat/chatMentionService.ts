@@ -640,7 +640,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ["lastActivity", session.lastActivityAt],
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string"),
       hint:
-        "Pointer to another Daex chat on this machine. Read its transcript with the daex CLI "
+        "Pointer to another DAEX chat on this machine. Read its transcript with the daex CLI "
         + "(silent and bounded): "
         + `\`daex chat read ${session.sessionId} --limit 20 --max-chars 8000 --text\`. `
         + `Page older content with \`daex chat read ${session.sessionId} --page --cursor <n>\`. `
@@ -689,7 +689,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
           : []),
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
       hint:
-        "Pointer to a Daex lane (git worktree + branch) in this project. Inspect it with "
+        "Pointer to a DAEX lane (git worktree + branch) in this project. Inspect it with "
         + `\`daex lanes show ${lane.id} --text\`, list its chats with `
         + `\`daex chat list --lane ${lane.id} --text\`, and search its history with `
         // Id + `--lane` flag rather than the in-query `lane:<name>` filter: lane
@@ -765,7 +765,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ["lastSynced", pr.lastSyncedAt ?? ""],
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
       hint:
-        "Pointer to a pull request tracked by Daex. The status above is Daex's last sync, not a live read. "
+        "Pointer to a pull request tracked by DAEX. The status above is DAEX's last sync, not a live read. "
         + `Read more with \`daex prs show ${pr.id} --text\`, `
         + `\`daex prs checks ${pr.id} --text\` (CI rollup and per-check rows), and `
         + `\`daex prs comments ${pr.id} --text\` (unresolved review work).`,
@@ -777,15 +777,15 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       case "ok":
         return null;
       case "signed_out":
-        return "The Daex account is signed out on this machine, so account machines cannot be read.";
+        return "The DAEX account is signed out on this machine, so account machines cannot be read.";
       case "auth_expired":
-        return "The Daex account session on this machine expired, so account machines cannot be read.";
+        return "The DAEX account session on this machine expired, so account machines cannot be read.";
       case "not_configured":
-        return "The Daex account machine directory is not configured on this machine.";
+        return "The DAEX account machine directory is not configured on this machine.";
       case "unsupported":
-        return "This Daex runtime cannot read account machines.";
+        return "This DAEX runtime cannot read account machines.";
       default:
-        return "The Daex account machine directory could not be reached.";
+        return "The DAEX account machine directory could not be reached.";
     }
   };
 
@@ -818,14 +818,14 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ["snapshotAt", new Date().toISOString()],
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
       hint:
-        "The user referenced this machine connected through Daex. "
+        "The user referenced this machine connected through DAEX. "
         + `Read its status, projects, lanes and recent chats with \`daex machines show ${snapshot.machineKey} --text\`. `
         + "Change nothing there unless the user asks. When the user asks for work there: "
         + `to run a command (tests, a build, a CLI signed in there), run \`daex shell start --machine ${snapshot.machineKey} --wait -- <command>\` from this chat; `
         + "it runs in your code there, so push your commit first (uncommitted changes go along). "
         + `For a whole task, start a chat there (\`daex chat create --machine ${snapshot.machineKey} --provider <p> --model <id>\`); `
         + `to move this chat, \`daex chat handoff <this chat> --to ${snapshot.machineKey}\`. `
-        + "Projects, lanes and chats below come from Daex Activity (recent work only, not a full listing).",
+        + "Projects, lanes and chats below come from DAEX Activity (recent work only, not a full listing).",
       previewLabel: "Snapshot at send time:",
       preview: formatAccountMachineSnapshotText(snapshot, Date.now(), { compact: true }),
     };
@@ -846,7 +846,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ["toolCount", toolCount != null ? String(toolCount) : "not reported"],
         ["lastError", record.lastError ?? "not reported"],
       ],
-      hint: "Pointer to an MCP server configured in Daex on this machine. This snapshot does not attach tools or authorize a tool call. Check the named server and available tools before using it.",
+      hint: "Pointer to an MCP server configured in DAEX on this machine. This snapshot does not attach tools or authorize a tool call. Check the named server and available tools before using it.",
       previewLabel: toolCount != null ? "Available tool names:" : "Available tool names (not reported):",
       preview: tools.length ? tools.join("\n") : null,
     };

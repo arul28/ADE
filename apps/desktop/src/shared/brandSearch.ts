@@ -1,6 +1,6 @@
 /**
  * People keep typing the old product name. A search query with the word
- * "ade" also searches as "daex", so "ade cloud" finds "Daex Cloud". The query
+ * "ade" also searches as "daex", so "ade cloud" finds "DAEX Cloud". The query
  * as typed is always tried first, so an exact match on "ADE" still wins.
  *
  * Settings search and the command palette use this. The iPhone app has no

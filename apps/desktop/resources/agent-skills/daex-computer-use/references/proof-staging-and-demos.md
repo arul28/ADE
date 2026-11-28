@@ -6,14 +6,14 @@ Stage before showcase proof (the steps are in **daex-proof-artifacts**):
 
 | Surface | Stage |
 |---|---|
-| Apple | `daex apple status-bar --time 9:41 --wifi-bars 3 --battery-level 100`; a device never paired with Daex (no push banners). New screens: add a hero shot with `daex apple render --angles three-quarter-left` |
+| Apple | `daex apple status-bar --time 9:41 --wifi-bars 3 --battery-level 100`; a device never paired with DAEX (no push banners). New screens: add a hero shot with `daex apple render --angles three-quarter-left` |
 | Mac / Windows / Linux Desktop | `daex screen windows --text`, then `close` or `minimize --window <id>` everything that is not the subject |
 | App Control | Only the app's window is recorded: make the subject big inside it (collapse sidebars, open the panel); `daex proof step --focus` for the rest |
 | Browser | `daex browser emulate --tab <id> --width 1280 --height 800 --scale 2` (not smaller: stills come out at this size); `daex browser zoom --tab <id> --factor 1.25` when text is small |
 
 ## How a recording becomes a demo
 
-A recording becomes a **demo** when it stops. Daex cuts still time, speeds up
+A recording becomes a **demo** when it stops. DAEX cuts still time, speeds up
 waits (a load, a spinner) with a small `4×` badge, zooms to the part of the
 screen where the actions happen (not on a phone, unless you pass `--zoom`),
 draws the pointer and a ring on each click, and keeps the file under 10 MB.

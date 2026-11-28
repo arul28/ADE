@@ -3,18 +3,18 @@ name: daex-android
 description: "Android app on an emulator via `daex android`: find or create the lane's emulator, boot it, build and install (Gradle or APK), drive by element query, logcat, screenshots, recordings, proof, foldables, Compose previews, instrumentation tests, Android SDK setup."
 ---
 
-# Daex Android Development
+# DAEX Android Development
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 Drive the lane's Android emulator with `"$ADE_CLI_PATH" android <command>`.
-`$ADE_CLI_PATH` is the CLI of the Daex that launched you, so your calls and the
+`$ADE_CLI_PATH` is the CLI of the DAEX that launched you, so your calls and the
 desktop's Android tool share one emulator. A bare `daex` goes through PATH and
-can reach a different Daex. Commands below written as `daex …` mean
+can reach a different DAEX. Commands below written as `daex …` mean
 `"$ADE_CLI_PATH" …` too.
 
 Each lane has one emulator, on the machine that runs the lane. It works on
-macOS, Windows and Linux. Daex starts it without a window and shows it in the
+macOS, Windows and Linux. DAEX starts it without a window and shows it in the
 Android tool of the Work pane.
 
 ## Five rules before your first command
@@ -25,9 +25,9 @@ Android tool of the Work pane.
   `emulator` binary (`emulator -avd …`).** `android start` checks the
   machine's memory first and refuses (`ANDROID_LOW_MEMORY`) when another
   emulator would make it swap; each emulator takes 5–9 GB, and a machine
-  with too many froze. Daex also stops the emulators it starts once nobody
+  with too many froze. DAEX also stops the emulators it starts once nobody
   uses them. An emulator started by hand skips both: it opens a window on
-  the user's machine, still counts against the memory limit, and Daex never
+  the user's machine, still counts against the memory limit, and DAEX never
   stops it. The lane has its emulator: `android start` boots it.
 - **Never run `adb kill-server`, `adb emu kill` or `adb reboot`.** One adb
   server serves every lane's emulator and every live view. Killing it cuts
@@ -36,7 +36,7 @@ Android tool of the Work pane.
   `android device-create` and `android device-detach`, so the lane knows
   its device and other lanes do not take it.
 - **Check each step before you report it.** A tap, swipe, button or type
-  that returns `ok` only means Daex sent the input. After each step that
+  that returns `ok` only means DAEX sent the input. After each step that
   matters, confirm it with `android assert-visible`,
   `android wait-for-element` or `android snapshot`. Report only what you
   confirmed. Before `record-stop`, confirm the final state, so the video
@@ -54,7 +54,7 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
 - `sdk: not found`, or a tool that is not available: the SDK is not set up.
   Run `android sdk status --text` and tell the user what it says. Only the
   user can accept Google's licences, so only the user can install it, in the
-  Daex desktop app: the setup card in the Android tool, or Settings › Android
+  DAEX desktop app: the setup card in the Android tool, or Settings › Android
   devices. Never accept a licence for them.
 - `state: none`: the lane has no emulator yet. Make one:
   `android device-create --profile medium_phone --text`
@@ -66,9 +66,9 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
   the user. Ask the user before `android start --force`.
   `ANDROID_LOW_DISK` means the disk has too little free space for a new
   device's first start (its data partition takes about 7 GB free); the
-  sentence gives both numbers. On a Daex Cloud computer Daex grows the disk
+  sentence gives both numbers. On a DAEX Cloud computer DAEX grows the disk
   itself before it refuses: when the sentence says the disk is growing, the
-  computer restarts and Daex continues your chat; run `android start` again
+  computer restarts and DAEX continues your chat; run `android start` again
   then. When it couldn't grow on its own, grow it yourself with
   `daex cloud resize --free 8 --reason "Android emulator first boot"` (up to
   its size's disk maximum it needs no yes). Do
@@ -77,7 +77,7 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
   `--force` does not help.
 - `state: booted`: drive it.
 
-Daex stops an emulator it started that nobody has used for 20 minutes
+DAEX stops an emulator it started that nobody has used for 20 minutes
 (`keep running: no` in `status`). It boots again with `android start`. If you
 need it up through a long pause, run `android keep-running on --text`, and
 `off` when you are done.
@@ -165,19 +165,19 @@ a tap is fresh. `--fresh` reads again anyway.
   `install<Variant>` for the module (default `app`, `debug`). The first build
   downloads Gradle and the Android plugin and can take minutes; later builds
   take seconds. A failed build prints the end of the Gradle output: read it.
-- Daex gives the build `JAVA_HOME` (the `jdk` in `status`), `ANDROID_HOME`
+- DAEX gives the build `JAVA_HOME` (the `jdk` in `status`), `ANDROID_HOME`
   and `ANDROID_SDK_ROOT`. Use `--gradle`, not `./gradlew` in your shell: your
   shell can have no JDK and no SDK path ("Unable to locate a Java Runtime",
   "SDK location not found").
-- On an emulator Daex made for the lane, `uninstall` removes any app. On the
-  user's own AVD (attached), it removes only apps Daex installed, and Daex
+- On an emulator DAEX made for the lane, `uninstall` removes any app. On the
+  user's own AVD (attached), it removes only apps DAEX installed, and DAEX
   removes those again when the lane lets the AVD go.
 
 - The 20-minute idle stop counts any call on the lane's emulator, input on
   the device itself, another viewer, a recording, a lease and a test run as use
   (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`, 0 turns it off). The lane keeps its
   device: `"$A" android start` boots it again, and `status` says when it was
-  powered off. Daex never powers off an emulator it did not start. Take a
+  powered off. DAEX never powers off an emulator it did not start. Take a
   `lease`, or `keep-running on`, when you need it to stay up between turns.
 - `open-url` with an `http(s)` URL that opens in Chrome skips Chrome's first
   run ("Welcome to Chrome" and the notifications prompt), once per boot.
@@ -276,7 +276,7 @@ turn end and cleanup: daex-computer-use `references/other-machines.md`.
 size), the folder, the free space and the licences a missing part needs.
 `android sdk licenses --text` prints the licence text. An agent may read
 both. Installing, cancelling an install and choosing the SDK folder are the
-user's, in the Daex desktop app: the setup card in the Android tool, or
+user's, in the DAEX desktop app: the setup card in the Android tool, or
 Settings › Android devices. `sdk install`, `sdk use` and `sdk cancel` refuse
 every terminal, yours too, so ask the user.
 
@@ -287,12 +287,12 @@ Each error prints its next step. The common ones:
 | Code | What to do |
 |---|---|
 | `ANDROID_NOT_RUNNING` | `android start`, or `device-create` when the lane has none |
-| `ANDROID_ADB_UNAUTHORIZED` | adb refused the device (the error says why). You cannot restart the adb server: every device on it loses its connection, so Daex refuses an agent's `--restart-adb`. Ask the user to press **Restart adb and start** in the Android pane, or to run `daex android start --restart-adb` in a terminal on that machine. If the error says Daex already restarted the server, ask them to cold boot the AVD. Never run `adb kill-server` yourself |
+| `ANDROID_ADB_UNAUTHORIZED` | adb refused the device (the error says why). You cannot restart the adb server: every device on it loses its connection, so DAEX refuses an agent's `--restart-adb`. Ask the user to press **Restart adb and start** in the Android pane, or to run `daex android start --restart-adb` in a terminal on that machine. If the error says DAEX already restarted the server, ask them to cold boot the AVD. Never run `adb kill-server` yourself |
 | `ANDROID_ELEMENT_NOT_FOUND` | `android snapshot --text`, then aim again |
 | `ANDROID_WAIT_TIMEOUT` | look at the screen; pass a longer `--timeout-ms` |
 | `ANDROID_BUILD_FAILED` | read the Gradle output; fix the build. No JDK: ask the user to install Android Studio or a JDK 17+ |
 | `ANDROID_INSTALL_FAILED` | read adb's reason; a signature conflict needs `uninstall` first |
-| `ANDROID_PACKAGE_NOT_ADE_INSTALLED` | the user's AVD and an app Daex did not install: leave it |
+| `ANDROID_PACKAGE_NOT_ADE_INSTALLED` | the user's AVD and an app DAEX did not install: leave it |
 | `ANDROID_AVD_HELD_BY_OTHER_LANE` | pick another AVD, or `device-create` |
 | `ANDROID_EXTRA_DEVICE_LIMIT` | the lane holds 2 extras: remove one with `device-detach --device <avd>`, or promote and use one |
 | `ANDROID_LANE_DEVICE_BUSY` | the device is in use (a recording, the user's live view, tests, an install, another agent's lease): wait for it, then promote again |

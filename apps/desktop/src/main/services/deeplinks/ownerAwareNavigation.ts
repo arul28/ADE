@@ -247,7 +247,7 @@ export function ownerNavigationFailureCopy(
     ? error.message.trim()
     : `The owning ${BRAND.NAME} machine did not accept the destination.`;
   const incompatible = (
-    /older (?:ADE|Daex)|does not support|method not found|code -32601|runtime incompatible|update (?:ADE|Daex)/i
+    /older (?:ADE|DAEX)|does not support|method not found|code -32601|runtime incompatible|update (?:ADE|DAEX)/i
       .test(detail)
   );
   if (incompatible) {
@@ -257,7 +257,7 @@ export function ownerNavigationFailureCopy(
       detail: `${detail}\n\nUpdate and restart ${BRAND.NAME} there, then open it again.`,
     };
   }
-  if (/project .* no longer available on this (?:ADE|Daex) machine/i.test(detail)) {
+  if (/project .* no longer available on this (?:ADE|DAEX) machine/i.test(detail)) {
     return {
       title: "Project not on this computer",
       message: `This belongs to a project that is no longer open in ${BRAND.NAME} on this computer.`,

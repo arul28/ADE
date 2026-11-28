@@ -322,7 +322,7 @@ describe("built-in browser agent access", () => {
     expect(() => controller.assertUrlAccessSync(
       "https://github.com/settings/tokens",
       { chatSessionId: "chat-2" },
-    )).toThrow(/has not allowed this chat to use the Daex browser/);
+    )).toThrow(/has not allowed this chat to use the DAEX browser/);
     expect(asked).toHaveLength(1);
   });
 
@@ -343,7 +343,7 @@ describe("built-in browser agent access", () => {
       "http://localhost:5173/account",
       { chatSessionId: "chat-1" },
       "navigate",
-    )).rejects.toThrow(/approval_blocked: the user blocked this chat from using the Daex browser/);
+    )).rejects.toThrow(/approval_blocked: the user blocked this chat from using the DAEX browser/);
     expect(asked).toHaveLength(1);
   });
 

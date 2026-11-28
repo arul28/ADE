@@ -323,7 +323,7 @@ function parseMachinePower(value: Record<string, unknown>): {
 /**
  * The name a machine shows: the person's custom name as typed, else the
  * reported name, with an old default ("ADE Cloud computer", "ADE CLI on
- * <host>") read as Daex. Lookups by name also try the raw stored name.
+ * <host>") read as DAEX. Lookups by name also try the raw stored name.
  */
 export function accountMachineDisplayName(machine: AdeAccountMachine): string | null {
   return machine.customName?.trim() || displayLegacyDefaultName(machine.name?.trim()) || null;

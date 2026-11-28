@@ -2,7 +2,7 @@
 
 ## Usage limits: waiting out a reset
 
-When a provider rejects a turn for a usage limit, Daex parks the chat and re-sends
+When a provider rejects a turn for a usage limit, DAEX parks the chat and re-sends
 a `continue` prompt on its own once the published reset passes. Nothing is lost —
 subagents restart with the resumed turn — so the default answer is to wait.
 

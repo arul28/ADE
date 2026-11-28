@@ -17,9 +17,9 @@ describe("describeAppleError", () => {
     expect(describeAppleError(new Error("APPLE_STREAM_NOT_RUNNING")).sentence)
       .toBe("Video stopped.");
     expect(describeAppleError(new Error("APPLE_HELPER_UNAVAILABLE")).sentence)
-      .toBe("Daex's simulator helper is missing from this install.");
+      .toBe("DAEX's simulator helper is missing from this install.");
     expect(describeAppleError(new Error("you cannot start the ADE brain directly")).sentence)
-      .toBe("Install Daex into Applications, then relaunch.");
+      .toBe("Install DAEX into Applications, then relaunch.");
     expect(describeAppleError(new Error("Error invoking remote method 'x': TypeError")).sentence)
       .toBe("Something went wrong with the simulator.");
   });

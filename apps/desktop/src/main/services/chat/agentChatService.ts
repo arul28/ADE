@@ -2107,7 +2107,7 @@ const CLAUDE_UNATTENDED_APPROVAL_MESSAGE = "This automation run has nobody to ap
 const CLAUDE_UNATTENDED_PLAN_MESSAGE = "This automation run has nobody to approve a plan, so the plan was not approved. Finish without implementing it and report the plan in your final message.";
 const UNATTENDED_QUESTION_MESSAGE = "This automation run has nobody to answer questions. Do not wait for an answer: use your best judgment, and say what you assumed in your final message.";
 /** canUseTool's answer when ADE closed the card (a Stop, the asking subagent ended) before anyone answered. */
-const CLAUDE_CARD_CLOSED_MESSAGE = "Daex closed this approval before the user answered (the turn was stopped or the asking agent ended). Nobody denied it.";
+const CLAUDE_CARD_CLOSED_MESSAGE = "DAEX closed this approval before the user answered (the turn was stopped or the asking agent ended). Nobody denied it.";
 /** canUseTool's answer when Claude withdrew the request; the SDK discards it. */
 const CLAUDE_REQUEST_WITHDRAWN_MESSAGE = "Claude withdrew this request.";
 /** Longer than a recurring schedule lives (seven days), so a claim never lapses mid-schedule. */
@@ -10161,7 +10161,7 @@ function buildExecutionModeDirective(
 
   if (provider === "codex" && mode === "parallel") {
     return [
-      "[Daex launch directive]",
+      "[DAEX launch directive]",
       "Use Codex parallel delegation for independent subtasks when it improves latency or coverage.",
       "Split bounded work into parallel subagents, keep each delegate narrowly scoped, then reconcile results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10170,7 +10170,7 @@ function buildExecutionModeDirective(
 
   if (provider === "claude" && (mode === "subagents" || mode === "parallel")) {
     return [
-      "[Daex launch directive]",
+      "[DAEX launch directive]",
       "Use Claude subagents for independent subtasks when they will materially improve latency or coverage.",
       "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10179,7 +10179,7 @@ function buildExecutionModeDirective(
 
   if (provider === "droid" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
     return [
-      "[Daex launch directive]",
+      "[DAEX launch directive]",
       "Use Droid's available delegation tools for independent subtasks when they will materially improve latency or coverage.",
       "Split bounded work into narrowly scoped delegates, let them complete independently, then reconcile the results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10188,7 +10188,7 @@ function buildExecutionModeDirective(
 
   if (provider === "muse" && (mode === "parallel" || mode === "subagents" || mode === "teams")) {
     return [
-      "[Daex launch directive]",
+      "[DAEX launch directive]",
       "Use Muse's subagents and workflows for independent subtasks when they will materially improve latency or coverage.",
       "Give each worker a narrow objective, let them run in parallel, then reconcile their results before the final answer.",
       "If the task is tightly coupled, stay focused instead of forcing delegation.",
@@ -10204,7 +10204,7 @@ function buildClaudeInteractionModeDirective(
 ): string | null {
   if (provider !== "claude" || mode !== "plan") return null;
   return [
-    "[Daex launch directive]",
+    "[DAEX launch directive]",
     "You are in plan mode for this turn.",
     "Stay inspect-only: analyze the request, outline the implementation, surface risks, and do not make edits or run commands.",
   ].join("\n");
@@ -10215,9 +10215,9 @@ function buildLaneWorktreeDirective(args: { laneId: string; laneWorktreePath: st
   const laneWorktreePath = args.laneWorktreePath.trim();
   if (!laneId.length || !laneWorktreePath.length) return null;
   return [
-    "[Daex launch directive]",
-    `Daex launched this session in lane '${laneId}' at worktree '${laneWorktreePath}'.`,
-    "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless Daex explicitly relaunches you elsewhere.",
+    "[DAEX launch directive]",
+    `DAEX launched this session in lane '${laneId}' at worktree '${laneWorktreePath}'.`,
+    "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless DAEX explicitly relaunches you elsewhere.",
   ].join("\n");
 }
 
@@ -10246,13 +10246,13 @@ function composeLaunchDirectives(baseText: string, directives: Array<string | nu
 function buildEpochDirectiveRevocation(kind: EpochDirective): string {
   switch (kind) {
     case "computerUse":
-      return "Daex computer use is not available in this session now. Earlier computer-use instructions no longer apply.";
+      return "DAEX computer use is not available in this session now. Earlier computer-use instructions no longer apply.";
     case "laneScreen":
       return "This lane has no private screen now. Earlier lane-screen instructions no longer apply.";
     case "laneDevices":
-      return "Daex: the lane device last announced is no longer bound. Earlier <ade-lane-tools> instructions no longer apply: this lane has no Apple device or Android emulator. Create one with `daex apple start` or `daex android device-create` if this chat needs it.";
+      return "DAEX: the lane device last announced is no longer bound. Earlier <ade-lane-tools> instructions no longer apply: this lane has no Apple device or Android emulator. Create one with `daex apple start` or `daex android device-create` if this chat needs it.";
     case "laneGuidance":
-      return "Daex's guidance for this session changed. Earlier guidance no longer applies.";
+      return "DAEX's guidance for this session changed. Earlier guidance no longer applies.";
   }
 }
 
@@ -10318,9 +10318,9 @@ export function buildLinearSessionDirective(
   // workflow state-id, so the skill is the authoritative reference.
   return [
     "## Linear-tracked work",
-    `This work is tracked by Linear issue(s) ${idList}. You have Daex's Linear connection — read and update them with the \`daex linear\` CLI (issue, comment, set-state, assign, label; run \`daex linear --help\` or see the bundled **daex-linear** skill for exact syntax).`,
+    `This work is tracked by Linear issue(s) ${idList}. You have DAEX's Linear connection — read and update them with the \`daex linear\` CLI (issue, comment, set-state, assign, label; run \`daex linear --help\` or see the bundled **daex-linear** skill for exact syntax).`,
     "Prefer `daex linear` over any Linear MCP or direct Linear API — those are not authenticated in this environment.",
-    "When you comment on Linear directly, include relevant Daex deeplinks unless Daex already posted a lane/chat/PR card; see the bundled **daex-deeplinks** skill.",
+    "When you comment on Linear directly, include relevant DAEX deeplinks unless DAEX already posted a lane/chat/PR card; see the bundled **daex-deeplinks** skill.",
   ].join("\n");
 }
 
@@ -10413,7 +10413,7 @@ export function buildComputerUseDirective(
         "",
         "Tips:",
         "- Always call ghost_context before interacting with an app to orient yourself",
-        "- For Electron dev apps (like Daex itself), the app may register as \"Electron\" — use ghost_find or text queries rather than app-targeted commands",
+        "- For Electron dev apps (like DAEX itself), the app may register as \"Electron\" — use ghost_find or text queries rather than app-targeted commands",
         "- Use ghost_annotate for a labeled screenshot with clickable coordinates",
         "- For web apps in Chrome, prefer dom_id for clicking elements",
         "- Use ghost_wait after clicks in web apps to wait for state changes",
@@ -11435,8 +11435,8 @@ function buildAdeSessionLineageGuidance(
   if (!session) return null;
   const sessionEnvironmentReference = process.platform === "win32" ? "$env:ADE_CHAT_SESSION_ID" : "$ADE_CHAT_SESSION_ID";
   const sessionBinding = options.sessionIdFromEnvironment === true
-    ? `This Daex chat session's id is in \`${sessionEnvironmentReference}\`; pass it as \`--session\` to its status commands.`
-    : `This Daex chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
+    ? `This DAEX chat session's id is in \`${sessionEnvironmentReference}\`; pass it as \`--session\` to its status commands.`
+    : `This DAEX chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`;
   const spawnGuidance = buildSpawnSelfReportGuidance(session, opts);
   return [sessionBinding, spawnGuidance].filter(Boolean).join("\n");
 }
@@ -19051,7 +19051,7 @@ export function createAgentChatService(args: {
   };
 
   const CURSOR_CONTINUITY_DISCLAIMER =
-    "Use this Daex transcript context to continue the user's work. Do not claim access to hidden Cursor SDK state that was not restored.";
+    "Use this DAEX transcript context to continue the user's work. Do not claim access to hidden Cursor SDK state that was not restored.";
 
   /**
    * Shared seeding for every case where a Cursor conversation has to continue
@@ -19169,7 +19169,7 @@ export function createAgentChatService(args: {
         ? Math.max(0, Math.floor(maxComposedChars) - restartNoteChars)
         : 0;
       replay = fitTranscriptReplayTextToBudget(replay, budget);
-      const reconstructionPrefix = "System context (Daex continuity, do not echo verbatim):\n";
+      const reconstructionPrefix = "System context (DAEX continuity, do not echo verbatim):\n";
       const separatorLength = replay && reconstruction ? 2 : 0;
       const reconstructionBudget = Math.max(
         0,
@@ -19212,10 +19212,10 @@ export function createAgentChatService(args: {
     // transcript a second time after a restart.
     persistChatState(managed);
     const parts: string[] = [];
-    if (restartNote) parts.push(`System notice from Daex (not from the user):\n${restartNote}`);
+    if (restartNote) parts.push(`System notice from DAEX (not from the user):\n${restartNote}`);
     if (replay) parts.push(replay);
     if (reconstruction) {
-      parts.push(`System context (Daex continuity, do not echo verbatim):\n${reconstruction}`);
+      parts.push(`System context (DAEX continuity, do not echo verbatim):\n${reconstruction}`);
     }
     return {
       composed: parts.join("\n\n"),
@@ -19250,7 +19250,7 @@ export function createAgentChatService(args: {
     }
     stageCursorSdkContinuityHeader(managed, [
       "Cursor SDK continuity recovery",
-      `Daex attempted to resume Cursor SDK agent ${previousAgentId}, but the Cursor SDK opened agent ${nextAgentId} instead.`,
+      `DAEX attempted to resume Cursor SDK agent ${previousAgentId}, but the Cursor SDK opened agent ${nextAgentId} instead.`,
       "The conversation so far was replayed into this agent in full.",
       CURSOR_CONTINUITY_DISCLAIMER,
     ].join("\n"));
@@ -19299,7 +19299,7 @@ export function createAgentChatService(args: {
   ): void => {
     stageCursorSdkContinuityHeader(created, [
       "Forked Cursor chat",
-      "This chat was forked from an earlier Daex chat. Cursor threads cannot be resumed twice, so this is a brand-new Cursor agent and the earlier conversation was replayed into it in full.",
+      "This chat was forked from an earlier DAEX chat. Cursor threads cannot be resumed twice, so this is a brand-new Cursor agent and the earlier conversation was replayed into it in full.",
       CURSOR_CONTINUITY_DISCLAIMER,
     ].join("\n"));
   };
@@ -19377,7 +19377,7 @@ export function createAgentChatService(args: {
     const goal = trimLine(sourceSession.goal)
       ?? summaryLines[0]
       ?? trimLine(sourceSession.title)
-      ?? "Continue the same Daex work item from the previous chat.";
+      ?? "Continue the same DAEX work item from the previous chat.";
     const preservedContext = uniqueNonEmpty([
       trimLine(sourceSession.title) ? `Previous title: ${trimLine(sourceSession.title)}` : null,
       trimLine(sourceSession.summary) ? `Existing session summary: ${trimLine(sourceSession.summary)}` : null,
@@ -19449,7 +19449,7 @@ export function createAgentChatService(args: {
       return `${speaker}: ${entry.text}`;
     }).join("\n");
     const prompt = [
-      "You are Daex's chat handoff assistant.",
+      "You are DAEX's chat handoff assistant.",
       "Rewrite the source context into a compact Markdown handoff brief for another coding model.",
       "Return exactly these headings in this order:",
       "## Current goal",
@@ -19508,8 +19508,8 @@ export function createAgentChatService(args: {
 
   const buildHandoffPrompt = (brief: string, handoffNote: string | null = null): string => {
     return [
-      "This message was injected automatically by Daex during a chat handoff.",
-      "You are taking over from a previous Daex work chat that the user is handing off to this new model.",
+      "This message was injected automatically by DAEX during a chat handoff.",
+      "You are taking over from a previous DAEX work chat that the user is handing off to this new model.",
       "Continue the same task in the same lane. Do not restart discovery from scratch unless the brief below is clearly missing a required detail.",
       "The user will keep discussing the same work in this new chat.",
       handoffNote ? "Apply the user's handoff note below as the highest-priority instruction for this handoff." : null,
@@ -37792,8 +37792,8 @@ export function createAgentChatService(args: {
       ? [
           "",
           "## Project slash commands and skills",
-          "Daex walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and Daex bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and Daex's bundled `daex:*` plugin skills for you, so this section lists only the roots it cannot see.",
-          "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, Daex may pre-expand the file's body and substitute `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not necessarily the literal `/<name>`.",
+          "DAEX walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and DAEX bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and DAEX's bundled `daex:*` plugin skills for you, so this section lists only the roots it cannot see.",
+          "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, DAEX may pre-expand the file's body and substitute `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not necessarily the literal `/<name>`.",
           "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence, read the file at the path below and follow it.",
           "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies, read its SKILL.md file and follow it as if it had been invoked.",
           ...(injectionPlan.commands.length ? [
@@ -37805,7 +37805,7 @@ export function createAgentChatService(args: {
             "",
             "Skills (autonomously usable when relevant):",
             ...renderedSkills.lines,
-            ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside Daex's skill-listing budget. Run \`daex skill list --text\` if none of the listed skills fits.`] : []),
+            ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside DAEX's skill-listing budget. Run \`daex skill list --text\` if none of the listed skills fits.`] : []),
           ] : []),
         ]
       : [];
@@ -37827,12 +37827,12 @@ export function createAgentChatService(args: {
     return [
       harnessPrompt,
       "",
-      "**Lifecycle:** Keep working in the background when useful. Daex keeps the transcript and session pointer, and later user messages may arrive by Agent View reply or by resuming the saved conversation.",
-      "**UI contract:** Do not ask the user to run `claude attach`, `claude logs`, or a resume command. Daex owns those mechanics.",
+      "**Lifecycle:** Keep working in the background when useful. DAEX keeps the transcript and session pointer, and later user messages may arrive by Agent View reply or by resuming the saved conversation.",
+      "**UI contract:** Do not ask the user to run `claude attach`, `claude logs`, or a resume command. DAEX owns those mechanics.",
       "",
-      "## Daex Workspace",
-      `Daex launched this session in lane worktree: ${managed.laneWorktreePath}.`,
-      "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless Daex explicitly relaunches you elsewhere.",
+      "## DAEX Workspace",
+      `DAEX launched this session in lane worktree: ${managed.laneWorktreePath}.`,
+      "Read-only inspection outside that worktree is allowed when needed. Edit files and run mutating commands only inside that worktree unless DAEX explicitly relaunches you elsewhere.",
       "",
       buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)) ?? "",
       "",
@@ -37998,7 +37998,7 @@ export function createAgentChatService(args: {
     }
     const attachmentText = args.resolvedAttachments.length
       ? [
-          "Daex attached files/images for this turn:",
+          "DAEX attached files/images for this turn:",
           ...args.resolvedAttachments.map((attachment) => {
             const pathText = attachmentAgentPath(attachment);
             const label = path.basename(pathText) || pathText;
@@ -39639,7 +39639,7 @@ export function createAgentChatService(args: {
         void runtime.host.command("subagent/stop", {
           sessionId: runtime.museSessionId,
           subagentId: origin.subagentId,
-          reason: "Its approval was dismissed in Daex",
+          reason: "Its approval was dismissed in DAEX",
         }).catch((error) => {
           // Muse would stay parked on an approval ADE no longer shows: stop the
           // turn instead, the same way out a card with no fitting choice takes.
@@ -42115,7 +42115,7 @@ export function createAgentChatService(args: {
     if (!toolDefinition) {
       runtime.sendResponse(id, {
         success: false,
-        contentItems: [{ type: "inputText", text: `Daex dynamic tool '${toolName}' is not available for this session.` }],
+        contentItems: [{ type: "inputText", text: `DAEX dynamic tool '${toolName}' is not available for this session.` }],
       });
       return;
     }
@@ -42696,7 +42696,7 @@ export function createAgentChatService(args: {
       method === "attestation/generate"
       || method === "account/chatgptAuthTokens/refresh"
     ) {
-      runtime.sendError(id, `Daex does not provide Codex app-server capability '${method}'.`, -32601);
+      runtime.sendError(id, `DAEX does not provide Codex app-server capability '${method}'.`, -32601);
       return;
     }
 
@@ -43831,7 +43831,7 @@ export function createAgentChatService(args: {
           await runtime.host.command("subagent/stop", {
             sessionId: runtime.museSessionId,
             subagentId: ref.subagentId,
-            reason: "Stopped from Daex",
+            reason: "Stopped from DAEX",
           });
         } else {
           await runtime.host.command("task/stop", { sessionId: runtime.museSessionId, taskId: id });
@@ -45196,7 +45196,7 @@ export function createAgentChatService(args: {
     }
     const runtime = managed.runtime?.kind === "codex" ? managed.runtime : null;
     if (provider !== "codex" || !runtime) {
-      throw new Error("This chat has no background work Daex can watch. Only Claude, OpenCode, and Codex report background jobs.");
+      throw new Error("This chat has no background work DAEX can watch. Only Claude, OpenCode, and Codex report background jobs.");
     }
     await refreshCodexBackgroundTerminals(managed, runtime);
     const live = [...runtime.backgroundTerminalsByProcessId.keys()];
@@ -45214,7 +45214,7 @@ export function createAgentChatService(args: {
     return {
       held: wanted,
       nativeWake: false,
-      message: `Daex wakes you when ${wanted.length === 1 ? "it ends" : "each of them ends"}. End your turn now.`,
+      message: `DAEX wakes you when ${wanted.length === 1 ? "it ends" : "each of them ends"}. End your turn now.`,
     };
   };
 
@@ -48429,7 +48429,7 @@ export function createAgentChatService(args: {
       initializeResponse = await host.initialize<{ userAgent?: unknown }>({
         clientInfo: {
           name: "ade_desktop",
-          title: "Daex Desktop",
+          title: "DAEX Desktop",
           version: appVersion
         },
         capabilities: {
@@ -48780,14 +48780,14 @@ export function createAgentChatService(args: {
     const head = text.slice(0, halfPreviewChars);
     const tail = text.slice(Math.max(halfPreviewChars, text.length - halfPreviewChars));
     const updatedToolOutput = [
-      `[Daex] Large ${input.tool_name} tool output trimmed before model context.`,
+      `[DAEX] Large ${input.tool_name} tool output trimmed before model context.`,
       `Original size: ${originalBytes} bytes. Retained first and last ${halfPreviewChars} characters.`,
       "",
       "----- BEGIN FIRST PREVIEW -----",
       head,
       "----- END FIRST PREVIEW -----",
       "",
-      `[Daex] ${Math.max(0, originalBytes - Buffer.byteLength(head + tail, "utf8"))} bytes omitted.`,
+      `[DAEX] ${Math.max(0, originalBytes - Buffer.byteLength(head + tail, "utf8"))} bytes omitted.`,
       "",
       "----- BEGIN LAST PREVIEW -----",
       tail,
@@ -49507,8 +49507,8 @@ export function createAgentChatService(args: {
       ? [
         "",
         "## Project slash commands and skills",
-        "Daex walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and Daex bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and Daex's bundled `daex:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
-        "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, Daex pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
+        "DAEX walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and DAEX bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and DAEX's bundled `daex:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
+        "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, DAEX pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
         "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
         "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",
         ...(visibleProjectCommandFiles.length ? [
@@ -49521,7 +49521,7 @@ export function createAgentChatService(args: {
           "",
           "Skills (autonomously usable when relevant):",
           ...renderedSkills.lines,
-          ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside Daex's skill-listing budget. Run \`daex skill list --text\`, or look under the agent skill roots above, if none of the listed skills fits.`] : []),
+          ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside DAEX's skill-listing budget. Run \`daex skill list --text\`, or look under the agent skill roots above, if none of the listed skills fits.`] : []),
         ] : []),
       ]
       : [];
@@ -56634,7 +56634,7 @@ export function createAgentChatService(args: {
       completion: null,
     } as unknown as AgentChatSessionSummary;
     return [
-      `Source: a ${cliName} CLI terminal session in Daex (${context.source === "provider_transcript" ? "from its own conversation file" : "from its last terminal output; Daex could not read its conversation"}).`,
+      `Source: a ${cliName} CLI terminal session in DAEX (${context.source === "provider_transcript" ? "from its own conversation file" : "from its last terminal output; DAEX could not read its conversation"}).`,
       "",
       buildDeterministicHandoffBrief({
         sourceSession: sourceSummary,
@@ -57302,7 +57302,7 @@ export function createAgentChatService(args: {
   const buildCrossMachineHandoffPrompt = (capsule: AgentChatCrossMachineHandoffCapsule): string =>
     formatContinuationPrompt({
       preamble: [
-        "This message was injected automatically by Daex during a cross-machine chat handoff.",
+        "This message was injected automatically by DAEX during a cross-machine chat handoff.",
         `The user moved this task from ${capsule.source.machineName} to this machine.`,
         `The destination lane was recreated from ${capsule.source.branchRef} at ${capsule.source.headSha}.`,
         "Continue the same task from the bounded brief below. Do not claim access to the source machine's provider history, terminals, secrets, caches, or untransferred artifacts.",
@@ -61214,14 +61214,14 @@ export function createAgentChatService(args: {
     if (decision === "accept" || decision === "accept_for_session") {
       return allowCursorHook();
     }
-    return denyCursorHook("Daex denied this Cursor tool call.");
+    return denyCursorHook("DAEX denied this Cursor tool call.");
   };
 
   const cursorSdkAdeControlDirective = (): string =>
     [
-      "Daex renders Cursor planning controls from private fenced control blocks in assistant text.",
-      "Daex consumes these blocks and removes them from the visible transcript; treat them as private formatting instructions and do not explain this mechanism in user-facing replies.",
-      "Any prior transcript text that says Daex planning controls are unavailable or require external planning tools is obsolete.",
+      "DAEX renders Cursor planning controls from private fenced control blocks in assistant text.",
+      "DAEX consumes these blocks and removes them from the visible transcript; treat them as private formatting instructions and do not explain this mechanism in user-facing replies.",
+      "Any prior transcript text that says DAEX planning controls are unavailable or require external planning tools is obsolete.",
       "To publish a visible plan, include ```ade_update_plan followed by JSON like {\"explanation\":\"...\",\"steps\":[{\"text\":\"Inspect wiring\",\"status\":\"pending\"}]} and close the fence.",
       "To ask a blocking question, output only ```ade_request_user_input followed by JSON like {\"title\":\"Input requested\",\"questions\":[{\"id\":\"scope\",\"header\":\"Scope\",\"question\":\"Which scope should I use?\",\"options\":[{\"label\":\"UI\"},{\"label\":\"Backend\"}],\"allowsFreeform\":true}]} and close the fence, then stop.",
       "When a plan is ready for approval, include ```ade_plan_approval followed by JSON like {\"planDescription\":\"1. Inspect\\n2. Patch\\n3. Verify\"} and close the fence.",
@@ -61680,7 +61680,7 @@ export function createAgentChatService(args: {
           queueCursorControlFollowup(
             managed,
             runtime,
-            "The user approved the plan. Continue implementation under Daex approval gates.",
+            "The user approved the plan. Continue implementation under DAEX approval gates.",
           );
         } else {
           queueCursorControlFollowup(
@@ -62437,7 +62437,7 @@ export function createAgentChatService(args: {
       });
       if (preflight === "allow") return allowCursorHook();
       if (preflight === "deny") {
-        return denyCursorHook(req.reason ?? "Daex denied this Cursor tool call.");
+        return denyCursorHook(req.reason ?? "DAEX denied this Cursor tool call.");
       }
 
       const itemId = req.id || randomUUID();
@@ -62479,7 +62479,7 @@ export function createAgentChatService(args: {
         toolName: waiter.toolName,
       });
       // The waiter's resolve removes it from `permissionWaiters`.
-      cancelCursorPermissionWaiter(waiter, "The Cursor tool hook stopped waiting for Daex's approval.");
+      cancelCursorPermissionWaiter(waiter, "The Cursor tool hook stopped waiting for DAEX's approval.");
       emitPendingInputResolved(managed, {
         itemId,
         decision: "cancel",
@@ -65911,7 +65911,7 @@ export function createAgentChatService(args: {
         });
         const choice = response.answers["copilot-exit-plan"]?.[0];
         const approved = (response.decision === "accept" || response.decision === "accept_for_session") && choice !== "reject";
-        if (!approved) return { approved: false, feedback: response.responseText || "Plan not approved in Daex." };
+        if (!approved) return { approved: false, feedback: response.responseText || "Plan not approved in DAEX." };
         // Copilot leaves plan mode with manual approvals (see the worker's
         // applyPermissionMode), which is ADE's Ask.
         if (target.session.copilotPermissionMode === "plan") {
@@ -65992,13 +65992,13 @@ export function createAgentChatService(args: {
         // The approval card answers with a decision (ACCEPT / ACCEPT ALL) and no
         // option; the question form answers with an option. Both must approve.
         if (choice === "reject" || response.decision === "decline" || response.decision === "cancel") {
-          return { kind: "reject", feedback: response.responseText || "Denied in Daex." };
+          return { kind: "reject", feedback: response.responseText || "Denied in DAEX." };
         }
         if (response.decision === "accept_for_session" || choice === "approve-for-session") {
           return sessionApproval ?? { kind: "approve-once", approvedInteractively: true };
         }
         if (response.decision === "accept") return { kind: "approve-once", approvedInteractively: true };
-        return { kind: "reject", feedback: response.responseText || "Denied in Daex." };
+        return { kind: "reject", feedback: response.responseText || "Denied in DAEX." };
       };
       acquired.pooled.bridge.onUserInputRequest = async (chatId, _waiterId, rawRequest) => {
         const target = managedSessions.get(chatId);
@@ -72416,7 +72416,7 @@ export function createAgentChatService(args: {
     const lane = laneService.getLaneBaseAndBranch(managed.session.laneId);
     return [
       "This chat's earlier AI session could not be reopened: the provider no longer has it.",
-      "Daex kept its own copy of the conversation, and here it is. Carry on exactly where it left off.",
+      "DAEX kept its own copy of the conversation, and here it is. Carry on exactly where it left off.",
       lastUserIndex >= 0 && !answered
         ? "The user's last message has not been answered yet: answer it now."
         : "Wait for the user's next message; do not repeat finished work.",
@@ -72845,8 +72845,8 @@ export function createAgentChatService(args: {
             runtime,
             interruptedTurnId,
             restarting
-              ? "Interrupted so Daex could restart and resume the Codex thread"
-              : "Interrupted so Daex could retry the Codex turn",
+              ? "Interrupted so DAEX could restart and resume the Codex thread"
+              : "Interrupted so DAEX could retry the Codex turn",
           );
         }
 
@@ -75879,7 +75879,7 @@ export function createAgentChatService(args: {
   const queueNoteForNextTurn = (managed: ManagedChatSession, note: string): boolean => {
     const text = note.trim();
     if (!text || managed.deleted || managed.closed) return false;
-    managed.pendingRestartNote = mergePendingRestartNote(managed.pendingRestartNote, `Daex note: ${text}`);
+    managed.pendingRestartNote = mergePendingRestartNote(managed.pendingRestartNote, `DAEX note: ${text}`);
     persistChatState(managed);
     return true;
   };

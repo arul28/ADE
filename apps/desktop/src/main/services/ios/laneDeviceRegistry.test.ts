@@ -167,9 +167,9 @@ describe("laneDeviceRegistry pure helpers", () => {
   });
 
   it("names a lane device and suffixes a collision", () => {
-    expect(appleLaneDeviceName({ laneId: "abc12345def", laneName: "Apple env" })).toBe("Daex · Apple env");
-    expect(appleLaneDeviceName({ laneId: "abc12345def" })).toBe("Daex · abc12345");
-    expect(appleLaneDeviceName({ laneId: "x", laneName: "A", taken: ["Daex · A"] })).toBe("Daex · A (2)");
+    expect(appleLaneDeviceName({ laneId: "abc12345def", laneName: "Apple env" })).toBe("DAEX · Apple env");
+    expect(appleLaneDeviceName({ laneId: "abc12345def" })).toBe("DAEX · abc12345");
+    expect(appleLaneDeviceName({ laneId: "x", laneName: "A", taken: ["DAEX · A"] })).toBe("DAEX · A (2)");
     expect(appleLaneDeviceName({ laneId: "x", laneName: "A", requested: "Mine" })).toBe("Mine");
   });
 });
@@ -197,7 +197,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
 
     const device = await registry.deviceCreate({ laneId: "lane-1" });
 
-    expect(run).toHaveBeenCalledWith("xcrun", ["simctl", "create", "Daex · Lane lane-1", RUNTIMES[0]!.deviceTypes[0]!.identifier, RUNTIMES[0]!.identifier], expect.anything());
+    expect(run).toHaveBeenCalledWith("xcrun", ["simctl", "create", "DAEX · Lane lane-1", RUNTIMES[0]!.deviceTypes[0]!.identifier, RUNTIMES[0]!.identifier], expect.anything());
     expect(device).toMatchObject({ udid: "created-udid", origin: "created", family: "iphone", runtime: "iOS 26.3" });
     expect(store.rows["lane-1"]).toMatchObject({ udid: "created-udid" });
     expect(store.getJson("apple:last-device-type")).toBe(RUNTIMES[0]!.deviceTypes[0]!.identifier);

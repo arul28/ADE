@@ -1408,7 +1408,7 @@
         }
       ],
       "notes": [
-        "This August snapshot is superseded by 0902; Daex now routes qwen3.8-max to the newer family."
+        "This August snapshot is superseded by 0902; DAEX now routes qwen3.8-max to the newer family."
       ],
       "basis": [
         "GPQA 0.93",
@@ -1478,7 +1478,7 @@
         }
       ],
       "notes": [
-        "This September snapshot is superseded by 1017; Daex now routes deepseek-v4.1-flash to the newer family.",
+        "This September snapshot is superseded by 1017; DAEX now routes deepseek-v4.1-flash to the newer family.",
         "Open weights."
       ],
       "basis": [

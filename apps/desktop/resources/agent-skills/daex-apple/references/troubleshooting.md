@@ -8,7 +8,7 @@ Three more (`APPLE_DEVICE_NOT_LANE_OWNED`, the `--out` path rule, and
 - `APPLE_NO_INSTALLED_SIMULATORS` — no installed runtime. `daex apple runtimes`
   shows what this Xcode needs; tell the user, then `daex apple runtimes install`
   (about 8 GB, in the background). Never download one without telling them.
-- `APPLE_HELPER_UNAVAILABLE` — no usable helper on that Mac: missing (the message lists where Daex looked) or from another Daex version. Tell the user; updating ADE.app or the brain fixes it.
+- `APPLE_HELPER_UNAVAILABLE` — no usable helper on that Mac: missing (the message lists where DAEX looked) or from another DAEX version. Tell the user; updating ADE.app or the brain fixes it.
   `status` → `tools.helper.present` is the check.
 - `APPLE_STREAM_NOT_RUNNING` — `frame` needs a live stream; use `screenshot`.
 - `APPLE_DEVICE_OFF` — the lane's device is powered off, and watching never
@@ -33,7 +33,7 @@ Three more (`APPLE_DEVICE_NOT_LANE_OWNED`, the `--out` path rule, and
   streaming, recording, testing, launching or leased. Finish or stop that, then
   promote again.
 - `APPLE_RUNTIME_NOT_INSTALLED` — the runtime or model you named is not on
-  this Mac. The message lists what is; Daex never downloads one.
+  this Mac. The message lists what is; DAEX never downloads one.
 - `APPLE_RUNTIME_ALREADY_INSTALLED` — `runtimes install --version` named a
   runtime the Mac has. The message names the version the missing models need.
 - `APPLE_BUILD_BUSY` — a launch, a test run or an `install` is already

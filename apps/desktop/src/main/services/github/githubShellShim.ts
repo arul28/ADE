@@ -167,7 +167,7 @@ ade_unreached=
 ade_tok=$(curl -q -sf --noproxy '*' --max-time ${SHIM_CLIENT_TIMEOUT_SEC} --unix-socket "$${GH_TOKEN_ENDPOINT_ENV}" "http://localhost/v1/token?owner=$ade_owner" </dev/null 2>/dev/null) || { ade_tok=; ade_unreached=1; }
 # A sandbox that blocks the endpoint (Codex plan mode, for one) would leave
 # only gh's own "run gh auth login" message, which is the wrong fix.
-[ -n "$ade_unreached" ] && printf '%s\\n' "gh: Daex could not reach its GitHub token from here (this command's sandbox may block it); running gh without it. Do not run gh auth login." >&2
+[ -n "$ade_unreached" ] && printf '%s\\n' "gh: DAEX could not reach its GitHub token from here (this command's sandbox may block it); running gh without it. Do not run gh auth login." >&2
 case $ade_tok in ''|*[!A-Za-z0-9_.-]*) ade_step_aside "$@" ;; esac
 GH_TOKEN=$ade_tok
 ADE_GH_TOKEN_SOURCE=account_app
@@ -409,7 +409,7 @@ async function ghMode(args) {
   if (token === UNREACHED) {
     // A sandbox that blocks the endpoint (Codex plan mode, for one) would
     // leave only gh's own "run gh auth login" message, which is the wrong fix.
-    process.stderr.write("gh: Daex could not reach its GitHub token from here (this command's sandbox may block it); running gh without it. Do not run gh auth login.\\n");
+    process.stderr.write("gh: DAEX could not reach its GitHub token from here (this command's sandbox may block it); running gh without it. Do not run gh auth login.\\n");
   }
   if (typeof token !== "string") return runGh(real, args, env);
   runGh(real, args, Object.assign({}, env, { GH_TOKEN: token, ADE_GH_TOKEN_SOURCE: "account_app" }));

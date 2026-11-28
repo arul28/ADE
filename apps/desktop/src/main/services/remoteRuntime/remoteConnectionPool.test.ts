@@ -1411,7 +1411,7 @@ describe("RemoteConnectionPool", () => {
     await expect(
       pool.callMachineForTarget(target, "projects.browseDirectories", {}),
     ).rejects.toThrow(
-      /Remote Daex service 0\.9\.0 does not support browsing remote directories/i,
+      /Remote DAEX service 0\.9\.0 does not support browsing remote directories/i,
     );
     expect(client.call.mock.calls.some(([method]) => method === "ade/actions/call")).toBe(false);
   });
@@ -2204,7 +2204,7 @@ describe("RemoteConnectionPool", () => {
         host: "brain.local",
         port: 8765,
       }),
-    ).rejects.toThrow(/connection was interrupted before Daex could confirm the action result/i);
+    ).rejects.toThrow(/connection was interrupted before DAEX could confirm the action result/i);
 
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);

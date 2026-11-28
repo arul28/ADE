@@ -1,18 +1,18 @@
 ---
 name: daex-linear
-description: "Any Linear issue task, also a chat or lane launched with one: read it or its comments, change its state, comment, assign, label, via `daex linear` (Daex's own connection, no API key). Not connected: `daex integrations connect linear`."
+description: "Any Linear issue task, also a chat or lane launched with one: read it or its comments, change its state, comment, assign, label, via `daex linear` (DAEX's own connection, no API key). Not connected: `daex integrations connect linear`."
 ---
 
-# Daex Linear
+# DAEX Linear
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 ## What you have
 
-If Daex launched you on a Linear issue, that issue lives in **Daex's Linear
+If DAEX launched you on a Linear issue, that issue lives in **DAEX's Linear
 connection** and you can both **read and write** it through the `daex linear`
 CLI. You do not hold a Linear token and you do not need one: every `daex linear`
-command routes over the Daex daemon to the desktop runtime, which owns the Linear
+command routes over the DAEX daemon to the desktop runtime, which owns the Linear
 credentials. The daemon does the authenticated Linear API call on your behalf.
 
 You do **not** need to know how you were launched, what mode you are in, or how
@@ -27,11 +27,11 @@ own idea, ask in words first. See "Connecting an integration" in
 
 Prefer `daex linear` over any Linear MCP server or direct Linear API call — the
 `daex linear` bridge is the connection that is actually configured for this
-workspace, and it keeps the issue's Daex links and sync state consistent.
+workspace, and it keeps the issue's DAEX links and sync state consistent.
 
 ## Knowing which issue is yours
 
-When Daex attaches an issue to your session it injects two environment variables:
+When DAEX attaches an issue to your session it injects two environment variables:
 
 - `ADE_LINEAR_ISSUE_IDS` — comma-separated identifiers of every attached issue,
   e.g. `ENG-431,ENG-440`. The first one is your primary issue.
@@ -74,7 +74,7 @@ daex linear issues --text                         # list issues attached to this
 daex linear issue --text                          # read your attached issue (full detail)
 daex linear issue ENG-431 --text                  # read a specific issue
 daex linear issue-comments --issue-id ENG-431 --text   # read an issue's comment thread
-daex linear graphql --query 'query { viewer { id name } }'  # advanced Linear API via Daex credentials
+daex linear graphql --query 'query { viewer { id name } }'  # advanced Linear API via DAEX credentials
 daex linear graphql --query-file query.graphql --variables-file vars.json
 ```
 
@@ -82,7 +82,7 @@ Use `--text` for human-readable output; omit it for JSON when you want to parse.
 
 ## Updating (you have write access)
 
-These move the issue forward through Daex's Linear connection — no API key. Each
+These move the issue forward through DAEX's Linear connection — no API key. Each
 takes an optional leading issue id; omit it to target your attached issue.
 
 ```bash
@@ -103,7 +103,7 @@ Notes:
   too (`--message/-m`, `--state-id`, `--assignee`, `--label`) if a positional is
   ambiguous.
 - Use `daex linear graphql` for Linear operations not covered by the typed
-  commands. It still routes through Daex's saved Linear OAuth/API key; do not ask
+  commands. It still routes through DAEX's saved Linear OAuth/API key; do not ask
   for or print token material.
 
 ## Filing follow-up issues and linking issues
@@ -132,22 +132,22 @@ Rules:
   file and line, how to reproduce) in `--description`.
 - After filing, add one comment on your own issue that names the new issue.
 
-## Daex deeplinks in Linear comments
+## DAEX deeplinks in Linear comments
 
-Daex posts its own Linear attachments/cards for lane, chat, and PR flows. The
-**daex-deeplinks** skill holds the matrix of which flow Daex covers automatically
+DAEX posts its own Linear attachments/cards for lane, chat, and PR flows. The
+**daex-deeplinks** skill holds the matrix of which flow DAEX covers automatically
 and which one leaves the link to you, plus the `daex link ...` commands and the
 HTTPS-vs-`ade://` guidance.
 
 The short version for this skill's commands: the direct issue actions
-(`comment`, `set-state`, `assign`, `label`, `graphql`) are the ones Daex does
-*not* link for you, so include the relevant Daex link yourself in any user-facing
+(`comment`, `set-state`, `assign`, `label`, `graphql`) are the ones DAEX does
+*not* link for you, so include the relevant DAEX link yourself in any user-facing
 Linear comment — especially when the action creates new Linear state or hands
 work to a human.
 
 ```bash
 daex linear graphql --query-file create-issue.graphql --variables-file vars.json
-daex linear comment NEW-123 "Created via Daex. Open in Daex: $(daex link linear-issue NEW-123 --no-clipboard)"
+daex linear comment NEW-123 "Created via DAEX. Open in DAEX: $(daex link linear-issue NEW-123 --no-clipboard)"
 ```
 
 ## Attaching / detaching this session
@@ -165,9 +165,9 @@ Two commands outside the `daex linear` surface also attach an issue:
 ## What lands where
 
 An `daex linear comment` is the issue's status channel — it is what reviewers and
-the issue's watchers see, and it is visible to people who never open Daex. The
+the issue's watchers see, and it is visible to people who never open DAEX. The
 workflow state you set with `set-state` is what shows in the team's board.
-Neither is inferred from your Daex activity; if you do not write them, the issue
+Neither is inferred from your DAEX activity; if you do not write them, the issue
 does not move.
 
 `set-state` takes a workflow state id, and the valid states are per-team, so

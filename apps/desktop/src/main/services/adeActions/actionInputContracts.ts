@@ -101,42 +101,42 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   account: {
     startLogin: {
-      description: "Start the machine-owned Daex account OAuth PKCE login flow.",
+      description: "Start the machine-owned DAEX account OAuth PKCE login flow.",
       input: "no input",
       example: "daex login",
     },
     pollLogin: {
-      description: "Poll an in-memory Daex account login session.",
+      description: "Poll an in-memory DAEX account login session.",
       input: "object { sessionId: string }",
       example: "daex actions run account.pollLogin --input-json '{\"sessionId\":\"...\"}'",
     },
     startDeviceLogin: {
-      description: "Start the machine-owned Daex account device authorization flow for headless sign-in.",
+      description: "Start the machine-owned DAEX account device authorization flow for headless sign-in.",
       input: "no input",
       example: "daex login --headless",
     },
     pollDeviceLogin: {
-      description: "Poll an in-memory Daex account device authorization session.",
+      description: "Poll an in-memory DAEX account device authorization session.",
       input: "object { sessionId: string }",
       example: "daex actions run account.pollDeviceLogin --input-json '{\"sessionId\":\"...\"}'",
     },
     status: {
-      description: "Read the machine-owned Daex account sign-in status without exposing tokens.",
+      description: "Read the machine-owned DAEX account sign-in status without exposing tokens.",
       input: "no input",
       example: "daex auth status --text",
     },
     cancelLogin: {
-      description: "Cancel a pending in-memory Daex account login session so a late browser callback cannot sign in.",
+      description: "Cancel a pending in-memory DAEX account login session so a late browser callback cannot sign in.",
       input: "object { sessionId: string }",
       example: "daex actions run account.cancelLogin --input-json '{\"sessionId\":\"...\"}'",
     },
     signOut: {
-      description: "Clear the machine-owned Daex account session.",
+      description: "Clear the machine-owned DAEX account session.",
       input: "no input",
       example: "daex logout",
     },
     getToken: {
-      description: "Internal bearer-token accessor for Daex remote services; refreshes near expiry.",
+      description: "Internal bearer-token accessor for DAEX remote services; refreshes near expiry.",
       input: "no input",
     },
     createToken: {
@@ -146,7 +146,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     deleteMachine: {
       description:
-        "Remove a machine from the Daex account. Destructive: the directory revokes it and clears its Activity, and it can only rejoin when someone confirms it on that computer. "
+        "Remove a machine from the DAEX account. Destructive: the directory revokes it and clears its Activity, and it can only rejoin when someone confirms it on that computer. "
         + `People only: agents are refused, so ask the user to do it. Refused without confirmation: "${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION}".`,
       input: `object { machine: string (machine key), confirmation: "${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION}" }`,
       example: `daex machines remove <machine-key> --confirm ${ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION} --text`,
@@ -169,7 +169,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex proxy stop --text",
     },
     signIn: {
-      description: "Sign in one Claude or Codex subscription for use in other harnesses (Custom providers, --via); Daex opens the provider's sign-in page and waits for completion.",
+      description: "Sign in one Claude or Codex subscription for use in other harnesses (Custom providers, --via); DAEX opens the provider's sign-in page and waits for completion.",
       input: "object { provider: \"claude\" | \"codex\" }",
       example: "daex actions run proxy.signIn --input-json '{\"provider\":\"claude\"}'",
     },
@@ -187,11 +187,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   attention: {
     sendNotification: {
       description:
-        "Send a push you write to every phone on the Daex account: title up to 64 characters, optional body up to 160, "
+        "Send a push you write to every phone on the DAEX account: title up to 64 characters, optional body up to 160, "
         + "optional daex:// link a tap opens. Respects notifications off, quiet hours and a muted machine. "
         + "At most 60 per account per hour. Open to agents and automations.",
       input: "object { title: string, body?: string, open?: string }",
-      example: "daex notify --title \"Deploy finished\" --body \"Daex 1.4.2 is live\" --open \"daex://pr/1514\"",
+      example: "daex notify --title \"Deploy finished\" --body \"DAEX 1.4.2 is live\" --open \"daex://pr/1514\"",
     },
     getSnapshot: {
       description: "Read the account-wide Activity stream across every connected machine and project.",
@@ -231,19 +231,19 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex integrations connect linear --reason \"To read and update the issues you mentioned\"",
     },
     status: {
-      description: "List every integration Daex can connect (github, linear, jira) with whether it is connected for this project on this machine, and as whom. Never returns a credential.",
+      description: "List every integration DAEX can connect (github, linear, jira) with whether it is connected for this project on this machine, and as whom. Never returns a credential.",
       input: "no input",
       example: "daex integrations status --text",
     },
   },
   cloud: {
     status: {
-      description: "Read this first. The whole Daex Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computer_limit | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {computers, smallComputers: unlimited, hours, outsideAgents}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours, unit}, credits {iphonePerMinute} | null (hours is one balance of credits: a Medium computer uses one an hour, the Daex Cloud iPhone iphonePerMinute a minute), iphone {access: on, creditsUsed, resetsAt} | null (only when this account has the Daex Cloud iPhone, ios@cloud), plans [{id, label, priceUsdMonth, computers, hours, hoursOnSizes, outsideAgents, extraHourCents (null: bigger sizes stop), current}], smallComputers, computers {inUse, awake, limit} (cloud computers asleep or not, and the plan's limit), lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, usesHours, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Small computers are unlimited and never use credits; a credit is an hour on a Medium computer (Large uses 2.5 an hour, X-Large 4). Say credits as time on each size (plans[].hoursOnSizes), never as a multiplier. Never returns a key or token.",
+      description: "Read this first. The whole DAEX Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computer_limit | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {computers, smallComputers: unlimited, hours, outsideAgents}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours, unit}, credits {iphonePerMinute} | null (hours is one balance of credits: a Medium computer uses one an hour, the DAEX Cloud iPhone iphonePerMinute a minute), iphone {access: on, creditsUsed, resetsAt} | null (only when this account has the DAEX Cloud iPhone, ios@cloud), plans [{id, label, priceUsdMonth, computers, hours, hoursOnSizes, outsideAgents, extraHourCents (null: bigger sizes stop), current}], smallComputers, computers {inUse, awake, limit} (cloud computers asleep or not, and the plan's limit), lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, usesHours, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Small computers are unlimited and never use credits; a credit is an hour on a Medium computer (Large uses 2.5 an hour, X-Large 4). Say credits as time on each size (plans[].hoursOnSizes), never as a multiplier. Never returns a key or token.",
       input: "no input",
       example: "daex cloud status --text",
     },
     list: {
-      description: "List the account's Daex Cloud machines: name, id, Daex machine key, state (running, asleep…), type and size, how fast it uses credits, how it sleeps, plus the account's plan and hours. Reads Daex Cloud with the account's key; never returns the key. status has the same computers with their lanes, and more.",
+      description: "List the account's DAEX Cloud machines: name, id, DAEX machine key, state (running, asleep…), type and size, how fast it uses credits, how it sleeps, plus the account's plan and hours. Reads DAEX Cloud with the account's key; never returns the key. status has the same computers with their lanes, and more.",
       input: "no input",
       example: "daex cloud list --text",
     },
@@ -253,32 +253,32 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex cloud hours --text",
     },
     referral: {
-      description: `The account's Daex Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} credits, and so does this account when the friend's first chat runs on Daex Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Medium-hour.`,
+      description: `The account's DAEX Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} credits, and so does this account when the friend's first chat runs on DAEX Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Medium-hour.`,
       input: "no input",
       example: "daex cloud invite --text",
     },
     phone_provider: {
-      description: "A tester's pick of who runs the account's Daex Cloud iPhones: auto (the usual order), nomac or revyl. Account level: no project, no pin. Only an account on the iPhone's beta list may pick; anyone else is refused (phone_not_on_account) with the server's sentence. A running phone keeps its own; the next one starts there. Returns {ok: true, provider}.",
+      description: "A tester's pick of who runs the account's DAEX Cloud iPhones: auto (the usual order), nomac or revyl. Account level: no project, no pin. Only an account on the iPhone's beta list may pick; anyone else is refused (phone_not_on_account) with the server's sentence. A running phone keeps its own; the next one starts there. Returns {ok: true, provider}.",
       input: "object { provider: \"auto\" | \"nomac\" | \"revyl\" }",
       example: "daex cloud phone-provider revyl",
     },
     invite_redeem: {
-      description: `Enter a friend's Daex Cloud invite for this account: the invite link or its 8-character code. Once per account, never changed, within ${CLOUD_REFERRAL_ENTER_DAYS} days of making the account. Returns {ok: true, rewarded, referral} or {ok: false, reason (${CLOUD_INVITE_REFUSAL_REASONS.join(" | ")}), message}. The person's own call from the Daex app (Settings › Account, desktop or phone): an agent, a Daex MCP app and the CLI are refused.`,
+      description: `Enter a friend's DAEX Cloud invite for this account: the invite link or its 8-character code. Once per account, never changed, within ${CLOUD_REFERRAL_ENTER_DAYS} days of making the account. Returns {ok: true, rewarded, referral} or {ok: false, reason (${CLOUD_INVITE_REFUSAL_REASONS.join(" | ")}), message}. The person's own call from the DAEX app (Settings › Account, desktop or phone): an agent, a DAEX MCP app and the CLI are refused.`,
       input: "object { code: string (the link https://ade-app.dev/invite/<CODE>, ade://invite/<CODE>, or the bare code) }",
       example: "App only: Settings › Account (desktop or phone). A terminal is refused.",
     },
     update: {
-      description: "Update a Daex Cloud computer to the current Daex: it restarts on the newest Daex release, files stay, running work stops. Asks the person first.",
+      description: "Update a DAEX Cloud computer to the current DAEX: it restarts on the newest DAEX release, files stay, running work stops. Asks the person first.",
       input: "object { machine: string }",
       example: "daex cloud update \"android vm\"",
     },
     create: {
-      description: "Make a Daex Cloud computer, signed in to the account. With a Daex desktop attached its window approves the sign-in; otherwise the person approves from a link Daex posts in your chat (the command waits up to 10 minutes). Costs credits. An agent never makes one alone: it asks the person on a card in its chat (a full-auto chat too), and with nobody to ask (an automation run, a Daex MCP app) the answer is no. Agents start a lane instead (lane_launch, daex chat create --machine cloud --size <size>). Refused before any card when the account is out of credits, uses all its computers or has a full disk (status's canStartLane sentence). Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
+      description: "Make a DAEX Cloud computer, signed in to the account. With a DAEX desktop attached its window approves the sign-in; otherwise the person approves from a link DAEX posts in your chat (the command waits up to 10 minutes). Costs credits. An agent never makes one alone: it asks the person on a card in its chat (a full-auto chat too), and with nobody to ask (an automation run, a DAEX MCP app) the answer is no. Agents start a lane instead (lane_launch, daex chat create --machine cloud --size <size>). Refused before any card when the account is out of credits, uses all its computers or has a full disk (status's canStartLane sentence). Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
       input: "object { kind?: \"box\" | \"vm\" (vm is a full computer: Android and Docker), shape?: \"small\" | \"medium\" | \"large\" | \"x-large\" or \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
       example: "daex cloud create --kind vm --shape 4x8 --name \"android vm\"",
     },
     limits: {
-      description: "What unattended agents (full-auto chats, automation runs) may do on Daex Cloud alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
+      description: "What unattended agents (full-auto chats, automation runs) may do on DAEX Cloud alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
       input: "none",
       example: "daex cloud limits --text",
     },
@@ -293,12 +293,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex --role agent actions run cloud.make_status --input-json '{\"requestId\":\"…\"}' --json",
     },
     lane_launch: {
-      description: "Start a new lane on Daex Cloud: this brain makes one new computer for the lane alone, joins it to the account, gets the GitHub repository there, then starts the chat there (chat.startLaunch on that computer, same launch id). Returns at once with {launch, machine, approvalUrl, madeByChat}; read progress with lane_launch_status. The same launch id again answers that launch (a failed one goes on from its failed step), never a second computer. Refused before any card when the account is out of credits, uses all its computers or has a full disk, with status's canStartLane sentence. Costs hours: asks the person in your chat first, within the agent limits for unattended chats. The lane starts from the pushed copy of its branch.",
+      description: "Start a new lane on DAEX Cloud: this brain makes one new computer for the lane alone, joins it to the account, gets the GitHub repository there, then starts the chat there (chat.startLaunch on that computer, same launch id). Returns at once with {launch, machine, approvalUrl, madeByChat}; read progress with lane_launch_status. The same launch id again answers that launch (a failed one goes on from its failed step), never a second computer. Refused before any card when the account is out of credits, uses all its computers or has a full disk, with status's canStartLane sentence. Costs hours: asks the person in your chat first, within the agent limits for unattended chats. The lane starts from the pushed copy of its branch.",
       input: "object { launch: chat launch args (kind \"chat\", launchId, prompt, chat, laneConfig?) with cloud: { sizeId: \"small\" | \"medium\" | \"large\" | \"xlarge\" }, originUrl: string (the project's git origin) }",
       example: "daex chat create --machine cloud --size medium --provider codex --model openai/gpt-5.6-sol --prompt \"…\"",
     },
     lane_launch_status: {
-      description: "A Daex Cloud lane launch this brain owns: {launch (stages, phase, laneId, sessionId), machine {name, instanceId, machineKey}, approvalUrl (the sign-in link while the join waits for the person), madeByChat}. Null for an unknown id.",
+      description: "A DAEX Cloud lane launch this brain owns: {launch (stages, phase, laneId, sessionId), machine {name, instanceId, machineKey}, approvalUrl (the sign-in link while the join waits for the person), madeByChat}. Null for an unknown id.",
       input: "object { launchId: string }",
       example: "daex chat launch-status <launchId> --machine cloud",
     },
@@ -308,102 +308,102 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex cloud resize --request --size large --reason \"Android needs a full computer\"",
     },
     tier_request_answer: {
-      description: "The person's answer to an agent's tier_request card, from their own client on the chat's machine, and how the change they said yes to ended, from the Daex that ran it (person only; an agent never answers its own card). Reads the card from the chat, marks it answered for every surface and tells the agent once in Daex's words: at once when the person keeps the size (answer dismiss), a note for its next turn at a yes, and when the change ends (outcome online, failed or cancelled). Answers { answered, toldAgent }.",
+      description: "The person's answer to an agent's tier_request card, from their own client on the chat's machine, and how the change they said yes to ended, from the DAEX that ran it (person only; an agent never answers its own card). Reads the card from the chat, marks it answered for every surface and tells the agent once in DAEX's words: at once when the person keeps the size (answer dismiss), a note for its next turn at a yes, and when the change ends (outcome online, failed or cancelled). Answers { answered, toldAgent }.",
       input: "object { chatSessionId: string, requestId: string (the card's request), answer: \"idle\" | \"now\" | \"dismiss\", outcome?: \"online\" | \"failed\" | \"cancelled\", error?: string }",
-      example: "The chat's tier request card in Daex (Keep the size, Change size)",
+      example: "The chat's tier request card in DAEX (Keep the size, Change size)",
     },
     recommend: {
-      description: "On a Daex Cloud computer, ask Gravity's Index (Daex's ad partner) for a tool or service the person needs right now, such as a hosted database or an email API. Call it only for a real, current need the person has, never to fill a gap or for something already set up. The account server decides whether there is a pick (Daex Cloud Free, the person's yes to sponsored cards, someone watching). A pick shows in your chat as a Sponsored card; it installs nothing. Answers { shown, pick, message }: follow `message`. Install or set up the pick only if the person asks. With no card (a CLI session), say it once in your reply, starting with \"Sponsored:\".",
+      description: "On a DAEX Cloud computer, ask Gravity's Index (DAEX's ad partner) for a tool or service the person needs right now, such as a hosted database or an email API. Call it only for a real, current need the person has, never to fill a gap or for something already set up. The account server decides whether there is a pick (DAEX Cloud Free, the person's yes to sponsored cards, someone watching). A pick shows in your chat as a Sponsored card; it installs nothing. Answers { shown, pick, message }: follow `message`. Install or set up the pick only if the person asks. With no card (a CLI session), say it once in your reply, starting with \"Sponsored:\".",
       input: "object { need: string (what the person needs, in a sentence) }",
       example: "daex cloud recommend --need \"a hosted Postgres for this app's orders\"",
     },
     clear_caches: {
-      description: "On the Daex Cloud computer this runs on, delete what is rebuilt on next use (package and tool caches, Docker's build cache), then measure the disk again and send it to Daex's server. Never a repository, dependencies, an image or an emulator. An agent's call asks the person with a card in its chat first; with nobody watching (full-auto, an automation, Daex MCP) the answer is no. Answers { freedGb }.",
+      description: "On the DAEX Cloud computer this runs on, delete what is rebuilt on next use (package and tool caches, Docker's build cache), then measure the disk again and send it to DAEX's server. Never a repository, dependencies, an image or an emulator. An agent's call asks the person with a card in its chat first; with nobody watching (full-auto, an automation, DAEX MCP) the answer is no. Answers { freedGb }.",
       input: "object { machine?: string (the instance id of the computer this runs on, the default: a call that names another machine is refused) }",
-      example: "daex actions run cloud.clear_caches (on a lane's cloud computer), or Settings › Daex Cloud › a lane › Clear caches",
+      example: "daex actions run cloud.clear_caches (on a lane's cloud computer), or Settings › DAEX Cloud › a lane › Clear caches",
     },
     grow_disk: {
-      description: "Grow the disk of the Daex Cloud computer this runs on, to fit `needFreeGb` more free space or to `toGb`. Up to the size's own disk maximum it grows with nothing to ask, unattended chats too; there is no plan or account disk. Past the size's maximum it is refused (limit, reason tier_limit): move the lane to a bigger size. A grow restarts the computer: Daex saves the chats, the call waits for the restart, and your chat continues after it with a note that the disk grew. Answers { state: \"fits\" | \"grown\" | \"growing\" | \"limit\" | \"declined\" | \"busy\" | \"unavailable\", fromGb?, toGb?, message }.",
+      description: "Grow the disk of the DAEX Cloud computer this runs on, to fit `needFreeGb` more free space or to `toGb`. Up to the size's own disk maximum it grows with nothing to ask, unattended chats too; there is no plan or account disk. Past the size's maximum it is refused (limit, reason tier_limit): move the lane to a bigger size. A grow restarts the computer: DAEX saves the chats, the call waits for the restart, and your chat continues after it with a note that the disk grew. Answers { state: \"fits\" | \"grown\" | \"growing\" | \"limit\" | \"declined\" | \"busy\" | \"unavailable\", fromGb?, toGb?, message }.",
       input: "object { needFreeGb?: number (GB that must be free), toGb?: number (the disk's new size), reason: string }",
       example: "daex cloud resize --free 8 --reason \"the Android emulator's first boot needs 7.2 GB\"",
     },
     lane_launch_cancel: {
-      description: "Stop a Daex Cloud lane launch before its chat starts, and delete the computer made for it. Only the chat that started it, or the person.",
+      description: "Stop a DAEX Cloud lane launch before its chat starts, and delete the computer made for it. Only the chat that started it, or the person.",
       input: "object { launchId: string }",
       example: "daex chat launch-cancel <launchId> --machine cloud",
     },
     sleep: {
-      description: "Put a Daex Cloud computer to sleep now: memory kept, it uses no credits.",
+      description: "Put a DAEX Cloud computer to sleep now: memory kept, it uses no credits.",
       input: "object { machine: string (name, id or machine key) }",
       example: "daex cloud sleep \"android vm\"",
     },
     saved_chat_machine: {
-      description: "Which of the given asleep Daex Cloud computers saved a chat, and its project there, from the account's copy. It wakes nothing and returns no messages. Null: none of them.",
+      description: "Which of the given asleep DAEX Cloud computers saved a chat, and its project there, from the account's copy. It wakes nothing and returns no messages. Null: none of them.",
       input: "object { chatId: string, machineKeys: string[] (at most 20) }",
       example: "daex actions run cloud.saved_chat_machine --input-json '{\"chatId\":\"chat-1\",\"machineKeys\":[\"m-1\"]}' --json",
     },
     wake: {
-      description: "Wake an asleep Daex Cloud machine (about a second; Daex on it is online a few seconds later). The server refuses it at 0 credits. A --machine call to an asleep machine wakes it on its own.",
+      description: "Wake an asleep DAEX Cloud machine (about a second; DAEX on it is online a few seconds later). The server refuses it at 0 credits. A --machine call to an asleep machine wakes it on its own.",
       input: "object { machine: string }",
       example: "daex cloud wake \"android vm\"",
     },
     resize: {
-      description: "Change a Daex Cloud machine's size (same type). It restarts: files stay, running work stops. Asks the person first.",
+      description: "Change a DAEX Cloud machine's size (same type). It restarts: files stay, running work stops. Asks the person first.",
       input: "object { machine: string, shape: \"small\" | \"medium\" | \"large\" | \"x-large\" or \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
       example: "daex cloud resize \"android vm\" --shape 4x16",
     },
     copy: {
-      description: "Copy a Daex Cloud machine into a new one with the same files (repos, lanes, installed dependencies), signed in as a new machine: a fresh machine for a lane, from a warm one. A big disk takes minutes. Asks the person first; an agent with nobody to ask is refused (agents start lanes instead).",
+      description: "Copy a DAEX Cloud machine into a new one with the same files (repos, lanes, installed dependencies), signed in as a new machine: a fresh machine for a lane, from a warm one. A big disk takes minutes. Asks the person first; an agent with nobody to ask is refused (agents start lanes instead).",
       input: "object { machine: string, name?: string, shape?: string }",
       example: "daex cloud copy \"supabase-stack 9d77\" --name \"lane copy\"",
     },
     move: {
-      description: "Move a Daex Cloud machine to the other type (box to VM or back), keeping every repo, lane and chat: makes the new machine, copies the home folder, deletes the old one. Docker data and running processes don't move. Asks the person first; an agent with nobody to ask is refused. To move one chat and its lane to another computer, use daex chat move.",
+      description: "Move a DAEX Cloud machine to the other type (box to VM or back), keeping every repo, lane and chat: makes the new machine, copies the home folder, deletes the old one. Docker data and running processes don't move. Asks the person first; an agent with nobody to ask is refused. To move one chat and its lane to another computer, use daex chat move.",
       input: "object { machine: string, to: \"box\" | \"vm\", shape?: string }",
       example: "daex cloud move \"my box\" --to vm",
     },
     delete: {
-      description: "Delete a Daex Cloud machine and remove it from the account. Its files are gone for good. Asks the person first; a full-auto chat may delete only a machine it made itself.",
+      description: "Delete a DAEX Cloud machine and remove it from the account. Its files are gone for good. Asks the person first; a full-auto chat may delete only a machine it made itself.",
       input: "object { machine: string }",
       example: "daex cloud delete \"lane copy\"",
     },
     lanes: {
-      description: "Every lane of the Daex Cloud account, one list, with no wake and no spend. A lane is on a computer (state awake | asleep | starting | stopping | deleting | error) or its computer was deleted (computer_deleted: the lane and its chats stay, and its next message makes a new computer on its branch; deleted {at, fate, sentence} says why). Each lane: {laneId, name, branch, projectOrigin, state, computer {instanceId, machineKey, name, sizeLabel, hoursRate, lastUsedAt, deletesAt, diskGb} | null, deleted | null, chats (saved chat count), backup {commits, files, savedAt, bytes} | null (work not on GitHub that Daex saved), machineKeys, link}. unread lists the parts Daex couldn't read. stale: lanes unused for a week or due for deletion, biggest disk first.",
+      description: "Every lane of the DAEX Cloud account, one list, with no wake and no spend. A lane is on a computer (state awake | asleep | starting | stopping | deleting | error) or its computer was deleted (computer_deleted: the lane and its chats stay, and its next message makes a new computer on its branch; deleted {at, fate, sentence} says why). Each lane: {laneId, name, branch, projectOrigin, state, computer {instanceId, machineKey, name, sizeLabel, hoursRate, lastUsedAt, deletesAt, diskGb} | null, deleted | null, chats (saved chat count), backup {commits, files, savedAt, bytes} | null (work not on GitHub that DAEX saved), machineKeys, link}. unread lists the parts DAEX couldn't read. stale: lanes unused for a week or due for deletion, biggest disk first.",
       input: "object { project?: string (a git origin), deleted?: boolean (only lanes whose computer was deleted), stale?: boolean }",
       example: "daex cloud lanes --stale --text",
     },
     lane_show: {
-      description: "One Daex Cloud lane (as in lanes) and its saved chats [{chatId, machineKey, title, provider, model, updatedAt}]. No wake.",
-      input: "object { lane: string (its name, id, branch or Daex link; a name two lanes share is refused with their ids) }",
+      description: "One DAEX Cloud lane (as in lanes) and its saved chats [{chatId, machineKey, title, provider, model, updatedAt}]. No wake.",
+      input: "object { lane: string (its name, id, branch or DAEX link; a name two lanes share is refused with their ids) }",
       example: "daex cloud lanes show fix-login --text",
     },
     lane_delete: {
-      description: "Delete a Daex Cloud lane. On a computer: Daex checks its work first (no wake when the computer is asleep and saved), then asks the person on one card: Delete lane (the lane, its computer, its files and its saved chats go) | Keep for later (Daex pushes the work, removes the computer, keeps the lane and its chats) | Cancel. Computer already deleted: the lane's record, its saved work and its saved chats go. A full-auto chat goes on alone only for a computer it made; plan mode, automations and Daex MCP apps are told no. Returns {outcome: deleted | kept_for_later | partial | failed, message, ...}.",
-      input: "object { lane: string (its name, id, branch or Daex link; a name two lanes share is refused with their ids) }",
+      description: "Delete a DAEX Cloud lane. On a computer: DAEX checks its work first (no wake when the computer is asleep and saved), then asks the person on one card: Delete lane (the lane, its computer, its files and its saved chats go) | Keep for later (DAEX pushes the work, removes the computer, keeps the lane and its chats) | Cancel. Computer already deleted: the lane's record, its saved work and its saved chats go. A full-auto chat goes on alone only for a computer it made; plan mode, automations and DAEX MCP apps are told no. Returns {outcome: deleted | kept_for_later | partial | failed, message, ...}.",
+      input: "object { lane: string (its name, id, branch or DAEX link; a name two lanes share is refused with their ids) }",
       example: "daex cloud lanes delete fix-login",
     },
     lane_free: {
-      description: "Keep a Daex Cloud lane for later: Daex pushes its work to GitHub, removes its computer (no more credits or disk), and keeps the lane and its chats. Its next message makes a new computer on the same branch. Asks the person first, as a delete.",
-      input: "object { lane: string (its name, id, branch or Daex link; a name two lanes share is refused with their ids) }",
+      description: "Keep a DAEX Cloud lane for later: DAEX pushes its work to GitHub, removes its computer (no more credits or disk), and keeps the lane and its chats. Its next message makes a new computer on the same branch. Asks the person first, as a delete.",
+      input: "object { lane: string (its name, id, branch or DAEX link; a name two lanes share is refused with their ids) }",
       example: "daex cloud lanes free fix-login",
     },
     lane_start: {
       description: "A new computer for a lane whose computer was deleted, on the lane's branch (origin/<branch>), as a lane launch (lane_launch's card and limits). Run it in a folder of the lane's project. Returns the launch status.",
-      input: "object { lane: string (its name, id, branch or Daex link; a name two lanes share is refused with their ids), size?: \"small\" | \"medium\" | \"large\" | \"xlarge\" }",
+      input: "object { lane: string (its name, id, branch or DAEX link; a name two lanes share is refused with their ids), size?: \"small\" | \"medium\" | \"large\" | \"xlarge\" }",
       example: "daex cloud lanes start fix-login --size medium",
     },
     lane_keep: {
       description: "Stop the idle cleanup's delete of a lane's computer (a lane with deletesAt): the idle clock starts again. It wakes nothing and uses no credits.",
-      input: "object { lane: string (its name, id, branch or Daex link; a name two lanes share is refused with their ids) }",
+      input: "object { lane: string (its name, id, branch or DAEX link; a name two lanes share is refused with their ids) }",
       example: "daex cloud lanes keep fix-login",
     },
     lane_git: {
-      description: "A Daex Cloud lane's Git summary as its computer saved it at rest (branch, commits ahead, changed files), with no wake. summary is null when no computer saved one.",
-      input: "object { lane: string (its name, id, branch or Daex link; a name two lanes share is refused with their ids) }",
+      description: "A DAEX Cloud lane's Git summary as its computer saved it at rest (branch, commits ahead, changed files), with no wake. summary is null when no computer saved one.",
+      input: "object { lane: string (its name, id, branch or DAEX link; a name two lanes share is refused with their ids) }",
       example: "daex cloud lanes git fix-login --text",
     },
     saved_chats_list: {
-      description: "The account's saved chats: what each Daex Cloud computer saved, readable with the computer asleep or deleted. Newest first, a page at a time. Each row: {chatId, machineKey, laneId, laneName, title, provider, model, updatedAt, computer {state: exists | deleted, ...}}.",
+      description: "The account's saved chats: what each DAEX Cloud computer saved, readable with the computer asleep or deleted. Newest first, a page at a time. Each row: {chatId, machineKey, laneId, laneName, title, provider, model, updatedAt, computer {state: exists | deleted, ...}}.",
       input: "object { machineKey?: string, projectKey?: string, limit?: number (at most 500), cursor?: string }",
       example: "daex cloud chats --text",
     },
@@ -413,12 +413,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex cloud chats read <chat id> --text",
     },
     saved_chat_delete: {
-      description: "Delete one saved chat from Daex Cloud for good. Refused while the chat's computer still runs it. Asks the person first, as a delete.",
+      description: "Delete one saved chat from DAEX Cloud for good. Refused while the chat's computer still runs it. Asks the person first, as a delete.",
       input: "object { chatId: string, machineKey?: string }",
       example: "daex cloud chats delete <chat id>",
     },
     sessions_list: {
-      description: "The account's saved CLI and shell copies (what a Daex Cloud computer kept of each terminal), with no wake.",
+      description: "The account's saved CLI and shell copies (what a DAEX Cloud computer kept of each terminal), with no wake.",
       input: "object { machineKey?: string, project?: string, cursor?: string }",
       example: "daex cloud sessions --text",
     },
@@ -428,7 +428,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex cloud sessions read <session id> --text",
     },
     session_delete: {
-      description: "Delete one saved CLI or shell copy from Daex Cloud for good. Asks the person first, as a delete.",
+      description: "Delete one saved CLI or shell copy from DAEX Cloud for good. Asks the person first, as a delete.",
       input: "object { sessionId: string, machineKey?: string }",
       example: "daex cloud sessions delete <session id>",
     },
@@ -443,7 +443,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex cloud backups forget <lane id>",
     },
     jobs_list: {
-      description: "What Daex's server runs now for the account: lane launches, computer moves and copies, each with its id and state. unread lists the parts Daex couldn't read.",
+      description: "What DAEX's server runs now for the account: lane launches, computer moves and copies, each with its id and state. unread lists the parts DAEX couldn't read.",
       input: "no input",
       example: "daex cloud jobs --text",
     },
@@ -453,12 +453,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex cloud jobs cancel <job id>",
     },
     kept_lane_move_preview: {
-      description: "What moving a kept Daex Cloud lane (its computer deleted) to this machine would bring: its branch, its saved work not on GitHub, and each chat and CLI with how much history comes back (full, transcript or fresh). With fromComputer, a lane whose computer is asleep: also whether its saved copy is complete, and the files git ignores on it. Reads only; run it in a folder of the lane's project.",
+      description: "What moving a kept DAEX Cloud lane (its computer deleted) to this machine would bring: its branch, its saved work not on GitHub, and each chat and CLI with how much history comes back (full, transcript or fresh). With fromComputer, a lane whose computer is asleep: also whether its saved copy is complete, and the files git ignores on it. Reads only; run it in a folder of the lane's project.",
       input: "object { laneId: string, fromComputer?: { instanceId: string } }",
       example: "daex actions run cloud.kept_lane_move_preview --input-json '{\"laneId\":\"<lane id>\"}'",
     },
     kept_lane_move: {
-      description: "Move a kept Daex Cloud lane to this machine: its branch and saved work first (nothing pushed, newer work here never overwritten), then each chat and CLI, then Daex Cloud forgets the lane. With fromComputer, a lane whose computer is asleep: Daex first deletes that computer and keeps the lane, with no wake, only while it rests with every lane's work saved (else the record fails with wakeInstead and nothing is deleted). Returns at once with a running record; a failure keeps the lane on Daex Cloud and a new call goes on. The person's only.",
+      description: "Move a kept DAEX Cloud lane to this machine: its branch and saved work first (nothing pushed, newer work here never overwritten), then each chat and CLI, then DAEX Cloud forgets the lane. With fromComputer, a lane whose computer is asleep: DAEX first deletes that computer and keeps the lane, with no wake, only while it rests with every lane's work saved (else the record fails with wakeInstead and nothing is deleted). Returns at once with a running record; a failure keeps the lane on DAEX Cloud and a new call goes on. The person's only.",
       input: "object { laneId: string, fromComputer?: { instanceId: string } }",
     },
     kept_lane_move_status: {
@@ -466,24 +466,24 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { restoreId: string }",
     },
     project_overview: {
-      description: "One project's whole Daex Cloud view with no computer awake: its lanes, saved chats, CLI copies, Git summaries and the computers due for deletion. origin defaults to this folder's git origin.",
+      description: "One project's whole DAEX Cloud view with no computer awake: its lanes, saved chats, CLI copies, Git summaries and the computers due for deletion. origin defaults to this folder's git origin.",
       input: "object { origin?: string (github.com/<owner>/<repo>) }",
       example: "daex cloud project --text",
     },
   },
   mcp_registry: {
     list: {
-      description: "Read the person's MCP setup on this machine: every server in Daex's MCP registry (name, transport, the command and args or the URL, the env variable and header NAMES, on or off for the account / this machine / this project, and whether each value is set here), plus the servers other tools' configs on this machine have that the registry does not, with the tools they come from. Never returns a value.",
+      description: "Read the person's MCP setup on this machine: every server in DAEX's MCP registry (name, transport, the command and args or the URL, the env variable and header NAMES, on or off for the account / this machine / this project, and whether each value is set here), plus the servers other tools' configs on this machine have that the registry does not, with the tools they come from. Never returns a value.",
       input: "no input",
       example: "daex mcp servers --text",
     },
     request: {
-      description: "Propose adding one MCP server to the person's Daex registry: an MCP server card opens in this chat showing exactly what runs, and the person approves it (always, in every permission mode) and types any env or header values. Daex saves it to their account and the values to the account vault, on the machine that runs this chat. Returns at once with {already: true} when the registry has the same name, URL, or command line. Otherwise blocks until they add or decline. Returns {name, added: true, missing, next} | {name, added: false, already: true, existing, matchedBy, next} | {name, added: false, declined: true}; a value is never returned, logged, or written to the transcript. source \"imported\" takes a server another tool's config has (by its name, see mcp_registry.list); source \"agent\" describes one: command + args (stdio) or url (http/sse), with envNames or headerNames. After it is added, this chat's agent does not have the tools until the person presses Refresh chat. Never guess a URL or command: for a server you do not know, ask the person for its link or offer to search. If the person named the server, raise the card at once; if it was your own idea, ask in words first and raise the card only after a yes.",
+      description: "Propose adding one MCP server to the person's DAEX registry: an MCP server card opens in this chat showing exactly what runs, and the person approves it (always, in every permission mode) and types any env or header values. DAEX saves it to their account and the values to the account vault, on the machine that runs this chat. Returns at once with {already: true} when the registry has the same name, URL, or command line. Otherwise blocks until they add or decline. Returns {name, added: true, missing, next} | {name, added: false, already: true, existing, matchedBy, next} | {name, added: false, declined: true}; a value is never returned, logged, or written to the transcript. source \"imported\" takes a server another tool's config has (by its name, see mcp_registry.list); source \"agent\" describes one: command + args (stdio) or url (http/sse), with envNames or headerNames. After it is added, this chat's agent does not have the tools until the person presses Refresh chat. Never guess a URL or command: for a server you do not know, ask the person for its link or offer to search. If the person named the server, raise the card at once; if it was your own idea, ask in words first and raise the card only after a yes.",
       input: "object { name: string, reason: string, source?: \"imported\" | \"agent\", transport?: \"stdio\" | \"http\" | \"sse\", command?: string, args?: string[], url?: string, envNames?: string[], headerNames?: string[], timeoutMs?: number }",
       example: "daex mcp servers add github --reason \"To read your PRs\" --env GITHUB_PERSONAL_ACCESS_TOKEN -- npx -y @modelcontextprotocol/server-github",
     },
     remove: {
-      description: "Propose removing one MCP server from the person's Daex registry: a card in this chat asks them, in every permission mode. On yes it leaves their account on every machine, with its saved values and sign-in. Blocks until they answer. Returns {name, removed: true, next} | {name, removed: false, declined: true}. Only when the person asked for it. This chat's agent keeps the server's tools until the person presses Refresh chat. GitHub, Linear and Jira are Daex integrations, not servers: link their settings page (ade://settings/integrations.github, .linear, .jira) instead.",
+      description: "Propose removing one MCP server from the person's DAEX registry: a card in this chat asks them, in every permission mode. On yes it leaves their account on every machine, with its saved values and sign-in. Blocks until they answer. Returns {name, removed: true, next} | {name, removed: false, declined: true}. Only when the person asked for it. This chat's agent keeps the server's tools until the person presses Refresh chat. GitHub, Linear and Jira are DAEX integrations, not servers: link their settings page (ade://settings/integrations.github, .linear, .jira) instead.",
       input: "object { name: string, reason?: string, timeoutMs?: number }",
       example: "daex mcp servers remove stripe --reason \"You asked to disconnect Stripe\"",
     },
@@ -504,7 +504,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex secrets list --text",
     },
     get: {
-      description: "Read one Daex project secret value. The person only, in the desktop app; agents run a command with the secrets instead (`project_secret.exec`, `daex secrets exec -- <command>`).",
+      description: "Read one DAEX project secret value. The person only, in the desktop app; agents run a command with the secrets instead (`project_secret.exec`, `daex secrets exec -- <command>`).",
       input: "object { name: string }",
       example: "daex secrets exec -- ./scripts/deploy.sh",
     },
@@ -514,7 +514,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex secrets set STRIPE_API_KEY --value sk_test_...",
     },
     copy: {
-      description: "Copy another project's own secrets into this project in one call, never returning a value. `from` is that project's folder on this machine or its repository (owner/name, GitHub URL). Every check runs before the first write. A name this project already has is skipped and reported unless `overwrite`. Each secret keeps its place (account or this computer only). Returns {from, copied, replaced, skipped} (names). Only the person (the desktop) or a Daex MCP app with full access may copy; a chat's agent is refused, because a copy would move another project's values into this one.",
+      description: "Copy another project's own secrets into this project in one call, never returning a value. `from` is that project's folder on this machine or its repository (owner/name, GitHub URL). Every check runs before the first write. A name this project already has is skipped and reported unless `overwrite`. Each secret keeps its place (account or this computer only). Returns {from, copied, replaced, skipped} (names). Only the person (the desktop) or a DAEX MCP app with full access may copy; a chat's agent is refused, because a copy would move another project's values into this one.",
       input: "object { from: string, names?: string[], overwrite?: boolean }",
       example: "daex secrets copy --from owner/other-repo --names STRIPE_API_KEY,SENTRY_DSN",
     },
@@ -526,7 +526,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   analytics: {
     capture: {
-      description: "Capture one privacy-bounded Daex product event. Event names and properties are strictly allowlisted and quota limited.",
+      description: "Capture one privacy-bounded DAEX product event. Event names and properties are strictly allowlisted and quota limited.",
       input: "object { event, surface, properties?, projectId?, sessionId?, clientEventId?, occurredAt?, dedupeKey?, minimumIntervalMs? }",
       example: "daex actions run analytics.capture --input-json '{\"event\":\"ade_screen_viewed\",\"surface\":\"tui\",\"properties\":{\"screen\":\"details_help\"}}'",
     },
@@ -539,7 +539,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   ai: {
     getProviderContextInventory: {
       description:
-        "List what a provider's agent receives when a lane chat starts on this machine: Daex's own prompt pieces (exact), "
+        "List what a provider's agent receives when a lane chat starts on this machine: DAEX's own prompt pieces (exact), "
         + "the user's and the project's instruction files, memory, skills, agents, plugins and MCP servers (estimated; no config values), "
         + "and the median first-turn context of the last 30 days' chats. Read-only.",
       input: `object { provider: ${providerContextProviderInput}, laneId?: string (defaults to the primary lane) }`,
@@ -549,21 +549,21 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   usage: {
     getAdeUsageStats: {
       description:
-        "Read token, cost, and activity stats. `scope` picks the reach: \"account\" merges every machine on the Daex account, \"machine\" is this machine only, \"project\" is the open project's share of it.",
+        "Read token, cost, and activity stats. `scope` picks the reach: \"account\" merges every machine on the DAEX account, \"machine\" is this machine only, \"project\" is the open project's share of it.",
       input:
         "object { preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\", force?: boolean }",
       example: "daex usage stats --range 30d --scope account --text",
     },
     getCostBreakdown: {
       description:
-        "Rank Daex chat spend by chat, lane, or account from the per-turn ledger: API-equivalent value, dollars billed to API keys, and plan value covered by subscriptions. Chats and lanes are the open project's; accounts are the machine's. The ledger keeps three months.",
+        "Rank DAEX chat spend by chat, lane, or account from the per-turn ledger: API-equivalent value, dollars billed to API keys, and plan value covered by subscriptions. Chats and lanes are the open project's; accounts are the machine's. The ledger keeps three months.",
       input:
         "object { by: \"chat\" | \"lane\" | \"account\", preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, laneId?: string (with by: chat, one lane's chats), limit?: number (max 200) }",
       example: "daex usage stats --by lane --range 30d --text",
     },
     getModelDetail: {
       description:
-        "One model's cost, tokens, cost per million tokens, cache hit rate, daily trend, cost split by token type and speed, and the price Daex bills it at (custom, list, or fallback).",
+        "One model's cost, tokens, cost per million tokens, cache hit rate, daily trend, cost split by token type and speed, and the price DAEX bills it at (custom, list, or fallback).",
       input:
         "object { provider: string, model: string (as the stats name it), preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\" }",
       example: "daex usage stats --model claude-opus-5-5 --text",
@@ -582,7 +582,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     getTurnUsageSummary: {
       description:
-        "Read this machine's per-turn usage ledger: tokens, cache hit ratio, provider cost, and API-list-price cost by provider, account, and model, plus what one percent of each subscription window has cost in Daex turns.",
+        "Read this machine's per-turn usage ledger: tokens, cache hit ratio, provider cost, and API-list-price cost by provider, account, and model, plus what one percent of each subscription window has cost in DAEX turns.",
       input:
         `object { days?: number (1-${ADE_TURN_USAGE_MAX_DAYS}, default ${ADE_TURN_USAGE_DEFAULT_DAYS}), groupBy?: ${ADE_TURN_USAGE_GROUP_BY.map((value) => JSON.stringify(value)).join(" | ")} (default ${JSON.stringify(DEFAULT_ADE_TURN_USAGE_GROUP_BY)}), recent?: number (newest rows of the calling project to include, max ${ADE_TURN_USAGE_MAX_RECENT}) }`,
       example: "daex usage turns --days 14 --text",
@@ -625,7 +625,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex router efficiency --days 7 --text",
     },
     refreshModelRegistry: {
-      description: "Fetch the newest model registry from the Daex account directory (signed-in accounts only).",
+      description: "Fetch the newest model registry from the DAEX account directory (signed-in accounts only).",
       input: "object { force?: boolean }",
       example: "daex router refresh --text",
     },
@@ -655,7 +655,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     acknowledgeDependencyStatus: {
       description:
-        "Mark the current lockfiles as installed for tools Daex cannot watch (tracksInstall: false: bun, Bundler, Python tools). "
+        "Mark the current lockfiles as installed for tools DAEX cannot watch (tracksInstall: false: bun, Bundler, Python tools). "
         + "Tools with an install record clear by themselves when the install finishes.",
       input: "object { lockfiles?: string[] } (paths relative to the main checkout; omit for all)",
       example: "daex lanes action acknowledgeDependencyStatus --input-json '{\"lockfiles\":[\"Gemfile.lock\"]}'",
@@ -707,22 +707,22 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex lanes action initEnv --arg laneId=<lane>",
     },
     getReclaimRisk: {
-      description: "Preview what Daex can safely remove for one lane, including estimated bytes and any blocked reasons.",
+      description: "Preview what DAEX can safely remove for one lane, including estimated bytes and any blocked reasons.",
       input: "object { laneId: string }",
       example: "daex lanes reclaim-preview lane-123 --text",
     },
     archiveAndReclaim: {
-      description: "Archive a lane and remove only its Daex-managed local worktree and generated data. The lane, branch, chat, and metadata remain.",
+      description: "Archive a lane and remove only its DAEX-managed local worktree and generated data. The lane, branch, chat, and metadata remain.",
       input: "object { laneId: string, confirmation: \"RECLAIM\", forceDirty?: boolean }",
       example: "daex lanes archive-and-reclaim lane-123 --confirm RECLAIM --text",
     },
     cloudStartBranch: {
-      description: "Before a Daex Cloud lane starts: whether the branch it starts from is on GitHub, and how many local commits no remote has. push=true means push it first.",
+      description: "Before a DAEX Cloud lane starts: whether the branch it starts from is on GitHub, and how many local commits no remote has. push=true means push it first.",
       input: "object { start?: { from: \"default\" | \"primary\" | \"branch\", branch?, on: \"remote\" | \"local\" }, branchRef?: string }",
       example: "daex actions run lane.cloudStartBranch --input-json '{\"start\":{\"from\":\"branch\",\"branch\":\"feature\",\"on\":\"local\"}}'",
     },
     pushCloudStartBranch: {
-      description: "Push the branch a Daex Cloud lane starts from to origin, so the new computer can clone it. Answers the check again after the push.",
+      description: "Push the branch a DAEX Cloud lane starts from to origin, so the new computer can clone it. Answers the check again after the push.",
       input: "object { start?: { from, branch?, on }, branchRef?: string }",
       example: "daex actions run lane.pushCloudStartBranch --input-json '{\"branchRef\":\"feature\"}'",
     },
@@ -774,7 +774,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run chat.completeLaunchClient --input-json '{\"launchId\":\"6f1c…\",\"sessionId\":\"pty-1\"}'",
     },
     createSession: {
-      description: "Create a persistent Daex Work chat session.",
+      description: "Create a persistent DAEX Work chat session.",
       input: "object { laneId?, provider?, model/modelId (required from an agent), reasoningEffort?, permissionMode?, fastMode?, title?, surface? }",
       example: "daex actions run chat.createSession --input-json '{\"laneId\":\"lane-1\",\"provider\":\"codex\",\"model\":\"openai/gpt-5.6-sol\",\"reasoningEffort\":\"xhigh\",\"permissionMode\":\"full-auto\",\"fastMode\":false}'",
     },
@@ -784,7 +784,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run chat.getAvailableModels --input-json '{\"provider\":\"codex\"}'",
     },
     getSessionSummary: {
-      description: "Read one chat session summary, plus the IANA timeZone of the Daex brain that produced its timestamps.",
+      description: "Read one chat session summary, plus the IANA timeZone of the DAEX brain that produced its timestamps.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "daex actions run chat.getSessionSummary --scalar chat-123",
     },
@@ -819,12 +819,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex chat ask --clear",
     },
     createScheduledWork: {
-      description: "Create durable scheduled work for an eligible chat or tracked provider CLI session. Use delaySeconds or runAt for one-shot wakeups; five-field cron uses the Daex brain machine's local timezone.",
+      description: "Create durable scheduled work for an eligible chat or tracked provider CLI session. Use delaySeconds or runAt for one-shot wakeups; five-field cron uses the DAEX brain machine's local timezone.",
       input: "object { sessionId?: string, prompt: string, exactly one of cron?: string | runAt?: ISO 8601 string with offset/Z | delaySeconds?: positive integer, recurring?: boolean, reason?: string }",
       example: "daex actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"Check CI and report\"}' --text",
     },
     listScheduledWork: {
-      description: "List Daex-managed durable wakeups, cron jobs, and loops, optionally for one chat.",
+      description: "List DAEX-managed durable wakeups, cron jobs, and loops, optionally for one chat.",
       input: "object { sessionId?: string, includeTerminal?: boolean }",
       example: "daex actions run chat.listScheduledWork --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
@@ -834,7 +834,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run chat.getScheduledWorkState --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
     cancelScheduledWork: {
-      description: "Cancel one Daex-managed scheduled job. Claude cron cancellation is also requested through CronDelete.",
+      description: "Cancel one DAEX-managed scheduled job. Claude cron cancellation is also requested through CronDelete.",
       input: "object { sessionId: string, scheduleId: string }",
       example: "daex actions run chat.cancelScheduledWork --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\"}' --text",
     },
@@ -914,7 +914,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run chat.deleteThreadComment --input-json '{\"sessionId\":\"chat-123\",\"commentId\":\"c-1\"}'",
     },
     messageSession: {
-      description: "Deliver a message to a chat using Daex-normalized routing: auto steers active turns, wakes idle chats, queues non-urgent context, or interrupts and replaces.",
+      description: "Deliver a message to a chat using DAEX-normalized routing: auto steers active turns, wakes idle chats, queues non-urgent context, or interrupts and replaces.",
       input: "object { sessionId: string, text: string, kind?: \"auto\" | \"queue\" | \"wake\" | \"interrupt-replace\", attachments?, contextAttachments?, metadata?, clientSendId?: string (one per send; a retry with the same id is not delivered twice) }",
       example: "daex actions run chat.messageSession --input-json '{\"sessionId\":\"chat-123\",\"kind\":\"auto\",\"text\":\"use this context\"}'",
     },
@@ -964,7 +964,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run chat.recoverCodexTurn --input-json '{\"sessionId\":\"chat-123\",\"turnId\":\"turn-456\",\"action\":\"wait\"}'",
     },
     recoverTurn: {
-      description: "Recover a stalled provider turn using Daex's provider-neutral wait, nudge, same-runtime retry, or restart-and-resume actions.",
+      description: "Recover a stalled provider turn using DAEX's provider-neutral wait, nudge, same-runtime retry, or restart-and-resume actions.",
       input: "object { sessionId: string, turnId: string, action: \"wait\" | \"nudge\" | \"retry_same_runtime\" | \"restart_resume\" }",
       example: "daex actions run chat.recoverTurn --input-json '{\"sessionId\":\"chat-123\",\"turnId\":\"turn-456\",\"action\":\"restart_resume\"}'",
     },
@@ -1064,9 +1064,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   session: {
     setSessionActivity: {
       description:
-        "Agent callers must use a Daex-bound tracked session. The target may be the caller's chat or a tracked terminal owned by that chat; "
+        "Agent callers must use a DAEX-bound tracked session. The target may be the caller's chat or a tracked terminal owned by that chat; "
         + "`--session` cannot target another session. Report one fixed activity label for the current turn. This is a detail inside the existing parent phase, "
-        + "not a board-state change; Daex stamps the source and update time, and null clears the report.",
+        + "not a board-state change; DAEX stamps the source and update time, and null clears the report.",
       input: `object { sessionId: string, value: ${sessionActivityValueInput} | null }`,
       example: "daex actions run session.setSessionActivity --input-json '{\"sessionId\":\"chat-123\",\"value\":\"testing\"}' --text",
     },
@@ -1074,7 +1074,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "Internal: a tracked agent CLI's own hook reports its turn (Claude's UserPromptSubmit, Stop, StopFailure, "
         + "PermissionRequest, Notification, Elicitation) and the agents beside it (SubagentStart, SubagentStop, SessionEnd). "
-        + "Run by `ade __ade-cli-turn-hook` from the hook Daex adds to the launch; agents do not call it. "
+        + "Run by `ade __ade-cli-turn-hook` from the hook DAEX adds to the launch; agents do not call it. "
         + "The runtime reads it as working, done, background work or needs you. Unknown sessions answer ok: false.",
       input: "object { sessionId: string, provider: \"claude\", payload: { hook_event_name: string, prompt_id?: string, notification_type?: string, tool_name?: string, agent_id?: string, agent_type?: string, message?: string } }",
       example: "daex actions run session.reportCliTurnSignal --input-json '{\"sessionId\":\"term-123\",\"provider\":\"claude\",\"payload\":{\"hook_event_name\":\"Stop\"}}'",
@@ -1119,7 +1119,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex automations webhook new --label \"Deploy failures\" --text",
     },
     webhookGetEndpoint: {
-      description: "Read one webhook URL: url, route, whether its token lives on this machine, and the last delivery time. Registers it with Daex's relay if that has not happened yet.",
+      description: "Read one webhook URL: url, route, whether its token lives on this machine, and the last delivery time. Registers it with DAEX's relay if that has not happened yet.",
       input: "object { hookId: string }",
       example: "daex automations webhook url wh-0123456789abcdef --text",
     },
@@ -1174,7 +1174,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run automations.listRuns --input-json '{\"limit\":20}' --json",
     },
     deleteRule: {
-      description: "Delete one automation rule. A rule that follows the Daex account is deleted on every computer.",
+      description: "Delete one automation rule. A rule that follows the DAEX account is deleted on every computer.",
       input: "object { id: string }",
       example: "daex actions run automations.deleteRule --input-json '{\"id\":\"nightly-review\"}' --text",
     },
@@ -1185,9 +1185,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     setRunOn: {
       description:
-        "Choose which computer runs a rule that follows the Daex account (\"Run on\"). Every computer with the repository shows the rule; "
+        "Choose which computer runs a rule that follows the DAEX account (\"Run on\"). Every computer with the repository shows the rule; "
         + "only this one schedules and starts it. No deviceId means the computer this runs on; another computer is named by its sync device id and name. "
-        + "cloud: true makes Daex Cloud the home: Daex's server watches its schedule or webhook and starts each run on a new cloud computer.",
+        + "cloud: true makes DAEX Cloud the home: DAEX's server watches its schedule or webhook and starts each run on a new cloud computer.",
       input: "object { id: string, deviceId?: string, name?: string (required with deviceId), cloud?: boolean }",
       example: "daex automations run-on nightly-review --text",
     },
@@ -1202,7 +1202,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run automations.planTest --input-json '{\"id\":\"nightly-review\",\"mode\":\"safe\",\"event\":{\"pr\":{\"number\":12,\"title\":\"Bump deps\"}}}' --text",
     },
     runTest: {
-      description: "Start a test run of one automation. A safe test works in a throwaway lane and only reports steps that post, push, or call outside Daex. A live test runs for real. Both mark notifications [Test] and use no run budget.",
+      description: "Start a test run of one automation. A safe test works in a throwaway lane and only reports steps that post, push, or call outside DAEX. A live test runs for real. Both mark notifications [Test] and use no run budget.",
       input: "object { id: string, mode: \"safe\" | \"live\", event?: same as planTest }",
       example: "daex actions run automations.runTest --input-json '{\"id\":\"nightly-review\",\"mode\":\"safe\"}' --text",
     },
@@ -1241,7 +1241,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   search: {
     query: {
-      description: "Search Daex's own project index across lanes, chats, PRs, files, and issues — the index behind the command palette.",
+      description: "Search DAEX's own project index across lanes, chats, PRs, files, and issues — the index behind the command palette.",
       input: "object { query: string, laneId?: string, limit?: number }",
       example: "daex actions run search.query --input-json '{\"query\":\"sync cursor\",\"limit\":20}' --json",
     },
@@ -1270,7 +1270,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   project_config: {
     get: {
-      description: "Read the project's Daex configuration: shared config, local overrides, and the merged effective result.",
+      description: "Read the project's DAEX configuration: shared config, local overrides, and the merged effective result.",
       input: "no input",
       example: "daex actions run project_config.get --json",
     },
@@ -1287,7 +1287,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run ios_simulator.listDevices --json",
     },
     listLaunchTargets: {
-      description: "List the app targets Daex can launch on an iOS simulator for one lane.",
+      description: "List the app targets DAEX can launch on an iOS simulator for one lane.",
       input: "object { laneId: string }",
       example: "daex actions run ios_simulator.listLaunchTargets --input-json '{\"laneId\":\"lane-1\"}' --json",
     },
@@ -1328,12 +1328,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex android sdk status --json",
     },
     installSdk: {
-      description: "Start the guided Android SDK install. User-only: the Daex desktop app sends it (the setup card, or Settings › Android devices); an agent and a terminal are refused. Every licence the install needs must be named in acceptedLicenseIds; surface names where the user accepted them. Progress arrives as android.sdk.install events.",
+      description: "Start the guided Android SDK install. User-only: the DAEX desktop app sends it (the setup card, or Settings › Android devices); an agent and a terminal are refused. Every licence the install needs must be named in acceptedLicenseIds; surface names where the user accepted them. Progress arrives as android.sdk.install events.",
       input: "object { acceptedLicenseIds: string[], sdkRoot?: string, includeAndroidCli?: boolean, surface?: \"setup-card\" | \"settings\" }",
       example: "Desktop app only: the setup card, or Settings › Android devices. A terminal is refused.",
     },
     cancelSdkInstall: {
-      description: "Stop the running Android SDK install. Finished parts stay; the partial download is kept for the next install. User-only: the Daex desktop app sends it.",
+      description: "Stop the running Android SDK install. Finished parts stay; the partial download is kept for the next install. User-only: the DAEX desktop app sends it.",
       input: "object {}",
       example: "Desktop app only: the setup card's Cancel. A terminal is refused.",
     },
@@ -1343,7 +1343,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run android_emulator.getSdkInstallState --json",
     },
     setSdkPath: {
-      description: "Use an Android SDK that is already on this machine (\"Use mine…\"), or null to go back to detection. User-only: the Daex desktop app sends it.",
+      description: "Use an Android SDK that is already on this machine (\"Use mine…\"), or null to go back to detection. User-only: the DAEX desktop app sends it.",
       input: "object { path: string | null }",
       example: "Desktop app only: \"Use mine…\" on the setup card. A terminal is refused.",
     },
@@ -1354,12 +1354,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex android sdk images --json",
     },
     installSystemImage: {
-      description: "Download and install one system image on the guided install's job (one install per machine; progress as android.sdk.install events; cancelSdkInstall stops it). User-only: the Daex desktop app sends it from the device picker's System images; an agent and a terminal are refused. The image's licence must be named in acceptedLicenseIds.",
+      description: "Download and install one system image on the guided install's job (one install per machine; progress as android.sdk.install events; cancelSdkInstall stops it). User-only: the DAEX desktop app sends it from the device picker's System images; an agent and a terminal are refused. The image's licence must be named in acceptedLicenseIds.",
       input: "object { id: string, acceptedLicenseIds: string[], laneId?: string }",
       example: "Desktop app only: the device picker's System images. A terminal is refused.",
     },
     removeSystemImage: {
-      description: "Delete one installed system image folder. Refused while an AVD that boots from it runs; when AVDs use it, confirmedInUse must be true (their files stay, but they cannot start). User-only: the Daex desktop app sends it.",
+      description: "Delete one installed system image folder. Refused while an AVD that boots from it runs; when AVDs use it, confirmedInUse must be true (their files stay, but they cannot start). User-only: the DAEX desktop app sends it.",
       input: "object { id: string, confirmedInUse?: boolean, laneId?: string }",
       example: "Desktop app only: the device picker's System images. A terminal is refused.",
     },
@@ -1389,25 +1389,25 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     start: {
       description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted. "
         + "Refused with ANDROID_LOW_MEMORY when the machine is under memory pressure, swapping, or its emulators would pass half of its memory; force boots anyway. "
-        + "When adb refuses the device (ANDROID_ADB_UNAUTHORIZED), Daex restarts the adb server itself if no other device uses it; restartAdb restarts it even then, "
+        + "When adb refuses the device (ANDROID_ADB_UNAUTHORIZED), DAEX restarts the adb server itself if no other device uses it; restartAdb restarts it even then, "
         + "and only the person may ask for that (an agent's restartAdb is refused): an agent asks the person to press \"Restart adb and start\" in the Android pane, or to run daex android start --restart-adb in a terminal on that machine. "
         + "device names one of the lane's extra devices to boot beside the lane's device instead (the same memory guard).",
       input: "object { laneId: string, force?: boolean, restartAdb?: boolean, device?: string }",
       example: "daex android start --json",
     },
     stop: {
-      description: "Stop the lane's emulator, if Daex started it. The lane keeps its AVD. device names one of the lane's extra devices to stop instead.",
+      description: "Stop the lane's emulator, if DAEX started it. The lane keeps its AVD. device names one of the lane's extra devices to stop instead.",
       input: "object { laneId: string, device?: string }",
       example: "daex android stop --json",
     },
     setKeepRunning: {
-      description: "Pin the lane's running emulator (\"Keep running\") so Daex does not stop it after 20 minutes unused, or unpin it. Answers the lane's device status.",
+      description: "Pin the lane's running emulator (\"Keep running\") so DAEX does not stop it after 20 minutes unused, or unpin it. Answers the lane's device status.",
       input: "object { laneId: string, keepRunning: boolean }",
       example: "daex android keep-running on --json",
     },
     releaseDevice: {
       description:
-        "Stop the lane's emulator and let the AVD go. An AVD Daex made for the lane is deleted unless deleteCreated is false; the user's own AVD is never deleted. "
+        "Stop the lane's emulator and let the AVD go. An AVD DAEX made for the lane is deleted unless deleteCreated is false; the user's own AVD is never deleted. "
         + "device names one of the lane's extra devices: that one goes, and the lane keeps its own device. Without device, the extras stay.",
       input: "object { laneId: string, deleteCreated?: boolean, device?: string }",
       example: "daex android device-detach --json",
@@ -1415,7 +1415,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     devicePromote: {
       description:
         "Make one of the lane's extra devices the lane's own device (the one that streams, records, runs tests and takes installs by default). "
-        + "The old device is kept: one Daex made becomes an extra (its emulator keeps running), the user's own AVD is released to them. "
+        + "The old device is kept: one DAEX made becomes an extra (its emulator keeps running), the user's own AVD is released to them. "
         + "Refused with ANDROID_LANE_DEVICE_BUSY while the old device starts or stops, streams to a viewer, records, runs tests, installs or launches an app, or another holder has the lane's lease.",
       input: "object { laneId: string, device: string }",
       example: "daex android device-promote --device ade_1234abcd_pixel_10 --json",
@@ -1472,12 +1472,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex android foreground --package com.android.chrome --wait 10 --json",
     },
     frame: {
-      description: "Write one PNG of the lane's emulator screen now, on the machine that runs it. Never filed as proof (screenshot files proof). outPath must be inside the lane's worktree; omitted = a file under the Daex data folder.",
+      description: "Write one PNG of the lane's emulator screen now, on the machine that runs it. Never filed as proof (screenshot files proof). outPath must be inside the lane's worktree; omitted = a file under the DAEX data folder.",
       input: "object { laneId: string, outPath?: string }",
       example: "daex android frame --json",
     },
     inspectPoint: {
-      description: "Read the element under a point (device pixels) as the chat composer's context packet: resource id, class, text, bounds, nearby elements, and the source file and line when Daex finds the element's id, testTag or text in the lane's worktree. includeScreenshot adds a PNG crop of the element. ref aims at one element instead.",
+      description: "Read the element under a point (device pixels) as the chat composer's context packet: resource id, class, text, bounds, nearby elements, and the source file and line when DAEX finds the element's id, testTag or text in the lane's worktree. includeScreenshot adds a PNG crop of the element. ref aims at one element instead.",
       input: "object { laneId: string, x: number, y: number, ref?: string, includeScreenshot?: boolean }",
       example: "daex android inspect 540 1200 --json",
     },
@@ -1487,23 +1487,23 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex android select 540 1200 --json",
     },
     deviceCleanup: {
-      description: "Run the Android device cleanup pass now: release the devices of lanes that ended, stop emulators Daex started that no lane holds, forget lane rows whose AVD is gone, and list Daex AVDs no lane holds (never deleted). powerOffIdle also stops idle Daex emulators now (an agent: its own lane's only). dryRun reports and changes nothing.",
+      description: "Run the Android device cleanup pass now: release the devices of lanes that ended, stop emulators DAEX started that no lane holds, forget lane rows whose AVD is gone, and list DAEX AVDs no lane holds (never deleted). powerOffIdle also stops idle DAEX emulators now (an agent: its own lane's only). dryRun reports and changes nothing.",
       input: "object { laneId?: string, powerOffIdle?: boolean, dryRun?: boolean }",
       example: "daex android device-cleanup --dry-run --json",
     },
     screenshot: {
-      description: "Write a PNG of the lane's emulator screen, on the machine that runs it, and file it in the calling chat's proof drawer (proof false skips that). outPath defaults to a file under the Daex data folder.",
+      description: "Write a PNG of the lane's emulator screen, on the machine that runs it, and file it in the calling chat's proof drawer (proof false skips that). outPath defaults to a file under the DAEX data folder.",
       input: "object { laneId: string, outPath?: string, caption?: string, proof?: boolean }",
       example: "daex android screenshot --out /tmp/screen.png --json",
     },
     // P1 agent suite (`androidAgentSuite.ts`).
     listApps: {
-      description: "List the apps installed on the lane's emulator (not the system ones), with each launcher activity and whether Daex installed it.",
+      description: "List the apps installed on the lane's emulator (not the system ones), with each launcher activity and whether DAEX installed it.",
       input: "object { laneId: string }",
       example: "daex android apps --json",
     },
     installApp: {
-      description: "Install an app on the lane's emulator: an APK inside the lane's folder, or the project's Gradle build (gradlew :<module>:install<Variant>, module app and variant debug by default). Daex remembers the package, so a lane release can remove it. device names one of the lane's extra devices to install on instead (booted first when off).",
+      description: "Install an app on the lane's emulator: an APK inside the lane's folder, or the project's Gradle build (gradlew :<module>:install<Variant>, module app and variant debug by default). DAEX remembers the package, so a lane release can remove it. device names one of the lane's extra devices to install on instead (booted first when off).",
       input: "object { laneId: string, apkPath?: string, gradle?: { module?: string, variant?: string }, device?: string }",
       example: "daex android install --gradle --module app --variant debug --json",
     },
@@ -1523,7 +1523,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex android terminate --package com.example.app --json",
     },
     uninstallApp: {
-      description: "Remove an app from the lane's emulator. On an AVD the lane attached (the user's own), only a package Daex installed there.",
+      description: "Remove an app from the lane's emulator. On an AVD the lane attached (the user's own), only a package DAEX installed there.",
       input: "object { laneId: string, packageName: string }",
       example: "daex android uninstall --package com.example.app --json",
     },
@@ -1673,7 +1673,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex android permission grant camera --package com.example.app --json",
     },
     getDeviceSettings: {
-      description: "Read the emulator's text and display size, developer switches, accessibility switches, status bar override, battery, radios, the last location Daex set, the display's orientation and the app in front. fields foreground reads only the app in front; orientation only the display's turn.",
+      description: "Read the emulator's text and display size, developer switches, accessibility switches, status bar override, battery, radios, the last location DAEX set, the display's orientation and the app in front. fields foreground reads only the app in front; orientation only the display's turn.",
       input: "object { laneId: string, fields?: \"all\" | \"foreground\" | \"orientation\" }",
       example: "daex actions run android_emulator.getDeviceSettings --input-json '{\"laneId\":\"<lane>\"}'",
     },
@@ -1693,7 +1693,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex android status-bar --clear --json",
     },
     clearLocation: {
-      description: "Clear the location Daex set: the emulator has no 'no location', so its GPS goes back to the point a cold boot uses (37.4219983, -122.084).",
+      description: "Clear the location DAEX set: the emulator has no 'no location', so its GPS goes back to the point a cold boot uses (37.4219983, -122.084).",
       input: "object { laneId: string }",
       example: "daex android location --clear --json",
     },
@@ -1725,7 +1725,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "daex actions run app_control.getStatus --json",
     },
     listTargets: {
-      description: "List the desktop apps and renderer targets Daex can attach to right now.",
+      description: "List the desktop apps and renderer targets DAEX can attach to right now.",
       input: "no input",
       example: "daex actions run app_control.listTargets --json",
     },
@@ -1790,12 +1790,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   "external-sessions": {
     list: {
-      description: "List provider-native CLI sessions found outside Daex.",
+      description: "List provider-native CLI sessions found outside DAEX.",
       input: "object { providers?, laneId?, cwd?, scope?: \"project\" | \"all\", limit? }",
       example: "daex actions run external-sessions.list --input-json '{\"scope\":\"project\",\"limit\":20}' --text",
     },
     import: {
-      description: "Import an outside provider CLI session into a Daex lane as a CLI terminal or chat.",
+      description: "Import an outside provider CLI session into a DAEX lane as a CLI terminal or chat.",
       input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode?, accountId? }",
       example: "daex actions run external-sessions.import --input-json '{\"provider\":\"codex\",\"sessionId\":\"thread-id\",\"laneId\":\"lane-1\",\"target\":\"cli\",\"mode\":\"resume\"}' --text",
     },
@@ -1900,7 +1900,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     loginCommand: {
       description:
         "The exact command that signs one account in: the provider binary, its argv, and the single env var that points it at "
-        + "this account's config home. Daex never drives the OAuth flow itself.",
+        + "this account's config home. DAEX never drives the OAuth flow itself.",
       input: "object { id: string }",
       example: "daex actions run provider_instances.loginCommand --input-json '{\"id\":\"work\"}' --text",
     },
@@ -1915,7 +1915,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   provider_logins: {
     status: {
       description:
-        "The provider sign-ins your Daex account keeps for Daex Cloud, and this computer's part: whether it copies its "
+        "The provider sign-ins your DAEX account keeps for DAEX Cloud, and this computer's part: whether it copies its "
         + "sign-ins (and why not), and what it found for each provider. Never a token, a key or a file's content.",
       input: "object { provider?: string }",
       example: "daex actions run provider_logins.status --input-json '{\"provider\":\"grok\"}' --text",
@@ -1923,7 +1923,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     captureNow: {
       description:
         "Look at this computer's login files now and copy any changed sign-in into the account, behind the same rules as "
-        + "the background pass (an account with Daex Cloud, sync on, switched on). The user's action; agents are refused.",
+        + "the background pass (an account with DAEX Cloud, sync on, switched on). The user's action; agents are refused.",
       input: "object { provider?: string }",
       example: "daex actions run provider_logins.captureNow --text",
     },
@@ -1931,15 +1931,15 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "Copy Antigravity's Google sign-in (the agy CLI login) from this computer's OS keyring into the account, once: "
         + "the macOS Keychain, Windows Credential Manager, or a Linux keyring through secret-tool. macOS, or a locked "
-        + "keyring, asks the person first; Daex never reads the keyring in the background. Refused on a cloud computer "
-        + "and for another computer. Only the Daex desktop app on this computer calls it.",
+        + "keyring, asks the person first; DAEX never reads the keyring in the background. Refused on a cloud computer "
+        + "and for another computer. Only the DAEX desktop app on this computer calls it.",
       input: "object { provider: \"antigravity\", slot?: \"personal\" | \"business\" }",
       example: "(desktop only) provider_logins.allowKeychain {\"provider\":\"antigravity\"}",
     },
     allowGitHubCli: {
       description:
-        "Turn on or off the copy of this computer's GitHub CLI login (github.com) for Copilot on Daex Cloud. Off at the "
-        + "start. On runs one `gh auth token` at once (it can ask to unlock the keychain), so only the Daex desktop app "
+        "Turn on or off the copy of this computer's GitHub CLI login (github.com) for Copilot on DAEX Cloud. Off at the "
+        + "start. On runs one `gh auth token` at once (it can ask to unlock the keychain), so only the DAEX desktop app "
         + "on that computer turns it on; off removes this computer's copy from the account, from any of the person's "
         + "desktops. Refused on a cloud computer.",
       input: "object { on: boolean }",
@@ -1947,30 +1947,30 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     use: {
       description:
-        "Pick the sign-in Daex Cloud uses for a provider: a sign-in's key from status, \"key\" for the saved Daex Cloud key, "
-        + "or null for the newest switched-on sign-in. Only the Daex desktop app calls it; the CLI, agents and outside apps are refused.",
+        "Pick the sign-in DAEX Cloud uses for a provider: a sign-in's key from status, \"key\" for the saved DAEX Cloud key, "
+        + "or null for the newest switched-on sign-in. Only the DAEX desktop app calls it; the CLI, agents and outside apps are refused.",
       input: "object { provider: string, key: string | null, slot?: string }",
       example: "(desktop only) provider_logins.use {\"provider\":\"codex\",\"key\":\"key\"}",
     },
     setCloud: {
-      description: "Switch one sign-in on or off for Daex Cloud. Only the Daex desktop app calls it.",
+      description: "Switch one sign-in on or off for DAEX Cloud. Only the DAEX desktop app calls it.",
       input: "object { key: string, on: boolean }",
       example: "(desktop only) provider_logins.setCloud {\"key\":\"grok/3f9a0c11d2e4.base\",\"on\":false}",
     },
     setCloudAll: {
-      description: "The one off switch for all of Daex Cloud's sign-ins. Only the Daex desktop app calls it.",
+      description: "The one off switch for all of DAEX Cloud's sign-ins. Only the DAEX desktop app calls it.",
       input: "object { on: boolean }",
       example: "(desktop only) provider_logins.setCloudAll {\"on\":false}",
     },
     setCloudBalance: {
       description:
-        "Switch Claude's smart balance on or off for Daex Cloud. One switch for Daex Cloud, off at the start, apart from "
-        + "each computer's own switch. Only the Daex desktop app calls it.",
+        "Switch Claude's smart balance on or off for DAEX Cloud. One switch for DAEX Cloud, off at the start, apart from "
+        + "each computer's own switch. Only the DAEX desktop app calls it.",
       input: "object { provider: \"claude\", on: boolean }",
       example: "(desktop only) provider_logins.setCloudBalance {\"provider\":\"claude\",\"on\":true}",
     },
     remove: {
-      description: "Remove one sign-in from the account; every computer hears it. Only the Daex desktop app calls it.",
+      description: "Remove one sign-in from the account; every computer hears it. Only the DAEX desktop app calls it.",
       input: "object { key: string }",
       example: "(desktop only) provider_logins.remove {\"key\":\"grok/3f9a0c11d2e4.base\"}",
     },

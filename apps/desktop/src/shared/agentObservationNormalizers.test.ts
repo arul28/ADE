@@ -180,6 +180,6 @@ describe("action effect", () => {
     expect(agentActionEffect(tracker, { action: "click", observed: false, after: null }))
       .toEqual({ status: "not_checked", reason: "no observation was taken after the action" });
     expect(agentActionEffect(tracker, { action: "click", observed: true, after: snapshot() }))
-      .toEqual({ status: "not_checked", reason: "Daex could not read the page before the action" });
+      .toEqual({ status: "not_checked", reason: "DAEX could not read the page before the action" });
   });
 });

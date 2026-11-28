@@ -356,7 +356,7 @@ export function formatCtoMessages(entries: readonly CtoStoryEntry[], timeZone?: 
 }
 
 export const CTO_STORY_SYSTEM_PROMPT = [
-  "You keep the running story of a long conversation between a person and their CTO, an AI agent that runs their software project in Daex (lanes, chats, pull requests, releases, routines).",
+  "You keep the running story of a long conversation between a person and their CTO, an AI agent that runs their software project in DAEX (lanes, chats, pull requests, releases, routines).",
   "You get the story so far (it may be empty) and the next messages. Output the complete updated story and nothing else: no preamble, no code fences.",
   "Keep what a CTO picking the conversation back up must know: what the person asked for and decided, their preferences and corrections (a later correction replaces the earlier version; say so), commitments and promises the CTO made, work that is still open or waiting on someone, and specific facts such as PR numbers, lane and branch names, versions, dates and names.",
   "Drop greetings, small talk, tool noise and details that no longer matter. Condense older parts to make room for newer ones.",
@@ -499,7 +499,7 @@ export function buildCtoHistoryBlock(args: {
     lines.push(`<story_so_far from="${shortWhen(story.startsAt, args.timeZone)}" through="${shortWhen(story.coveredThrough, args.timeZone)}">\n${escapeHistoryTags(story.summary.trim())}\n</story_so_far>`);
   }
   if (carried) {
-    lines.push(`Your last turns on ${escapeHistoryTags(carried.fromName)}, your previous home (Daex moved you to this computer and kept your notes):\n<conversation_history>\n${escapeHistoryTags(carried.text.trim())}\n</conversation_history>`);
+    lines.push(`Your last turns on ${escapeHistoryTags(carried.fromName)}, your previous home (DAEX moved you to this computer and kept your notes):\n<conversation_history>\n${escapeHistoryTags(carried.text.trim())}\n</conversation_history>`);
   }
   if (args.tail.length) {
     const skipped = args.omitted > 0

@@ -374,7 +374,7 @@ function tierRequestWords(
     case "online":
       return {
         sentence: `${name} is on ${to} now.`,
-        agent: { via: "wake", text: `The person said yes to your request: ${name} now runs at ${to}. Daex changed the lane's computer for it; your files and this chat stayed. Carry on with the work that needed it.` },
+        agent: { via: "wake", text: `The person said yes to your request: ${name} now runs at ${to}. DAEX changed the lane's computer for it; your files and this chat stayed. Carry on with the work that needed it.` },
       };
     case "failed":
       return {
@@ -391,7 +391,7 @@ function tierRequestWords(
       return {
         sentence: now ? `You said yes. ${BRAND.NAME} changes it to ${to} now.` : `You said yes. ${BRAND.NAME} changes it to ${to} once the agent is idle.`,
         // True after the change too, when the agent reads it later.
-        agent: { via: "next_turn", text: `The person said yes to your request to change ${name} to ${to}. Daex changes it ${now ? "at once (Daex stops the running turn for it)" : "once you are idle"}; the lane's computer restarts for it, and your files and this chat stay. Daex tells you in this chat when the change is done.` },
+        agent: { via: "next_turn", text: `The person said yes to your request to change ${name} to ${to}. DAEX changes it ${now ? "at once (DAEX stops the running turn for it)" : "once you are idle"}; the lane's computer restarts for it, and your files and this chat stay. DAEX tells you in this chat when the change is done.` },
       };
     }
   }

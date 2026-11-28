@@ -321,9 +321,9 @@ export type BuiltInBrowserHostNote = {
 /** A browser error, with the machine whose browser refused, for the agent to read. */
 export function builtInBrowserErrorOnMachine(message: string, machine: string, userComputer: boolean): string {
   // Older machines still say "ADE browser"; both names count as the browser's own lead.
-  if (/^(?:ADE|Daex) browser on /.test(message)) return message;
+  if (/^(?:ADE|DAEX) browser on /.test(message)) return message;
   const where = `${machine}${userComputer ? " (the user's computer)" : ""}`;
-  const lead = /^(?:ADE|Daex) browser /.exec(message)?.[0];
+  const lead = /^(?:ADE|DAEX) browser /.exec(message)?.[0];
   return lead
     ? `${BRAND.NAME} browser on ${where} ${message.slice(lead.length)}`
     : `${BRAND.NAME} browser on ${where}: ${message}`;

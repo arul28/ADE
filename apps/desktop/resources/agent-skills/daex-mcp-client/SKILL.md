@@ -1,14 +1,14 @@
 ---
 name: daex-mcp-client
-description: Use this skill when you reach Daex from outside through its MCP server (a cloud bot, a hosted agent, claude.ai, ChatGPT, a script) and need to pick a machine and project, use a device there, start a chat with an exact model, effort and permissions, learn when it finished, read its results and proof, or move files into a lane.
+description: Use this skill when you reach DAEX from outside through its MCP server (a cloud bot, a hosted agent, claude.ai, ChatGPT, a script) and need to pick a machine and project, use a device there, start a chat with an exact model, effort and permissions, learn when it finished, read its results and proof, or move files into a lane.
 disable-model-invocation: true
 ---
 
-# Using Daex over MCP
+# Using DAEX over MCP
 
-Daex was called ADE: the MCP tool `daex` was named `ade` (that name still runs), and old `ade-*` prompt names still open.
+DAEX was called ADE: the MCP tool `daex` was named `ade` (that name still runs), and old `ade-*` prompt names still open.
 
-Daex runs on the person's own machines. You reach them through one URL. Each
+DAEX runs on the person's own machines. You reach them through one URL. Each
 tool call is one short HTTP request, and every tool is also a `daex` command,
 so `["<command>","--help"]` through the `daex` tool explains any of them.
 
@@ -25,9 +25,9 @@ Cloudflare front refuses default library user agents (Python's urllib) with
    `machine` lists them; device commands take `--lane <lane there>`.
    `--machine` and `devices use` are refused: pick the machine with `machine`.
    The one exception is `--machine cloud` (and `--size`) on `chat create`,
-   `lanes create` and `chat launch-status`, for Daex Cloud.
+   `lanes create` and `chat launch-status`, for DAEX Cloud.
 
-**Device work (an iPhone simulator, an emulator) stays inside Daex.** Best:
+**Device work (an iPhone simulator, an emulator) stays inside DAEX.** Best:
 `chat_start` a chat whose prompt asks for it; the chat drives its own lane's
 device and files proof. Driving it yourself: `["apple","start","--lane",
 "<lane>"]`, then `apple` verbs with that same `--lane`, in ONE lane. Each lane
@@ -56,7 +56,7 @@ A chat id finds its own project and machine. `chat_status`, `chat_read`,
 }}
 ```
 
-- `model` is required: Daex never picks one for you. `["chat","models",
+- `model` is required: DAEX never picks one for you. `["chat","models",
   "--text"]` through the `daex` tool lists the ids, and `["harness","routes",
   "--text"]` lists every model each harness can reach. `provider` is the
   harness (`claude`, `codex`, `opencode`, …).
@@ -118,10 +118,10 @@ When a chat waits on the person, `inbox` shows the question and `chat_respond`
 answers it, if the person told you to. With full access that is approvals,
 questions, and a secret card (its answer is saved to the project's secrets,
 not to the chat). Screen-control consent stays with the person: they answer it
-in Daex.
+in DAEX.
 
 A chat that is gone says why: `state: "deleted"` with `deletedAt` and
-`reopenable` (null when Daex could not check), or `state: "not_found"`.
+`reopenable` (null when DAEX could not check), or `state: "not_found"`.
 
 ## 4. Read results and proof
 
@@ -135,7 +135,7 @@ A chat that is gone says why: `state: "deleted"` with `deletedAt` and
 - `proof_review` with `session` returns the image inline. A video comes as a
   sheet of key frames. A tall page comes one page at a time: the result says
   `page` and `pages`, and `page: 2` shows the next. `y_from` and `y_to` cut any
-  band. `ade-proof://` links open only inside Daex, so don't try to fetch them.
+  band. `ade-proof://` links open only inside DAEX, so don't try to fetch them.
 
 ## 5. Move files in
 

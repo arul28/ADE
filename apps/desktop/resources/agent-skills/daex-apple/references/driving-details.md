@@ -5,7 +5,7 @@
 - When several elements match, the answer says which one it used and why,
   lists the others with their points, and names the `--index` that picks the
   next. A control that holds the matching text wins over the text inside it.
-- A row marked `(inferred)` is a SwiftUI tab Daex placed from source because
+- A row marked `(inferred)` is a SwiftUI tab DAEX placed from source because
   the Tab Bar showed no tab items. Its frame is a guess, so `tap-element`
   refuses it and prints the point to `tap` instead. A real tab item carries
   its source file and line.

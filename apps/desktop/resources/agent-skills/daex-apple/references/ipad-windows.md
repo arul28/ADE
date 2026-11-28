@@ -31,7 +31,7 @@ out the app in front and reads the frame back:
   says it cannot find the window, `relaunch --bundle-id <id>` brings it back.
 - `APPLE_WINDOWING_UNAVAILABLE`: the app in front is not in a window (an
   iPhone, or an iPad set to Full Screen Apps in Settings ▸ Multitasking &
-  Gestures), or Daex cannot find the window. Portrait and landscape both
+  Gestures), or DAEX cannot find the window. Portrait and landscape both
   work.
 - `snapshot`, `find` and `tap-element` give screen points wherever the
   window is. If a read could not place a window (one still opening), its rows

@@ -17,7 +17,7 @@ value is not masked (the command says which). Masking is best effort: a
 command that changes a value (reverses, splits or re-encodes it) can print it
 unmasked, whatever its length. So never run a command that prints a secret,
 and never copy output that could hold one into chat or a log.
-`daex secrets get` is the person's, in the Daex desktop app.
+`daex secrets get` is the person's, in the DAEX desktop app.
 
 ```
 daex secrets list --text                 # names, where each lives, never a value
@@ -42,7 +42,7 @@ The chat shows the user a password field (with a "Generate a strong one"
 button; `--generate` marks it as suggested). The command blocks until they
 answer and prints only the outcome — `{name, saved: true}`, `{name, saved:
 false, kept: true}` or `{name, saved: false, declined: true}` — never the
-value. For a token a shell CLI needs that should not stay in Daex, add
+value. For a token a shell CLI needs that should not stay in DAEX, add
 `--delivery file --request-id <key>`: the user may choose a temporary private
 file, and you get `{saved: true, delivery: "file", file}`. Read it only inside
 a command (`TOKEN="$(cat <file>)" wrangler deploy`) and never print it; it is

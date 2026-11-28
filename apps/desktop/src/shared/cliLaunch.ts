@@ -387,7 +387,7 @@ function unwrapAdeGuidancePromptForTitle(raw: string): string {
   if (!text.length) return "";
   const marker = /\bUser prompt:\s*/iu.exec(text);
   const looksLikeAdeGuidance =
-    /^(?:ADE|Daex) session guidance\b/iu.test(text)
+    /^(?:ADE|DAEX) session guidance\b/iu.test(text)
     || (/^Start working on that user prompt immediately\./iu.test(text) && marker != null);
   if (!looksLikeAdeGuidance) return stripAdeLaneDirectiveForTitle(text);
 
@@ -403,7 +403,7 @@ function stripAdeLaneDirectiveForTitle(raw: string): string {
   const firstLine = lines[start]?.trim() ?? "";
   const pathLine = lines[start + 1]?.trim() ?? "";
   const looksLikeLaneDirective =
-    /^You are working in (?:ADE|Daex) lane:?$/iu.test(firstLine)
+    /^You are working in (?:ADE|DAEX) lane:?$/iu.test(firstLine)
     && (
       pathLine.includes(".ade/worktrees/")
       || pathLine.startsWith("/")
@@ -1086,17 +1086,17 @@ function workTabCliPreamblePrompt(
   sessionGuidance: string,
   hasInitialPrompt = false,
 ): string {
-  // Title cleanup here and external-session discovery find Daex's preamble
-  // in provider session files by "Daex session guidance" (or the pre-rename
+  // Title cleanup here and external-session discovery find DAEX's preamble
+  // in provider session files by "DAEX session guidance" (or the pre-rename
   // "ADE session guidance").
   const launchInstruction = hasInitialPrompt
     ? [
-        "Daex session guidance. Treat this as operating guidance for the CLI session",
+        "DAEX session guidance. Treat this as operating guidance for the CLI session",
         "and keep it in mind while handling the user prompt below.",
         "Start working on that user prompt immediately.",
       ].join(" ")
     : [
-        "Daex session guidance. Treat this as operating guidance for the CLI session,",
+        "DAEX session guidance. Treat this as operating guidance for the CLI session,",
         "keep it in mind for future user messages, and wait for the user's next",
         "instruction before taking action.",
       ].join(" ");
@@ -1468,7 +1468,7 @@ export function buildTrackedCliLaunchCommand(args: {
     const guidance = [
       sessionGuidance,
       activityGuidance,
-      `Daex permission policy for this Pi session: ${permissionMode}. Pi has no supported native Daex permission flag, so follow this policy and the Daex guidance without bypassing it.`,
+      `DAEX permission policy for this Pi session: ${permissionMode}. Pi has no supported native DAEX permission flag, so follow this policy and the DAEX guidance without bypassing it.`,
     ].filter((part): part is string => Boolean(part)).join("\n\n");
     const commandArgs = [
       ...modelToCliFlag(resolvePiCliModelForLaunch(modelForLaunch)),

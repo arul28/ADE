@@ -342,7 +342,7 @@ function validatePreflight() {
   // DisplayName to carry the product and DisplayVersion to carry the version,
   // and Stable/Beta side-by-side installs are only distinguishable when each
   // channel owns one stable DisplayName. run-electron-builder.mjs overrides it
-  // with the channel's display name ("Daex", "Daex Beta"), also
+  // with the channel's display name ("DAEX", "DAEX Beta"), also
   // version-independent; this is the fallback for a build outside the wrapper.
   // eslint-disable-next-line no-template-curly-in-string
   if (pkg.build?.nsis?.uninstallDisplayName !== "${productName}") {
@@ -541,7 +541,7 @@ function createNodePathValue(paths, options = {}) {
 }
 
 function assertAdeCliHelp(stdout, label) {
-  if (!stdout.includes("Agent-focused command-line interface for Daex")) {
+  if (!stdout.includes("Agent-focused command-line interface for DAEX")) {
     fail(`${label} did not print ADE CLI help`);
   }
 }

@@ -164,8 +164,8 @@ async function startBrain(command, socket, logFile) {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) fail(`the brain exited ${child.exitCode} before it listened:\n${fs.readFileSync(logFile, "utf8")}`);
-    // The old release prints "ADE brain listening on", the new build "Daex brain listening on".
-    if (/(?:Daex|ADE) brain listening on/.test(fs.readFileSync(logFile, "utf8"))) return child;
+    // The old release prints "ADE brain listening on", the new build "DAEX brain listening on".
+    if (/(?:DAEX|ADE) brain listening on/.test(fs.readFileSync(logFile, "utf8"))) return child;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   fail(`the brain did not listen within 120 s:\n${fs.readFileSync(logFile, "utf8")}`);

@@ -281,7 +281,7 @@ function classifyAccountMachineAdoptionFailure(
   ) {
     return "authentication";
   }
-  if (/older (?:ADE|Daex)|compatible cipher|update (?:it|(?:ADE|Daex))/i.test(reason)) return "protocol";
+  if (/older (?:ADE|DAEX)|compatible cipher|update (?:it|(?:ADE|DAEX))/i.test(reason)) return "protocol";
   if (/identity|signature|device id|cipher/i.test(reason)) return "identity";
   if (/ECONN|EHOST|ENET|unreach|offline|closed|socket|websocket|refused/i.test(reason)) {
     return "unreachable";

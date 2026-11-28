@@ -374,7 +374,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     };
     const changesPermissions = Boolean(launch.permissionMode || launch.codexApprovalPolicy || launch.codexSandbox || launch.codexConfigSource);
     if (changesPermissions && args.runtimeActor) {
-      throw new Error("An agent cannot change a CLI session's permissions. The user can, from Daex or their own `daex` shell.");
+      throw new Error("An agent cannot change a CLI session's permissions. The user can, from DAEX or their own `daex` shell.");
     }
     if (Object.keys(launch).length > 0) assertRunsHere(sessionId, "change");
     // The relaunch goes first: a refused setting leaves the title and pin as they were.
@@ -491,10 +491,10 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
         kind: question ? "question" : "approval",
         title: row.attentionMessage?.trim() || "The CLI is waiting at a prompt in its terminal.",
         description: keys
-          ? `Answer with --approve${keys.acceptForSession ? ", --approve-session" : ""} or --deny; Daex presses ${providerName(row)}'s own key.`
+          ? `Answer with --approve${keys.acceptForSession ? ", --approve-session" : ""} or --deny; DAEX presses ${providerName(row)}'s own key.`
           : question
             ? `${providerName(row)} is asking a question; answer it in the terminal (\`daex terminal write ${row.id} --data …\`).`
-            : `Daex does not know ${providerName(row)}'s approval keys; answer it in the terminal (\`daex terminal write ${row.id} --data …\`).`,
+            : `DAEX does not know ${providerName(row)}'s approval keys; answer it in the terminal (\`daex terminal write ${row.id} --data …\`).`,
         questions: [],
         allowsFreeform: false,
         blocking: true,
@@ -512,14 +512,14 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     const sessionId = row.id;
     assertRunsHere(sessionId, "answer");
     if (!awaitingPrompt(row)) {
-      throw new Error(`The CLI in '${sessionId}' is not waiting on a prompt Daex can see. Look at its terminal, or read it with \`daex terminal read ${sessionId}\`.`);
+      throw new Error(`The CLI in '${sessionId}' is not waiting on a prompt DAEX can see. Look at its terminal, or read it with \`daex terminal read ${sessionId}\`.`);
     }
     const provider = providerOf(row);
     const keys = promptKeys(row);
     if (!keys) {
       throw new Error(deps.ptyService?.getCliPromptKind?.(sessionId) === "question"
         ? `${providerName(row)} is asking a question, not for a permission. Answer it in the terminal (\`daex terminal write ${sessionId} --data …\`).`
-        : `Daex does not know ${providerName(row)}'s approval keys. Answer the prompt in the terminal (\`daex terminal write ${sessionId} --data …\`).`);
+        : `DAEX does not know ${providerName(row)}'s approval keys. Answer the prompt in the terminal (\`daex terminal write ${sessionId} --data …\`).`);
     }
     const decision = args.decision ?? (args.responseText?.trim() ? "decline" : "accept");
     const key = decision === "accept"
@@ -528,7 +528,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
         ? keys.acceptForSession
         : keys.decline;
     if (key == null) {
-      throw new Error(`${providerName(row)} has no "allow for this session" answer Daex can press. Use --approve or --deny.`);
+      throw new Error(`${providerName(row)} has no "allow for this session" answer DAEX can press. Use --approve or --deny.`);
     }
     const pty = requirePty();
     if (!pty.writeBySessionId?.(sessionId, key)) {

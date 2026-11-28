@@ -438,7 +438,7 @@ export function evaluatePrWatch(args: {
   const unreadableSince = unreadable ? (previous.unreadableSince ?? nowIso) : null;
   if (unreadable && nowMs - timeMs(unreadableSince) >= PR_WATCH_UNREADABLE_LIMIT_MS) {
     return {
-      changes: [...held, { kind: "unreadable", reason: "GitHub no longer lets Daex read this pull request. It was removed, or this account lost access to it." }],
+      changes: [...held, { kind: "unreadable", reason: "GitHub no longer lets DAEX read this pull request. It was removed, or this account lost access to it." }],
       next: { ...previous, unreadableSince, held: [] },
       exhausted: false,
       stop: "unreadable",
@@ -583,7 +583,7 @@ export const PR_SHIP_STANDING_BRIEF = [
   "3. Rebase or merge the base branch only when the PR has a real conflict, then re-run the affected checks.",
   `4. ${PR_THREAD_CLOSEOUT_RULE}`,
   "5. When the required checks pass and nothing is left unaddressed, merge the PR with the repository's usual merge method (`gh pr merge` or `daex prs land`).",
-  "Daex wakes you with the next change once CI and the review bots have finished, so end your turn after you push.",
+  "DAEX wakes you with the next change once CI and the review bots have finished, so end your turn after you push.",
 ].join("\n");
 
 export type PrWatchWakeContext = {
@@ -639,7 +639,7 @@ function changeLines(change: PrWatchChange, ctx: PrWatchWakeContext): string[] {
           + " Do not treat this as a pass; verify the change yourself if it matters.",
       ];
     case "merge_queue_removed":
-      return [`- It was removed from the merge queue without merging${mergeQueueReasonText(change.reason)}. Daex does not re-queue it.`];
+      return [`- It was removed from the merge queue without merging${mergeQueueReasonText(change.reason)}. DAEX does not re-queue it.`];
     case "merged":
       return ["- The pull request was merged."];
     case "closed":
@@ -660,18 +660,18 @@ function closingLine(ctx: PrWatchWakeContext): string {
   switch (ctx.stop) {
     case "merged":
       return ctx.mode === "ship"
-        ? "Shipping is done; Daex stopped watching. Wrap up and report what landed."
-        : "Daex stopped watching this pull request.";
+        ? "Shipping is done; DAEX stopped watching. Wrap up and report what landed."
+        : "DAEX stopped watching this pull request.";
     case "closed":
-      return "Daex stopped watching this pull request.";
+      return "DAEX stopped watching this pull request.";
     case "unreadable":
-      return "Daex stopped watching. Check GitHub access, then run `daex prs watch` to watch it again.";
+      return "DAEX stopped watching. Check GitHub access, then run `daex prs watch` to watch it again.";
     case "exhausted":
-      return `Daex stopped watching after ${PR_WATCH_COMMENT_ONLY_WAKE_LIMIT} comment-only updates in a row. Run \`daex prs watch\` to watch it again.`;
+      return `DAEX stopped watching after ${PR_WATCH_COMMENT_ONLY_WAKE_LIMIT} comment-only updates in a row. Run \`daex prs watch\` to watch it again.`;
     default:
       return ctx.mode === "ship"
-        ? "Follow your shipping instructions. Daex keeps watching and wakes you on the next change."
-        : `Look into each item and act on it as your task requires. ${ctx.changes.some((change) => change.kind === "remarks") ? `${PR_THREAD_CLOSEOUT_RULE} ` : ""}Daex keeps watching and wakes you on the next change, so end your turn when you are done. Run \`daex prs unwatch\` when you no longer need updates.`;
+        ? "Follow your shipping instructions. DAEX keeps watching and wakes you on the next change."
+        : `Look into each item and act on it as your task requires. ${ctx.changes.some((change) => change.kind === "remarks") ? `${PR_THREAD_CLOSEOUT_RULE} ` : ""}DAEX keeps watching and wakes you on the next change, so end your turn when you are done. Run \`daex prs unwatch\` when you no longer need updates.`;
   }
 }
 
@@ -679,7 +679,7 @@ function closingLine(ctx: PrWatchWakeContext): string {
 export function buildPrWatchWakeText(ctx: PrWatchWakeContext): string {
   const verb = ctx.mode === "ship" ? "shipping" : "watching";
   const lines = [
-    `Update on pull request #${ctx.pr.githubPrNumber} (${ctx.pr.githubUrl}), which Daex is ${verb} for you:`,
+    `Update on pull request #${ctx.pr.githubPrNumber} (${ctx.pr.githubUrl}), which DAEX is ${verb} for you:`,
     ...ctx.changes.flatMap((change) => changeLines(change, ctx)),
     "",
   ];

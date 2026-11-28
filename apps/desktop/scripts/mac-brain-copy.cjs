@@ -1,5 +1,5 @@
 // The brain copy: a second copy of the app's own executable,
-// `Contents/MacOS/Daex Brain` (`Daex Alpha Brain` for `ADE Alpha`), for the
+// `Contents/MacOS/DAEX Brain` (`DAEX Alpha Brain` for `ADE Alpha`), for the
 // brain-executable switch in `apps/ade-cli/src/serviceManager/brainExecutable.ts`
 // (mode `brain-copy`). macOS names the background item after this file
 // ("Background Items Added", Login Items).
@@ -37,7 +37,7 @@ const MODE_FILE = path.resolve(__dirname, "..", "..", "ade-cli", "src", "service
 // Keep in step with brainCopyFileName / legacyBrainCopyFileName in brainExecutable.ts.
 const BRAIN_COPY_SUFFIX = " Brain";
 const FROZEN_EXECUTABLE_PREFIX = "ADE";
-const BRAIN_COPY_PREFIX = "Daex";
+const BRAIN_COPY_PREFIX = "DAEX";
 // Restricted entitlements need a provisioning profile, which authorizes the
 // app's main executable only. The brain uses none of them.
 const RESTRICTED_ENTITLEMENT_KEYS = [
@@ -76,7 +76,7 @@ function bundleExecutableName(appPath) {
   return name;
 }
 
-/** `ADE` -> `Daex Brain`; another executable name -> `<name> Brain`. */
+/** `ADE` -> `DAEX Brain`; another executable name -> `<name> Brain`. */
 function brainCopyFileName(executableName) {
   const branded = executableName === FROZEN_EXECUTABLE_PREFIX || executableName.startsWith(`${FROZEN_EXECUTABLE_PREFIX} `)
     ? `${BRAIN_COPY_PREFIX}${executableName.slice(FROZEN_EXECUTABLE_PREFIX.length)}`

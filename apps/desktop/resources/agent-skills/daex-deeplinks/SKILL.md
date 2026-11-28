@@ -1,15 +1,15 @@
 ---
 name: daex-deeplinks
-description: "Make, share or open Daex deeplinks (lane, chat or CLI session, file, commit, artifact, branch, PR, Linear issue) to paste in GitHub, Linear, Slack, email, a terminal or the phone (`daex link`)."
+description: "Make, share or open DAEX deeplinks (lane, chat or CLI session, file, commit, artifact, branch, PR, Linear issue) to paste in GitHub, Linear, Slack, email, a terminal or the phone (`daex link`)."
 ---
 
-# Daex deeplinks
+# DAEX deeplinks
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 ## What a deeplink is
 
-Daex deeplinks are URLs that route directly to a specific Daex entity. Two forms,
+DAEX deeplinks are URLs that route directly to a specific DAEX entity. Two forms,
 identical semantics:
 
 ```
@@ -38,7 +38,7 @@ tries the `ade://` upgrade and falls back to an install card. Both forms parse
 to the same target shape.
 
 **Lane, session, commit, and artifact ids are local** — the UUID/id is
-meaningful only on the machine that created it. Daex can attach an envelope to
+meaningful only on the machine that created it. DAEX can attach an envelope to
 local links as query params:
 
 ```
@@ -46,31 +46,31 @@ repo=<owner>/<repo>&branch=<branch>&pr=<number>&linear=<ADE-123>
 ```
 
 The envelope does not change the primary target; it gives receivers a portable
-fallback chain. If the local id is unknown, Daex can offer to switch to the
+fallback chain. If the local id is unknown, DAEX can offer to switch to the
 matching project, create/open the branch or PR, open the Linear issue, or open a
 commit on GitHub. **Branch links are portable** — they fetch/import the remote
 branch as a lane if the receiver does not have it yet. **Linear-issue links are
-portable** — they open Daex's Linear pane for the issue and show setup if the
+portable** — they open DAEX's Linear pane for the issue and show setup if the
 active project has not connected Linear.
 
 ## Settings and pages in a chat reply
 
-When the user asks where something is in Daex ("how do I manage my
+When the user asks where something is in DAEX ("how do I manage my
 providers?"), run `daex settings find <words>` and put the link it prints in
 your reply:
 
 ```
 ade://settings/<entry-id>     # one card in Settings; the chat shows it as a chip
-ade://open/<page>             # a Daex page (prs, lanes, history, connections…)
+ade://open/<page>             # a DAEX page (prs, lanes, history, connections…)
 ```
 
-- The chip's label comes from Daex's own settings list, not from your text,
+- The chip's label comes from DAEX's own settings list, not from your text,
   and a click opens the card; a page for one computer opens on the chat's
   machine.
-- `ade://open/...` works only when the user clicks it in a chat; Daex ignores
+- `ade://open/...` works only when the user clicks it in a chat; DAEX ignores
   it from anywhere else.
 - `find` marks settings only the user can change (publishing, sign-ins,
-  money, the computer itself, preferences). Daex refuses an agent's change to
+  money, the computer itself, preferences). DAEX refuses an agent's change to
   them. Say that the user changes it, and give the link.
 
 ## When to use which form
@@ -108,7 +108,7 @@ daex link <url>                                             # round-trip an exis
 ```
 
 Every form copies to the clipboard by default and prints the URL to stdout.
-When a live Daex runtime is bound, `daex link lane`, `session --lane`, and
+When a live DAEX runtime is bound, `daex link lane`, `session --lane`, and
 `commit --lane` attach repo/branch/PR envelope params best-effort. Use
 `--no-envelope` to skip that lookup and `--no-clipboard` in scripts.
 
@@ -121,9 +121,9 @@ daex link commit abc1234 --lane 550e8400-e29b-41d4-a716-446655440000 --no-clipbo
 
 ## Pairing a browser — `daex sync web`
 
-Run `daex sync web --text` on, or pointed at, a Daex machine to print the
+Run `daex sync web --text` on, or pointed at, a DAEX machine to print the
 web-client pairing link and 6-digit code. Open the link in any browser, enter
-the code, and the Daex web client (Work, Lanes, Files, PRs) pairs to that
+the code, and the DAEX web client (Work, Lanes, Files, PRs) pairs to that
 machine — the browser analogue of scanning the phone pairing QR.
 
 Use `--open` to launch the pairing link in the default browser. Human output
@@ -139,7 +139,7 @@ daex open --linear-issue <ADE-123> --branch <branch>        # Linear coding-tool
 ```
 
 The CLI hands the URL to the OS, which routes through the registered `ade://`
-protocol back to a running Daex desktop window (or launches Daex cold). If the
+protocol back to a running DAEX desktop window (or launches DAEX cold). If the
 focused window's project doesn't match the deeplink's repo, the cross-repo
 banner appears with a "Switch to <project>" button.
 
@@ -150,20 +150,20 @@ daex linear install               # writes ~/.linear/coding-tools.json
 daex linear install --dry-run     # show what would be written
 ```
 
-Adds an entry so Linear's "Open issue in coding tool" picker can launch Daex.
+Adds an entry so Linear's "Open issue in coding tool" picker can launch DAEX.
 The template uses Linear's documented placeholders (`{{issue.identifier}}`,
 `{{issue.branchName}}`) — Linear does NOT expose the GitHub repo, so the
 desktop renderer opens the active project's Linear pane to the issue. If the
-project is not connected to Linear yet, Daex shows a setup modal that routes to
+project is not connected to Linear yet, DAEX shows a setup modal that routes to
 Settings > Integrations > Linear.
 
 ## RPC for programmatic dispatch
 
-For agents working through the Daex RPC layer, deeplinks dispatch via the
+For agents working through the DAEX RPC layer, deeplinks dispatch via the
 existing `app/navigate` method:
 
 ```jsonc
-// JSON-RPC over the Daex socket (`daex serve` / desktop RPC port)
+// JSON-RPC over the DAEX socket (`daex serve` / desktop RPC port)
 { "method": "app/navigate", "params": {
     "target": { "kind": "lane", "laneId": "<uuid>" }
 }}
@@ -196,44 +196,44 @@ something a user pasted).
 
 ## Auto-attached deeplinks
 
-Daex automatically appends an "Open in Daex" footer to PR descriptions it
-creates or adopts (idempotent via an HTML marker), and pushes Daex lane/chat
+DAEX automatically appends an "Open in DAEX" footer to PR descriptions it
+creates or adopts (idempotent via an HTML marker), and pushes DAEX lane/chat
 links with repo envelopes to any Linear issue linked to the lane (Linear
 attachment + one-time comment). Agents do not need to call `daex link` for
 those flows — they fire on PR creation / Linear-link events.
 
 Linear card/comment matrix:
 
-| Linear-related action | Who adds the Daex link |
+| Linear-related action | Who adds the DAEX link |
 | --- | --- |
-| `daex lanes create --linear-issue-json` | Daex posts the lane attachment/comment |
-| `daex lanes link-linear-issue` / `daex chat attach-linear-issue` / `daex linear attach --this-session` | Daex posts lane/chat attachments when a lane/session is known |
-| `daex chat create --from-linear-issue` or `daex lanes create --start-chat` | Daex posts the chat attachment after the issue is attached |
-| `daex prs create` on a linked lane | Daex posts the PR attachment/footer |
-| `daex linear comment`, `set-state`, `assign`, `label`, or `graphql` | The agent should include the relevant Daex link in any Linear comment it writes |
+| `daex lanes create --linear-issue-json` | DAEX posts the lane attachment/comment |
+| `daex lanes link-linear-issue` / `daex chat attach-linear-issue` / `daex linear attach --this-session` | DAEX posts lane/chat attachments when a lane/session is known |
+| `daex chat create --from-linear-issue` or `daex lanes create --start-chat` | DAEX posts the chat attachment after the issue is attached |
+| `daex prs create` on a linked lane | DAEX posts the PR attachment/footer |
+| `daex linear comment`, `set-state`, `assign`, `label`, or `graphql` | The agent should include the relevant DAEX link in any Linear comment it writes |
 
 If you create new Linear state directly (for example with `daex linear graphql`),
 mint the Linear-pane link yourself and comment it back to the issue:
 
 ```bash
 daex link linear-issue ADE-123 --no-clipboard
-daex linear comment ADE-123 "Created via Daex. Open in Daex: <paste link>"
+daex linear comment ADE-123 "Created via DAEX. Open in DAEX: <paste link>"
 ```
 
 ### PR closeout links
 
 When handing off a newly created or adopted PR, include both links: the GitHub
-PR URL (`githubUrl` / `html_url`) and the Daex PR link. `daex prs create` prints
-the Daex link as `adeUrl`; for a PR that came from another path, mint it:
+PR URL (`githubUrl` / `html_url`) and the DAEX PR link. `daex prs create` prints
+the DAEX link as `adeUrl`; for a PR that came from another path, mint it:
 
 ```bash
 daex link pr <owner/repo> <number> --no-clipboard
 ```
 
 Prefer the default HTTPS form in chat, PR comments, and terminal output: it is
-clickable and shareable, and on a machine with Daex installed it upgrades into
+clickable and shareable, and on a machine with DAEX installed it upgrades into
 `ade://pr/<owner>/<repo>/<number>` and lands in the PRs tab. The PR body also
-gets the automatic "Open in Daex" footer, but that footer is not a substitute for
+gets the automatic "Open in DAEX" footer, but that footer is not a substitute for
 the links in your final message.
 
 When you copy a deeplink from the desktop UI, the lane right-click menu offers
@@ -265,12 +265,12 @@ daex link artifact proof-123                                          # proof/hi
 daex link session <session-id> --lane <lane-uuid>                    # chat or CLI session
 daex link lane "$(daex lanes list --text | head -2 | tail -1 | awk '{print $1}')"  # current lane
 
-# Open a link locally (any of these reach a running Daex)
+# Open a link locally (any of these reach a running DAEX)
 daex open ade://lane/<uuid>
 daex open ade://session/<session-id>
 daex open "https://ade-app.dev/open?type=branch&repo=a/b&branch=feat"
 daex open --linear-issue ADE-123 --branch feat-x
 
-# One-time setup so Linear's "Open in coding tool" calls into Daex
+# One-time setup so Linear's "Open in coding tool" calls into DAEX
 daex linear install
 ```

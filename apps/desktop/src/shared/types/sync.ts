@@ -630,7 +630,7 @@ export function readCompetingSyncHostOwner(
   const reason = health?.skipReason;
   if (!reason) return null;
   const match =
-    /^Another (?:ADE|Daex) app on this computer owns sync for this machine \((.*), pid (\d+)\)\.$/.exec(reason);
+    /^Another (?:ADE|DAEX) app on this computer owns sync for this machine \((.*), pid (\d+)\)\.$/.exec(reason);
   if (!match) return null;
   const pid = Number.parseInt(match[2]!, 10);
   if (!Number.isFinite(pid) || pid <= 0) return null;

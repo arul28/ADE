@@ -443,7 +443,7 @@ async function requestPermission(
     }
     return {
       selectedOption: "cancel",
-      comment: comment ?? "Daex has no plan editor for this confirmation; the request was cancelled.",
+      comment: comment ?? "DAEX has no plan editor for this confirmation; the request was cancelled.",
     } as DroidSdkTypes.RequestPermissionHandlerResult;
   }
   return {

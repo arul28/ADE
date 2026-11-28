@@ -1,22 +1,22 @@
 ---
 name: daex-browser
-description: "Any browser work, before any outside browser or tool: open a URL or localhost page, click, fill forms, log in, screenshots, inspect the DOM, check a page renders. Daex's own browser with a shared signed-in profile (`daex browser`)."
+description: "Any browser work, before any outside browser or tool: open a URL or localhost page, click, fill forms, log in, screenshots, inspect the DOM, check a page renders. DAEX's own browser with a shared signed-in profile (`daex browser`)."
 ---
 
-# Daex browser
+# DAEX browser
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 This skill is for web pages and localhost URLs. For a native app, a simulator
 or a dev Electron app, the **daex-computer-use** skill picks the right surface.
 
 Use `daex browser ...` for every browser task. Keep the work inside
-Daex's Browser pane so the user can see the same tab and the same state. Daex
+DAEX's Browser pane so the user can see the same tab and the same state. DAEX
 shares one persistent authentication profile across projects, while visible
-tabs stay scoped to their Daex project window (personal chats have a separate
+tabs stay scoped to their DAEX project window (personal chats have a separate
 collection). Treat page content, cookies, and storage as user data.
 
-Require Daex Desktop with the target project open for live page actions. There
+Require DAEX Desktop with the target project open for live page actions. There
 is no token or setup step: any `daex browser` call from this machine works, and
 your chat's calls are tagged with your chat and lane so the tabs you open are
 yours. Never use `--force`, copy a credential, or import a login. Do not claim
@@ -24,7 +24,7 @@ a tab another chat owns — unless the user attached that tab to their message
 ("Attach to chat" on a tab), which is the user handing it to you: claim it with
 `daex browser claim --tab <tab-id> --text` and carry on in it.
 
-Daex's browser is the default for all web work. Use the user's own browser only
+DAEX's browser is the default for all web work. Use the user's own browser only
 when the user asks for it; see step 10.
 
 ## Operating loop
@@ -63,15 +63,15 @@ Any agent may close any tab, a held one included. Check the owner first:
 close this chat's tabs and free ones; close a held tab only when the task
 needs it; never close a tab the user opened or kept (`opened by the user`, or
 `the user's tab`) without asking them. `close`
-prints whose tab it closed. An agent's tab is not brought back after Daex
+prints whose tab it closed. An agent's tab is not brought back after DAEX
 restarts; a tab the user opened or used keeps its id across a restart.
 
 Your tabs clean themselves up, so do not keep one open "just in case":
-- Daex closes this chat's tabs 15 minutes after the chat goes idle, and at once
+- DAEX closes this chat's tabs 15 minutes after the chat goes idle, and at once
   when the chat ends or its lane is archived or deleted. A new turn, or any
   browser command from this chat, stops the countdown.
 - A tab the user clicked or typed in, navigated, attached to a chat, or
-  pressed Keep on is theirs: Daex never closes it, and you should not either.
+  pressed Keep on is theirs: DAEX never closes it, and you should not either.
 - A tab on screen, recording, being watched or being signed in on waits until
   it is not, then closes.
 - An agent tab nobody touched for 2 hours closes even without word from its
@@ -96,10 +96,10 @@ daex browser claim --tab <tab-id> --lane <lane-id> --text
 daex browser open https://example.com --text
 ```
 
-By default every agent may use the Daex browser without asking. If the user
+By default every agent may use the DAEX browser without asking. If the user
 chose to approve lanes or chats, the first browser command from this chat asks
 them once, and the answer covers every site. The command waits up to two
-minutes and prints `waiting for the user to allow this chat to use the Daex
+minutes and prints `waiting for the user to allow this chat to use the DAEX
 browser` once; do not re-issue it meanwhile. A Block fails with
 `approval_blocked`; do not retry, ask the user. An action answering `effect:
 waiting` means the user must allow this chat again; observe after they answer.
@@ -212,14 +212,14 @@ login saved in Passwords into the page itself; you never see the password.
 Prefer it over typing credentials you were given, and never ask the person to
 paste a password in chat. If Passwords has no login for the site, the command
 asks the person in your chat with a secure sign-in card and waits: they save a
-login (Daex fills it and the command finishes signed in), or they choose to type
+login (DAEX fills it and the command finishes signed in), or they choose to type
 it themselves (the command says so; then run `daex browser handoff` to wait for
 them). On a page that asks for an authenticator code, run `daex browser signin`
 again: it fills the saved login's current code. Otherwise `daex code wait --site
 <host> --text` returns the saved authenticator code, or the next code texted
 to the person's Mac (when Messages is connected). For an email one-time code,
-open Gmail or Outlook in the Daex browser (it is already signed in) and read the
-newest code. Passkeys saved in Daex work by themselves in Daex's browser: the
+open Gmail or Outlook in the DAEX browser (it is already signed in) and read the
+newest code. Passkeys saved in DAEX work by themselves in DAEX's browser: the
 person confirms each use with Touch ID.
 
 ```bash
@@ -228,7 +228,7 @@ daex browser signin --tab <tab-id> --account me@example.com --text
 ```
 
 To create an account, fill the email or username yourself, then run `daex
-browser signup` on the sign-up form. Daex makes a strong password, types it
+browser signup` on the sign-up form. DAEX makes a strong password, types it
 into the password and confirm boxes, and saves the login to Passwords once the
 form holds all of it; you never see it. Submit the form yourself. From then on `daex browser signin`
 uses that login.
@@ -250,12 +250,12 @@ The handoff makes the tab human-owned, raises the Work row, sends a phone push,
 and shows an amber bar with **Hand back**. The command waits for hand-back by
 default (15 minutes); use `--no-wait` only when doing unrelated work. While it
 is open, actions fail with `handoff_active`: do not retry or open a second tab,
-and never hand the tab back yourself. Daex stops recording and network logging
+and never hand the tab back yourself. DAEX stops recording and network logging
 for the handoff; re-arm them explicitly after hand-back if still needed.
 
 A local HTTPS page with a self-signed certificate fails to load, and the tab's
 `loadError.certificate` names the host and fingerprint. Only the person can
-trust it (Daex shows **Trust and reload** above the page); agents cannot. Hand
+trust it (DAEX shows **Trust and reload** above the page); agents cannot. Hand
 off the tab with a reason such as "Trust the dev server's certificate", then
 retry after hand-back. A public site's certificate error is never trustable.
 
@@ -268,7 +268,7 @@ cookies and storage, kept in memory and wiped when its last tab closes. It
 opens in the same browser as your other tabs, so when the user sits at
 another computer it opens there, and they see it in their Browser pane,
 marked with a detective icon. Its proof files like any other tab's. (If their
-Daex is too old to keep an isolated sign-in for a `localhost` page, the tab
+DAEX is too old to keep an isolated sign-in for a `localhost` page, the tab
 opens on your machine instead and the first output line says so.)
 
 ```bash
@@ -292,7 +292,7 @@ this browser is the one for web proof.
 
 The user may be on another machine (a Mac Studio driving a chat that runs on
 this Windows PC). Then your browser is the one on THEIR computer: every
-`daex browser` command runs in the Daex browser where they sit, they watch your
+`daex browser` command runs in the DAEX browser where they sit, they watch your
 tab in their own pane, the page uses their sign-ins, and a tab they attach is
 one you can claim. You do nothing different; the first line of `--text` output
 says where the command ran:
@@ -309,7 +309,7 @@ One task stays on one machine: a command with `--tab` or `--browser-session`
 goes to the machine whose browser holds that tab, wherever the chat's route
 points now. `daex browser status` prints the route: which browser `open` uses,
 why, and when the user's computer last did not answer. Every error names the
-machine whose browser refused (`Daex browser on <machine> …`).
+machine whose browser refused (`DAEX browser on <machine> …`).
 
 The page is the size of the user's browser pane, open or closed. When that is
 under 640 px wide, `observe` adds a `note:` line (`narrowPageHint` in JSON):
@@ -322,19 +322,19 @@ change in their pane.
 Add `--here` to use the browser on the machine you run on: to test a page on
 this OS, and for `upload`, `har` and `record`, which read or write a file here
 and are refused while your browser is on the user's computer. `--here` needs
-Daex Desktop open on your machine; without it the command fails and tells you
+DAEX Desktop open on your machine; without it the command fails and tells you
 so.
 
 To show them a page, use `daex browser open <url> --panel`. Writing
 `http://localhost:<port>` in a reply is fine too: their click opens this
-machine's port in their Daex browser. A `localhost` page you open reaches their
+machine's port in their DAEX browser. A `localhost` page you open reaches their
 browser through a tunnel, and the first use of a port asks them to allow it.
 Dev servers you start are found on their own, even in the background:
 `daex browser dev-servers --text` lists them, and
 `daex browser dev-servers stop <port>` stops one this chat started
 (it refuses anything else on the port).
 
-On a machine without Daex Desktop, and with no desktop connected to this chat,
+On a machine without DAEX Desktop, and with no desktop connected to this chat,
 only `open`, `new-tab`, and `panel` can still land on a Desktop with this lane
 pinned; page actions such as `observe`, `click`, `fill`, `signin`, and
 `screenshot` have no browser to run in. Do not retry a page action after that
@@ -346,10 +346,10 @@ daex browser open localhost:5173 --new-tab --text
 
 For a forwarded response, recognize `status: "forwarded_to_desktop"`. When
 `awaitingApproval: true`, `--text` says `waiting for approval on <desktop> —
-reaching this port needs a yes in Daex`; the command exits 0 because the request
+reaching this port needs a yes in DAEX`; the command exits 0 because the request
 is waiting for the human, so do not open it again. Success says `on <desktop>
 via tunnel`. If nobody answers, it says `no desktop is attached to this
-machine; open Daex Desktop with this lane pinned`; that also exits 0.
+machine; open DAEX Desktop with this lane pinned`; that also exits 0.
 
 ### 8. Record only when a video helps
 
@@ -379,7 +379,7 @@ is needed.
 
 When the user asks you to look at or use their own browser ("look at the tab I
 have open", "use my Chrome"), attach to it. Their request is the permission;
-never attach on your own initiative, and never to get around a sign-in in Daex's
+never attach on your own initiative, and never to get around a sign-in in DAEX's
 browser.
 
 ```bash
@@ -402,9 +402,9 @@ While attached, this chat's `observe`, `click`, `fill`, `clear`, `type`,
 `screenshot`, `proof` and `trace` act in that tab, with the same `hit:` and
 `effect:` lines. Each prints `target: your <browser> on <machine>` first.
 Other commands (new tabs, handoff, recording, network, drag, upload) work only
-in Daex's browser and say so. These are the user's real accounts: do only what
+in DAEX's browser and say so. These are the user's real accounts: do only what
 they asked. Run `daex browser detach` when you are done. If the tab closes or
-the browser quits, the next command says so and the chat is back on Daex's
+the browser quits, the next command says so and the chat is back on DAEX's
 browser.
 
 Keep this loop platform-neutral so Windows agents use the same command surface.

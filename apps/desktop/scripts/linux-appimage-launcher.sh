@@ -27,25 +27,25 @@ for arg in "$@"; do
   [[ "$arg" == --no-sandbox ]] || args+=("$arg")
 done
 if [[ "${ADE_ALLOW_NO_SANDBOX:-}" == 1 ]]; then
-  echo 'Daex: Chromium sandbox disabled by ADE_ALLOW_NO_SANDBOX=1.' >&2
+  echo 'DAEX: Chromium sandbox disabled by ADE_ALLOW_NO_SANDBOX=1.' >&2
   exec "$binary" --no-sandbox ${args[@]+"${args[@]}"}
 fi
 if ! unshare -Ur true 2>/dev/null; then
   # No AppArmor profile is offered for the AppImage: it can only match a path
   # under /tmp, which any local user could create to get the same exception.
   help_url='https://ade-app.dev/docs/getting-started/linux#if-the-appimage-will-not-start'
-  message="Daex can't start from this AppImage.
+  message="DAEX can't start from this AppImage.
 
-Your system blocks the security sandbox an AppImage needs, which is normal on Ubuntu 24.04 and newer. Install the Daex .deb instead. It has the permission it needs.
+Your system blocks the security sandbox an AppImage needs, which is normal on Ubuntu 24.04 and newer. Install the DAEX .deb instead. It has the permission it needs.
 
 Steps and downloads: $help_url"
-  echo "Daex: $message" >&2
-  echo 'Daex: To accept the risk and run without the sandbox, start Daex with ADE_ALLOW_NO_SANDBOX=1.' >&2
+  echo "DAEX: $message" >&2
+  echo 'DAEX: To accept the risk and run without the sandbox, start DAEX with ADE_ALLOW_NO_SANDBOX=1.' >&2
   open_help=
   if command -v zenity >/dev/null 2>&1; then
-    zenity --question --title='Daex' --width=520 --ok-label='Open help' --cancel-label='Close' --text="$message" && open_help=1
+    zenity --question --title='DAEX' --width=520 --ok-label='Open help' --cancel-label='Close' --text="$message" && open_help=1
   elif command -v kdialog >/dev/null 2>&1; then
-    kdialog --title 'Daex' --yes-label 'Open help' --no-label 'Close' --yesno "$message" && open_help=1
+    kdialog --title 'DAEX' --yes-label 'Open help' --no-label 'Close' --yesno "$message" && open_help=1
   elif command -v xmessage >/dev/null 2>&1; then
     xmessage "$message" || true
   fi

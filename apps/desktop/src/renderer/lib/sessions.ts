@@ -64,7 +64,7 @@ export function formatSessionActionError(error: unknown, action: string): string
     // showing the raw id for.
     return `${action} failed: that session is no longer on the machine this tab is connected to. Refresh the list, or switch to the machine that owns it and try again.`;
   }
-  if (/is still owned by another (?:ADE|Daex) runtime/i.test(message)) {
+  if (/is still owned by another (?:ADE|DAEX) runtime/i.test(message)) {
     return `${action} failed: another ${BRAND.NAME} runtime still owns this session. Stop it from that machine first.`;
   }
   return `${action} failed: ${message}`;

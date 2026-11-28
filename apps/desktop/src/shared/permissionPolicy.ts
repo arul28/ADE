@@ -177,8 +177,8 @@ export function claudeToolNameToNeutral(name: string): string {
 }
 
 /**
- * MCP server names that are one server. Daex's CTO tool server was named
- * `ade-cto` before the Daex rename and is `daex-cto` now; a policy written
+ * MCP server names that are one server. DAEX's CTO tool server was named
+ * `ade-cto` before the DAEX rename and is `daex-cto` now; a policy written
  * for the old name keeps matching the new one, and above all a deny rule never
  * silently stops matching. `ade-cto` is deprecated: write `daex-cto`.
  */

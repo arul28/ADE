@@ -68,7 +68,7 @@ export function buildOpenCodeAdeInstructions(args: {
   const providerConfig = args.permissionMode === "config-toml";
   const harnessMode = adeOpenCodeMode(args.permissionMode) ?? "edit";
   return [
-    "# Daex session instructions",
+    "# DAEX session instructions",
     "",
     buildCodingAgentSystemPrompt({
       cwd: args.laneWorktreePath,
@@ -82,7 +82,7 @@ export function buildOpenCodeAdeInstructions(args: {
       ? [
           "",
           "## Permission policy",
-          "This session runs under your own OpenCode configuration. Daex sets no permission policy for it, so ignore any permission tier named above: follow your configuration's rules, and treat it as authoritative wherever it is more restrictive.",
+          "This session runs under your own OpenCode configuration. DAEX sets no permission policy for it, so ignore any permission tier named above: follow your configuration's rules, and treat it as authoritative wherever it is more restrictive.",
         ]
       : []),
     ...(args.sessionActivityGuidance?.trim()

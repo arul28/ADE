@@ -28,7 +28,7 @@ const SNAPSHOT_TIMEOUT_MS = 120_000;
 const READ_TIMEOUT_MS = 15_000;
 const RAW_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 
-/** Commits are written as Daex, so a machine with no git identity can still save. */
+/** Commits are written as DAEX, so a machine with no git identity can still save. */
 const SNAPSHOT_IDENTITY_ENV: NodeJS.ProcessEnv = {
   GIT_AUTHOR_NAME: BRAND.NAME,
   GIT_AUTHOR_EMAIL: "ade@localhost",
@@ -37,7 +37,7 @@ const SNAPSHOT_IDENTITY_ENV: NodeJS.ProcessEnv = {
 };
 
 /**
- * Trailer keys, written as `Daex-<Key>`. Saves made before the rename carry
+ * Trailer keys, written as `DAEX-<Key>`. Saves made before the rename carry
  * `ADE-<Key>`; every reader below accepts either (`trailerKeyPattern`).
  */
 const TRAILER = {

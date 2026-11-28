@@ -272,7 +272,7 @@ export type MacDesktopServiceDeps = {
   hostIsLocal?: (() => boolean) | null;
   /**
    * The app name macOS puts in its permission UI. Defaults to the shown
-   * name of `ADE_DESKTOP_APP_NAME`, then Daex. Test seam only.
+   * name of `ADE_DESKTOP_APP_NAME`, then DAEX. Test seam only.
    */
   resolveResponsibleAppName?: (() => string) | null;
   /** How this build was signed. Defaults to the packaged marker on disk. */
@@ -433,7 +433,7 @@ export function createMacDesktopService(serviceDeps: MacDesktopServiceDeps): Mac
   /** The app name macOS addresses in its permission UI. */
   const responsibleAppName = (): string => {
     if (deps.resolveResponsibleAppName) return deps.resolveResponsibleAppName();
-    // The env names the app on disk (ADE.app); System Settings lists it as Daex.
+    // The env names the app on disk (ADE.app); System Settings lists it as DAEX.
     const fromEnv = process.env.ADE_DESKTOP_APP_NAME?.trim();
     return installedDesktopAppDisplayName(fromEnv && fromEnv.length ? fromEnv : "ADE");
   };

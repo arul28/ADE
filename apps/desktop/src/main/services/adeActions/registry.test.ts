@@ -207,7 +207,7 @@ describe("runtime domain services behind the allowlist", () => {
         () => settingsDomain.set!("all", "ade_mcp.enabled", false),
         () => settingsDomain.set!("all", "ade_mcp.machine.abc", { endpointKey: "x" }),
       ]) {
-        expect(call).toThrow(/Settings → Daex MCP/);
+        expect(call).toThrow(/Settings → DAEX MCP/);
       }
       expect(vault.get("all", "ade_mcp", "account-secret")).toBe("s3cret");
       expect(settings.get("all", "ade_mcp.enabled")).toBe(true);
@@ -334,7 +334,7 @@ describe("runtime domain services behind the allowlist", () => {
     });
     const activityDescription = getAdeActionInputContract("session", "setSessionActivity")?.description;
     expect(activityDescription).toContain("fixed activity label");
-    expect(activityDescription).toContain("Daex-bound tracked session");
+    expect(activityDescription).toContain("DAEX-bound tracked session");
     expect(activityDescription).toContain("tracked terminal owned by that chat");
   });
 
@@ -922,7 +922,7 @@ describe("runtime domain services behind the allowlist", () => {
       }
       await expect(chat.getImageDataUrl({ path: textPath })).rejects.toThrow(/not an image/i);
       for (const refused of [outside, homeSecret]) {
-        await expect(chat.getImageDataUrl({ path: refused }), refused).rejects.toThrow(/outside the folders Daex shows chat images from/);
+        await expect(chat.getImageDataUrl({ path: refused }), refused).rejects.toThrow(/outside the folders DAEX shows chat images from/);
       }
     } finally {
       vi.restoreAllMocks();
@@ -956,7 +956,7 @@ describe("runtime domain services behind the allowlist", () => {
       };
 
       await expect(chat.getImageDataUrl({ path: symlinkPath }))
-        .rejects.toThrow(/outside the folders Daex shows chat images from/);
+        .rejects.toThrow(/outside the folders DAEX shows chat images from/);
     } finally {
       vi.restoreAllMocks();
       await fs.promises.rm(base, { recursive: true, force: true });
@@ -1996,7 +1996,7 @@ describe("runtime session actions", () => {
       deleteSession: (sessionId: string) => boolean;
     } & Record<string, unknown>;
 
-    expect(() => sessionService.deleteSession("terminal-1")).toThrow("still owned by another Daex runtime");
+    expect(() => sessionService.deleteSession("terminal-1")).toThrow("still owned by another DAEX runtime");
     expect(dispose).not.toHaveBeenCalled();
     expect(deleteSession).not.toHaveBeenCalled();
   });

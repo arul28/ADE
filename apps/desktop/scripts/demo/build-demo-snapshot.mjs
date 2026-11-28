@@ -191,7 +191,7 @@ function authChat() {
   const t = transcript(id, 300);
   t.push({ type: "user_message", text: "When a Claude chat runs a workflow, the side pane only says \"no agent rows published\". Make every workflow agent show up there, live.", turnId });
   t.push({ type: "status", turnStatus: "started", turnId }, 200);
-  t.push({ type: "text", text: `Done. Daex took the workflow for a background shell command, so it dropped the workflow's progress updates. The pane now shows each agent live, in a cleaner layout, and clicking an agent opens its transcript. PR #${REAL_PR.number} is open and all checks pass.`, messageId: "m1", turnId }, 90_000);
+  t.push({ type: "text", text: `Done. DAEX took the workflow for a background shell command, so it dropped the workflow's progress updates. The pane now shows each agent live, in a cleaner layout, and clicking an agent opens its transcript. PR #${REAL_PR.number} is open and all checks pass.`, messageId: "m1", turnId }, 90_000);
   t.push({ type: "turn_diff_summary", turnId, beforeSha: "1a2b3c4", afterSha: "5d6e7f8", files: REAL_PR.files.slice(0, 4).map((f) => ({ path: f.filename, additions: f.additions, deletions: f.deletions, status: "M" })) }, 400);
   t.push({ type: "status", turnStatus: "completed", turnId }, 200);
   t.push({ type: "done", turnId, status: "completed", model: "claude-opus-5-5", modelId: "anthropic/claude-opus-5-5", usage: { inputTokens: 900, outputTokens: 1800, contextTokens: 22000, requestCount: 5, contextWindow: 1000000 } }, 300);

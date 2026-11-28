@@ -194,7 +194,7 @@ static class Program {
 
     Application.EnableVisualStyles();
     mainForm = new Form {
-      Text = "Daex Music",
+      Text = "DAEX Music",
       Width = 960,
       Height = 640,
       ShowInTaskbar = show,
@@ -271,7 +271,7 @@ static class Program {
       int n = ++popupCount;
       var features = ev.WindowFeatures;
       var form = new Form {
-        Text = "Connect Apple Music - Daex",
+        Text = "Connect Apple Music - DAEX",
         StartPosition = FormStartPosition.CenterScreen,
         ShowInTaskbar = true,
         Width = 520,

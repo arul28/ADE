@@ -402,7 +402,7 @@ function isImplicitConnectionFailure(error: unknown): boolean {
   if (error instanceof PairedRuntimeTransportUnavailableError) return true;
   if (isRemoteRuntimeConnectionError(error)) return true;
   const message = errorMessage(error);
-  return /remote (?:runtime|(?:ADE|Daex) service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before (?:ADE|Daex) could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
+  return /remote (?:runtime|(?:ADE|DAEX) service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before (?:ADE|DAEX) could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
     message,
   );
 }

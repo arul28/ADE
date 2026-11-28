@@ -67,8 +67,8 @@ export class BuiltInBrowserApprovalPendingError extends Error {
 
   constructor(subject: "chat" | "lane") {
     super(
-      `${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}: waiting for the user to allow this ${subject} to use the Daex browser. `
-      + "The prompt is still open in Daex; run the same command again to keep waiting.",
+      `${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}: waiting for the user to allow this ${subject} to use the DAEX browser. `
+      + "The prompt is still open in DAEX; run the same command again to keep waiting.",
     );
     this.name = "BuiltInBrowserApprovalPendingError";
   }
@@ -85,7 +85,7 @@ export class BuiltInBrowserAgentsDisabledError extends Error {
 
   constructor() {
     super(
-      `${BUILT_IN_BROWSER_AGENTS_DISABLED_CODE}: the user turned off agent use of the Daex browser in Settings. `
+      `${BUILT_IN_BROWSER_AGENTS_DISABLED_CODE}: the user turned off agent use of the DAEX browser in Settings. `
       + "Do not retry; ask the user to turn it back on if the browser is needed.",
     );
     this.name = "BuiltInBrowserAgentsDisabledError";
@@ -98,7 +98,7 @@ export class BuiltInBrowserApprovalBlockedError extends Error {
 
   constructor(subject: "chat" | "lane") {
     super(
-      `${BUILT_IN_BROWSER_APPROVAL_BLOCKED_CODE}: the user blocked this ${subject} from using the Daex browser. `
+      `${BUILT_IN_BROWSER_APPROVAL_BLOCKED_CODE}: the user blocked this ${subject} from using the DAEX browser. `
       + "Do not retry; ask the user if the browser is needed.",
     );
     this.name = "BuiltInBrowserApprovalBlockedError";
@@ -389,7 +389,7 @@ export function createBuiltInBrowserAgentAccessController(args: {
     if (covers(identity)) return;
     const subject = subjectFor(identity);
     throw new Error(
-      `The user has not allowed this ${subject} to use the Daex browser yet. `
+      `The user has not allowed this ${subject} to use the DAEX browser yet. `
       + `Run daex --socket browser authorize${subject === "chat" ? " from this chat" : ""} to ask them, then try again.`,
     );
   };

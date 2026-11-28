@@ -6,7 +6,7 @@
 - **Missing packages:** a plain server may lack Xvfb, the window manager,
   AT-SPI or ffmpeg. `daex screen status --text` lists them with the install
   command (`missing packages`, `install with`). You cannot install them: ask
-  the user to run `daex screen setup --allow-prompt` from their Daex client, or
+  the user to run `daex screen setup --allow-prompt` from their DAEX client, or
   the printed command on that machine.
 - **Browsers:** `daex screen open https://…` starts the machine's Chrome or
   Chromium (Firefox if that is all there is) with a lane-private profile and

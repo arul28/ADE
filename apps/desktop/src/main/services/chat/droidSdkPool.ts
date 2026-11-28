@@ -313,7 +313,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
         try {
           decision = bridge.onPermissionRequest
             ? await bridge.onPermissionRequest(message.request)
-            : { selectedOption: "cancel", comment: "Daex is not ready to approve Droid tool calls." };
+            : { selectedOption: "cancel", comment: "DAEX is not ready to approve Droid tool calls." };
         } catch (error) {
           args.logger?.error("agent_chat.droid_sdk_permission_error", {
             // The Error itself, so `logBridge` lifts it into the Sentry event

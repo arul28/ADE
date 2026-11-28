@@ -205,7 +205,7 @@ export function buildAdeSessionActivityGuidance(args: {
  */
 export function buildAdeWindowsTrackedCliActivityGuidance(): string {
   return [
-    "Activity detail for this tracked Daex CLI session:",
+    "Activity detail for this tracked DAEX CLI session:",
     "- When ADE_CLI_PATH and ADE_ACTIVITY_SESSION_ID are available, first identify your command shell. In PowerShell, report activity with `& \"$env:ADE_CLI_PATH\" chat activity testing` and clear it with `& \"$env:ADE_CLI_PATH\" chat activity clear`.",
     "  In cmd.exe, use `\"%ADE_CLI_PATH%\" chat activity testing` and `\"%ADE_CLI_PATH%\" chat activity clear`. Replace testing with one value from "
       + `${SESSION_ACTIVITY_VALUES.join(", ")}.`,
@@ -217,9 +217,9 @@ export function buildAdeWindowsTrackedCliActivityGuidance(): string {
 export function buildAdePosixTrackedCliActivityGuidance(): string {
   const command = '"$ADE_CLI_PATH"';
   return [
-    "Activity detail for this tracked Daex CLI session:",
+    "Activity detail for this tracked DAEX CLI session:",
     `- When your command shell exposes ADE_CLI_PATH and ADE_ACTIVITY_SESSION_ID, report activity with \`${command} chat activity testing\`; clear it with \`${command} chat activity clear\`. Replace testing with one value from ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
-    "  Daex scopes this command to the tracked terminal row; do not pass another session id.",
+    "  DAEX scopes this command to the tracked terminal row; do not pass another session id.",
   ].join("\n");
 }
 
@@ -282,10 +282,10 @@ export function buildCliSpawnReportGuidance(
   // same id; it is named here too in case a shell loses the variable.
   // `peer` is the stored name of a chat that does not report back.
   if (lineage?.spawnKind === "peer") {
-    return `Daex chat ${parent} started you. Nobody waits for your result. If that chat needs it, report it with \`daex chat message\`. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
+    return `DAEX chat ${parent} started you. Nobody waits for your result. If that chat needs it, report it with \`daex chat message\`. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
   }
   return [
-    `You are a subagent of Daex chat ${parent} ($ADE_PARENT_CHAT_SESSION_ID). That chat cannot see this terminal, so report to it yourself:`,
+    `You are a subagent of DAEX chat ${parent} ($ADE_PARENT_CHAT_SESSION_ID). That chat cannot see this terminal, so report to it yourself:`,
     "- When you finish a task, send a report: what you did, what you checked, and anything left open. Send one for each task you finish, not only when you exit.",
     "- When you need a decision, put the question and your recommendation in a report and wait; do not ask the user. That chat asks them when it cannot decide.",
     `- ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`,
@@ -341,12 +341,12 @@ export function buildAdeBootstrapGuidance(
   options: AdeBootstrapGuidanceOptions = {},
 ): string {
   return [
-    // External-session discovery recognizes Daex's own ACP chats by this
+    // External-session discovery recognizes DAEX's own ACP chats by this
     // heading, or the pre-rename "## ADE" (`discoverAcpShared.ts`).
-    "## Daex",
-    "Daex (formerly ADE) is a local-first dev environment (lanes, chats, terminals, PRs, proof, apps, iOS, browsers); its `daex` CLI controls Daex state. `ade` is the same command and still works.",
+    "## DAEX",
+    "DAEX (formerly ADE) is a local-first dev environment (lanes, chats, terminals, PRs, proof, apps, iOS, browsers); its `daex` CLI controls DAEX state. `ade` is the same command and still works.",
     ...(options.nativeSkillListing
-      ? ["Before a task in a Daex area, read its `daex:daex-*` skill."]
+      ? ["Before a task in a DAEX area, read its `daex:daex-*` skill."]
       : [
         `Skills: read the matching \`daex-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
         formatAdeAgentSkillRootsForPrompt(skillRoots),
@@ -377,7 +377,7 @@ export function buildAdeBootstrapGuidance(
     // models, and one wake per thing waited on, so an agent never polls.
     // `ade drafts` and `ade settings find` stay named here: without them the
     // 2026-11-16 discovery bench lost both features.
-    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`daex new chat --mode chat --provider <p> --model <id>`)."} Subagents report back; to wait on a PR use \`daex prs watch\`, on a terminal \`daex terminal watch\`, else \`daex chat scheduled-work create\`. \`daex drafts\` sends a message as the user. Daex settings: \`daex settings find <words>\`. Stop processes you start; \`daex help <command>\` shows usage.`,
+    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`daex new chat --mode chat --provider <p> --model <id>`)."} Subagents report back; to wait on a PR use \`daex prs watch\`, on a terminal \`daex terminal watch\`, else \`daex chat scheduled-work create\`. \`daex drafts\` sends a message as the user. DAEX settings: \`daex settings find <words>\`. Stop processes you start; \`daex help <command>\` shows usage.`,
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

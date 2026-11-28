@@ -255,12 +255,12 @@ export function agentActionEffect(
   if (tracker.targetUnreachable && POINT_TARGET_ACTIONS.has(input.action)) {
     return {
       status: "unconfirmed",
-      reason: `the target's center was still off screen or covered after Daex scrolled to it, so the ${input.action} may have landed on something else`,
+      reason: `the target's center was still off screen or covered after DAEX scrolled to it, so the ${input.action} may have landed on something else`,
     };
   }
   return compareAgentEffectFingerprints(tracker.before, agentDomEffectFingerprint(input.after), {
     ignoreLayout: tracker.ignoreLayout,
-    missingReason: "Daex could not read the page before the action",
+    missingReason: "DAEX could not read the page before the action",
   });
 }
 

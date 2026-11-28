@@ -820,7 +820,7 @@ function normalizeSshConnectError(
   if (
     code === "ECONNRESET" ||
     /(?:^|\s)ECONNRESET(?:\s|$)|connection reset|connection closed by remote host|socket closed|connection lost before handshake/i.test(message) ||
-    /closed before (?:it became ready|(?:ADE|Daex) could complete the SSH handshake)/i.test(fallback)
+    /closed before (?:it became ready|(?:ADE|DAEX) could complete the SSH handshake)/i.test(fallback)
   ) {
     return copySshErrorMetadata(
       source,

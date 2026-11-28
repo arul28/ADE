@@ -1103,14 +1103,14 @@ function closeRuntimeClient(client: RuntimeRpcClient): void {
 // messages (see RuntimeRpcClient.failConnection). A drop happens whenever the
 // daemon restarts or is recycled — e.g. when a desktop rebuild changes the
 // expected build hash and the running daemon is deemed incompatible.
-const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote (?:ADE|Daex) service connection (closed|failed)/i;
+const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote (?:ADE|DAEX) service connection (closed|failed)/i;
 
 // A `Remote ADE service method X failed (code …)` error is the daemon's own
 // JSON-RPC reply: the socket answered, so whatever went wrong is the brain's,
 // not the transport's. This is checked first and wins, because a brain-side
 // message can quote a transport sentence verbatim — and retrying a brain-side
 // failure would re-run a non-idempotent action against a healthy daemon.
-const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote (?:ADE|Daex) service method \S+ failed[\s(:]/i;
+const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote (?:ADE|DAEX) service method \S+ failed[\s(:]/i;
 
 /** 0xC000026B: Windows would not start a process because the session is logging off. */
 const WINDOWS_STATUS_DLL_INIT_FAILED_LOGOFF = 0xC000026B;

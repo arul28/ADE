@@ -41,7 +41,7 @@ export function findCustomProvider(presets: readonly HarnessPreset[] | null, ref
     const route = decodeRoutePresetId(wanted);
     return route
       ? { ok: true, preset: { id: wanted, name: `The ${presetSourceSummary(route.source).title} route`, harness: route.harness, source: route.source, model: route.model } }
-      : { ok: false, message: `"${wanted}" is not a route id Daex can read. Build one again with \`daex harness route-id\`.` };
+      : { ok: false, message: `"${wanted}" is not a route id DAEX can read. Build one again with \`daex harness route-id\`.` };
   }
   if (!presets?.length) {
     return {

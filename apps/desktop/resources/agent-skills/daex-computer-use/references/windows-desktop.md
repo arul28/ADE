@@ -43,7 +43,7 @@ you pass is stripped.
 ## Windows specifics
 
 - **Sign-in tasks:** the private seat is a real sign-in, so logon tasks and
-  startup apps run there too. Daex cannot control administrator windows; status
+  startup apps run there too. DAEX cannot control administrator windows; status
   and window listings mark them `[admin]`.
 - **Long text:** on the private seat, and for `--real` typing, Windows types
   one character at a time, so `type` takes about 25 ms per character and

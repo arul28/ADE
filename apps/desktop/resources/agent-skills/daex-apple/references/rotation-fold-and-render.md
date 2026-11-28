@@ -50,7 +50,7 @@
 - 3D renders: `render --angles front,three-quarter-left --poses closed,open`
   (`--lighting studio|dusk`, `--sheet`, `--video`, `--no-shadow`) files stills
   of the 3D device with its live screen to the proof drawer. No pane needs to
-  be open: any Daex desktop window with the project open renders it off
+  be open: any DAEX desktop window with the project open renders it off
   screen (a project on another machine must be the window's front tab);
   with none, it says so. The device must be on (`apple start`). On a
   Duo each pose folds the simulator first. It prints a `cite:` line per

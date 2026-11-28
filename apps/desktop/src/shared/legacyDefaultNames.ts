@@ -1,5 +1,5 @@
 /**
- * Names Daex made up before the rename, shown with the new name.
+ * Names DAEX made up before the rename, shown with the new name.
  *
  * Machines, devices and cloud computers keep the default name they were given
  * when they were made ("ADE Cloud computer", "ADE CLI on <host>"). Those rows
@@ -26,7 +26,7 @@ const LEGACY_DEFAULTS: ReadonlyArray<readonly [RegExp, (match: RegExpExecArray) 
   [new RegExp(`^${OLD} (CLI|agents|Desktop) on (.+)$`), (m) => `${BRAND.NAME} ${m[1]} on ${m[2]}`],
 ];
 
-/** A stored name with an old default's product name swapped for Daex; any other name unchanged. */
+/** A stored name with an old default's product name swapped for DAEX; any other name unchanged. */
 export function displayLegacyDefaultName(name: string): string;
 export function displayLegacyDefaultName(name: string | null | undefined): string | null | undefined;
 export function displayLegacyDefaultName(name: string | null | undefined): string | null | undefined {

@@ -557,7 +557,7 @@ function createPiSdkConnection(args: AcquirePiSdkConnectionArgs): Promise<PiSdkP
       if (!bridge.onUiRequest) {
         // Nothing can render this card, so answer immediately. Blocking a Pi
         // callback on a listener that does not exist would hang the turn.
-        worker.respondToUi(message.requestId, { ok: false, error: "No Daex surface is available to answer this request." });
+        worker.respondToUi(message.requestId, { ok: false, error: "No DAEX surface is available to answer this request." });
         return;
       }
       bridge.onUiRequest(message.requestId, message.payload);

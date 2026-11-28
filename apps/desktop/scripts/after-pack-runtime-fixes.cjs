@@ -182,11 +182,11 @@ function materializeDaexCliAliases(resourcesRoot) {
 
 // The product's shown name; twin of BRAND.NAME in src/shared/brand.ts (a
 // CommonJS hook cannot import TypeScript). The installed name it replaces stays.
-const DISPLAY_NAME = "Daex";
+const DISPLAY_NAME = "DAEX";
 const LEGACY_DISPLAY_NAME = "ADE";
 
 /**
- * The name macOS shows for the app ("ADE" -> "Daex", "ADE Alpha" -> "Daex
+ * The name macOS shows for the app ("ADE" -> "DAEX", "ADE Alpha" -> "DAEX
  * Alpha"), or null when the product name is already what should show.
  */
 function macDisplayNameFor(productName) {
@@ -196,7 +196,7 @@ function macDisplayNameFor(productName) {
 }
 
 /**
- * Shows the app as Daex on macOS (menu bar, Finder, Dock, Launchpad, About,
+ * Shows the app as DAEX on macOS (menu bar, Finder, Dock, Launchpad, About,
  * permission prompts) while the bundle keeps everything that identifies it:
  * the file name `ADE.app`, `Contents/MacOS/ADE`, the helpers and the
  * Info.plist CFBundleName. Existing installs and the updater stay where they

@@ -176,7 +176,7 @@ const args = [
   // three different names. Pin the artifact name to the space-free channel base
   // so the updater feed can only ever reference the file published beside it.
   `--config.win.artifactName=${windowsInstallerArtifactName(channelIdentity)}`,
-  // Show Daex in the Start menu and the installed apps list without moving
+  // Show DAEX in the Start menu and the installed apps list without moving
   // anything: shortcutName names only the .lnk (SHORTCUT_NAME, stored as
   // ShortcutName in the install key, so an update renames the old ADE.lnk and
   // keeps its AUMID), and uninstallDisplayName is only the Uninstall key's
@@ -185,7 +185,7 @@ const args = [
   `--config.nsis.shortcutName=${channelIdentity.displayName}`,
   `--config.nsis.uninstallDisplayName=${channelIdentity.displayName}`,
   `--config.fileAssociations.name=${channelIdentity.fileClass}`,
-  `--config.fileAssociations.description=${configuredFileAssociation.description ?? "Daex files"}`,
+  `--config.fileAssociations.description=${configuredFileAssociation.description ?? "DAEX files"}`,
   ...configuredFileAssociation.ext.map((extension) => `--config.fileAssociations.ext=${extension}`),
   // electron-builder 26 selects the Azure signing manager purely on the
   // presence of win.azureSignOptions, and that selection sits above the single

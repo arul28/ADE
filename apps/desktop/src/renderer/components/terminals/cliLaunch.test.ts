@@ -442,7 +442,7 @@ describe("ACP CLI providers", () => {
     expect(launch.assignedSessionId).toBeUndefined();
     expect(launch.startupCommand).not.toContain("Review this lane.");
     // ADE guidance rides in front of the first prompt; the user prompt comes last.
-    expect(launch.initialInput).toMatch(/^Daex session guidance\b/u);
+    expect(launch.initialInput).toMatch(/^DAEX session guidance\b/u);
     expect(launch.initialInput?.endsWith("Review this lane.")).toBe(true);
     expect(launch.initialInputDelayMs).toBe(750);
   });
@@ -522,7 +522,7 @@ describe("ACP CLI providers", () => {
     // The first prompt is the ADE guidance followed by the user prompt.
     const iIndex = launch.args.indexOf("-i");
     expect(iIndex).toBeGreaterThan(-1);
-    expect(launch.args[iIndex + 1]).toMatch(/^Daex session guidance\b/u);
+    expect(launch.args[iIndex + 1]).toMatch(/^DAEX session guidance\b/u);
     expect(launch.args[iIndex + 1].endsWith("Plan the change.")).toBe(true);
   });
 
@@ -1108,7 +1108,7 @@ describe("buildTrackedCliStartupCommand", () => {
     it("keeps empty Codex CLI launches waiting for the next user task", () => {
       const launch = buildTrackedCliLaunchCommand({ provider: "codex", permissionMode: "default" });
 
-      expect(launch.initialInput).toContain("Daex session guidance");
+      expect(launch.initialInput).toContain("DAEX session guidance");
       expect(launch.initialInput).toContain("wait for the user's next instruction before taking action");
       expect(launch.initialInput).not.toContain("User prompt:");
     });
@@ -1164,8 +1164,8 @@ describe("buildTrackedCliStartupCommand", () => {
         "-c",
         "model_reasoning_effort=\"medium\"",
       ]));
-      expect(launch.args.join("\n")).not.toContain("Daex session guidance");
-      expect(launch.initialInput).toContain("Daex session guidance");
+      expect(launch.args.join("\n")).not.toContain("DAEX session guidance");
+      expect(launch.initialInput).toContain("DAEX session guidance");
       expect(launch.initialInput).toContain("Start working on that user prompt immediately.");
       expect(launch.initialInput).not.toContain("wait for the user's next instruction before taking action");
       expect(launch.initialInput).toContain("User prompt:");
@@ -1316,10 +1316,10 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args).toEqual(["--mode", "plan", "--model", "cursor-fast"]);
       expect(launch.startupCommand).toContain("cursor-agent --mode plan --model cursor-fast");
       expect(launch.startupCommand).not.toContain("Review this lane.");
-      expect(launch.startupCommand).not.toContain("Daex session guidance");
+      expect(launch.startupCommand).not.toContain("DAEX session guidance");
       expect(launch.startupCommand).not.toContain("cursor-agent create-chat");
       expect(launch.startupCommand).not.toContain("--resume");
-      expect(launch.initialInput).toContain("Daex session guidance");
+      expect(launch.initialInput).toContain("DAEX session guidance");
       expect(launch.initialInput).toContain("Review this lane.");
       expect(launch.initialInputDelayMs).toBe(750);
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
@@ -1422,7 +1422,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args.join("\n")).toContain(buildAdeCliAgentGuidance());
       expect(launch.startupCommand).toBe("pi --model \"openai/gpt-5.4\" --thinking high --tools read,bash,edit,write,grep,find,ls --tui-mode regular");
       expect(launch.initialInput).toBe("Run the Pi path.");
-      expect(launch.args.join("\n")).toContain("Daex permission policy for this Pi session: full-auto");
+      expect(launch.args.join("\n")).toContain("DAEX permission policy for this Pi session: full-auto");
       expect(launch.initialInput).not.toContain("--dangerously");
       expect(launch.args).not.toEqual(expect.arrayContaining(["--permission-mode", "full-auto"]));
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
@@ -1458,7 +1458,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args).toEqual(["-lc", launch.startupCommand]);
       expect(launch.startupCommand).toContain("droid --settings \"$ADE_DROID_SETTINGS\"");
       expect(launch.startupCommand).toContain("Run the Droid path.");
-      expect(launch.startupCommand).toContain("Daex session guidance");
+      expect(launch.startupCommand).toContain("DAEX session guidance");
       expect(launch.startupCommand).toContain("\\\"model\\\":\\\"claude-sonnet-5\\\"");
       expect(launch.startupCommand).toContain("\\\"reasoningEffort\\\":\\\"high\\\"");
       expect(launch.startupCommand).toContain("\\\"autonomyLevel\\\":\\\"low\\\"");
@@ -1504,9 +1504,9 @@ describe("buildTrackedCliStartupCommand", () => {
         // first newline, and the ADE preamble is always multi-line, so the whole
         // prompt used to be lost. It rides the PTY instead now.
         expect(launch.startupCommand).not.toContain("Run the Droid path.");
-        expect(launch.startupCommand).not.toContain("Daex session guidance");
+        expect(launch.startupCommand).not.toContain("DAEX session guidance");
         expect(launch.initialInput).toContain("Run the Droid path.");
-        expect(launch.initialInput).toContain("Daex session guidance");
+        expect(launch.initialInput).toContain("DAEX session guidance");
         expect(launch.initialInput).toContain("\n");
         expect(launch.initialInputDelayMs).toBe(750);
       });

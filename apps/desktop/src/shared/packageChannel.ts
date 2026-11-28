@@ -72,15 +72,15 @@ const PACKAGE_CHANNEL_DISPLAY_NAMES: Record<AppPackageChannel, string> = {
   alpha: `${BRAND.NAME} Alpha`,
 };
 
-/** "Daex" or "Daex Alpha". */
+/** "DAEX" or "DAEX Alpha". */
 export function appPackageChannelDisplayName(channel: AppPackageChannel): string {
   return PACKAGE_CHANNEL_DISPLAY_NAMES[channel];
 }
 
 /**
  * The name a person sees for an installed app name (`ADE_DESKTOP_APP_NAME`):
- * `ADE.app` keeps its file name but macOS, dialogs and copy list it as Daex.
- * "ADE", "ADE Beta" and "ADE Alpha" map to the Daex names; any other
+ * `ADE.app` keeps its file name but macOS, dialogs and copy list it as DAEX.
+ * "ADE", "ADE Beta" and "ADE Alpha" map to the DAEX names; any other
  * (custom) name is shown as it is.
  */
 export function installedDesktopAppDisplayName(installedName: string): string {

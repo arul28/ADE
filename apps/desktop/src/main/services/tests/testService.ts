@@ -42,7 +42,7 @@ type ActiveRunEntry = {
 };
 
 const MAX_TEST_LOG_BYTES = 10 * 1024 * 1024;
-const TEST_LOG_LIMIT_NOTICE = "\n[Daex] test log limit reached (10MB). Further output omitted.\n";
+const TEST_LOG_LIMIT_NOTICE = "\n[DAEX] test log limit reached (10MB). Further output omitted.\n";
 
 function clampMaxBytes(maxBytes: number | undefined, fallback: number): number {
   if (typeof maxBytes !== "number" || !Number.isFinite(maxBytes)) return fallback;

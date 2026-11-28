@@ -88,7 +88,7 @@ export function buildPackagedSyncHostConflictDialogContent(args: {
   conflict: SyncHostSingletonConflict;
 }): PackagedSyncHostConflictDialogContent {
   const owner = args.conflict.owner;
-  // App names name the install on disk (ADE.app); the dialog shows their Daex names.
+  // App names name the install on disk (ADE.app); the dialog shows their DAEX names.
   const ownerName = installedDesktopAppDisplayName(owner.appName ?? "ADE");
   const launchingAppName = installedDesktopAppDisplayName(args.launchingAppName);
   const portText = owner.port != null ? ` on sync port ${owner.port}` : "";

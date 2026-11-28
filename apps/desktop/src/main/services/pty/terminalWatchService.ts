@@ -566,7 +566,7 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
       throw new Error(`Chat '${chatSessionId}' was not found on this machine. A terminal watch runs on the machine that runs the chat.`);
     }
     if (!isChatToolType(row.toolType)) {
-      throw new Error("A terminal watch wakes a Daex chat, and this session is not one. Run it from a chat, or pass --chat <chat id>.");
+      throw new Error("A terminal watch wakes a DAEX chat, and this session is not one. Run it from a chat, or pass --chat <chat id>.");
     }
     if (row.archivedAt) throw new Error(`Chat '${chatSessionId}' is archived.`);
     return row;

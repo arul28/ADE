@@ -1754,7 +1754,7 @@ export function summarizeDiffStats(diff: string): { additions: number; deletions
   // line. An unanchored search matched a real diff whose own changed lines
   // quoted the notice — editing this file, for instance — and reported that
   // change as having no additions or deletions.
-  const shortenedDiff = (diff.startsWith("[Daex] Large file diff was shortened") || diff.startsWith("[ADE] Large file diff was shortened"))
+  const shortenedDiff = (diff.startsWith("[DAEX] Large file diff was shortened") || diff.startsWith("[ADE] Large file diff was shortened"))
     && (diff.includes("bytes were left out.") || diff.includes("bytes omitted from stored chat history."));
   if (shortenedDiff) {
     return { additions: 0, deletions: 0 };

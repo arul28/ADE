@@ -1,21 +1,21 @@
 ---
 name: daex-scene
-description: "A chart, status across many items, a changed number, a comparison, a timeline, Daex's lanes, chats or PRs, or a pick or small form for the user: a fenced ```scene block Daex renders live (`daex scene preview`)."
+description: "A chart, status across many items, a changed number, a comparison, a timeline, DAEX's lanes, chats or PRs, or a pick or small form for the user: a fenced ```scene block DAEX renders live (`daex scene preview`)."
 ---
 
-# Daex scenes
+# DAEX scenes
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
-Emit a fenced code block with language `scene` containing plain HTML. Daex renders
+Emit a fenced code block with language `scene` containing plain HTML. DAEX renders
 it in a sandboxed frame with its own origin and its own Content-Security-Policy,
-inline in your reply, on the reply's own text column and in Daex's font and
+inline in your reply, on the reply's own text column and in DAEX's font and
 colors. You write real HTML, CSS and JavaScript — there is no schema and no
 component list to stay inside.
 
 A scene **shows**, and it can **ask**: a button or a small form in it puts a
 ready reply in the user's prompt box (see "Asking"). The user can add to it,
-and sends it themselves. That reply is a chat message, never a permission. Daex
+and sends it themselves. That reply is a chat message, never a permission. DAEX
 has native surfaces for approvals, and a scene never stands in for one.
 
 `daex scene guide` prints the short version of this file: when to draw, how a
@@ -147,7 +147,7 @@ is in the prompt box.
   every reply control is disabled, the options their message names stay
   marked, `ade.answered` holds their message, and `ade.on("answered", fn)`
   fires, so you can redraw.
-- `button`, `input`, `select` and `textarea` already look like Daex. Add layout,
+- `button`, `input`, `select` and `textarea` already look like DAEX. Add layout,
   not a restyle.
 - Say the question in your reply text too. The terminal and the phone show the
   scene's title only, and the user can always answer by typing.
@@ -162,11 +162,11 @@ is in the prompt box.
 
 | Member | What it does |
 |---|---|
-| `ade.data` | The live Daex data the scene asked for (see below), or `null`. |
+| `ade.data` | The live DAEX data the scene asked for (see below), or `null`. |
 | `ade.on("data", fn)` | Called with each new data snapshot, and at once if one already arrived. |
-| `ade.on("theme", fn)` | Called when the user switches Daex's theme. The CSS variables already changed. |
-| `ade.theme` | Daex's resolved palette. Also available as CSS variables. |
-| `ade.open(url)` | Opens an `ade://` deeplink in Daex, or an http(s) page in Daex's browser. Plain `<a href>` links do the same. Works only in answer to a click in the scene. |
+| `ade.on("theme", fn)` | Called when the user switches DAEX's theme. The CSS variables already changed. |
+| `ade.theme` | DAEX's resolved palette. Also available as CSS variables. |
+| `ade.open(url)` | Opens an `ade://` deeplink in DAEX, or an http(s) page in DAEX's browser. Plain `<a href>` links do the same. Works only in answer to a click in the scene. |
 | `ade.reply(text)` | Puts `text` in the user's prompt box as a draft reply. Only in answer to a click or key press; nothing is sent. Returns a promise. |
 | `ade.answered` | The user's message that followed this scene, or `null` while it is open. |
 | `ade.on("picked", fn)` | Called with the text each time a reply lands in the prompt box. |
@@ -175,7 +175,7 @@ is in the prompt box.
 | `ade.restored` | True when the scene already played once and is being brought back; `ade.animate` and `ade.countUp` skip to their end state then. |
 | `ade.animate(target, keyframes, options)` | Web Animations, collapsed to the end state under reduced motion or restore. |
 | `ade.countUp(target, to, { from, duration, decimals })` | Counts a number up. |
-| `ade.chart(target, options)` | Draws a bar, line, area, donut or sparkline chart in Daex's look. See "Charts". |
+| `ade.chart(target, options)` | Draws a bar, line, area, donut or sparkline chart in DAEX's look. See "Charts". |
 | `ade.three.view(target, options)` | A 3D view with three.js (`THREE`), lights and drag-to-orbit. See "3D". |
 | `ade.resize()` | Re-measures the scene and asks the host for the new height. Call it after you change the content's size. |
 | `ade.ready()` | Call it when your first paint is done. |
@@ -184,8 +184,8 @@ CSS variables, already set on `:root` and kept current when the theme changes:
 `--bg`, `--surface`, `--border`, `--fg`, `--fg-muted`, `--accent`, `--success`,
 `--warning`, `--danger`, `--chart-1` … `--chart-6` (series colors for charts),
 `--font-sans`, `--font-mono`, `--font-size`. Use them
-and the scene looks like the rest of Daex in every theme, light ones included.
-`--font-sans` is Daex's Geist and `--font-mono` its JetBrains Mono.
+and the scene looks like the rest of DAEX in every theme, light ones included.
+`--font-sans` is DAEX's Geist and `--font-mono` its JetBrains Mono.
 
 ## Charts
 
@@ -276,7 +276,7 @@ a scene mentions it (`THREE.OrbitControls` included); do not import it.
   materials. One 3D view per reply. Past four live 3D views on screen, the
   oldest one shows its still picture.
 
-## Live Daex data
+## Live DAEX data
 
 Ask on the marker line, and the scene stays true after the turn ends: scrolled
 back into view tomorrow, it shows tomorrow's lanes.
@@ -292,12 +292,12 @@ back into view tomorrow, it shows tomorrow's lanes.
 | `prs` | `number, title, state, checks, review, laneId, additions, deletions, updatedAt, githubUrl, url` |
 
 `url` is an `ade://` deeplink: put it in an `<a href>` (or pass it to
-`ade.open`) and a click opens that lane, chat or PR in Daex. The snapshot
+`ade.open`) and a click opens that lane, chat or PR in DAEX. The snapshot
 `{ at, lanes?, sessions?, prs? }` arrives after load and again when it changes,
 so render from `ade.on("data", render)`, and draw an empty state until the
 first one arrives.
 
-**Use live data instead of typing Daex's numbers in.** Asking for `data=` and
+**Use live data instead of typing DAEX's numbers in.** Asking for `data=` and
 then hardcoding values you looked up is the worst of both: the numbers are
 stale tomorrow and wrong if your lookup was. Start from this and restyle it:
 
@@ -342,7 +342,7 @@ so the preview shows real lanes, chats and PRs.
 - **No globals named `top`, `parent`, `opener`, `frames` or `self`.** In a
   sandboxed frame those are the window's own, and touching them throws.
   `var top = []` breaks the whole script. Rename them.
-- **No access to Daex beyond the above.** Different origin, sandboxed without
+- **No access to DAEX beyond the above.** Different origin, sandboxed without
   `allow-same-origin`. `ade.open`, `ade.reply` and the data feed are the only bridges.
 - **No external libraries.** They cannot be fetched. Native CSS animations,
   SVG, canvas and the Web Animations API are what you have, and they are enough.
@@ -372,7 +372,7 @@ meaningless tomorrow.
 ## Size
 
 Keep it under roughly 500 lines of markup. Past that it is a document, not a
-view. The hard cap is 96,000 source bytes. Over it Daex renders your code as
+view. The hard cap is 96,000 source bytes. Over it DAEX renders your code as
 highlighted text instead of a view. Scenes can be up to 960 px tall in the
 transcript (taller ones scroll inside), and the reader can expand any scene to
 a full-window view.

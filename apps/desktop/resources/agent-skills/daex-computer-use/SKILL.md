@@ -1,13 +1,13 @@
 ---
 name: daex-computer-use
-description: "Any computer use: drive an app, screen, simulator or web page; click, type, screenshot, record, or prove a UI change works. Picks the Daex surface (`daex apple`, `daex screen` for the lane's own desktop, `daex app-control`, `daex browser`), so you never drive the user's screen."
+description: "Any computer use: drive an app, screen, simulator or web page; click, type, screenshot, record, or prove a UI change works. Picks the DAEX surface (`daex apple`, `daex screen` for the lane's own desktop, `daex app-control`, `daex browser`), so you never drive the user's screen."
 ---
 
-# Daex computer use
+# DAEX computer use
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
-This is the one entry point for computer use in Daex. Decide whether you need a
+This is the one entry point for computer use in DAEX. Decide whether you need a
 screen at all, then pick the surface, then follow that surface's loop.
 
 ## Detail files
@@ -71,7 +71,7 @@ launches the same way as your dev build, with its binary and
 `$ADE_APP_CONTROL_DEBUG_FLAGS` (see **daex-app-control**). Only when the app
 refuses a debug port does Mac Desktop drive an Electron window by point.
 
-Daex's browser is the default for web work. Attach to the user's own browser
+DAEX's browser is the default for web work. Attach to the user's own browser
 only when they ask for it, never on your own, and tell them which machine and
 tab you attached to.
 
@@ -79,14 +79,14 @@ Lane screens (`daex screen`) exist on macOS, Windows and Linux machines. On Linu
 each lane gets its own X display, so nothing you do there touches anyone's
 screen; see **Linux Desktop** below.
 
-**Only Daex's surfaces stay off the user's screen.** Anything else that clicks,
+**Only DAEX's surfaces stay off the user's screen.** Anything else that clicks,
 types or captures — an MCP server, `osascript` or System Events,
 `cliclick`, `screencapture`, a browser-automation CLI, a Chrome you open
 yourself — acts on the user's real screen, pointer and focus. Do not use them
-for task work. When a Daex surface cannot do a step, say which step and why,
+for task work. When a DAEX surface cannot do a step, say which step and why,
 and ask; do not switch tools silently.
 
-Note: `daex desktop` is a different command. It launches the Daex desktop app.
+Note: `daex desktop` is a different command. It launches the DAEX desktop app.
 
 ## A device on another machine
 
@@ -103,10 +103,10 @@ observation, then check the result. Every acting command (click, type, press,
 fill, scroll, drag) reports two lines:
 
 - `hit:` — the element the command actually hit.
-- `effect:` — `observed` (Daex saw the screen change), `unconfirmed` (Daex
-  looked and saw no change), `not_checked` (Daex did not look), or, in the
+- `effect:` — `observed` (DAEX saw the screen change), `unconfirmed` (DAEX
+  looked and saw no change), `not_checked` (DAEX did not look), or, in the
   browser, `waiting` (the action started a navigation that waits for the
-  user to allow this chat to use the Daex browser; observe again after they
+  user to allow this chat to use the DAEX browser; observe again after they
   answer).
 
 When the effect is `unconfirmed`, observe again before you act again or report
@@ -156,7 +156,7 @@ daex app-control show --floating --text
 ## Mac Desktop
 
 Each lane owns a private macOS screen. `daex screen ...` creates it, parks
-apps on it, and drives them through the Accessibility API. Daex captures the
+apps on it, and drives them through the Accessibility API. DAEX captures the
 user's real display only through `--real-screen`, and drives their pointer only
 under a lease, so background and Accessibility clicks need no ask. The one
 exception is real input (`--real`), which asks for that lease below. While
@@ -194,7 +194,7 @@ stalled apps, modifier keys and windows: `references/linux-desktop.md`.
 
 ## Check each step before you report it
 
-A click, type or press that returns `ok` only means Daex sent the input. It
+A click, type or press that returns `ok` only means DAEX sent the input. It
 does not mean the app did what you wanted. After each step that matters,
 confirm it: read the screen the command printed, `daex screen wait --label
 "<text>"`, `daex screen observe`, or a screenshot. Report only what you
@@ -244,7 +244,7 @@ The copy still shares that app's data with the user (cookies, history, recent
 files).
 
 A document is different: `open <file>` hands it to the lane's own copy of
-the app, and Daex refuses when the user also runs that app (macOS might give
+the app, and DAEX refuses when the user also runs that app (macOS might give
 the file to the user's copy). Open it from the lane's copy, or pass
 `--new-instance`. Detail: `references/mac-screen-details.md`.
 
@@ -299,7 +299,7 @@ its panels but not the controls inside them. Then act by point and click it
 with `--x/--y`. That is still delivered to the app alone and moves no pointer.
 
 Points are **global screen points**, not screenshot pixels: pass `--local`
-for a point read off the screenshot and Daex adds the display's origin. How
+for a point read off the screenshot and DAEX adds the display's origin. How
 the plane works: `references/mac-screen-details.md`.
 
 ### 3. Act — the result already contains the next observation
@@ -419,13 +419,13 @@ do not pipe the command into `tail` or `head` without `set -o pipefail`.
   to stand in for the file: that checks nothing and leaves unsaved work.
 - **`ade: Unknown command 'screen'` means your shell found an older
   `daex`,** not that the lane has no screen: a login shell can rebuild PATH and
-  put an installed CLI ahead of the one this Daex launched. Run the same command
+  put an installed CLI ahead of the one this DAEX launched. Run the same command
   through the launched CLI: `"$ADE_CLI_PATH" screen status --text`
   (PowerShell: `& $env:ADE_CLI_PATH screen status --text`), and keep
   using it for the rest of the task.
-- **Never repair Daex from a task.** Do not start, stop or install a brain or
+- **Never repair DAEX from a task.** Do not start, stop or install a brain or
   service (another channel may own it), and do not `npm install` in the user's
-  repo to fix Daex's own errors. Report the error.
+  repo to fix DAEX's own errors. Report the error.
 - **If `daex screen` still refuses after that, stop and report it.** Do not
   fall back to the user's real screen, and do not record it with `daex proof
   record --real-screen`.
@@ -465,7 +465,7 @@ record. Detail: `references/proof-staging-and-demos.md`.
   with no action. `--max-seconds <n>` sets a shorter limit.
 - **Mark the steps.** While recording, run `daex proof step "<what happens
   next>"` before each part of the flow. Each step is a caption in the video
-  and a chapter in Daex's player. Keep steps short and in the user's words.
+  and a chapter in DAEX's player. Keep steps short and in the user's words.
 - **Wait for the result, not for a time.** Use the surface's wait command
   instead of `sleep` (for example `daex app-control wait --text-match "Saved"`
   or `daex apple wait-for-element --label "Saved"`): the recording stops as
@@ -487,7 +487,7 @@ prints carries an `error` line and the partial file's path — report that inste
 of assuming the clip exists.
 
 If a recording fails, say so. Never attach an older recording or a copied
-file in its place. Daex refuses copied proof.
+file in its place. DAEX refuses copied proof.
 
 **Read that state before you rely on the record.** If the observation it
 returns does not show what your caption claims, the proof is wrong: fix the

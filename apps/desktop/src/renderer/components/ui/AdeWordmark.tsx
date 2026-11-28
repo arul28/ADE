@@ -3,7 +3,7 @@ import { useAppearanceStore, type ThemeId } from "../../state/appearanceStore";
 import { BRAND } from "../../../shared/brand";
 
 /**
- * The Daex mark (the "æ" glyph) for a theme. The dark-theme picture is a
+ * The DAEX mark (the "æ" glyph) for a theme. The dark-theme picture is a
  * white glyph, which vanishes on a light page, so the light theme uses the
  * brand violet glyph instead. Both are made from
  * `assets/brand/daex/glyph-mask.png`.

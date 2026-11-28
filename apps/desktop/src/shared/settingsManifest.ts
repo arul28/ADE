@@ -2420,7 +2420,7 @@ const FIND_SYNONYMS: Record<string, string> = {
   publish: "transcript",
   share: "transcript",
   sharing: "transcript",
-  // "Daex Cloud" (or the old "ADE Cloud") is a product, not the stop word
+  // "DAEX Cloud" (or the old "ADE Cloud") is a product, not the stop word
   // "ade" plus "cloud": alone, "cloud" is a fragment of Cloudflare and
   // Cloudinary and finds them first.
   "daex-cloud": "daex cloud",

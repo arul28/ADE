@@ -4472,7 +4472,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!xcodeVersion) setupSteps.push("Install Xcode 26.3 or newer.");
     if (!mcpbridgeAvailable) setupSteps.push("Install or select an Xcode that provides `xcrun mcpbridge`.");
     if (!xcodeRunning) setupSteps.push("Open apps/ios/ADE.xcodeproj in Xcode before rendering previews.");
-    if (error) setupSteps.push("If Xcode shows an \"Allow\" prompt for ADE Preview Lab, click Allow and keep Daex open until the retry finishes.");
+    if (error) setupSteps.push("If Xcode shows an \"Allow\" prompt for ADE Preview Lab, click Allow and keep DAEX open until the retry finishes.");
     if (error) setupSteps.push("If no prompt appears, open Xcode > Settings > Intelligence and enable \"Allow external agents to use Xcode tools\" under Model Context Protocol.");
     if (xcodeRunning && !error && !selectedWindow) setupSteps.push("Bring the Xcode window for apps/ios/ADE.xcodeproj forward, then retry.");
     return {
@@ -6045,7 +6045,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         role: element.role,
         elementType: element.elementType,
         sourceSnippet,
-        selectionExplanation: "The user selected this UI element from the Daex iOS Simulator inspector. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
+        selectionExplanation: "The user selected this UI element from the DAEX iOS Simulator inspector. The screenshot or crop attachment is visual evidence for this packet; frames are in screenshot pixels.",
       },
       accessibilityIdentifier: element.identifier,
       screenshotDataUrl: screenshotDataUrl ?? undefined,

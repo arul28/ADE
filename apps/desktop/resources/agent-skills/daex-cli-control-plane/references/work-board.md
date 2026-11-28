@@ -2,20 +2,20 @@
 
 ## Activity detail on the card
 
-Daex derives the parent state automatically, and for Daex chats it also detects
+DAEX derives the parent state automatically, and for DAEX chats it also detects
 the activity detail (Exploring, Implementing, Testing, Reviewing, Shipping,
 Monitoring) from your tool calls, so you do not need to report it. Some
 provider adapters also surface structured activity, such as Plan mode or a
-background monitor. Daex offers agent-reported activity only when the current
-provider can invoke the session's Daex CLI; use it to correct or refine the
+background monitor. DAEX offers agent-reported activity only when the current
+provider can invoke the session's DAEX CLI; use it to correct or refine the
 detected state (Debugging, which looks like testing to the detector). When available, session-specific guidance gives the exact
 command and allowed values. For tracked terminals, `daex chat activity` targets
-`ADE_ACTIVITY_SESSION_ID`, while other Daex commands continue to use the owning
+`ADE_ACTIVITY_SESSION_ID`, while other DAEX commands continue to use the owning
 chat in `ADE_CHAT_SESSION_ID`. Use that guidance to report or clear a detail;
 when it is absent, do not try to set one.
 
 An activity report refines a Working card and never moves it to Needs you,
-Waiting, or Done. Daex clears it when a new user turn is accepted. Update it
+Waiting, or Done. DAEX clears it when a new user turn is accepted. Update it
 when the work changes; do not keep a stale label. Each card shows at most one
 status: Needs you has priority, otherwise one current activity detail occupies
 the label in place of generic Working.

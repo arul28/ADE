@@ -157,7 +157,7 @@ const ENGINE_SOURCE = String.raw`
         if (available < MAGIC.length) return null;
         var magic = take(MAGIC.length);
         for (var i = 0; i < MAGIC.length; i += 1) {
-          if (magic[i] !== MAGIC.charCodeAt(i)) throw new Error("This file is not a Daex raw capture (bad header).");
+          if (magic[i] !== MAGIC.charCodeAt(i)) throw new Error("This file is not a DAEX raw capture (bad header).");
         }
         sawMagic = true;
       }

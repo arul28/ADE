@@ -136,7 +136,7 @@ describe("recoverFromOverflow", () => {
     });
     expect(h.notices).toEqual([{
       kind: "info",
-      message: "That was too long for Claude Opus 5. Daex is sending your message again with the newest 2 turns of the handoff.",
+      message: "That was too long for Claude Opus 5. DAEX is sending your message again with the newest 2 turns of the handoff.",
       turnId: "turn-1",
     }]);
     // A retry in flight is not an outcome yet: only the caller knows whether it
@@ -186,7 +186,7 @@ describe("recoverFromOverflow", () => {
     expect(h.staged).toEqual([fit().text]);
     expect(h.notices).toEqual([{
       kind: "warning",
-      message: "The handoff transcript is too long for Claude Opus 5. Daex kept the newest 2 turns. Send your message again.",
+      message: "The handoff transcript is too long for Claude Opus 5. DAEX kept the newest 2 turns. Send your message again.",
       turnId: "turn-2",
     }]);
     // Exactly one coarse product fact per give-up.
@@ -216,7 +216,7 @@ describe("recoverFromOverflow", () => {
       isRetryTurn: false,
     })).toBe("stop");
     expect(h.deps.resetProviderSession).not.toHaveBeenCalled();
-    expect(h.notices[0]?.message).toContain("Daex kept the newest 0 turns.");
+    expect(h.notices[0]?.message).toContain("DAEX kept the newest 0 turns.");
   });
 });
 
@@ -319,7 +319,7 @@ describe("retry bookkeeping", () => {
     expect(h.staged).toEqual([fit().text]);
     expect(h.notices).toEqual([{
       kind: "warning",
-      message: "The handoff transcript is too long for Claude Opus 5. Daex kept the newest 2 turns. Send your message again.",
+      message: "The handoff transcript is too long for Claude Opus 5. DAEX kept the newest 2 turns. Send your message again.",
       turnId: "turn-2",
     }]);
 

@@ -133,13 +133,13 @@ describe("RuntimeRpcClient", () => {
 
     const first = client.call("projects.list", {});
     const second = client.call("runtime/info", {});
-    const firstAssertion = expect(first).rejects.toThrow("Remote Daex service connection closed.");
-    const secondAssertion = expect(second).rejects.toThrow("Remote Daex service connection closed.");
+    const firstAssertion = expect(first).rejects.toThrow("Remote DAEX service connection closed.");
+    const secondAssertion = expect(second).rejects.toThrow("Remote DAEX service connection closed.");
     transport.emitClose();
 
     await firstAssertion;
     await secondAssertion;
-    await expect(client.call("projects.list", {})).rejects.toThrow("Remote Daex service connection closed.");
+    await expect(client.call("projects.list", {})).rejects.toThrow("Remote DAEX service connection closed.");
   });
 
   it("includes bounded SSH process details when the runtime helper exits", async () => {
@@ -168,10 +168,10 @@ describe("RuntimeRpcClient", () => {
     transport.emitError(new Error("ECONNRESET"));
     transport.emitClose();
 
-    await expect(pending).rejects.toThrow("Remote Daex service connection failed: ECONNRESET");
+    await expect(pending).rejects.toThrow("Remote DAEX service connection failed: ECONNRESET");
     expect(onDisconnect).toHaveBeenCalledTimes(1);
     expect(onDisconnect.mock.calls[0]?.[0]).toMatchObject({
-      message: "Remote Daex service connection failed: ECONNRESET",
+      message: "Remote DAEX service connection failed: ECONNRESET",
     });
   });
 
@@ -191,7 +191,7 @@ describe("RuntimeRpcClient", () => {
     });
 
     await expect(pending).rejects.toThrow(
-      'Remote Daex service method projects.create failed (code -32601): Method not found Details: {"method":"projects.create"}',
+      'Remote DAEX service method projects.create failed (code -32601): Method not found Details: {"method":"projects.create"}',
     );
   });
 
@@ -262,7 +262,7 @@ describe("RuntimeRpcClient", () => {
       const timedOutId = requestId(transport.writes[1]!);
       const unrelatedId = requestId(transport.writes[2]!);
       const timeoutAssertion = expect(timedOutMutation).rejects.toThrow(
-        "Remote Daex service timed out waiting for method ade/actions/call (25ms).",
+        "Remote DAEX service timed out waiting for method ade/actions/call (25ms).",
       );
       await vi.advanceTimersByTimeAsync(25);
 
@@ -336,8 +336,8 @@ describe("RuntimeRpcClient", () => {
 
     const first = client.call("projects.list", {});
     const second = client.call("runtime/info", {});
-    const firstAssertion = expect(first).rejects.toThrow("Failed to parse remote Daex service response");
-    const secondAssertion = expect(second).rejects.toThrow("Failed to parse remote Daex service response");
+    const firstAssertion = expect(first).rejects.toThrow("Failed to parse remote DAEX service response");
+    const secondAssertion = expect(second).rejects.toThrow("Failed to parse remote DAEX service response");
 
     transport.emitData('{"jsonrpc":"2.0",invalid}\n');
 
@@ -345,7 +345,7 @@ describe("RuntimeRpcClient", () => {
     await secondAssertion;
     expect(client.isClosed()).toBe(true);
     expect(onDisconnect).toHaveBeenCalledTimes(1);
-    await expect(client.call("ping", {})).rejects.toThrow("Failed to parse remote Daex service response");
+    await expect(client.call("ping", {})).rejects.toThrow("Failed to parse remote DAEX service response");
   });
 
   it("rejects invalid per-call timeout overrides before writing requests", async () => {
@@ -509,7 +509,7 @@ describe("RuntimeRpcClient waiting while the other end still runs a call", () =>
         request.method === "ade/actions/call" ? await new Promise(() => {}) : {});
       const call = client.call("ade/actions/call", ACTION, { timeoutMs: 30_000 });
       const assertion = expect(call).rejects.toThrow(
-        "Remote Daex service timed out waiting for method ade/actions/call storage.runMaintenanceNow (30000ms).",
+        "Remote DAEX service timed out waiting for method ade/actions/call storage.runMaintenanceNow (30000ms).",
       );
       await vi.advanceTimersByTimeAsync(30_000);
       await assertion;

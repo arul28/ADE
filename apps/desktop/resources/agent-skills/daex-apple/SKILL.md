@@ -1,20 +1,20 @@
 ---
 name: daex-apple
-description: "iOS app or SwiftUI view running on a simulator via `daex apple`, on a Mac or, from any machine (Windows, Linux), the Daex Cloud iPhone: find or create the lane's device, boot and stream it, drive by element query, screenshots, recordings, proof, SwiftUI previews."
+description: "iOS app or SwiftUI view running on a simulator via `daex apple`, on a Mac or, from any machine (Windows, Linux), the DAEX Cloud iPhone: find or create the lane's device, boot and stream it, drive by element query, screenshots, recordings, proof, SwiftUI previews."
 ---
 
-# Daex Apple Development
+# DAEX Apple Development
 
-Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+DAEX was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
 
 This skill is for iOS apps and iOS SwiftUI views. For a macOS app, a dev
 Electron app or a web page, the **daex-computer-use** skill picks the right
 surface.
 
 Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
-`$ADE_CLI_PATH` is the CLI of the Daex that launched you, so your calls and the
+`$ADE_CLI_PATH` is the CLI of the DAEX that launched you, so your calls and the
 desktop's Apple Development tool share one session. A bare `daex` goes through
-PATH and can reach a different Daex. Commands below written as `daex …` mean
+PATH and can reach a different DAEX. Commands below written as `daex …` mean
 `"$ADE_CLI_PATH" …` too.
 
 The pixels come from a vendored Swift helper (`ade-sim-helper`) reading the
@@ -26,12 +26,12 @@ feature that no longer exists.
 ## Four rules before your first command
 
 - **Always call `"$ADE_CLI_PATH"`, never a bare `daex`.** A bare `daex` can be
-  an older install or another Daex's CLI. That shows up as "Unknown command
+  an older install or another DAEX's CLI. That shows up as "Unknown command
   'apple'", "Domain 'apple' is unavailable", or a runtime version mismatch.
   Do not add `--socket`: `"$ADE_CLI_PATH"` already names the right one.
 - **Never open or script the Simulator app.** No `open -a Simulator`, no
   AppleScript or System Events, no `launch --foreground` or
-  `open-device --window`. Daex drives the device directly and shows it in its
+  `open-device --window`. DAEX drives the device directly and shows it in its
   own stream. Once Simulator.app runs, every booted simulator (every lane's)
   gets a window on the person's screen.
 - **Never capture proof with `xcrun simctl io … screenshot` or
@@ -39,7 +39,7 @@ feature that no longer exists.
   `record-stop` file proof to the lane automatically. See below for why the
   owner matters.
 - **Check each step before you report it.** A tap, swipe, button or type
-  that returns `ok` only means Daex sent the input. It does not mean the app
+  that returns `ok` only means DAEX sent the input. It does not mean the app
   did what you wanted. After each step that matters, confirm it:
   `apple foreground` (which app is in front), `apple assert-visible` or
   `apple wait-for-element` (what is on screen), or `apple snapshot`. Report
@@ -91,10 +91,10 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
   Use `foreground --wait 10`, or wait for an element of that app.
 - Tap, drag and scroll coordinates are the screenshot's and the snapshot's
   points, upright, whichever way the device is held (the Duo's inner display
-  included): Daex turns them onto the framebuffer for you. Prefer
+  included): DAEX turns them onto the framebuffer for you. Prefer
   `tap-element` anyway.
 - `launch` builds Debug. Pass `--configuration Release` when the app's
-  configurations differ in more than speed (Daex's own iOS app signs into a
+  configurations differ in more than speed (DAEX's own iOS app signs into a
   test backend in Debug); the summary names the configuration it built.
   Arguments after `--` reach the app, for `launch` and `relaunch`.
 - One agent should drive the device. Let it do the taps, screenshots and
@@ -120,12 +120,12 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
 `status` is the gate and the map.
 
 - `supported: false` means this machine is not a Mac. Use a Mac's simulator
-  (`daex devices` lists `ios@<Mac>`) or the Daex Cloud iPhone (`ios@cloud`, below)
+  (`daex devices` lists `ios@<Mac>`) or the DAEX Cloud iPhone (`ios@cloud`, below)
   instead. Only with neither, stop and say so.
 - `capabilities` lists every action you may call on this device, by name. Read
   it instead of guessing verbs or reading source.
 - `device` tells you whether this lane already owns a simulator, its `origin`
-  (`created` or the older `clone` for Daex's own, `attached` for the user's),
+  (`created` or the older `clone` for DAEX's own, `attached` for the user's),
   and its `laneId`.
 - `tools.helper` (`present`, `path`, `version`) is the check when every device
   call fails at once.
@@ -153,14 +153,14 @@ There `screenshot --out <path>` copies the shot back to this machine.
 Use `--no-build` when the app is already installed and you only want it in
 front. Use `relaunch` or `terminate` for an app that is already there.
 
-## Daex Cloud iPhone (any machine)
+## DAEX Cloud iPhone (any machine)
 
 `ios@cloud` is the account's iPhone in the cloud, not a simulator on any machine,
 so Windows and Linux use it too. `daex devices` lists it only when the account
 has it; otherwise `use ios@cloud` says why: not on this account yet, or this
-machine's Daex is too old for it (then the person updates Daex; don't look for
+machine's DAEX is too old for it (then the person updates DAEX; don't look for
 another cause). It spends
-the account's Daex Cloud credits (one a minute); a Mac of the person's
+the account's DAEX Cloud credits (one a minute); a Mac of the person's
 (`ios@<Mac>`) spends none, so prefer one that is listed.
 
 ```bash
@@ -205,7 +205,7 @@ For one command, `daex apple … --machine cloud`. What differs:
   the iPhone used (`iphone`) and every plan's (`plans`). It stops when the
   credits run out unless extra credits are on (paid plans), and after 2
   hours. `daex apple stop` as soon as you are done. Only the person changes the
-  plan or extra credits, in Settings › Daex Cloud. A full-auto chat or an automation uses it only when the
+  plan or extra credits, in Settings › DAEX Cloud. A full-auto chat or an automation uses it only when the
   person lets agents spend (the agent limits, as for hours).
 
 Working fast on it (measured: `snapshot` about 1 s, a step 2–3 s, a fresh
@@ -237,7 +237,7 @@ streams it. Other simulators in `apple devices` belong to someone else:
 another lane, an `xcodebuild test` run, or the user.
 
 - You may make the lane's ONE device without asking, and you never make a
-  simulator with `xcrun simctl create` or `simctl clone` — Daex cannot see or
+  simulator with `xcrun simctl create` or `simctl clone` — DAEX cannot see or
   delete a device made that way.
 - Need a second model too (an iPad beside an iPhone Duo)? Give the lane an
   extra device: `device-create --extra --device-type "<model>"` (at most 2),
@@ -245,7 +245,7 @@ another lane, an `xcodebuild test` run, or the user.
   stream, record, `launch` or run tests. Extras, `install --device` and
   `device-promote`: `references/devices-and-runtimes.md`.
 - You may attach an installed simulator only when the user names it
-  (`device-attach --simulator <name>` or `start --udid <udid>`). Daex refuses a
+  (`device-attach --simulator <name>` or `start --udid <udid>`). DAEX refuses a
   simulator another lane holds, with `APPLE_DEVICE_NOT_LANE_OWNED`.
 - `--device <udid>` on any other command must be this lane's device or one of
   its extra devices. With no device yet, the command tells you to run
@@ -282,7 +282,7 @@ a different kind and calling it done.
 
 ## The lane's device
 
-One simulator per lane. Daex creates one on first ask, or binds one you already
+One simulator per lane. DAEX creates one on first ask, or binds one you already
 have. Creating a device never downloads anything. With no runtime installed you
 get `APPLE_NO_INSTALLED_SIMULATORS`: run `daex apple runtimes` to see what this
 Xcode needs, and `daex apple runtimes install` to fetch it (about 8 GB per
@@ -310,15 +310,15 @@ free" is almost never true. Runtimes and devices in full:
   only for the device this lane already holds. Its answer says whether it made
   a new simulator or attached an installed one.
 - `stop` powers the device **off** and keeps it registered as the lane's (the
-  next `start` boots it; Daex deletes a device it made with the lane). `shutdown` only ends this chat's session
+  next `start` boots it; DAEX deletes a device it made with the lane). `shutdown` only ends this chat's session
   and leaves the simulator running — the two are not the same, and a verb named
   `stop` that left a booted device behind was a real bug.
 - `device-create`, `device-attach`, `device-delete`, `device-detach`, what
-  Daex deletes with the lane, the 30-minute idle power-off, and runtime naming:
+  DAEX deletes with the lane, the 30-minute idle power-off, and runtime naming:
   `references/devices-and-runtimes.md`. Closing the Apple Development tab in
   the desktop powers the device off.
 - Deleting an installed simulator from the list is the user's call, made in
-  the desktop picker. Daex refuses it from an agent; do not try.
+  the desktop picker. DAEX refuses it from an agent; do not try.
 
 ## iPad windows
 
@@ -364,7 +364,7 @@ Name elements, not pixels.
 - `long-press x y` holds the finger down (default 1000 ms, 100–5000) and
   lifts it: what opens a context menu. Do not fake it with a one-point swipe.
 - `foreground` reports which app the device has in front, read from the device
-  rather than from what Daex last launched.
+  rather than from what DAEX last launched.
 - Hardware buttons: `button home` (also `lock`, `volume-up`, `volume-down`,
   `siri`, `app-switcher`). `shake` is refused with `APPLE_BUTTON_UNSUPPORTED`,
   because neither the helper nor `simctl` has it. `app-switcher` is
@@ -377,7 +377,7 @@ Name elements, not pixels.
   are testing in front before you rotate. iPhone Duo folding (`fold`,
   `posture`, which way the inner display runs), `duo-skill` and 3D renders
   (`render`): `references/rotation-fold-and-render.md`.
-- A simulator that is signed in and paired with a Daex machine gets that
+- A simulator that is signed in and paired with a DAEX machine gets that
   machine's real push notifications, and their banners land on screenshots.
   Capture fixtures on a device that was never paired (a fresh lane device or
   an extra device is not), or sign the app out first.
@@ -403,7 +403,7 @@ When the user asks to see the device ("open the sim drawer", "show me"):
 ```
 
 It targets your own chat and reports what really happened. A shell with no
-Daex chat identity (`ADE_CHAT_SESSION_ID` unset, e.g. an OpenCode agent shell)
+DAEX chat identity (`ADE_CHAT_SESSION_ID` unset, e.g. an OpenCode agent shell)
 cannot use `apple show` or `ui show`; ask the user to open the tool.
 
 - `shown` — it is on screen now.
@@ -447,7 +447,7 @@ ever run `simctl io` by hand, write to `/tmp`. Detail:
 `references/recording-and-proof-details.md`.
 
 If you must attach a file from elsewhere, run `daex proof attach` from **inside
-the lane worktree** so Daex can place it, and read the last line: it names the
+the lane worktree** so DAEX can place it, and read the last line: it names the
 lane and the chat the artifact landed on. `lane none / chat none` is a failure,
 not a detail.
 
@@ -533,5 +533,5 @@ change what you do on the common path:
 - `screenshot --out` and `frame --out` must land inside the build root (the
   lane worktree). A relative path resolves there (`--out .ade/tmp/shot.png`);
   `/tmp` is refused with `IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT`.
-- `--text` reads two ways. A bare `--text` is Daex's output mode;
+- `--text` reads two ways. A bare `--text` is DAEX's output mode;
   `--text-match <value>` is the element query's substring match.

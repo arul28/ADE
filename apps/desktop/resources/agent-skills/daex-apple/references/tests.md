@@ -2,7 +2,7 @@
 
 `apple test` runs `xcodebuild test` on this lane's device, with parallel
 testing off and DerivedData in the lane's cache
-(`.ade/cache/ios-simulator/DerivedData`), which Daex deletes with the lane. One
+(`.ade/cache/ios-simulator/DerivedData`), which DAEX deletes with the lane. One
 test run goes at a time on the Mac (`APPLE_TEST_RUN_BUSY`: wait, then run
 again). A failing test comes back as `passed: false` with the failures and the
 log path; it is not an error. `--text` prints the counts (XCTest and Swift

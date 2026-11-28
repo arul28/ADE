@@ -89,13 +89,13 @@ export function readSmallJson(filePath: string, maxBytes = 256 * 1024): Record<s
 }
 
 /**
- * Daex's own ACP chats open with the guidance block, headed "## Daex" (or
+ * DAEX's own ACP chats open with the guidance block, headed "## DAEX" (or
  * "## ADE" before the rename). Some providers wrap the
  * prompt in `<user_query>` first, so the check looks inside that wrapper too.
  */
 export function startsWithAdeGuidance(text: string | null | undefined): boolean {
   if (!text) return false;
-  return /^\s*(?:<user_query>\s*)?## (?:ADE|Daex)\b/u.test(text);
+  return /^\s*(?:<user_query>\s*)?## (?:ADE|DAEX)\b/u.test(text);
 }
 
 /** Expand a leading `~` the way the provider CLIs do for their own env overrides. */

@@ -99,7 +99,7 @@ function browserPageStep(
   if (!bundleId || !WEB_BROWSER_BUNDLE_IDS.has(bundleId)) return null;
   return {
     method: "browser",
-    reason: "this is a web page in a browser; the Daex browser acts on the DOM and confirms each step, unless the task needs this browser",
+    reason: "this is a web page in a browser; the DAEX browser acts on the DOM and confirms each step, unless the task needs this browser",
     // No command: ADE does not know the page's URL here, and a placeholder is
     // not a command the agent can run as is.
     command: null,
@@ -368,7 +368,7 @@ export function macDesktopWindowDragNextStep(args: {
   }
   return {
     method: "observe",
-    reason: `${why}. Claim it instead: Daex moves it onto this lane's display`,
+    reason: `${why}. Claim it instead: DAEX moves it onto this lane's display`,
     command: `daex screen claim --window ${hit.id} --text`,
   };
 }

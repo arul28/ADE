@@ -40,10 +40,10 @@ describe("packagedSyncHostLaunchGate", () => {
       conflict: stableConflict,
     });
 
-    expect(content.title).toBe("Cannot launch Daex Alpha");
-    expect(content.message).toContain("Daex is already running with phone sync");
-    expect(content.detail).toContain("Only one official Daex build can host phone sync");
-    expect(content.detail).toContain("Running now: Daex (pid 3735) on sync port 8828");
+    expect(content.title).toBe("Cannot launch DAEX Alpha");
+    expect(content.message).toContain("DAEX is already running with phone sync");
+    expect(content.detail).toContain("Only one official DAEX build can host phone sync");
+    expect(content.detail).toContain("Running now: DAEX (pid 3735) on sync port 8828");
     expect(content.quitCommand).toContain("brain stop --text");
     expect(content.detail).toContain(content.quitCommand);
   });
@@ -107,7 +107,7 @@ describe("packagedSyncHostLaunchGate", () => {
     expect(blocked).toBe(true);
     expect(copyToClipboard).toHaveBeenCalledWith(stableConflict.owner.quitCommand);
     expect(showDialog).toHaveBeenCalledWith(expect.objectContaining({
-      title: "Cannot launch Daex Alpha",
+      title: "Cannot launch DAEX Alpha",
       quitCommand: stableConflict.owner.quitCommand,
     }));
     expect(quit).toHaveBeenCalledTimes(1);

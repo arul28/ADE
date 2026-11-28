@@ -115,7 +115,7 @@ describe("formatOpenSshSpawnError", () => {
   it("turns a missing Windows OpenSSH client into an actionable prerequisite diagnostic", () => {
     const error = Object.assign(new Error("spawn ssh ENOENT"), { code: "ENOENT" });
     expect(formatOpenSshSpawnError(error, "win32")).toMatch(
-      /Windows OpenSSH Client is unavailable.*Optional Features.*Add-WindowsCapability.*restart Daex/i,
+      /Windows OpenSSH Client is unavailable.*Optional Features.*Add-WindowsCapability.*restart DAEX/i,
     );
   });
 
@@ -1384,7 +1384,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const { connected } = await connectToMac({ driverReady: false, failVerify: true });
 
       expect((connected.result.compatibilityWarnings ?? []).join("\n")).toMatch(
-        /Mac Desktop is not available on this machine: Daex could not install its driver/,
+        /Mac Desktop is not available on this machine: DAEX could not install its driver/,
       );
     });
   });
@@ -2062,7 +2062,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(connected.result).toMatchObject({
       version: "1.9.0-alpha.4",
       compatibilityWarnings: [
-        "This machine is using another installed Daex version. Some features may behave differently.",
+        "This machine is using another installed DAEX version. Some features may behave differently.",
       ],
     });
   });
@@ -2122,7 +2122,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     );
     expect(connected.result.version).toBe("1.2.27");
     expect(connected.result.compatibilityWarnings).toEqual(expect.arrayContaining([
-      "This machine is using another installed Daex version. Some features may behave differently.",
+      "This machine is using another installed DAEX version. Some features may behave differently.",
     ]));
   });
 
@@ -2282,7 +2282,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       pairedMachine: { hostIdentity: "mac-studio-device" },
     });
     expect(connected.result.compatibilityWarnings).toEqual(expect.arrayContaining([
-      "This machine is using another installed Daex version. Some features may behave differently.",
+      "This machine is using another installed DAEX version. Some features may behave differently.",
     ]));
   });
 
@@ -2372,7 +2372,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     })).rejects.toMatchObject({
       info: {
         kind: "generic",
-        message: "Daex couldn't connect to this machine. Check that Daex is open there, then press Try again.",
+        message: "DAEX couldn't connect to this machine. Check that DAEX is open there, then press Try again.",
         detail: expect.stringMatching(/\.ade \[capability_negotiation\].*multi-project/is),
       },
     });

@@ -33,7 +33,7 @@ export function isSyncServiceUnavailableError(error: unknown): boolean {
 }
 
 export function isRemoteRuntimeConnectionError(error: unknown): boolean {
-  return /remote (?:runtime|(?:ADE|Daex) service) connection (?:(?:was )?interrupted|closed|failed)|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
+  return /remote (?:runtime|(?:ADE|DAEX) service) connection (?:(?:was )?interrupted|closed|failed)|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
     errorMessage(error),
   );
 }
@@ -44,7 +44,7 @@ export function isRemoteRuntimeConnectionError(error: unknown): boolean {
  */
 export function isRemoteOutcomeUnknownError(error: unknown): boolean {
   // The sync link's own wait (web client, CLI peer) ran out with no answer.
-  return /before (?:ADE|Daex) could confirm the action result|Timed out waiting for remote command result/i.test(errorMessage(error))
+  return /before (?:ADE|DAEX) could confirm the action result|Timed out waiting for remote command result/i.test(errorMessage(error))
     || isRemoteRuntimeConnectionError(error)
     || isRuntimeTransportTimeoutError(error);
 }
@@ -70,7 +70,7 @@ export function isRemoteMachineAwayError(error: unknown): boolean {
 }
 
 export function isRuntimeTransportTimeoutError(error: unknown): boolean {
-  return /IPC handler for .+ timed out after \d+ms|Remote (?:ADE|Daex) service timed out waiting for method/i.test(
+  return /IPC handler for .+ timed out after \d+ms|Remote (?:ADE|DAEX) service timed out waiting for method/i.test(
     errorMessage(error),
   );
 }

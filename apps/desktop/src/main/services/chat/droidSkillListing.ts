@@ -81,7 +81,7 @@ function buildSkillListingSection(
   if (!lines.length) return EMPTY_LISTING;
   const section = [
     "## Project commands and skills",
-    "Files this project and this user keep that your harness does not load on its own. When the user sends `/<name>`, Daex expands the file for you. When one fits the task, read its file and follow it.",
+    "Files this project and this user keep that your harness does not load on its own. When the user sends `/<name>`, DAEX expands the file for you. When one fits the task, read its file and follow it.",
     ...lines,
     ...(omitted > 0
       ? [`- ${omitted} more omitted to keep this list short. Run \`daex skill list --text\` if none of these fits.`]

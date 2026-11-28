@@ -187,7 +187,7 @@ describe("WorkToolReadOnlyView", () => {
     render(<WorkToolReadOnlyView tool="browser" laneId="lane-1" runtimePin={LANE_PIN} />);
 
     expect(
-      await screen.findByText("Tools run on the desktop. Open Daex on your Mac to see them here."),
+      await screen.findByText("Tools run on the desktop. Open DAEX on your Mac to see them here."),
     ).toBeTruthy();
   });
 
@@ -219,7 +219,7 @@ describe("WorkToolReadOnlyView", () => {
 
     expect(
       await screen.findByText(
-        "Daex Desktop doesn't have this project open. Open it on your Mac to see its tabs.",
+        "DAEX Desktop doesn't have this project open. Open it on your Mac to see its tabs.",
       ),
     ).toBeTruthy();
   });
@@ -438,7 +438,7 @@ describe("WorkToolReadOnlyView", () => {
     expect(api.takeControl).toHaveBeenCalledWith({
       laneId: "lane-1",
       controllerId: expect.any(String),
-      controllerLabel: "Daex Web",
+      controllerLabel: "DAEX Web",
     });
     expect(screen.getByTestId("mac-desktop-web-takeover-banner").textContent).toContain("You have control");
     expect(screen.getByTestId("mac-desktop-web-owner").textContent).toBe("You have control");

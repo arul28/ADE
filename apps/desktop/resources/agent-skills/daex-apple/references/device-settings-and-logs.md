@@ -14,7 +14,7 @@
 bundle id's `os_log` subsystem. If the app logs under another subsystem, add
 `--subsystem <prefix>`; `--process <name>` follows another process. `print()`
 never reaches the device log. When no app line has arrived after a few
-seconds, `apple log` says so with a hint. Daex's own rows name the device they
+seconds, `apple log` says so with a hint. DAEX's own rows name the device they
 drove, so the log of one device leaves out taps on the lane's other devices.
 
 Also `content-size`, `status-bar`, `open-url`, `relaunch`, `terminate`,

@@ -614,7 +614,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
       ...process.env,
     },
   });
-  if (!adeCliHelp.includes("Agent-focused command-line interface for Daex")) {
+  if (!adeCliHelp.includes("Agent-focused command-line interface for DAEX")) {
     throw new Error("[release:mac] Bundled ADE CLI wrapper did not print ADE CLI help");
   }
   const versionOf = async (binPath) => (await execFileAsync(binPath, ["--version"], {

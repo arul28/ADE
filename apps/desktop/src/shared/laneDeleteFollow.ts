@@ -48,7 +48,7 @@ export type LaneDeleteFollowDeps = {
 /** A failure that says nothing about the delete: the call never reached the machine, or its answer was lost. */
 function isTransientStartError(error: unknown): boolean {
   if (isRemoteOutcomeUnknownError(error)) return true;
-  return /Remote (?:ADE|Daex) service connection failed recently|Remote target is not connected/i.test(errorText(error));
+  return /Remote (?:ADE|DAEX) service connection failed recently|Remote target is not connected/i.test(errorText(error));
 }
 
 function errorText(error: unknown): string {
