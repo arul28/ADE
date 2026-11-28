@@ -116,6 +116,9 @@ export function CloudQueueSendCard({
   const started = record?.state === "running" || record?.state === "done";
   const signIn = record?.state === "waiting_for_sign_in" ? record.signIn ?? null : null;
   const approval = record?.state === "needs_approval" ? record.approval : null;
+  // The step's words, as on a launch card (no free-model move: this chat keeps its provider). Worked out on each render.
+  const words = signIn ? cloudSignInStepWords(signIn, Date.now()) : null;
+  const signInLine = words ? [signIn?.kind === "api_key" || signIn?.kind === "desktop" ? null : words.instruction, words.timeLeft, words.charge].filter(Boolean).join(" ") : "";
   const actions = [
     ...(failed ? [{ label: "Put back", onClick: () => { onRestore(send.text); onDone(); } }] : []),
     ...(signIn?.url ? [{ label: "Open sign-in", onClick: () => openExternalUrl(signIn.url!) }] : []),

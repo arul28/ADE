@@ -3,8 +3,10 @@ import { expectCloudComputerSignIn } from "../newDeviceEmail";
 import { unsettledPhoneMilli } from "./credits";
 import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
 import { sha256Hex } from "../sinkUtils";
-import { isAdeFreeModelId } from "../../../desktop/src/shared/adeFreeModels";
+import { ADE_FREE_MODELS, isAdeFreeModelId } from "../../../desktop/src/shared/adeFreeModels";
 import { noteFreeModelLaunch } from "./freeModels";
+import { captureCloudSignInStep, type CloudSignInStep, type CloudWaitUntil } from "./analytics";
+import { chargeSignInWait, openSignInFreeWait, signInChargeOf, signInClientOf, signInEndNoteOf } from "./signInWait";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
   CLOUD_AUTO_SIZE,
@@ -21,6 +23,7 @@ import {
   CLOUD_LAUNCH_METADATA,
   CLOUD_LAUNCH_RECORD_TTL_MS,
   CLOUD_LAUNCH_SIGN_IN_TIMED_OUT,
+  CLOUD_SIGN_IN_END_GRACE_MS,
   CLOUD_PATHS,
   type CloudAutoSizeRefusal,
   type CloudLaunchAttachment,
@@ -145,6 +148,11 @@ export type LaunchRow = {
   session_id: string | null;
   /** While `waiting_for_sign_in`: CloudLaunchSignIn as JSON (migration 0038). */
   sign_in_json: string | null;
+  /** Migration 0076 (`signInWait.ts`): the sign-in wait's free window, when it opened, and when it was charged after all. */
+  sign_in_free_at?: number | null;
+  sign_in_free_opened_at?: number | null;
+  sign_in_charged_at?: number | null;
+  sign_in_used_at?: number | null;
   created_at: number;
   updated_at: number;
   expires_at: number;
@@ -437,6 +445,7 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     sessionId: row.session_id,
     error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     signIn: row.state === "waiting_for_sign_in" ? signInOfRow(row) : null,
+    endNote: signInEndNoteOf({ ...row, state: neverJoined || retryStopped ? "failed" : row.state }),
     machine: row.kind === "machine" ? machineFactsOf(row) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -456,7 +465,68 @@ function machineFactsOf(row: LaunchRow): CloudMachineLaunchFacts | null {
 }
 
 function signInOfRow(row: LaunchRow): CloudLaunchSignIn | null {
-  return parseJsonColumn<CloudLaunchSignIn | null>(row.sign_in_json, null, { launchId: row.launch_id, column: "sign_in_json" });
+  const stored = parseJsonColumn<CloudLaunchSignIn | null>(row.sign_in_json, null, { launchId: row.launch_id, column: "sign_in_json" });
+  if (!stored) return null;
+  // The server's own facts are added on a read (`withSignInFacts`); never what a computer wrote.
+  const { freeModel: _freeModel, ownComputer: _ownComputer, charge: _charge, ...signIn } = stored;
+  return signIn;
+}
+
+/** What the step shows that only the account knows. */
+export type SignInExtras = { freeModel: { modelId: string; label: string } | null; ownComputer: boolean };
+export type FreeModelGate = { kind: "ok" } | { kind: "consent" } | { kind: "unavailable"; message: string };
+
+/** The first DAEX Free Model: what a chat switches to from its sign-in step. */
+const SWITCH_FREE_MODEL = ADE_FREE_MODELS[0]!;
+
+/**
+ * Whether this launch's chat can still move to a free model: a new chat, not
+ * on one already. A launch that continues a saved chat (`continueChat`, the
+ * queued message's card) keeps its chat's provider: it gets the step, not the move.
+ */
+function canSwitchToFreeModel(row: LaunchRow, request: CloudServerLaunchRequest | null): boolean {
+  return row.kind === "chat" && row.state === "waiting_for_sign_in" && request?.chat != null && request.continueChat == null
+    && !isAdeFreeModelId(request.chat.modelId);
+}
+
+/**
+ * Adds the server's facts to a waiting launch's sign-in: the cost line (from
+ * its computer), the free-model way out and the own-computer line (from the
+ * account, read once for all launches of a request). Never fails the read.
+ */
+async function withSignInFacts<T extends { signIn?: CloudLaunchSignIn | null }>(
+  env: CloudEnv,
+  rows: Array<{ row: LaunchRow; answer: T }>,
+  deps: Pick<LaunchRouteDeps, "signInExtras">,
+): Promise<void> {
+  const waiting = rows.filter((entry) => entry.answer.signIn);
+  if (!waiting.length) return;
+  let extras: SignInExtras = { freeModel: null, ownComputer: false };
+  try {
+    extras = (await deps.signInExtras?.()) ?? extras;
+  } catch (error) {
+    reportCloudFailure("cloud.sign_in_extras_failed", { message: error instanceof Error ? error.name : "unknown" });
+  }
+  for (const { row, answer } of waiting) {
+    const computer = row.instance_id ? await ownedComputer(env, row.user_id, row.instance_id).catch(() => null) : null;
+    const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+    answer.signIn = {
+      ...answer.signIn!,
+      freeModel: extras.freeModel && canSwitchToFreeModel(row, request) ? extras.freeModel : null,
+      ownComputer: extras.ownComputer,
+      charge: signInChargeOf(row, computer),
+    };
+  }
+}
+
+/** The step's event, with the launch's provider. Never fails the caller. */
+function noteSignInStep(env: CloudEnv, deps: Pick<LaunchRouteDeps, "waitUntil">, row: LaunchRow, step: CloudSignInStep, client: "desktop" | "web" | "ios" | "computer", now: number): void {
+  try {
+    const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+    captureCloudSignInStep(env, deps.waitUntil, row.user_id, { step, provider: request?.chat?.provider ?? null, client }, row.launch_id, now);
+  } catch {
+    // An event is never worth a failed request.
+  }
 }
 
 /** One row of `GET /cloud/launches?active=1`. */
@@ -478,6 +548,7 @@ function summaryOf(row: LaunchRow, now: number): CloudLaunchSummary {
     updatedAt: record.updatedAt,
     stage: running ?? record.stages[record.stages.length - 1] ?? null,
     signIn: record.signIn ?? null,
+    endNote: record.endNote ?? null,
     provider: record.request?.chat?.provider ?? null,
     modelId: record.request?.chat?.modelId ?? null,
   };
@@ -1321,7 +1392,22 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   }
   // The computer gave up on the sign-in itself: its queued messages fail as with the server's
   // own timeout, and the minute cron deletes the computer (`failUnjoinedLaunches`).
-  if (state === "failed" && error === SIGN_IN_NEVER_FINISHED) await failQueuedMessagesStatement(env, row.launch_id, SIGN_IN_NEVER_FINISHED, now).run();
+  if (state === "failed" && error === SIGN_IN_NEVER_FINISHED) {
+    await failQueuedMessagesStatement(env, row.launch_id, SIGN_IN_NEVER_FINISHED, now).run();
+    noteSignInStep(env, deps, row, "timed_out", "computer", now);
+  }
+  // The sign-in step (`signInWait.ts`): its wait is free time on the computer from the first report;
+  // once it ends signed in (the chat starts, on its provider or a free model) the wait is charged.
+  if (state === "waiting_for_sign_in" && row.state !== "waiting_for_sign_in") {
+    noteSignInStep(env, deps, row, "shown", "computer", now);
+  }
+  if (state === "waiting_for_sign_in" && signIn?.expiresAt != null && row.sign_in_free_opened_at == null && row.instance_id) {
+    await openSignInFreeWait(env, row, await ownedComputer(env, row.user_id, row.instance_id), now, signIn.expiresAt);
+  }
+  if (row.state === "waiting_for_sign_in" && (state === "joined" || state === "running" || state === "done")) {
+    await chargeSignInWait(env, row, now);
+    noteSignInStep(env, deps, row, "signed_in", "computer", now);
+  }
   return json(recordOf((await readLaunch(env, row.launch_id))!, now));
 }
 
@@ -1692,13 +1778,18 @@ const UNJOINED_PER_TICK = 20;
  */
 const MADE_NOTHING_AFTER_MS = PENDING_TIMEOUT_MS + 5 * 60_000;
 /**
- * How long a launch may wait on a provider sign-in before the server ends it
- * and deletes its computer. The computer gives up a little sooner by itself
- * (`SIGN_IN_WAIT_MS` in cloudBootLaunch.ts).
+ * How long a launch may sit in its sign-in step with no word from its
+ * computer before the server ends it and deletes the computer (each report
+ * moves `updated_at`). The real end is the computer's: its wait
+ * (`cloudSignInWaitMsFor`, 30 minutes, a cloud Mac 10) reports the timeout,
+ * or, from a computer that names `expiresAt`, `CLOUD_SIGN_IN_END_GRACE_MS`
+ * after it (`signInEndedSql`). This one is for an older computer gone silent.
  */
 const SIGN_IN_WAIT_MS = 45 * 60_000;
 /** The computer's own timeout reports the same error, so both end the same way. */
 const SIGN_IN_NEVER_FINISHED = CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
+/** A waiting launch past its end: silent for `SIGN_IN_WAIT_MS`, or past the `expiresAt` its computer named plus the grace. Binds: the two cut-offs. */
+const signInEndedSql = "(updated_at <= ? or coalesce(json_extract(sign_in_json, '$.expiresAt'), 9007199254740991) <= ?)";
 /** The server's own endings: the computer is deleted with or after them, so no report brings the launch back. */
 const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED
   || error === LAUNCH_COMPUTER_DELETED || error === LEGACY_LAUNCH_COMPUTER_DELETED;
@@ -1750,13 +1841,13 @@ export async function failUnjoinedLaunches(
   // ran, so it ends like a computer that never joined (the computer gives up
   // on its own first; this is for one that stopped answering).
   const stalled = (await env.DB.prepare(`
-    select * from cloud_launches where state = 'waiting_for_sign_in' and updated_at <= ? limit ?
-  `).bind(now - SIGN_IN_WAIT_MS, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+    select * from cloud_launches where state = 'waiting_for_sign_in' and ${signInEndedSql} limit ?
+  `).bind(now - SIGN_IN_WAIT_MS, now - CLOUD_SIGN_IN_END_GRACE_MS, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
   for (const row of stalled) {
     const failed = await env.DB.prepare(`
       update cloud_launches set state = 'failed', error = ?, sign_in_json = null, updated_at = ?
-      where launch_id = ? and state = 'waiting_for_sign_in' and updated_at <= ?
-    `).bind(SIGN_IN_NEVER_FINISHED, now, row.launch_id, now - SIGN_IN_WAIT_MS).run();
+      where launch_id = ? and state = 'waiting_for_sign_in' and ${signInEndedSql}
+    `).bind(SIGN_IN_NEVER_FINISHED, now, row.launch_id, now - SIGN_IN_WAIT_MS, now - CLOUD_SIGN_IN_END_GRACE_MS).run();
     if ((failed.meta?.changes ?? 0) !== 1) continue;
     ended += 1;
     logCloud("cloud.launch_sign_in_never_finished", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id });

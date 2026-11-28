@@ -13,9 +13,11 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { freePlanGithubOf, settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { routeSponsored, type GravityEnv } from "./gravity";
-import { routeFreeModels } from "./freeModels";
+import { freeModelsAccountState, routeFreeModels } from "./freeModels";
+import { endSignInFreeAt, reportNamesWork } from "./signInWait";
+import { ADE_FREE_MODELS } from "../../../desktop/src/shared/adeFreeModels";
 import { noteComputerNetwork, rateMilliFor, smallUsesNoHours } from "./sponsoredSmall";
-import { requestNetwork } from "./sponsoredConsent";
+import { requestNetwork, sponsoredRequester } from "./sponsoredConsent";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
@@ -1696,7 +1698,11 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     // Pricing v3: CLI sessions, automations and an outside agent's turn give it the full price
     // (`adPrice.ts`). Only from the newest report: one sent late never undoes a newer one.
-    if (await recordActivity(env, computer.instance_id, report, waitUntil)) await noteActivityReport(env as GravityEnv, computer, report, now);
+    if (await recordActivity(env, computer.instance_id, report, waitUntil)) {
+      await noteActivityReport(env as GravityEnv, computer, report, now);
+      // Work during a launch's free sign-in wait: the meter runs from here (`signInWait.ts`).
+      if (computer.free_wake_started_at != null && reportNamesWork(report)) await endSignInFreeAt(env, computer, now);
+    }
     // The network its brain calls from, for Free Small's tripwire (`sponsoredSmall.ts`). Never fails the report.
     await noteComputerNetwork(env, computer, requestNetwork(request)).catch((error: unknown) => {
       reportCloudFailure("cloud.computer_network_failed", { message: error instanceof Error ? error.message : "unknown" });
@@ -2032,6 +2038,8 @@ function launchDepsFor(request: Request, env: CloudEnv, userId: string, provider
 async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response> {
   await env.DB.prepare("update cloud_computers set last_active_at = max(coalesce(last_active_at, 0), ?) where instance_id = ? and deleted_at is null")
     .bind(now, computer.instance_id).run();
+  // A person at its terminal during a launch's free sign-in wait: the meter runs from here.
+  if (computer.free_wake_started_at != null) await endSignInFreeAt(env, computer, now);
   const refused = await idleUseRefusal(env, computer, now);
   return refused ?? json({ ok: true });
 }

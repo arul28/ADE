@@ -78,12 +78,19 @@ export type CloudComputerRest = {
   /** The server's idle cleanup claimed the computer. */
   noteCleanupStarted: () => void;
   /**
+   * A launch's provider sign-in wait began (true) or ended (false). While it
+   * runs, the first remote work is reported at once (`/use`): the wait is free
+   * time on the server only until someone uses the computer (`signInWait.ts`).
+   */
+  noteSignInWait: (waiting: boolean) => void;
+  /**
    * A person's remote work reached the computer. During the cleanup it is
    * reported (`/use`). Answers the refusal sentence once the delete started.
    * Typing (`report: false`) is refused the same way but never reported: it
-   * must not count as use for the idle cleanup.
+   * must not count as use for the idle cleanup. `signInUse: false`: work the
+   * idle cleanup counts but a sign-in wait doesn't (watching a read-only tool).
    */
-  noteRemoteWork: (options?: { report?: boolean }) => Promise<string | null>;
+  noteRemoteWork: (options?: { report?: boolean; signInUse?: boolean }) => Promise<string | null>;
 };
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -97,6 +104,9 @@ export function createCloudComputerRest(deps: CloudComputerRestDeps): CloudCompu
   let lastUseReportAt = 0;
   /** The server answered `/use` with `computer_deleting`. */
   let deleting = false;
+  /** A launch's sign-in wait runs (`noteSignInWait`), and whether its first work went to the server. */
+  let signInWaiting = false;
+  let signInUseReported = false;
 
   const startDrain = (reason: string): Promise<CloudChatQueueDrainResult> | null => {
     const round = queue?.drain(reason) ?? null;
@@ -169,8 +179,18 @@ export function createCloudComputerRest(deps: CloudComputerRestDeps): CloudCompu
     noteCleanupStarted() {
       cleanupUntil = now() + CLEANUP_WINDOW_MS;
     },
+    noteSignInWait(waiting) {
+      signInWaiting = waiting;
+      signInUseReported = false;
+    },
     async noteRemoteWork(options) {
       const at = now();
+      // The sign-in wait's free time ends at the first work: told at once, without holding the work up.
+      if (signInWaiting && !signInUseReported && options?.report !== false && options?.signInUse !== false) {
+        signInUseReported = true;
+        lastUseReportAt = at;
+        void reportUse();
+      }
       if (at >= cleanupUntil) return null;
       if (options?.report !== false && !deleting && at - lastUseReportAt > USE_REPORT_EVERY_MS) {
         lastUseReportAt = at;

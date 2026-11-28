@@ -146,8 +146,11 @@ function SignInDetail({ signIn, instanceId, launchId }: { signIn: CloudLaunchSig
   };
 
   const needsCode = signIn.kind !== "api_key" && (signIn.needsPastedCode || signIn.kind === "url_paste");
+  const said = signIn.kind === "api_key" ? null : [words.instruction, words.reason].filter(Boolean).join(" ");
+  const meta = [words.timeLeft, words.charge].filter(Boolean).join(" ");
   return (
     <div className="mt-1.5 flex flex-col gap-2">
+      {said ? <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>{said}</p> : null}
       {signIn.kind === "device" && signIn.userCode ? (
         <div className="flex items-center gap-2">
           <span className="ade-signin-code" aria-label="Sign-in code">{signIn.userCode}</span>
@@ -530,11 +533,15 @@ export function CloudSetupCard({
               // The server's sentence once: the report's raw error is the same
               // text, so the notice hides its "›" line. The message rows above
               // already say "Not sent".
-              detail: failureReason ?? `${BRAND.CLOUD_NAME} didn't say why.`,
+              // A start that ended in its sign-in step adds whether the wait was charged (`endNote`).
+              detail: `${failureReason ?? `${BRAND.CLOUD_NAME} didn't say why.`}${record?.endNote ? ` ${record.endNote}` : ""}`,
               actions: [{ label: "Retry", onClick: () => void retryAccountCloudLaunch(entry.launchId) }],
               report: { surface: "cloud_setup_card", code: "launch_failed", technicalDetail: failureReason },
             }}
           />
+        ) : null}
+        {phase === "cancelled" && record?.endNote ? (
+          <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>{record.endNote}</p>
         ) : null}
         {ready && record ? (
           <div className="flex items-center gap-2">

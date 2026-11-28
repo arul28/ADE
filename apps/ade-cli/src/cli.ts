@@ -33199,6 +33199,8 @@ async function runServe(
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
       holdCloudWork: holdCloudWork ?? null,
+      // The wait is free on the server until someone uses the computer: the first remote work is told at once.
+      ...(cloudRest ? { onSignInWait: (waiting: boolean) => cloudRest.noteSignInWait(waiting) } : {}),
       providerReady: cloudProviderReady,
       remoteSignIn: cloudRemoteSignIn,
       refreshVault: cloudRefreshVault,
@@ -33422,6 +33424,17 @@ async function runServe(
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
   // and status polls do not: an idle window polling one must not bill it all month.
+  // A launch's sign-in wait is free until someone uses the computer (`signInWait.ts` on the server):
+  // a person who only has Files, Git or a terminal's output open (the desktop's once-a-minute
+  // "still watching") hasn't used it; a screen, a preview, a device or any write has. Outside the
+  // wait every "still watching" counts as before. An older desktop names no tool: it counts.
+  const READ_ONLY_WATCH_TOOLS = new Set(["files", "git", "terminal", "side-chat"]);
+  const isWatchingReadOnlyTool = (params: unknown): boolean => {
+    if (!isRecord(params) || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
+    const { domain, action, args } = params.arguments;
+    if (domain !== "work_tools" || action !== "noteWatching" || !isRecord(args)) return false;
+    return typeof args.tool === "string" && READ_ONLY_WATCH_TOOLS.has(args.tool);
+  };
   const remoteUseKind = (params: unknown): "work" | "typing" | null => {
     if (!isRecord(params) || !isRecord(params.arguments)) return null;
     if (params.name === "work_copy_file") return "work";
@@ -33451,7 +33464,7 @@ async function runServe(
         // The server's idle cleanup may be saving this computer for its delete
         // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
         // Typing is refused then too, but never reported: it is not use.
-        const refusal = await cloudRest?.noteRemoteWork({ report: useKind === "work" });
+        const refusal = await cloudRest?.noteRemoteWork({ report: useKind === "work", signInUse: !isWatchingReadOnlyTool(request.params) });
         if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
       // Counted for a grow's restart now; held awake once it outlasts a short wait (a push with a slow hook).

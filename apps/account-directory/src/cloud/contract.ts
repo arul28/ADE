@@ -529,6 +529,12 @@ export type CloudComputerActivityReport = {
    * list changes. An older brain leaves it out: read as none.
    */
   fullPriceWork?: CloudFullPriceWork[];
+  /**
+   * The terminals open on the computer now (any kind: a shell too). A
+   * launch's sign-in wait is free only while nothing runs (`signInWait.ts`).
+   * An older brain leaves it out.
+   */
+  openTerminals?: number;
 };
 
 /** How hard a computer pushes one of its limits, as the provider reads it. */
@@ -2552,6 +2558,12 @@ export type CloudLaunchRecord = {
   error: string | null;
   /** While `waiting_for_sign_in`: the provider sign-in the launch waits on. Absent from an older server. */
   signIn?: CloudLaunchSignIn | null;
+  /**
+   * A launch that failed or was cancelled in its sign-in step: one plain
+   * sentence from the server about what the wait cost ("Nothing was charged
+   * for the wait."). Null otherwise; absent from an older server.
+   */
+  endNote?: string | null;
   /** A `machine` launch's computer; null for any other kind. Absent from an older server. */
   machine?: CloudMachineLaunchFacts | null;
   createdAt: number;
@@ -2821,16 +2833,71 @@ export type CloudLaunchSignIn = {
   needsPastedCode: boolean;
   /** For `api_key`: the account sign-in to save (`CloudAccountSignInId`). */
   signInId: string | null;
-  /** One plain sentence: what to do, or why it can't be done here. */
+  /**
+   * One plain sentence: why it can't be done here (`api_key`, `desktop`), a
+   * start that failed, or what changed (`CLOUD_SIGN_IN_CODE_REFUSED`,
+   * `CLOUD_SIGN_IN_LINK_CHANGED`, `CLOUD_SIGN_IN_CODE_EXPIRED`). For
+   * `device` and `url_paste` it never repeats the instruction.
+   */
   reason: string | null;
+  /** From the computer: when the wait ends (epoch ms); the launch fails after it. Absent from an older computer. */
+  expiresAt?: number | null;
+  /**
+   * From the server, on a read (whatever the computer sent is dropped): DAEX
+   * Free Models reach this account and the chat can start on one instead
+   * (`POST /cloud/launches/:launch/free-model`). Null otherwise.
+   */
+  freeModel?: { modelId: string; label: string } | null;
+  /** From the server, on a read: the account has DAEX on a computer of its own (sharing its sign-ins skips this step). */
+  ownComputer?: boolean;
+  /**
+   * From the server, on a read: the line about cost under the step. Null on
+   * a size that uses no credits. `free`: the wait costs nothing if it ends
+   * here (`SIGN_IN_FREE_SENTENCE`); otherwise it names the size.
+   */
+  charge?: { free: boolean; sentence: string } | null;
 };
+
+/** The sentences a waiting launch's `reason` carries when something changed (the apps show them as they are). */
+export const CLOUD_SIGN_IN_CODE_REFUSED = "That code didn't work. Open sign-in again and paste the new code.";
+export const CLOUD_SIGN_IN_LINK_CHANGED = "The sign-in page changed. Open it again.";
+export const CLOUD_SIGN_IN_CODE_EXPIRED = "The code expired. Open the page again and type the new code.";
+/**
+ * How long a cloud start waits for its provider sign-in. The server writes the
+ * launch's request, so it decides: a cloud Mac (`os: "mac"` in the request, a
+ * scarce machine at many times a Medium's rate) waits 10 minutes, every other
+ * computer 30. The computer's wait (`waitForSignIn`) and the server's free
+ * window (`signInWait.ts`) both read it; `expiresAt` carries it to the cards.
+ */
+export const CLOUD_SIGN_IN_WAIT_MS = 30 * 60_000;
+export const CLOUD_MAC_SIGN_IN_WAIT_MS = 10 * 60_000;
+export function cloudSignInWaitMsFor(request: unknown): number {
+  const os = request && typeof request === "object" ? (request as { os?: unknown }).os : undefined;
+  return os === "mac" ? CLOUD_MAC_SIGN_IN_WAIT_MS : CLOUD_SIGN_IN_WAIT_MS;
+}
+/** After a wait's end: the computer's failed report and the minute cron's delete (`failUnjoinedLaunches`). */
+export const CLOUD_SIGN_IN_END_GRACE_MS = 2 * 60_000;
+/** The most codes one sign-in job takes (`POST .../sign-ins/:job/code`). */
+export const CLOUD_SIGN_IN_MAX_CODES = 10;
+export const CLOUD_SIGN_IN_TOO_MANY_CODES = "That's too many codes for one sign-in. Cancel the start and try again.";
+
+/**
+ * `POST /cloud/launches/:launch/free-model`: the person's own chat launch,
+ * while it waits in its sign-in step, starts on DAEX Free Models instead
+ * (`CloudLaunchSignIn.freeModel`), with its first message unchanged, on the
+ * same computer. Once per launch: a second call answers the same record.
+ * 409 `launch_not_waiting`, `free_models_unavailable` (the message says
+ * why) or `free_models_consent` (the app asks for the Free Models yes, then
+ * calls again).
+ */
+export type CloudLaunchFreeModelErrorCode = "launch_not_waiting" | "free_models_unavailable" | "free_models_consent";
 
 /** `GET /cloud/launches?active=1`: newest first, at most 50. */
 export type CloudLaunchList = { launches: CloudLaunchSummary[] };
 export type CloudLaunchSummary = Pick<
   CloudLaunchRecord,
   "launchId" | "state" | "kind" | "projectOrigin" | "laneId" | "laneName" | "instanceId" | "approval" | "sessionId" | "error" | "createdAt" | "updatedAt"
-> & {
+> & Pick<CloudLaunchRecord, "endNote"> & {
   /** The stage running now, or the last one (`CloudLaunchStage.id`). */
   stage: CloudLaunchStage | null;
   signIn: CloudLaunchSignIn | null;

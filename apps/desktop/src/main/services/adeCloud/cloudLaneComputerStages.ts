@@ -345,7 +345,19 @@ export function createCloudLaneComputerStages(
     // The computer waits for the chat's provider sign-in: the card shows the link and code.
     const waiting = state === "waiting_for_sign_in" ? server.signIn ?? null : null;
     const signIn = waiting
-      ? { label: waiting.label, url: waiting.url, userCode: waiting.userCode, reason: waiting.reason, jobId: waiting.jobId ?? null, needsPastedCode: waiting.needsPastedCode === true }
+      ? {
+        label: waiting.label,
+        url: waiting.url,
+        userCode: waiting.userCode,
+        reason: waiting.reason,
+        jobId: waiting.jobId ?? null,
+        needsPastedCode: waiting.needsPastedCode === true,
+        provider: waiting.provider ?? null,
+        expiresAt: waiting.expiresAt ?? null,
+        freeModel: waiting.freeModel ?? null,
+        ownComputer: waiting.ownComputer === true,
+        charge: waiting.charge ?? null,
+      }
       : null;
     if (JSON.stringify(record.snapshot.cloud.signIn ?? null) !== JSON.stringify(signIn)) {
       if (signIn) record.snapshot.cloud.signIn = signIn;
@@ -374,9 +386,11 @@ export function createCloudLaneComputerStages(
 
   /** The sentence for a launch the server or its computer ended, from the computer's own words when it has them. */
   const serverFailure = (server: CloudLaunchRecord): LaunchStepError => {
-    if (server.state === "cancelled") return new LaunchStepError(`This launch was cancelled on ${BRAND.CLOUD_NAME}.`);
+    // A launch that ended in its sign-in step says whether its wait was charged (the server's `endNote`).
+    const note = server.endNote ? ` ${server.endNote}` : "";
+    if (server.state === "cancelled") return new LaunchStepError(`This launch was cancelled on ${BRAND.CLOUD_NAME}.${note}`);
     const failed = server.stages.find((stage) => stage.status === "failed");
-    return new LaunchStepError(clip(server.error ?? failed?.error ?? "The new computer couldn't start the lane.", 400));
+    return new LaunchStepError(`${clip(server.error ?? failed?.error ?? "The new computer couldn't start the lane.", 400)}${note}`);
   };
 
   /** Pairs and connects, retrying while the computer's account row and relay route come up. */

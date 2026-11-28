@@ -15422,8 +15422,9 @@ const adeBridge = {
       return runtime.handled ? runtime.result : null;
     },
     /** "Still watching" on a cloud computer, to the machine the tool is on. */
-    noteWatching: (pin?: OpenProjectBinding | null): Promise<void> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "work_tools", "noteWatching", {}, async () => undefined),
+    // `tool`: which Work tool is open; a launch's sign-in wait counts only a screen or a preview as use.
+    noteWatching: (pin?: OpenProjectBinding | null, tool?: string): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "work_tools", "noteWatching", tool ? { tool } : {}, async () => undefined),
     setActiveTool: async (
       laneId: string,
       tool: WorkToolId | null,

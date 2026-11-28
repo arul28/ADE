@@ -168,10 +168,14 @@ export function parseActivityReport(body: Record<string, unknown> | null, now: n
   if (idleSince === undefined || reportedAt == null || sleepsAt === undefined) return null;
   // Pricing v3: the full-price work running now; an older brain sends none (left out, not empty).
   const work = Array.isArray(body.fullPriceWork) ? { fullPriceWork: readFullPriceWork(body.fullPriceWork) } : {};
+  // The terminals open now (a launch's free sign-in wait ends at the first); an older brain sends none.
+  const terminals = typeof body.openTerminals === "number" && Number.isInteger(body.openTerminals) && body.openTerminals >= 0 && body.openTerminals <= 10_000
+    ? { openTerminals: body.openTerminals }
+    : {};
   // Busy has no idle stretch; an idle one has no sleep while busy.
   return body.busy
-    ? { busy: true, idleSince: null, sleepsAt: null, runningAgents, reportedAt, ...work }
-    : { busy: false, idleSince, sleepsAt, runningAgents, reportedAt, ...work };
+    ? { busy: true, idleSince: null, sleepsAt: null, runningAgents, reportedAt, ...work, ...terminals }
+    : { busy: false, idleSince, sleepsAt, runningAgents, reportedAt, ...work, ...terminals };
 }
 
 /** Keeps the report; an older one (sent late) never replaces a newer one. True when this one was kept. */
