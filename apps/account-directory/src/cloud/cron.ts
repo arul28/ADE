@@ -240,11 +240,13 @@ function shapeFromProviderStatements(env: CloudEnv, computer: TickComputer, inst
   if (size.multiplierMilli !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
     statements.push(...restartStretchStatements(env, computer, now));
   }
-  statements.push(env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, multiplier_milli = ? where instance_id = ? and cpu = ? and memory_gb = ?")
+  // Off any ad price: Pricing v3's step later in this tick puts the new size on its price (`syncAdPricesInTick`).
+  statements.push(env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, multiplier_milli = ?, ad_full_milli = null where instance_id = ? and cpu = ? and memory_gb = ?")
     .bind(size.cpu, size.memoryGb, size.multiplierMilli, computer.instance_id, computer.cpu, computer.memory_gb));
   computer.cpu = size.cpu;
   computer.memory_gb = size.memoryGb;
   computer.multiplier_milli = size.multiplierMilli;
+  computer.ad_full_milli = null;
   return statements;
 }
 
@@ -448,7 +450,8 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
   const unseen = computers.filter((computer) => {
     if (computer.status !== "running" || computer.awake_since == null) return false;
     if (computer.free_wake_until != null && computer.free_wake_until > now) return false;
-    const lastSign = Math.max(computer.last_seen_at ?? 0, computer.awake_since);
+    // Its wake, not its stretch: a rate move (Pricing v3) or the daily settle restarts the stretch, not the clock.
+    const lastSign = Math.max(computer.last_seen_at ?? 0, computer.status_changed_at ?? computer.awake_since);
     return now - lastSign > NO_CHECK_IN_MS;
   });
   if (unseen.length === 0) return;

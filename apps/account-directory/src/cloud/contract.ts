@@ -14,7 +14,8 @@
  *   GET    /cloud/instances/:id                CloudInstance
  *   DELETE /cloud/instances/:id                { deleted: true }
  *   POST   /cloud/instances/:id/sleep          { status }
- *   POST   /cloud/instances/:id/start          { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan)
+ *   POST   /cloud/instances/:id/start          { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan.
+ *                                                            Pricing v3: { adProof: { chatId, messageId } }: a person's message wakes it, counted as its proof first, so a Small on Free with ads wakes at 0 credits)
  *   POST   /cloud/instances/:id/stop           { status }
  *   POST   /cloud/instances/:id/idle           { status }   the computer asks to be slept ({ backupReportId }: it rests with that backup report)
  *   POST   /cloud/instances/:id/update         { status, templateVersion }   409 `update_in_progress`

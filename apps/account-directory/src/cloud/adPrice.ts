@@ -7,6 +7,7 @@ import {
   type CloudPublicPricing,
   type CloudAdProofAnswer,
   type CloudAdsState,
+  type CloudComputerActivityReport,
   type CloudComputerPrice,
   type CloudFullPriceReason,
   type CloudFullPriceWork,
@@ -18,7 +19,7 @@ import { CREDIT_SCALE, EXTRA_HOUR_MICROS, SMALL_NO_CARDS_RATE_MILLI, SMALL_SHAPE
 import { readCloudSettings, settingChangedAt, type CloudSettings } from "./settings";
 import { readConsent, sponsoredRequester, startsOnFor, yesHolds, type ConsentRow, type SponsoredRequester } from "./sponsoredConsent";
 import { freeRuleCharges, smallLookUntil } from "./sponsoredSmall";
-import { adTerms, gravitySwitches, pricingV3Mode, type PricingV3Mode, type SponsoredMode } from "./sponsoredSwitch";
+import { adTerms, gravitySwitches, pricingV3Mode, pricingV3Reaches, type PricingV3Mode, type SponsoredMode } from "./sponsoredSwitch";
 import { logCloud, reportCloudFailure, restartStretchAtStatements, shownPlanIdOf, statusGuard, type AccountRow, type ComputerRow } from "./store";
 
 /**
@@ -59,8 +60,10 @@ export type AdTargetRow = {
   unverified_at: number | null;
   full_work: string | null;
   full_work_at: number | null;
-  /** An outside agent sent one of its chats a message through the account server (`chatMessages.ts`); cleared once the brain reports it idle since. */
+  /** An outside agent sent one of its chats a message through the account server (`chatMessages.ts`), or made it. */
   outside_at: number | null;
+  /** The brain's first busy report after that message (its turn began); its next idle report ends the hold. */
+  outside_busy_at: number | null;
 };
 
 /** What the rules read for one account, read once. */
@@ -141,10 +144,16 @@ export function readFullPriceWork(value: unknown): CloudFullPriceWork[] {
 
 /** An outside agent's message holds the full price at most this long with no idle report (a brain that never sent one). */
 const OUTSIDE_AGENT_HOLD_MS = 6 * 60 * 60_000;
+/** An outside agent's message whose turn never began (no busy report since) holds the full price this long. */
+export const OUTSIDE_AGENT_NO_TURN_MS = 30 * 60_000;
 
 export type PriceDecision = { now: "ad" | "full"; reason: CloudFullPriceReason | null; adUntil: number | null };
 
-type DecisionTarget = Pick<AdTargetRow, "proof_at" | "fm_proof_at" | "unverified_at" | "full_work" | "outside_at">;
+type DecisionTarget = Pick<AdTargetRow, "proof_at" | "fm_proof_at" | "unverified_at" | "full_work" | "outside_at" | "outside_busy_at">;
+
+/** Pure: an outside agent's message still holds the full price (its turn runs, or may yet begin). */
+const outsideHolds = (target: DecisionTarget | null, now: number): boolean =>
+  target?.outside_at != null && now - target.outside_at < OUTSIDE_AGENT_HOLD_MS && (target.outside_busy_at != null || now - target.outside_at < OUTSIDE_AGENT_NO_TURN_MS);
 
 /**
  * Pure: the newest proof that counts under `ctx` (ads on: any; ads off: only
@@ -178,8 +187,9 @@ export function decidePrice(
   // computer's sleep clears it (`statusChangeStatements`). Not the stretch, which every rate move restarts.
   const work = awakeSince != null ? readFullPriceWork(target?.full_work ?? null) : [];
   if (work.length) return { now: "full", reason: work[0]!, adUntil: null };
-  // An outside agent's message through the account server, until the brain says it is idle again.
-  if (target?.outside_at != null && awakeSince != null && now - target.outside_at < OUTSIDE_AGENT_HOLD_MS) return { now: "full", reason: "outside_agent", adUntil: null };
+  // An outside agent's message (or computer) through the account server: until the brain's idle report
+  // after the turn it began, whatever order other reports came in (`noteActivityReport`).
+  if (awakeSince != null && outsideHolds(target, now)) return { now: "full", reason: "outside_agent", adUntil: null };
   if (live) return { now: "ad", reason: null, adUntil: until };
   const unverified = target?.unverified_at != null && target.unverified_at >= (proof ?? 0) && target.unverified_at + ctx.windowMs > now;
   return { now: "full", reason: unverified ? "unverified" : "not_in_use", adUntil: null };
@@ -252,7 +262,7 @@ export async function adContextFor(env: GravityEnv, account: AccountRow, switche
 
 async function targetsOf(env: GravityEnv, targets: readonly string[]): Promise<Map<string, AdTargetRow>> {
   if (targets.length === 0) return new Map();
-  const rows = await env.DB.prepare("select target, user_id, proof_at, fm_proof_at, unverified_at, full_work, full_work_at, outside_at from cloud_ad_targets where target in (select value from json_each(?))")
+  const rows = await env.DB.prepare("select target, user_id, proof_at, fm_proof_at, unverified_at, full_work, full_work_at, outside_at, outside_busy_at from cloud_ad_targets where target in (select value from json_each(?))")
     .bind(JSON.stringify(targets)).all<AdTargetRow>();
   return new Map((rows.results ?? []).map((row) => [row.target, row]));
 }
@@ -280,12 +290,16 @@ function v2RateMilli(computer: ComputerRow, ctx: AdContext, now: number): number
  * stretch restarts, so a race leaves the row on its old rate, charged once.
  * Empty when it is already there.
  */
-export function rateMoveStatements(env: GravityEnv, computer: ComputerRow, rate: number, adFull: number | null, edge: number): D1PreparedStatement[] {
+export function rateMoveStatements(env: GravityEnv, computer: ComputerRow, rate: number, adFull: number | null, edge: number, proofsRead?: Pick<AdTargetRow, "proof_at" | "fm_proof_at"> | null): D1PreparedStatement[] {
   if (computer.multiplier_milli === rate && (computer.ad_full_milli ?? null) === adFull) return [];
   const guard = statusGuard(computer);
+  // `proofsRead`: a move off the ad price holds only while no newer proof came in since they were read
+  // (a proof landing between the tick's read and its write keeps the ad price).
+  const noNewProof = proofsRead === undefined ? "" : " and not exists (select 1 from cloud_ad_targets where target = ? and (coalesce(proof_at, 0) > ? or coalesce(fm_proof_at, 0) > ?))";
   const statements: D1PreparedStatement[] = [
-    env.DB.prepare(`update cloud_computers set multiplier_milli = ?, ad_full_milli = ? where instance_id = ? and multiplier_milli = ? and ad_full_milli is ? and ${guard.sql}`)
-      .bind(rate, adFull, computer.instance_id, computer.multiplier_milli, computer.ad_full_milli ?? null, ...guard.binds),
+    env.DB.prepare(`update cloud_computers set multiplier_milli = ?, ad_full_milli = ? where instance_id = ? and multiplier_milli = ? and ad_full_milli is ? and ${guard.sql}${noNewProof}`)
+      .bind(rate, adFull, computer.instance_id, computer.multiplier_milli, computer.ad_full_milli ?? null, ...guard.binds,
+        ...(proofsRead === undefined ? [] : [computer.instance_id, proofsRead?.proof_at ?? 0, proofsRead?.fm_proof_at ?? 0])),
   ];
   const running = computer.awake_since != null && isMeteredStatus(computer.status);
   if (running) statements.push(...restartStretchAtStatements(env, computer, Math.max(computer.awake_since!, edge)));
@@ -300,20 +314,24 @@ export function rateMoveStatements(env: GravityEnv, computer: ComputerRow, rate:
  * differs from its size's) goes back to its size's own rate.
  */
 export function computerPriceStatements(env: GravityEnv, computer: ComputerRow, target: AdTargetRow | null, ctx: AdContext, now: number): D1PreparedStatement[] {
+  const rates = computerRatesMilli(computer, ctx);
+  // Off the ad price: from the end of its window when that ended (whatever the reason now: no use,
+  // ads off after a free-model chat's window, the switch), else now (work begun, ads turned off).
+  const offAd = (rate: number) => {
+    const until = adWindow(target, ctx, isChargedSmall(rates)).until;
+    const edge = computer.awake_since != null && until != null && until <= now ? fullPriceEdge(until, ctx, computer.awake_since, now) : now;
+    return rateMoveStatements(env, computer, rate, null, edge, target);
+  };
   if (!ctx.v3) {
     const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
     const v3Full = size && size.tier !== "small" && computer.multiplier_milli === v3FullRateMilli(size.multiplierMilli) && computer.multiplier_milli !== size.multiplierMilli;
     if (computer.ad_full_milli == null && !v3Full) return [];
-    return rateMoveStatements(env, computer, v2RateMilli(computer, ctx, now), null, now);
+    return computer.ad_full_milli != null ? offAd(v2RateMilli(computer, ctx, now)) : rateMoveStatements(env, computer, v2RateMilli(computer, ctx, now), null, now);
   }
-  const rates = computerRatesMilli(computer, ctx);
   const decision = decidePrice(target, ctx, computer.awake_since, now, { smallLook: isChargedSmall(rates) });
   if (decision.now === "ad") return rateMoveStatements(env, computer, rates.adMilli, rates.fullMilli, now);
-  // Back to the full price: at the end of the window when that is why.
-  const lapsed = computer.ad_full_milli != null && (decision.reason === "not_in_use" || decision.reason === "unverified");
-  const previousUntil = lapsed ? adWindow(target, ctx, isChargedSmall(rates)).until : null;
-  const edge = computer.awake_since != null ? fullPriceEdge(previousUntil, ctx, computer.awake_since, now) : now;
-  return rateMoveStatements(env, computer, rates.fullMilli, null, edge);
+  const work = decision.reason === "cli_session" || decision.reason === "automation" || decision.reason === "outside_agent";
+  return computer.ad_full_milli != null && !work ? offAd(rates.fullMilli) : rateMoveStatements(env, computer, rates.fullMilli, null, now);
 }
 
 /**
@@ -343,9 +361,13 @@ export async function syncAccountPrices(env: GravityEnv, account: AccountRow, no
  * end. At `off`, only a computer still on an ad rate (or a v3 full rate) goes
  * back, so the read is the tick's own and nothing else runs.
  */
-export async function syncAdPricesInTick(env: GravityEnv, computers: readonly ComputerRow[], now: number): Promise<void> {
+export async function syncAdPricesInTick(env: GravityEnv, tickRows: readonly ComputerRow[], now: number): Promise<void> {
   try {
     const switches = await pricingSwitches(env);
+    // The rows as the tick's own status changes left them: a computer it just woke is awake now.
+    const computers = switches.mode === "off" || tickRows.length === 0 ? tickRows
+      : (await env.DB.prepare("select * from cloud_computers where deleted_at is null and instance_id in (select value from json_each(?))")
+        .bind(JSON.stringify(tickRows.map((computer) => computer.instance_id))).all<ComputerRow>()).results ?? [];
     const running = computers.filter((computer) => computer.awake_since != null && isMeteredStatus(computer.status));
     const candidates = switches.mode === "off"
       ? computers.filter((computer) => computer.ad_full_milli != null || isV3OnlyRate(computer))
@@ -475,7 +497,8 @@ export function phoneAdMove(phone: Pick<PhonePriceRow, "ad_mark_at">, decision: 
     return minutes > 0 ? { addMilli: minutes * perMinute, markAt: phone.ad_mark_at + minutes * 60_000 } : null;
   }
   if (phone.ad_mark_at == null) return null;
-  const end = decision.reason === "not_in_use" || decision.reason === "unverified" ? fullPriceEdge(adUntil, ctx, phone.ad_mark_at, now) : now;
+  // Up to the window's end when it ended (whatever the reason now), else now.
+  const end = adUntil != null && adUntil <= now ? fullPriceEdge(adUntil, ctx, phone.ad_mark_at, now) : now;
   return { addMilli: begun(phone.ad_mark_at, end) * perMinute, markAt: null };
 }
 
@@ -487,17 +510,40 @@ const JOINED_NETWORK_MS = 30 * 24 * 60 * 60_000;
 const UNVERIFIED_ALERT_MS = 7 * 24 * 60 * 60_000;
 
 /**
- * Whether a request came from the network of the account's own cloud
- * computers (the one its brains call from, or one any computer joined from
- * lately): not a person at a screen. A request with no network data counts.
+ * Where a request's network is: `own`, the network of one of the account's
+ * own cloud computers (the one its brain calls from, or one it joined from
+ * lately), so not a person at a screen: the proof doesn't count. `cloud`,
+ * DAEX Cloud's network but none of the account's computers (a VPN or an
+ * office proxy there): it counts, and the owner hears of it. Null otherwise,
+ * or with no network data.
  */
-export async function fromOwnCloudNetwork(env: GravityEnv, userId: string, asn: number | null, now: number): Promise<boolean> {
-  if (asn == null) return false;
+export async function cloudNetworkOf(env: GravityEnv, userId: string, asn: number | null, now: number): Promise<"own" | "cloud" | null> {
+  if (asn == null) return null;
+  const joined = now - JOINED_NETWORK_MS;
   const row = await env.DB.prepare(`
-    select (exists (select 1 from cloud_computers where user_id = ? and deleted_at is null and net_asn = ?)
-      or exists (select 1 from cloud_computers where join_asn = ? and created_at >= ?)) as own
-  `).bind(userId, asn, asn, now - JOINED_NETWORK_MS).first<{ own: number }>();
-  return Boolean(row?.own);
+    select exists (select 1 from cloud_computers where user_id = ? and ((deleted_at is null and net_asn = ?) or (join_asn = ? and created_at >= ?))) as own,
+      exists (select 1 from cloud_computers where (deleted_at is null and net_asn = ?) or (join_asn = ? and created_at >= ?)) as cloud
+  `).bind(userId, asn, asn, joined, asn, asn, joined).first<{ own: number; cloud: number }>();
+  return row?.own ? "own" : row?.cloud ? "cloud" : null;
+}
+
+/** A proof that counted from DAEX Cloud's network (`cloudNetworkOf` `cloud`): the owner hears of it once a week per account. */
+export async function noteCloudNetworkProof(env: GravityEnv, account: AccountRow, asn: number | null, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
+  try {
+    logCloud("cloud.ad_price.cloud_network", { userId: account.user_id, asn });
+    await sendOwnerAlert(env, {
+      key: `ad_cloud_network:${account.user_id}:${Math.floor(now / UNVERIFIED_ALERT_MS)}`,
+      kind: "ad_cloud_network",
+      userId: account.user_id,
+      subject: "DAEX Cloud: an ad-price proof came from the DAEX Cloud provider's network",
+      reason: "A request that keeps this account's cloud computer at the ad price came from the network DAEX Cloud computers use, though not from one of this account's computers (a VPN or an office proxy there, say). It counted. Nothing was blocked.",
+      counts: { Network: asn != null ? `AS${asn}` : "unknown" },
+      step: "ad_cloud_network",
+      abuse: true,
+    }, now, waitUntil);
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.cloud_network_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
 }
 
 export type ProofTargets = { instanceId: string | null; phoneId: string | null };
@@ -506,7 +552,7 @@ export type ProofTargets = { instanceId: string | null; phoneId: string | null }
 const productOf = (targets: ProofTargets, freeModel: boolean): string => (targets.phoneId ? "phone" : freeModel && !targets.instanceId ? "free_model" : "linux");
 
 /**
- * A request that doesn't count (`fromOwnCloudNetwork`): marked on its
+ * A request that doesn't count (`cloudNetworkOf` `own`): marked on its
  * targets so their price row says why, and the owner hears of it once a week
  * per account. No ban, no penalty.
  */
@@ -525,7 +571,7 @@ export async function noteUnverified(env: GravityEnv, account: AccountRow, targe
       kind: "ad_cloud_request",
       userId: account.user_id,
       subject: "DAEX Cloud: an ad-price request came from a DAEX Cloud computer's network",
-      reason: "A request that would keep this account's cloud computer at the ad price came from the network DAEX Cloud computers call from, not from a phone or laptop. It did not count: no proof, nothing sent to the ad partner, and the computer has the full price. Nothing was blocked.",
+      reason: "A request that would keep this account's cloud computer at the ad price came from the network of one of this account's own DAEX Cloud computers, not from a phone or laptop. It did not count: no proof, nothing sent to the ad partner, and the computer has the full price. Nothing was blocked.",
       counts: { Network: asn != null ? `AS${asn}` : "unknown" },
       step: "ad_cloud_request",
       abuse: true,
@@ -550,7 +596,7 @@ const targetKeys = (targets: ProofTargets): string[] => [
 export async function countAdProof(
   env: GravityEnv,
   account: AccountRow,
-  proof: { chatId: string; turnId: string; kind: "reply" | "sent"; freeModel: boolean } & ProofTargets,
+  proof: { chatId: string; turnId: string; kind: "reply" | "sent"; freeModel: boolean; targetAt?: number } & ProofTargets,
   now: number,
 ): Promise<CloudAdProofAnswer> {
   const keys = targetKeys(proof);
@@ -575,7 +621,7 @@ export async function countAdProof(
   await env.DB.batch(keys.map((key) => env.DB.prepare(`
     insert into cloud_ad_targets (target, user_id, ${column}, updated_at) values (?, ?, ?, ?)
     on conflict (target) do update set ${column} = max(coalesce(${column}, 0), excluded.${column}), updated_at = excluded.updated_at
-  `).bind(key, account.user_id, now, now)));
+  `).bind(key, account.user_id, proof.targetAt ?? now, now)));
   await syncAccountPrices(env, account, now, scope);
   return { counted: true };
 }
@@ -591,23 +637,41 @@ function countProofStatement(env: GravityEnv, day: string, kind: string, userId:
 
 /* ---- The brain's full-price work ---- */
 
+/** Whether Pricing v3 reaches this account now: at `off` (and for others at `testers`) nothing new is kept. */
+async function v3Reaches(env: GravityEnv, userId: string): Promise<boolean> {
+  return pricingV3Reaches(env, userId, await pricingV3Mode(env));
+}
+
 /**
- * Keeps the full-price work a computer's brain reported (`POST .../activity`),
- * and moves the computer to the price it now has. Never fails the report.
+ * The newest activity report of a computer's brain (`POST .../activity`, one
+ * sent late never comes here): the full-price work it names, and the turn of
+ * an outside agent's message. A busy report after that message means its turn
+ * began; the idle report after it ends the hold. Moves the computer to the
+ * price it now has. Never fails the report.
  */
-export async function noteFullPriceWork(env: GravityEnv, computer: ComputerRow, work: CloudFullPriceWork[] | undefined, now: number): Promise<void> {
+export async function noteActivityReport(env: GravityEnv, computer: ComputerRow, report: Pick<CloudComputerActivityReport, "busy" | "fullPriceWork">, now: number): Promise<void> {
   try {
-    // None (an older brain leaves the field out, which means none too) only clears work it named
-    // before, and never adds a row: a computer with no full-price work writes nothing.
-    const saved = !work?.length
-      ? await env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, updated_at = ? where target = ? and coalesce(full_work, '[]') <> '[]'")
-        .bind(now, now, computer.instance_id).run()
-      : await env.DB.prepare(`
-      insert into cloud_ad_targets (target, user_id, full_work, full_work_at, updated_at) values (?, ?, ?, ?, ?)
-      on conflict (target) do update set full_work = excluded.full_work, full_work_at = excluded.full_work_at, updated_at = excluded.updated_at
-        where coalesce(cloud_ad_targets.full_work, '[]') <> excluded.full_work
-    `).bind(computer.instance_id, computer.user_id, JSON.stringify(work), now, now).run();
-    if (saved.meta?.changes) await syncComputerPrice(env, computer, now);
+    const work = report.fullPriceWork ?? [];
+    // None (an older brain leaves the field out, which means none too) only clears what was kept, and
+    // never adds a row. Work is kept only while Pricing v3 reaches the account: nothing kept at `off`
+    // turns into a price when it comes on (the brain reports again on its next change).
+    const keep = work.length > 0 && (await v3Reaches(env, computer.user_id));
+    const statements = [
+      keep
+        ? env.DB.prepare(`
+          insert into cloud_ad_targets (target, user_id, full_work, full_work_at, updated_at) values (?, ?, ?, ?, ?)
+          on conflict (target) do update set full_work = excluded.full_work, full_work_at = excluded.full_work_at, updated_at = excluded.updated_at
+            where coalesce(cloud_ad_targets.full_work, '[]') <> excluded.full_work
+        `).bind(computer.instance_id, computer.user_id, JSON.stringify(work), now, now)
+        : env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, updated_at = ? where target = ? and coalesce(full_work, '[]') <> '[]'")
+          .bind(now, now, computer.instance_id),
+      report.busy
+        ? env.DB.prepare("update cloud_ad_targets set outside_busy_at = ? where target = ? and outside_at is not null and outside_busy_at is null").bind(now, computer.instance_id)
+        : env.DB.prepare("update cloud_ad_targets set outside_at = null, outside_busy_at = null, updated_at = ? where target = ? and outside_busy_at is not null").bind(now, computer.instance_id),
+    ];
+    const [worked, turned] = await env.DB.batch(statements);
+    // A turn that began changes no price; its end, or new work, does.
+    if (worked?.meta?.changes || (!report.busy && turned?.meta?.changes)) await syncComputerPrice(env, computer, now);
   } catch (error) {
     reportCloudFailure("cloud.ad_price.work_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
@@ -615,15 +679,17 @@ export async function noteFullPriceWork(env: GravityEnv, computer: ComputerRow, 
 
 /**
  * An outside agent (ADE MCP) sent a message to a chat on this computer
- * through the account server (`origin: "mcp"`): the computer has the full
- * price until its brain next reports it idle (`noteComputerIdle`). Never
- * fails the send.
+ * through the account server (`origin: "mcp"`), or made the computer: the
+ * full price until the brain's idle report after the turn it starts
+ * (`noteActivityReport`), or `OUTSIDE_AGENT_NO_TURN_MS` with no turn at all.
+ * Nothing while Pricing v3 doesn't reach the account. Never fails the caller.
  */
-export async function noteOutsideAgentWork(env: GravityEnv, computer: ComputerRow, now: number): Promise<void> {
+export async function noteOutsideAgentWork(env: GravityEnv, computer: Pick<ComputerRow, "instance_id" | "user_id">, now: number): Promise<void> {
   try {
+    if (!(await v3Reaches(env, computer.user_id))) return;
     await env.DB.prepare(`
-      insert into cloud_ad_targets (target, user_id, outside_at, updated_at) values (?, ?, ?, ?)
-      on conflict (target) do update set outside_at = excluded.outside_at, updated_at = excluded.updated_at
+      insert into cloud_ad_targets (target, user_id, outside_at, outside_busy_at, updated_at) values (?, ?, ?, null, ?)
+      on conflict (target) do update set outside_at = excluded.outside_at, outside_busy_at = null, updated_at = excluded.updated_at
     `).bind(computer.instance_id, computer.user_id, now, now).run();
     await syncComputerPrice(env, computer, now);
   } catch (error) {
@@ -631,25 +697,26 @@ export async function noteOutsideAgentWork(env: GravityEnv, computer: ComputerRo
   }
 }
 
-/**
- * The brain reported the computer idle since `idleSince`: an outside agent's
- * message sent before that has had its turn. One sent after it (the turn not
- * begun yet) still holds. Never fails the report.
- */
-export async function noteComputerIdle(env: GravityEnv, computer: ComputerRow, idleSince: number, now: number): Promise<void> {
-  try {
-    const cleared = await env.DB.prepare("update cloud_ad_targets set outside_at = null, updated_at = ? where target = ? and outside_at is not null and outside_at < ?")
-      .bind(now, computer.instance_id, idleSince).run();
-    if (cleared.meta?.changes) await syncComputerPrice(env, computer, now);
-  } catch (error) {
-    reportCloudFailure("cloud.ad_price.idle_failed", { message: error instanceof Error ? error.message : "unknown" });
-  }
-}
-
-/** One computer on the price it has now, after its brain or an outside agent changed what decides it. */
-async function syncComputerPrice(env: GravityEnv, computer: ComputerRow, now: number): Promise<void> {
+/** One computer on the price it has now, after its brain, an outside agent or a resize changed what decides it. */
+export async function syncComputerPrice(env: GravityEnv, computer: Pick<ComputerRow, "instance_id" | "user_id">, now: number): Promise<void> {
   const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(computer.user_id).first<AccountRow>();
   if (account) await syncAccountPrices(env, account, now, { instanceIds: [computer.instance_id] });
+}
+
+/**
+ * The rate `computer` would wake at now under Pricing v3 (asleep, so its
+ * brain's work doesn't count), for the 0-credit check (`routes.ts`
+ * `wakeBlocker`), or null while Pricing v3 doesn't reach the account.
+ */
+export async function wakeRateMilli(env: GravityEnv, account: AccountRow, computer: ComputerRow, now: number): Promise<number | null> {
+  const settings = await readCloudSettings(env);
+  if ((await pricingV3Mode(env, settings)) === "off") return null;
+  const { ctx } = await adContextFor(env, account, await pricingSwitches(env, settings));
+  if (!ctx.v3) return null;
+  const rates = computerRatesMilli(computer, ctx);
+  if (rates.fullMilli === rates.adMilli) return rates.fullMilli;
+  const target = (await targetsOf(env, [computer.instance_id])).get(computer.instance_id) ?? null;
+  return decidePrice(target, ctx, null, now, { smallLook: isChargedSmall(rates) }).now === "ad" ? rates.adMilli : rates.fullMilli;
 }
 
 /* ---- What the apps read ---- */
@@ -727,7 +794,7 @@ export const isPublicPricingRequest = (url: URL): boolean => url.pathname.replac
  * `GET /public/pricing` (`CloudPublicPricing`): no auth, CORS `*`, never
  * cached. `pricingV3` only at `all` (a tester's prices stay theirs); `mac`
  * only while `mac_computers` is `all`; `ads` only where the request's country
- * has ads and the ad switch reaches everyone. One settings read.
+ * has ads and the ad switch reaches everyone. One settings read, kept in the isolate for 15 s.
  */
 export async function handlePublicPricing(request: Request, env: GravityEnv): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: PUBLIC_HEADERS });
@@ -739,8 +806,14 @@ export async function handlePublicPricing(request: Request, env: GravityEnv): Pr
   return new Response(JSON.stringify(answer), { status: 200, headers: { ...PUBLIC_HEADERS, "content-type": "application/json" } });
 }
 
+/** The settings `GET /public/pricing` reads, kept in the isolate a few seconds: the read has no auth and no rate limit. */
+let publicSettings: { at: number; settings: CloudSettings } | null = null;
+const PUBLIC_SETTINGS_MS = 15_000;
+
 async function publicPricing(env: GravityEnv, request: Request): Promise<CloudPublicPricing> {
-  const settings = await readCloudSettings(env);
+  const now = Date.now();
+  if (!publicSettings || now - publicSettings.at > PUBLIC_SETTINGS_MS || now < publicSettings.at) publicSettings = { at: now, settings: await readCloudSettings(env) };
+  const { settings } = publicSettings;
   if ((await pricingV3Mode(env, settings)) !== "all") return { pricingV3: false };
   // The cloud Mac's switch, once its branch adds it (`mac_computers`); none here reads as off.
   const mac = (settings as unknown as Record<string, string | undefined>).mac_computers === "all";

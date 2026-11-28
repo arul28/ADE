@@ -13,7 +13,6 @@ import {
   CLOUD_SPONSORED_RENDERERS,
   CLOUD_SPONSORED_SURFACES,
   CLOUD_SPONSORED_TRACKING,
-  type CloudAdProofAnswer,
   type CloudSponsoredAdAnswer,
   type CloudSponsoredConsent,
   type CloudSponsoredDevice,
@@ -49,7 +48,8 @@ import { noteSmallLook, smallStateOf, syncSmallRates } from "./sponsoredSmall";
 import { resetFreeModelMeter } from "./freeModelsMeter";
 import type { CloudWaitUntil } from "./analytics";
 import { gravitySwitches, inferenceReaches, inferenceSwitch, isTester, pricingV3Mode, pricingV3Reaches, switchReaches, type Switches } from "./sponsoredSwitch";
-import { countAdProof, fromOwnCloudNetwork, noteUnverified, syncAccountPrices, type ProofTargets } from "./adPrice";
+import { cloudNetworkOf, countAdProof, noteCloudNetworkProof, noteUnverified, syncAccountPrices, type ProofTargets } from "./adPrice";
+import { handleSent } from "./adProof";
 import { freeYesHolds, honorFreeGpc, outsideInferenceCountries, readFreeConsent, readFreeModelChat } from "./freeModelsConsent";
 import {
   loadAccount,
@@ -189,7 +189,7 @@ function countriesOf(env: GravityEnv): string[] {
  * Why this account sees no card now, or null when it may. The country is the
  * request's; an unknown one (no Cloudflare data) passes, so local runs work.
  */
-async function blockedReason(env: GravityEnv, account: AccountRow, country: string | null, switches?: Switches, v3 = false): Promise<CloudSponsoredNoAdReason | null> {
+export async function blockedReason(env: GravityEnv, account: AccountRow, country: string | null, switches?: Switches, v3 = false): Promise<CloudSponsoredNoAdReason | null> {
   const read = switches ?? (await gravitySwitches(env));
   if (!(await switchReaches(env, account, read.mode))) return "off";
   // Paid plans have no ads, a `past_due` one included; the test tool's plan counts as the plan.
@@ -204,18 +204,6 @@ async function v3For(env: GravityEnv, userId: string, settings?: CloudSettings):
   return pricingV3Reaches(env, userId, await pricingV3Mode(env, settings));
 }
 
-/**
- * `v3For` for `POST /sent`, which every app sends with each message: the
- * setting read is kept in the isolate for a few seconds, so a caller Pricing v3
- * doesn't reach costs one tester check at most, and nothing at `off`.
- */
-let sentModeCache: { at: number; mode: Awaited<ReturnType<typeof pricingV3Mode>> } | null = null;
-const SENT_MODE_CACHE_MS = 15_000;
-async function v3ForSent(env: GravityEnv, userId: string, now: number): Promise<boolean> {
-  if (!sentModeCache || now - sentModeCache.at > SENT_MODE_CACHE_MS || now < sentModeCache.at) sentModeCache = { at: now, mode: await pricingV3Mode(env) };
-  return pricingV3Reaches(env, userId, sentModeCache.mode);
-}
-
 /** Deletes where the person watched from (address, device), in the same transaction as the no it follows. */
 const clearViewers = (env: GravityEnv, userId: string) => env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId);
 
@@ -228,7 +216,7 @@ const clearViewers = (env: GravityEnv, userId: string) => env.DB.prepare("delete
  * same transaction; one saved meanwhile is checked once more. Returns the
  * account's answer as it now is.
  */
-async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow | null, who: SponsoredRequester, now: number): Promise<ConsentRow | null> {
+export async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow | null, who: SponsoredRequester, now: number): Promise<ConsentRow | null> {
   let consent = read;
   for (let tries = 0; tries < 2 && gpcOverrides(consent, who); tries += 1) {
     const flip = consent
@@ -571,13 +559,13 @@ export async function accountEmailHash(env: GravityEnv, userId: string): Promise
 }
 
 /** The computer, when it is the account's own live ADE Cloud computer. */
-async function ownCloudComputer(env: GravityEnv, userId: string, value: unknown) {
+export async function ownCloudComputer(env: GravityEnv, userId: string, value: unknown) {
   const instanceId = shortString(value, 64);
   return instanceId && ROW_ID.test(instanceId) ? ownedComputer(env, userId, instanceId) : null;
 }
 
 /** The account's live cloud iPhone by its id, or null (Pricing v3: a chat that holds it proves it). */
-async function ownLivePhone(env: GravityEnv, userId: string, value: unknown): Promise<string | null> {
+export async function ownLivePhone(env: GravityEnv, userId: string, value: unknown): Promise<string | null> {
   const phoneId = shortString(value, 160);
   if (!phoneId || !ROW_ID.test(phoneId)) return null;
   const row = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? and phone_id = ? and state = 'live' and credits = 1")
@@ -597,45 +585,6 @@ async function chatRunsOn(env: GravityEnv, userId: string, chatId: string, insta
   `).bind(instanceId, userId, chatId).first<{ total: number; child: number; here: number }>();
   if (!copies || copies.total === 0) return newChat;
   return Boolean(copies.here) && !copies.child;
-}
-
-/**
- * Pricing v3: a person sent a message in a chat that uses DAEX Cloud (a chat on
- * one of the account's cloud computers, or one that holds its cloud iPhone).
- * The proof restarts that computer's or phone's ad window (`adPrice.ts`). Not
- * found while Pricing v3 doesn't reach the account: apps send it only while
- * the account state has `pricing`.
- */
-async function handleSent(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
-  if (!(await v3ForSent(env, userId, now))) return notFound();
-  const body = await readJson(request);
-  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const chatId = shortString(body.chatId, 160);
-  const messageId = shortString(body.messageId, 150);
-  if (!chatId || !ROW_ID.test(chatId) || !messageId || !ROW_ID.test(messageId)) return badRequest("Name the chat and the message.");
-  const refused = (reason: CloudAdProofAnswer["reason"]) => json({ counted: false, reason } satisfies CloudAdProofAnswer);
-  const account = await loadAccount(env, userId, now);
-  const who = sponsoredRequester(request);
-  // An ADE Free Models chat shows its ad with ads off, so its message counts with ads off.
-  const free = await freeModelAdGate(env, userId, chatId, who, now);
-  const freeModel = free != null && !("reason" in free);
-  if (!freeModel) {
-    const blocked = await blockedReason(env, account, who.country, undefined, true);
-    if (blocked === "country") return refused("no_ads_here");
-    if (blocked) return refused("ads_off");
-    const consent = await honorGpc(env, account, await readConsent(env, userId), who, now);
-    if (!yesHolds(env, consent, who) || consent.notice_seen_at == null) return refused("ads_off");
-  }
-  const computer = await ownCloudComputer(env, userId, body.instanceId);
-  const onComputer = computer && (await chatRunsOn(env, userId, chatId, computer.instance_id, { newChat: true })) ? computer.instance_id : null;
-  const targets: ProofTargets = { instanceId: onComputer, phoneId: await ownLivePhone(env, userId, body.phoneId) };
-  if (!targets.instanceId && !targets.phoneId) return refused("not_cloud");
-  const asn = requestNetwork(request);
-  if (await fromOwnCloudNetwork(env, userId, asn, now)) {
-    await noteUnverified(env, account, targets, asn, now, waitUntil);
-    return refused("unverified");
-  }
-  return json(await countAdProof(env, account, { chatId, turnId: `msg:${messageId}`, kind: "sent", freeModel, ...targets }, now));
 }
 
 /**
@@ -688,7 +637,7 @@ type FreeModelAdGate = { reason: CloudSponsoredNoAdReason } | { live: boolean; e
  * plan and any machine: no plan check and no ADE Cloud computer. Their own
  * yes (`cloud_free_model_consent`) and Gravity's inference countries.
  */
-async function freeModelAdGate(env: GravityEnv, userId: string, chatId: string, who: SponsoredRequester, now: number): Promise<FreeModelAdGate | null> {
+export async function freeModelAdGate(env: GravityEnv, userId: string, chatId: string, who: SponsoredRequester, now: number): Promise<FreeModelAdGate | null> {
   const chat = await readFreeModelChat(env, userId, chatId, now - TURN_TTL_MS);
   if (!chat) return null;
   const inference = await inferenceSwitch(env);
@@ -767,12 +716,15 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     lookUnder = v3 && !legacy ? null : consent;
   }
   if (v3) {
-    // A request from the network of the account's own cloud computers: no proof, nothing sent to Gravity.
+    // From the network of the account's own cloud computers: no proof, nothing sent to Gravity. From
+    // DAEX Cloud's network otherwise (a VPN there): it counts, and the owner hears of it.
     const asn = requestNetwork(request);
-    if (await fromOwnCloudNetwork(env, userId, asn, now)) {
+    const network = await cloudNetworkOf(env, userId, asn, now);
+    if (network === "own") {
       await noteUnverified(env, account, targets, asn, now, waitUntil);
       return none("unverified");
     }
+    if (network === "cloud") await noteCloudNetworkProof(env, account, asn, now, waitUntil);
     // The proof, once per reply, whatever Gravity answers below (no ad, the daily limit). A free-model
     // chat on the person's own machine counts only for the owner's report.
     if (targets.instanceId || targets.phoneId || free) {

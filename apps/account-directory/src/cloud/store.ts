@@ -364,6 +364,8 @@ const REQUESTS_PER_MINUTE = {
   settings: 120,
   /** Sponsored cards and the Index (`gravity.ts`): a few per finished reply and open chat; this stops a loop. */
   sponsored: 30,
+  /** Pricing v3's message proofs (`/cloud/sponsored/sent`, `adProof.ts`): one per message a person sends, on every device. */
+  sponsored_sent: 60,
   /**
    * ADE Free Models' model calls (`freeModels.ts`), per account: under
    * Gravity's 60 a minute for one person, with room for a tool loop.
@@ -778,7 +780,7 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
     statements.push(...settleStatements(env, computer, now, guard), ...freeWakeStatements(env, computer, now, guard));
     // Pricing v3 (`adPrice.ts`): the full-price work its brain reported, and an outside agent's
     // message, end with the stretch awake.
-    statements.push(env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, outside_at = null, updated_at = ? where target = ? and (coalesce(full_work, '[]') <> '[]' or outside_at is not null)")
+    statements.push(env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, outside_at = null, outside_busy_at = null, updated_at = ? where target = ? and (coalesce(full_work, '[]') <> '[]' or outside_at is not null)")
       .bind(now, now, computer.instance_id));
     // A free wake that didn't count as use (an automatic update's window) leaves
     // `last_awake_at` before its start; closing it keeps the 30-day delete clock where it was.

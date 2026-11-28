@@ -76,7 +76,7 @@ Server (`apps/account-directory/src/cloud/`): `routes.ts`, `store.ts`,
 `planCleanup.ts`, `updates.ts`, `computerStatus.ts`, `automations.ts`,
 `eventWakes.ts`, `limits.ts`, `integrations.ts`, `ctoCopy.ts`, `referrals.ts`,
 `freePlan.ts`, `safety.ts`, `blocks.ts`, `costReport.ts`, `gravity.ts`,
-`adPrice.ts` and the `sponsored*.ts` files.
+`adPrice.ts`, `adProof.ts`, `gravityAd.ts` and the `sponsored*.ts` files.
 
 Shared: `apps/desktop/src/shared/adeCloud.ts`, `adeCloud/` (binding, chat queue,
 account calls), `cloudApiClient.ts` (typed fetch client), `cloudTiers.ts`,
@@ -368,7 +368,8 @@ Chats on the person's own machines never get a card.
 
 ### The ad price (Pricing v3, behind a switch)
 
-`adPrice.ts`, migration `0073`. Under Pricing v3 every plan can turn ads on, and
+`adPrice.ts` (the price), `adProof.ts` (a message's proof), migrations
+`0073_ad_price` and `0074_ad_price_outside`. Under Pricing v3 every plan can turn ads on, and
 a computer or the DAEX Cloud iPhone used with ads costs less. All of it is behind
 the setting `pricing_v3` (`off`, `testers`, `all`; held under the deploy var
 `PRICING_V3`, unset is a hard off). At `off` no answer and no number changes.
@@ -399,35 +400,75 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   turn or message) counts once on any number of devices (`cloud_ad_proofs`), and
   only for the caller's own computer. Apps send `/sent` only while the account
   state has `pricing`; a caller Pricing v3 does not reach gets a cheap 404.
+  `/sent` has its own rate bucket (`sponsored_sent`, 60 a minute).
+- **Bounds on a message's proof** (`adProof.ts`; a proof is the app's word,
+  since the server never sees a cloud chat's messages): a `/sent` for a chat
+  with no saved copy on that computer (a first message, or a chat the server
+  has never seen) holds the price with ads for 10 minutes, not the window, and
+  counts at most 6 times a UTC day per computer (12 per iPhone session); a
+  saved chat gets the whole window. A DAEX Free Models chat's message counts
+  only for the computer that saved it (or the iPhone it holds). `/ad` needs a
+  saved copy on that computer; its turn id is the app's word too, but every
+  `/ad` asks Gravity for an ad (at most 120 a day per account).
+- **A message that wakes a computer at 0 credits**: the computer wakes at the
+  price it has now (`wakeRateMilli`): a paid plan's Small at 0, a Small on Free
+  with a live proof at 0. A person's message that wakes it is that message's
+  proof first, so a Small on Free with ads on (country with ads, notice seen)
+  wakes at 0 credits at the price with ads: through the chat queue
+  (`POST /cloud/chats/.../messages`, a person's send), or
+  `POST /cloud/instances/:id/start` with `adProof: { chatId, messageId }`. A
+  wake for an outside agent stays refused at 0 credits; a CLI session or an
+  automation started later puts it at the full price, and the zero stop
+  stops it.
 - **Requests that do not count**: a proof from the network of one of the
-  account's own cloud computers (its `net_asn`, or a recent join's) is not
-  counted, Gravity is not asked, the owner gets an alert and the price reads
-  `unverified`. No ban.
+  account's own cloud computers (its `net_asn`, or one it joined from in the
+  last 30 days) is not counted, Gravity is not asked, the owner gets an alert
+  and the price reads `unverified`. A proof from DAEX Cloud's network that is
+  none of the account's computers (a VPN or an office proxy there) counts; the
+  owner gets an alert (`ad_cloud_network`). No ban.
 - **Full-price work** (`fullPriceWork` on the brain's activity report, sent on
-  change with no new poll; `noteFullPriceWork`):
+  change with no new poll; `noteActivityReport`; only the newest report by
+  `reportedAt` counts, and work is kept only while Pricing v3 reaches the
+  account):
   - `cli_session`: an agent CLI session is alive on the computer: any of the 13
     providers launched by DAEX, or one started by hand in a shell and found by
     its process name (`AGENT_CLI_PROCESS_NAMES`: claude, codex, cursor-agent,
     agent, droid, opencode, muse). Chat CLIs (`*-chat` rows) count as their chat.
   - `automation`: an automation's chat has work in hand.
   - `outside_agent`: an outside agent (DAEX MCP) sent a message through the
-    account queue; cleared at the computer's next idle report.
+    account queue, or made the computer (a create or copy with outside-agent
+    metadata). It holds until the brain's idle report after the first busy
+    report that follows the message (the turn it began), whatever the order of
+    other reports; with no busy report at all, 30 minutes. The computer's
+    sleep clears it.
   - Not detected (a decision: that process list also decides what keeps a
     computer awake): Pi, Qwen, Kimi, Grok, Copilot, Devin and Antigravity
-    started by hand in a plain shell. They send no proof, so the computer goes
-    to the full price when its window ends, unless a chat's proofs keep it open.
-  - Not detected: an outside agent on a live link straight to the brain, and a
-    chat's own scheduled turns. Neither sends a proof, so the computer goes to
-    the full price when its window ends.
+    started by hand in a plain shell, and a hand-started CLI that runs under
+    Node (its foreground process reads `node`, not its name). They send no
+    proof, so the computer goes to the full price when its window ends, unless
+    a chat's proofs keep it open.
+  - Not detected: an outside agent on a live link straight to the brain. It
+    sends no proof, so the computer goes to the full price when its window
+    ends.
+  - **Not full-price work (the rule):** a normal chat's scheduled wake-up
+    (`schedule_wakeup`, `cron` on a work chat). With no app open it sends no
+    proof and falls to the full price when the window ends; with an app open a
+    person can see the ad. "Scheduled run" in the plan means an automation's
+    schedule, which is `automation`.
 - **Billing**: the price lives on `cloud_computers.multiplier_milli`; a change
   ends the stretch at its edge and starts a new one (`rateMoveStatements`).
-  A window that ends goes back to full at the end of the window, any other
-  change at once ("off" takes effect at the next minute). The minute tick
+  A move off the ad price goes back to the end of the window when the window
+  ended (no use, ads off after a free-model chat's window, the switch turned
+  off, a tick missed); work and ads turned off move at once. A tick's move is
+  void when a newer proof landed since it read (`rateMoveStatements`). The minute tick
   (`syncAdPricesInTick`) and every write that can move a price (consent, a
   proof, a report) run the same decision. `ad_full_milli` holds the full rate
   while a computer is at the ad price, so the settle records the discount
   (`cloud_computer_days.ad_discount_milli`, `ad_ms`). The iPhone keeps its rate
-  per row (`cloud_phones.rate_milli`) and subtracts `ad_saved_milli`. Under
+  per row (`cloud_phones.rate_milli`; one started before Pricing v3 keeps 1,000
+  a minute with no ad price until it ends, and its stop time follows its own
+  rate) and subtracts `ad_saved_milli`: every minute begun at the ad price,
+  settled before the phone's final charge, stopped at `off`. Under
   Pricing v3 this replaces the 7-day Small rule.
 - **What apps read**: `CloudAccountState.pricing` (only with the request header
   `X-ADE-Pricing: 3`): the ads state for this request's country, and each

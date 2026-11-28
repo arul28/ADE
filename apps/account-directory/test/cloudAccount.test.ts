@@ -4982,6 +4982,9 @@ describe("ADE Cloud iPhone", () => {
     seedPhoneAccount({ extra_enabled: 0 });
     harness.exec("update cloud_accounts set used_milli = included_milli - 5000 where user_id = ?", OWNER);
     seedPhone("ses_live", 5, clock - 5 * 60_000, "live");
+    // Pricing v3 on since the phone began: a new phone would bill 500 a minute, this one still bills 1,000 (its row's rate), so it stops at its own.
+    Object.assign(harness.env, { PRICING_V3: "all" });
+    harness.insert("cloud_settings", { key: "pricing_v3", value: "all", updated_at: NOW });
     const nomacCalls: string[] = [];
     let state = "ready";
     const network = harness.net.fetchStub;
@@ -6884,5 +6887,212 @@ describe("ADE Free Models", () => {
     delete (harness.env as unknown as Row).GRAVITY_INFERENCE_KEY;
     expect(await state()).toBeUndefined();
     expect(inference).toEqual([]);
+  });
+});
+
+describe("Pricing v3's ad price", () => {
+  const HOME = 7922;
+  const CLOUD_NET = 24940;
+  const setting = (key: string, value: string) => harness.exec("insert or replace into cloud_settings (key, value, updated_at) values (?, ?, ?)", key, value, NOW - DAY);
+  const from = (asn: number) => (method: string, path: string, body?: Row) => {
+    const request = new Request(`https://directory.test${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": "203.0.113.7" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    Object.defineProperty(request, "cf", { value: { country: "US", regionCode: "TX", asn } });
+    return handleCloudRequest(request, harness.env);
+  };
+  const fromHome = from(HOME);
+  const sent = async (body: Row, send = fromHome) => (await send("POST", "/cloud/sponsored/sent", { instanceId: INSTANCE, chatId: "chat-1", ...body })).json() as Promise<Row>;
+  const priced = (id = INSTANCE) => {
+    const row = computer(harness, id);
+    return { rate: row.multiplier_milli, adFull: row.ad_full_milli };
+  };
+  const saveChat = (chatId: string, instanceId = INSTANCE, machineKey = `mk-${instanceId}`) =>
+    harness.insert("cloud_chat_copies", { user_id: OWNER, machine_key: machineKey, chat_id: chatId, instance_id: instanceId, r2_key: `chats/${chatId}`, updated_at: NOW });
+  const codeOf = async (response: Response) => [response.status, ((await response.clone().json()) as { error?: { code?: string } }).error?.code ?? null];
+
+  beforeEach(() => {
+    Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_ADS: "all", PRICING_V3: "all" });
+    setting("gravity_ads", "all");
+    setting("pricing_v3", "all");
+    seedAccount(harness, OWNER);
+    harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW - DAY, notice_seen_at: NOW - DAY });
+  });
+
+  it("at 0 credits, a person's message wakes Free's Small at the price with ads; a wake with no message, an outside agent's, or with ads off stays refused; a paid plan's Small always wakes", async () => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+    harness.env.CLOUD_CHATS = memoryBucket();
+    seedComputer(harness, { status: "stopped", awake_since: null, multiplier_milli: 500, machine_key: "key-a", ade_features: "chat_queue" });
+    provide(harness, INSTANCE, "stopped");
+    saveChat("chat-1", INSTANCE, "key-a");
+    harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+    const start = (body: Row) => fromHome("POST", `/cloud/instances/${INSTANCE}/start`, body);
+    const asleep = () => {
+      harness.exec("update cloud_computers set status = 'stopped', awake_since = null, multiplier_milli = 500, ad_full_milli = null where instance_id = ?", INSTANCE);
+      harness.exec("delete from cloud_ad_targets");
+      provide(harness, INSTANCE, "stopped");
+    };
+
+    // No message: Free's Small has its full price, which 0 credits can't pay.
+    expect(await codeOf(await start({}))).toEqual([402, "out_of_hours"]);
+    // An outside agent naming a message proves nothing (on Free it is refused as an outside agent).
+    expect((await start({ origin: "mcp", adProof: { chatId: "chat-1", messageId: "m-0" } })).status).toBe(403);
+    expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([]);
+    // A person's message is the proof: the wake goes, at the price with ads.
+    expect((await start({ adProof: { chatId: "chat-1", messageId: "m-1" } })).status).toBe(200);
+    expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([{ turn_id: "msg:m-1" }]);
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+
+    // The chat queue's wake: a person's message is its proof too; an outside agent's isn't.
+    asleep();
+    const queue = (body: Row) => fromHome("POST", "/cloud/chats/key-a/chat-1/messages", { text: "Fix the footer.", ...body });
+    expect(await codeOf(await queue({ messageId: "q-0", origin: "mcp" }))).toEqual([403, "outside_agent_free_plan"]);
+    expect((await queue({ messageId: "q-1" })).status).toBe(201);
+    expect(harness.rows("select turn_id from cloud_ad_proofs where turn_id like 'msg:q-%'")).toEqual([{ turn_id: "msg:q-1" }]);
+
+    // Ads off: the message proves nothing, and the wake is refused.
+    asleep();
+    harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER);
+    expect(await codeOf(await start({ adProof: { chatId: "chat-1", messageId: "m-2" } }))).toEqual([402, "out_of_hours"]);
+    // An ADE Free Models chat's ad shows with ads off: its message wakes the Small too.
+    Object.assign(harness.env, { GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
+    setting("gravity_inference", "testers");
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+    harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, country: "US", terms_version: 1 });
+    harness.insert("cloud_free_model_chats", { user_id: OWNER, chat_id: "chat-fm", first_at: clock, last_at: clock, requests: 1 });
+    saveChat("chat-fm", INSTANCE, "key-a");
+    expect((await start({ adProof: { chatId: "chat-fm", messageId: "m-3" } })).status).toBe(200);
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+
+    // A paid plan's Small costs nothing at either price: it wakes at 0 credits with no message and ads off.
+    asleep();
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_customer_id = 'cus_1', stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", OWNER);
+    harness.exec("update cloud_computers set multiplier_milli = 0 where instance_id = ?", INSTANCE);
+    expect((await start({})).status).toBe(200);
+  });
+
+  it("a proof for a chat no computer saved holds the price with ads 10 minutes, six a day per computer; a Free Models proof counts only where its chat is saved", async () => {
+    seedComputer(harness, { multiplier_milli: 500 });
+    seedComputer(harness, { instance_id: "cloud-two", multiplier_milli: 500 });
+    provide(harness);
+    provide(harness, "cloud-two");
+    saveChat("chat-1");
+    // A saved chat's message: the whole window (60 minutes).
+    expect(await sent({ messageId: "m-1" })).toEqual({ counted: true });
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+    clock += 59 * 60_000;
+    await harness.tick();
+    expect(priced().rate).toBe(0);
+    clock += 2 * 60_000;
+    await harness.tick();
+    expect(priced()).toEqual({ rate: 500, adFull: null });
+
+    // A chat no computer saved: 10 minutes.
+    expect(await sent({ chatId: "chat-new", messageId: "n-1" })).toEqual({ counted: true });
+    expect(priced().rate).toBe(0);
+    clock += 9 * 60_000;
+    await harness.tick();
+    expect(priced().rate).toBe(0);
+    clock += 2 * 60_000;
+    await harness.tick();
+    expect(priced().rate).toBe(500);
+    // Six a UTC day per computer, then none: another computer has its own six.
+    for (let n = 2; n <= 6; n += 1) expect(await sent({ chatId: `chat-new-${n}`, messageId: `n-${n}` })).toEqual({ counted: true });
+    expect(await sent({ chatId: "chat-new-7", messageId: "n-7" })).toEqual({ counted: false, reason: "not_cloud" });
+    expect(await sent({ instanceId: "cloud-two", chatId: "chat-new-7", messageId: "n-7" })).toEqual({ counted: true });
+    // A chat another computer saved is not this computer's.
+    expect(await sent({ instanceId: "cloud-two", chatId: "chat-1", messageId: "m-2" })).toEqual({ counted: false, reason: "not_cloud" });
+
+    // An ADE Free Models chat's ad shows with ads off: its proof counts for the computer that saved it, and only that one.
+    harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER);
+    Object.assign(harness.env, { GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
+    setting("gravity_inference", "testers");
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+    harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, country: "US", terms_version: 1 });
+    for (const chat of ["chat-fm", "chat-fm-new"]) harness.insert("cloud_free_model_chats", { user_id: OWNER, chat_id: chat, first_at: clock, last_at: clock, requests: 1 });
+    saveChat("chat-fm");
+    expect(await sent({ instanceId: "cloud-two", chatId: "chat-fm", messageId: "f-1" })).toEqual({ counted: false, reason: "not_cloud" });
+    expect(await sent({ instanceId: "cloud-two", chatId: "chat-fm-new", messageId: "f-2" })).toEqual({ counted: false, reason: "not_cloud" });
+    expect(harness.row("select fm_proof_at from cloud_ad_targets where target = 'cloud-two'").fm_proof_at).toBeNull();
+    expect(await sent({ chatId: "chat-fm", messageId: "f-3" })).toEqual({ counted: true });
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+  });
+
+  it("an outside agent's computer keeps the full price until the idle report after a busy one, whatever order reports come in, or 30 minutes with no turn", async () => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+    harness.env.CLOUD_CHATS = memoryBucket();
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_customer_id = 'cus_1', stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", OWNER);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    // A computer an outside agent made (ADE MCP), awake, its brain checking in.
+    expect((await fromHome("POST", "/cloud/instances", { type: "default", resources: { cpu: 4, memory: 8 }, metadata: { ade_made_by_agent: "mcp" } })).status).toBe(201);
+    const id = String(harness.rows("select instance_id from cloud_computers")[0]!.instance_id);
+    harness.exec("update cloud_computers set status = 'running', awake_since = ?, status_changed_at = ?, machine_key = 'key-x', ade_features = 'chat_queue' where instance_id = ?", clock, clock, id);
+    harness.insert("machines", { user_id: OWNER, machine_key: "key-x", last_seen_at: clock });
+    provide(harness, id, "running");
+    saveChat("chat-x", id, "key-x");
+    const seen = () => harness.exec("update machines set last_seen_at = ? where machine_key = 'key-x'", clock);
+    const report = (busy: boolean, reportedAt: number) =>
+      // From the computer's own network (a report sets it), never the person's.
+      from(CLOUD_NET)("POST", `/cloud/instances/${id}/activity`, { busy, idleSince: busy ? null : reportedAt - 1000, sleepsAt: busy ? null : reportedAt + HOUR, runningAgents: busy ? 1 : 0, reportedAt });
+    const onAd = () => priced(id).adFull != null;
+
+    // A person's proof: the agent's work holds the full price while its turn may still begin.
+    expect(await sent({ instanceId: id, chatId: "chat-x", messageId: "p-1" })).toEqual({ counted: true });
+    expect(onAd()).toBe(false);
+    // No turn in 30 minutes: the price with ads.
+    clock += 29 * 60_000;
+    seen();
+    await harness.tick();
+    expect(onAd()).toBe(false);
+    clock += 2 * 60_000;
+    seen();
+    await harness.tick();
+    expect(onAd()).toBe(true);
+
+    // An outside agent's message through the account: the full price again.
+    expect(await sent({ instanceId: id, chatId: "chat-x", messageId: "p-2" })).toEqual({ counted: true });
+    expect((await fromHome("POST", "/cloud/chats/key-x/chat-x/messages", { messageId: "a-1", text: "Run the tests.", origin: "mcp" })).status).toBe(201);
+    expect(onAd()).toBe(false);
+    // Idle before the turn began (the brain hadn't picked the message up): still full.
+    clock += 60_000;
+    expect((await report(false, clock)).status).toBe(200);
+    expect(onAd()).toBe(false);
+    clock += 60_000;
+    const busyAt = clock;
+    expect((await report(true, busyAt)).status).toBe(200);
+    expect(onAd()).toBe(false);
+    // An idle report written before the busy one, arriving late, never ends it.
+    clock += 60_000;
+    expect((await report(false, busyAt - 30_000)).status).toBe(200);
+    expect(onAd()).toBe(false);
+    // The idle report after the turn ends it: the price with ads.
+    expect((await report(false, clock)).status).toBe(200);
+    expect(onAd()).toBe(true);
+  });
+
+  it("a proof from the network of the account's own computers doesn't count; from the provider's network otherwise it counts and the owner hears of it", async () => {
+    seedComputer(harness, { multiplier_milli: 500, net_asn: CLOUD_NET });
+    saveChat("chat-1");
+    const alerts = (kind: string) => harness.rows("select 1 from cloud_owner_alerts where kind = ?", kind).length;
+    expect(await sent({ messageId: "m-1" }, from(CLOUD_NET))).toEqual({ counted: false, reason: "unverified" });
+    expect(priced()).toEqual({ rate: 500, adFull: null });
+    expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([]);
+    expect(alerts("ad_cloud_request")).toBe(1);
+    // A network one of its computers joined from in the last 30 days is its own too.
+    harness.exec("update cloud_computers set net_asn = null, join_asn = ? where instance_id = ?", CLOUD_NET, INSTANCE);
+    harness.exec("update cloud_computers set created_at = ? where instance_id = ?", clock - 29 * DAY, INSTANCE);
+    expect(await sent({ messageId: "m-2" }, from(CLOUD_NET))).toEqual({ counted: false, reason: "unverified" });
+
+    // The same network where only another account's computer is: it counts, and the owner is told.
+    harness.exec("update cloud_computers set join_asn = null where instance_id = ?", INSTANCE);
+    seedComputer(harness, { instance_id: "cloud-else", user_id: OTHER, net_asn: CLOUD_NET });
+    expect(await sent({ messageId: "m-3" }, from(CLOUD_NET))).toEqual({ counted: true });
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+    expect(alerts("ad_cloud_network")).toBe(1);
+    // A home network: counts, no alert.
+    expect(await sent({ messageId: "m-4" })).toEqual({ counted: true });
+    expect(alerts("ad_cloud_network")).toBe(1);
   });
 });

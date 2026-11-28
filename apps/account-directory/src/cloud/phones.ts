@@ -416,10 +416,12 @@ export async function phoneStartRate(env: CloudEnv, userId: string): Promise<num
 /**
  * The account's `PhoneCredits`. `reload`: read the account again (a phone's
  * save since `account` was read may have added to `used_milli`), in one read
- * with the phones' settled marks.
+ * with the phones' settled marks. `live`: the live phone's own rate (its
+ * `rate_milli`, null: 1,000), which its minutes left and its stop time
+ * follow, whatever the switch says now; with none, a new phone's.
  */
-export async function phoneCreditsFor(env: CloudEnv, account: AccountRow, now: number, { reload = false }: { reload?: boolean } = {}): Promise<PhoneCredits> {
-  const phoneRateMilli = (await phoneStartRate(env, account.user_id)) ?? PHONE_CREDIT_MILLI_PER_MINUTE;
+export async function phoneCreditsFor(env: CloudEnv, account: AccountRow, now: number, { reload = false, live }: { reload?: boolean; live?: { rateMilli: number | null } } = {}): Promise<PhoneCredits> {
+  const phoneRateMilli = live ? live.rateMilli ?? PHONE_CREDIT_MILLI_PER_MINUTE : (await phoneStartRate(env, account.user_id)) ?? PHONE_CREDIT_MILLI_PER_MINUTE;
   if (reload) {
     const read = await accountWithUnsettledPhones(env, account.user_id, now);
     if (read.liveUsedMilli != null) return { liveUsedMilli: read.liveUsedMilli, phoneRateMilli };
@@ -525,7 +527,7 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
   }
   const newest = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? order by created_at desc limit 1").bind(userId).first<{ phone_id: string }>();
   // Read after the live phone's save: its new minutes are in the credits by then.
-  const credits = await phoneCreditsFor(env, account, now, { reload: liveRow != null });
+  const credits = await phoneCreditsFor(env, account, now, { reload: liveRow != null, live: liveRow ? { rateMilli: liveRow.rate_milli ?? null } : undefined });
   return { account, label, usage: phoneUsageOf(account, rows, now, credits), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: unreadLiveRowId, rows };
 }
 
