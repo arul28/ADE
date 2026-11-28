@@ -15,6 +15,7 @@ import { useChatMachineWake } from "./useChatMachineWake";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { withChatPin } from "./chatMachinePin";
 import { BRAND } from "../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 type RevealTerminal = (terminal: { chatSessionId: string; terminalId: string; ptyId: string; label: string }) => void;
 
@@ -148,6 +149,8 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const NO_WORKTREE_ANSWER = new RegExp(`worktree is unavailable|Update ${PRODUCT_NAME_PATTERN} on this machine`, "i");
+
 async function startRun(args: {
   key: string;
   blockId: string;
@@ -232,7 +235,7 @@ async function startRun(args: {
     // A lane folder that is gone, or a host too old for the hosted client's
     // launch, is the person's state and the block says so; anything else is
     // ours to hear about.
-    if (!/worktree is unavailable|Update (?:ADE|DAEX) on this machine/i.test(errorText(error))) {
+    if (!NO_WORKTREE_ANSWER.test(errorText(error))) {
       captureError(error, { fingerprint: ["chat-code-block-run", "start-failed"], level: "warning", handled: true });
     }
     updateRun(key, id, { status: "failed", error: plainErrorText(error, `${BRAND.NAME} couldn't run that code.`) });

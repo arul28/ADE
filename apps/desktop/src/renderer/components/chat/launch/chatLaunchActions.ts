@@ -11,7 +11,12 @@ import {
   removeOptimisticQueuedMessage,
   resetChatLaunchStartFailure,
 } from "../../../state/chatLaunchStore";
-import { isUnsupportedAdeActionError, parseCodedErrorMessage } from "../../../../shared/codedError";
+import {
+  isUnavailableOnConnectedHostMessage,
+  isUnknownAdeActionMessage,
+  isUnsupportedAdeActionError,
+  parseCodedErrorMessage,
+} from "../../../../shared/codedError";
 import { toQueuedMessage } from "../../../../shared/chatLaunch";
 import { extractError } from "../../../lib/format";
 import {
@@ -56,8 +61,7 @@ export function isChatLaunchUnsupportedError(error: unknown): boolean {
   if (isUnsupportedAdeActionError(error)) return true;
   const parsed = parseCodedErrorMessage(error);
   if (parsed.code && UNSUPPORTED_ACTION_CODES.has(parsed.code)) return true;
-  return /^Unknown (?:ADE|DAEX) action\b/i.test(parsed.message)
-    || /\bis unavailable on the connected (?:ADE|DAEX) host\b/i.test(parsed.message);
+  return isUnknownAdeActionMessage(parsed.message) || isUnavailableOnConnectedHostMessage(parsed.message);
 }
 
 export type StartChatLaunchOutcome = "started" | "failed" | "unsupported";

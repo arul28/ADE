@@ -11,6 +11,7 @@ import { isAdeAvailable } from "./adeAvailability";
 import { normalizePathForComparison } from "./pathUtils";
 import { useAppStore } from "../state/appStore";
 import { useActiveRepositoryCopies } from "../state/repositoryScope";
+import { PRODUCT_NAME_PATTERN } from "../../shared/brandNames";
 
 /** A pin to the machine a chat works on, or "unreachable" when this window has no connection to it. */
 export type RemoteWorkPin = OpenProjectBinding | "unreachable";
@@ -302,6 +303,8 @@ export async function listRemoteWorkShells(
     .sort((a, b) => Number(a.status !== "running") - Number(b.status !== "running"));
 }
 
+const LOCAL_RUNTIME_NOT_READY = new RegExp(`Local runtime project is not available for this window|Local ${PRODUCT_NAME_PATTERN} runtime connection is not available`, "i");
+
 /**
  * A failed read of a chat's device on a machine, in words a person can act
  * on. Never Electron's "Error invoking remote method …" wrapper; the one
@@ -310,7 +313,7 @@ export async function listRemoteWorkShells(
  */
 export function remoteWorkReadErrorText(error: unknown, machineName: string): string {
   const raw = stripElectronErrorWrapper(error instanceof Error ? error.message : String(error ?? ""));
-  if (/Local runtime project is not available for this window|Local (?:ADE|DAEX) runtime connection is not available/i.test(raw)) {
+  if (LOCAL_RUNTIME_NOT_READY.test(raw)) {
     return `This window hasn't opened this chat's project folder on ${machineName}. Open that project here once, then try again.`;
   }
   return raw || `${machineName} did not answer.`;

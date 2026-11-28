@@ -138,6 +138,7 @@ import { isMachineScopeOlderBrainError, MACHINE_SCOPE_PROJECT_ID, machineScopeDo
 // How long a woken machine gets to come back online before the call fails as usual.
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { BRAND } from "../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -384,6 +385,15 @@ export function automaticReconnectBackoffMs(failureCount: number): number {
   );
 }
 
+/**
+ * Link failures that carry no structured kind. A dropped "remote … connection"
+ * is `isRemoteRuntimeConnectionError`, checked before this.
+ */
+const CONNECTION_FAILURE_MESSAGE = new RegExp(
+  String.raw`sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before ${PRODUCT_NAME_PATTERN} could finish the SSH handshake|Timed out while waiting for the SSH handshake`,
+  "i",
+);
+
 function isImplicitConnectionFailure(error: unknown): boolean {
   // One oversized reply closed one RPC channel. The host answered, so the
   // machine is reachable; the next call opens a new channel.
@@ -400,10 +410,7 @@ function isImplicitConnectionFailure(error: unknown): boolean {
   if (error instanceof RemoteRuntimeConnectError) return true;
   if (error instanceof PairedRuntimeTransportUnavailableError) return true;
   if (isRemoteRuntimeConnectionError(error)) return true;
-  const message = errorMessage(error);
-  return /remote (?:runtime|(?:ADE|DAEX) service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before (?:ADE|DAEX) could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
-    message,
-  );
+  return CONNECTION_FAILURE_MESSAGE.test(errorMessage(error));
 }
 
 function isConnectionBackoffThrottle(error: unknown): boolean {

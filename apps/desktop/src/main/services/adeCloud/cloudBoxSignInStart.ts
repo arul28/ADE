@@ -6,6 +6,7 @@
  */
 import { sanitizeAgentFailureText } from "../../../shared/chatErrorPresentation";
 import type { CloudProvider } from "./cloudProvider";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 /**
  * Starts a device sign-in on the box in the background (it keeps polling for
@@ -96,6 +97,8 @@ function cloudSignInFailureReason(output: string): string | null {
   return null;
 }
 
+const SIGN_IN_START_UNREACHABLE = new RegExp(String.raw`device service (?:could not be reached|timed out)|fetch failed|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH)\b|Failed to initialize the ${PRODUCT_NAME_PATTERN} brain`, "i");
+
 /**
  * A reason a moment later may fix: the computer couldn't reach ADE's account
  * service yet (its network or DNS comes up after its ADE answers), or its ADE
@@ -103,7 +106,7 @@ function cloudSignInFailureReason(output: string): string | null {
  */
 function isTransientCloudSignInFailure(reason: string | null): boolean {
   if (!reason) return false;
-  return /device service (?:could not be reached|timed out)|fetch failed|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH)\b|Failed to initialize the (?:ADE|DAEX) brain/i.test(reason);
+  return SIGN_IN_START_UNREACHABLE.test(reason);
 }
 
 /** The card's sentence when a computer's sign-in didn't start, with the computer's own reason. */
@@ -120,6 +123,8 @@ export type CloudBoxSignInStart = {
   /** Its `ade login` already kept trying: starting it again would stack a second wait on the first. */
   retriedOnItsOwn: boolean;
 };
+
+const KEPT_TRYING_NOTE = new RegExp(String.raw`\b${PRODUCT_NAME_PATTERN} kept trying\b`);
 
 /**
  * Starts a device sign-in on the box (see `startSignInCommand`) and returns its
@@ -140,7 +145,7 @@ async function startCloudBoxSignIn(
     exitCode: started.exitCode,
     reason: userCode ? null : cloudSignInFailureReason(output),
     // A newer image's `ade login` retries an unreachable account service itself and says so.
-    retriedOnItsOwn: !userCode && /\b(?:ADE|DAEX) kept trying\b/.test(output),
+    retriedOnItsOwn: !userCode && KEPT_TRYING_NOTE.test(output),
   };
 }
 

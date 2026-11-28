@@ -50,6 +50,7 @@ import { PI_THINKING_LEVELS } from "./piThinkingLevels";
 import { PROVIDER_DISPLAY_NAME } from "./providers";
 import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
 import { cutTextAtCodePoint } from "./codePointText";
+import { PRODUCT_NAME_PATTERN } from "./brandNames";
 
 export { PI_THINKING_LEVELS } from "./piThinkingLevels";
 
@@ -382,18 +383,22 @@ export function sanitizeTrackedCliPromptSeed(raw: string): string {
   return cutTextAtCodePoint(stripped, TRACKED_CLI_PROMPT_SEED_MAX_LEN);
 }
 
+const SESSION_GUIDANCE_HEADING = new RegExp(String.raw`^${PRODUCT_NAME_PATTERN} session guidance\b`, "iu");
+
 function unwrapAdeGuidancePromptForTitle(raw: string): string {
   const text = raw.trim();
   if (!text.length) return "";
   const marker = /\bUser prompt:\s*/iu.exec(text);
   const looksLikeAdeGuidance =
-    /^(?:ADE|DAEX) session guidance\b/iu.test(text)
+    SESSION_GUIDANCE_HEADING.test(text)
     || (/^Start working on that user prompt immediately\./iu.test(text) && marker != null);
   if (!looksLikeAdeGuidance) return stripAdeLaneDirectiveForTitle(text);
 
   const userPrompt = marker ? text.slice(marker.index + marker[0].length).trim() : text;
   return stripAdeLaneDirectiveForTitle(userPrompt);
 }
+
+const WORKING_IN_LANE_LINE = new RegExp(`^You are working in ${PRODUCT_NAME_PATTERN} lane:?$`, "iu");
 
 function stripAdeLaneDirectiveForTitle(raw: string): string {
   const lines = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
@@ -403,7 +408,7 @@ function stripAdeLaneDirectiveForTitle(raw: string): string {
   const firstLine = lines[start]?.trim() ?? "";
   const pathLine = lines[start + 1]?.trim() ?? "";
   const looksLikeLaneDirective =
-    /^You are working in (?:ADE|DAEX) lane:?$/iu.test(firstLine)
+    WORKING_IN_LANE_LINE.test(firstLine)
     && (
       pathLine.includes(".ade/worktrees/")
       || pathLine.startsWith("/")

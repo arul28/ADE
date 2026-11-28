@@ -15,6 +15,7 @@ import {
   EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER,
   JSONL_SCAN_BYTE_LIMIT,
 } from "./discoveryUtils";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 /**
  * Shared plumbing for the ACP-provider discoverers (Qwen, Kimi, Grok, Copilot).
@@ -88,6 +89,8 @@ export function readSmallJson(filePath: string, maxBytes = 256 * 1024): Record<s
   return text ? asRecord(safeParseJson(text)) : null;
 }
 
+const PRODUCT_HEADING_PROMPT = new RegExp(String.raw`^\s*(?:<user_query>\s*)?## ${PRODUCT_NAME_PATTERN}\b`, "u");
+
 /**
  * DAEX's own ACP chats open with the guidance block, headed "## DAEX" (or
  * "## ADE" before the rename). Some providers wrap the
@@ -95,7 +98,7 @@ export function readSmallJson(filePath: string, maxBytes = 256 * 1024): Record<s
  */
 export function startsWithAdeGuidance(text: string | null | undefined): boolean {
   if (!text) return false;
-  return /^\s*(?:<user_query>\s*)?## (?:ADE|DAEX)\b/u.test(text);
+  return PRODUCT_HEADING_PROMPT.test(text);
 }
 
 /** Expand a leading `~` the way the provider CLIs do for their own env overrides. */

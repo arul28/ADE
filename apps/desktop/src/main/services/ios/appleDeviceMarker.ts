@@ -5,6 +5,7 @@ import type { AppleInstalledSimulator, AppleSimulatorOwnershipInfo } from "../..
 import { APPLE_RELEASED_DEVICE_GRACE_MS } from "../../../shared/types/iosSimulator";
 import { pathsEqual } from "../shared/pathCompare";
 import { isRemoteWorkLaneId, remoteWorkLaneState } from "../remoteWork/remoteWorkCopyService";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 /**
  * The file that proves a simulator is ADE's.
@@ -106,9 +107,11 @@ export function appleMarkerIsProject(marker: AppleDeviceMarker, projectRoot: str
   return pathsEqual(path.resolve(marker.projectRoot), path.resolve(projectRoot));
 }
 
+const PRODUCT_DEVICE_NAME_PREFIX = new RegExp(String.raw`^${PRODUCT_NAME_PATTERN}(\s|·|$)`, "u");
+
 /** `DAEX · lane`, `ADE Repro`: a name DAEX (or ADE before the rename) made, or a person named after it. Evidence only for the storage view. */
 export function looksLikeAdeDeviceName(name: string): boolean {
-  return /^(?:ADE|DAEX)(\s|·|$)/u.test(name.trim());
+  return PRODUCT_DEVICE_NAME_PREFIX.test(name.trim());
 }
 
 /** Who each installed simulator belongs to, for the storage view: a lane, ADE (this or another project), or unknown. */

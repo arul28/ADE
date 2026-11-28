@@ -24,6 +24,7 @@ import { bindCopyLaunchStatement, launchCodeStillJoins, machineLaunchMinVersion,
 import { cloudSizeFor, cloudSizeForTier, type CloudSize } from "./plans";
 import { CloudProviderError } from "./provider";
 import { deleteComputer, isPendingId, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
+import { PRODUCT_NAME_PATTERN } from "../../../desktop/src/shared/brandNames";
 
 /**
  * A computer copied into a new one ("a warm copy": the same repos, lanes,
@@ -406,9 +407,11 @@ async function undoCopy(env: CloudEnv, job: JobRow, ctx: JobContext, why: "faile
   }
 }
 
+const STARTS_WITH_PRODUCT_NAME = new RegExp(String.raw`^${PRODUCT_NAME_PATTERN}\b`);
+
 /** Why a copy failed, as one clause ending in a stop. */
 function failureClause(error: string): string {
-  const why = /^(?:DAEX|ADE)\b/.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
+  const why = STARTS_WITH_PRODUCT_NAME.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
   return /[.!?…]$/.test(why) ? why : `${why}.`;
 }
 

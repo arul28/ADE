@@ -14,7 +14,7 @@
  */
 
 import type { DeleteLaneResult, LaneDeleteProgress } from "./types/lanes";
-import { isRemoteOutcomeUnknownError } from "./runtimeErrors";
+import { isRemoteCallNotSentError, isRemoteOutcomeUnknownError } from "./runtimeErrors";
 import { BRAND } from "./brand";
 
 /** How often the progress is read while the delete runs there. */
@@ -48,7 +48,7 @@ export type LaneDeleteFollowDeps = {
 /** A failure that says nothing about the delete: the call never reached the machine, or its answer was lost. */
 function isTransientStartError(error: unknown): boolean {
   if (isRemoteOutcomeUnknownError(error)) return true;
-  return /Remote (?:ADE|DAEX) service connection failed recently|Remote target is not connected/i.test(errorText(error));
+  return isRemoteCallNotSentError(error) || /Remote target is not connected/i.test(errorText(error));
 }
 
 function errorText(error: unknown): string {

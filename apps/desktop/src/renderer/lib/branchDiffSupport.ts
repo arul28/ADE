@@ -1,4 +1,4 @@
-import { isUnsupportedAdeActionError, parseCodedErrorMessage } from "../../shared/codedError";
+import { isUnavailableOnConnectedHostMessage, isUnsupportedAdeActionError, parseCodedErrorMessage } from "../../shared/codedError";
 import type { OpenProjectBinding } from "../../shared/types";
 
 /**
@@ -16,7 +16,8 @@ export function isBranchDiffUnsupported(error: unknown): boolean {
   return code === "unsupported_action"
     || errorCode === "unsupported_action"
     || code === "unsupported_command"
-    || /is unavailable on the connected (?:ADE|DAEX) host|Unsupported remote command/i.test(message);
+    || isUnavailableOnConnectedHostMessage(message)
+    || /Unsupported remote command/i.test(message);
 }
 
 const supportByLane = new Map<string, Promise<boolean>>();

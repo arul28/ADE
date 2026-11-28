@@ -3,6 +3,8 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { ChatDeviceSources, DeviceKind } from "../../../shared/types/deviceSources";
 import { normalizeChatDeviceSources } from "../../../shared/types/deviceSources";
 import { isRemoteMachineAwayError } from "../../../shared/runtimeErrors";
+import { isUnavailableOnConnectedHostMessage } from "../../../shared/codedError";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ipcErrorMessage } from "../../lib/format";
 import { isAdeCloudComputer, machineLabelForBinding } from "../../state/adeCloudLaneIndex";
@@ -58,9 +60,13 @@ export function deviceSourceErrorText(error: unknown): string {
   return error instanceof Error ? ipcErrorMessage(error) : String(error).trim();
 }
 
+const UNSUPPORTED_ANSWER = new RegExp(
+  String.raw`not callable|unknown action|not allowed|no ${PRODUCT_NAME_PATTERN} brain|device choice is kept for ${PRODUCT_NAME_PATTERN} chats|is not an agent chat session|was not found`,
+  "i",
+);
+
 function isUnsupportedAnswer(text: string): boolean {
-  // "is unavailable on the connected ADE host": the web client's answer for a host without the command.
-  return /not callable|unknown action|not allowed|no (?:ADE|DAEX) brain|device choice is kept for (?:ADE|DAEX) chats|is not an agent chat session|was not found|is unavailable on the connected (?:ADE|DAEX) host/i.test(text);
+  return UNSUPPORTED_ANSWER.test(text) || isUnavailableOnConnectedHostMessage(text);
 }
 
 /** A failed switch in words a person can act on. */

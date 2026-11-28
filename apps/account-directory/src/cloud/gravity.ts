@@ -55,6 +55,7 @@ import {
   type AccountRow,
   type CloudEnv,
 } from "./store";
+import { PRODUCT_NAME_PATTERN } from "../../../desktop/src/shared/brandNames";
 
 /**
  * Gravity (trygravity.com): sponsored cards under finished replies, and the
@@ -360,6 +361,8 @@ function readDevice(value: unknown): CloudSponsoredDevice | null {
   return { type, os, osVersion: shortString(raw.osVersion, 64), ua: shortString(raw.ua, 512), tracking };
 }
 
+const IOS_APP_USER_AGENT = new RegExp(String.raw`^${PRODUCT_NAME_PATTERN}-iOS\/`);
+
 /**
  * The account's hashed email for Gravity, when this device may send it. The
  * DAEX iPhone and iPad app (its own `DAEX-iOS/` user agent, `ADE-iOS/` before
@@ -370,7 +373,7 @@ function readDevice(value: unknown): CloudSponsoredDevice | null {
  */
 function hashedEmailFor(device: { os: string; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
   if (!emailHash) return null;
-  const iosApp = device?.os === "ios" && /^(?:DAEX|ADE)-iOS\//.test(device.ua ?? "");
+  const iosApp = device?.os === "ios" && IOS_APP_USER_AGENT.test(device.ua ?? "");
   if (iosApp && device?.tracking !== "authorized") return null;
   return emailHash;
 }

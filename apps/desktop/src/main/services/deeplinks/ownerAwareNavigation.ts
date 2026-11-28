@@ -8,6 +8,7 @@ import {
   type AccountProjectListResult,
 } from "../../../shared/accountProject";
 import { BRAND } from "../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 export type OwnerAwareNavigationDependencies = {
   getLocalMachineKey(): string;
@@ -234,6 +235,9 @@ export type OwnerNavigationFailureCopy = {
   detail: string;
 };
 
+const OLDER_PEER_ANSWER = new RegExp(`older ${PRODUCT_NAME_PATTERN}|does not support|method not found|code -32601|runtime incompatible|update ${PRODUCT_NAME_PATTERN}`, "i");
+const PROJECT_GONE_FROM_MACHINE = new RegExp(`project .* no longer available on this ${PRODUCT_NAME_PATTERN} machine`, "i");
+
 /**
  * What to tell the person when a link or an Activity item could not be opened
  * on the machine and project that own it. The cause is one of the sentences
@@ -246,10 +250,7 @@ export function ownerNavigationFailureCopy(
   const detail = error instanceof Error && error.message.trim()
     ? error.message.trim()
     : `The owning ${BRAND.NAME} machine did not accept the destination.`;
-  const incompatible = (
-    /older (?:ADE|DAEX)|does not support|method not found|code -32601|runtime incompatible|update (?:ADE|DAEX)/i
-      .test(detail)
-  );
+  const incompatible = OLDER_PEER_ANSWER.test(detail);
   if (incompatible) {
     return {
       title: `Update ${BRAND.NAME} on that computer`,
@@ -257,7 +258,7 @@ export function ownerNavigationFailureCopy(
       detail: `${detail}\n\nUpdate and restart ${BRAND.NAME} there, then open it again.`,
     };
   }
-  if (/project .* no longer available on this (?:ADE|DAEX) machine/i.test(detail)) {
+  if (PROJECT_GONE_FROM_MACHINE.test(detail)) {
     return {
       title: "Project not on this computer",
       message: `This belongs to a project that is no longer open in ${BRAND.NAME} on this computer.`,

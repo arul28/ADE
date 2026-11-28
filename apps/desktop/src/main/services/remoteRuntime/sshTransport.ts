@@ -18,6 +18,7 @@ import type { RuntimeRpcTransport, RuntimeRpcTransportCloseInfo } from "./runtim
 import { routeKey } from "./routeUtils";
 import { expandUserPath, isFile, privateKeyForPublicKeyPath, readSshPrivateKey } from "./sshKeyPaths";
 import { BRAND } from "../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 export type SshExecResult = {
   stdout: string;
@@ -802,6 +803,8 @@ function copySshErrorMetadata(source: unknown, target: Error): Error {
   return target;
 }
 
+const CLOSED_BEFORE_HANDSHAKE = new RegExp(`closed before (?:it became ready|${PRODUCT_NAME_PATTERN} could complete the SSH handshake)`, "i");
+
 function normalizeSshConnectError(
   error: unknown,
   fallback: string,
@@ -820,7 +823,7 @@ function normalizeSshConnectError(
   if (
     code === "ECONNRESET" ||
     /(?:^|\s)ECONNRESET(?:\s|$)|connection reset|connection closed by remote host|socket closed|connection lost before handshake/i.test(message) ||
-    /closed before (?:it became ready|(?:ADE|DAEX) could complete the SSH handshake)/i.test(fallback)
+    CLOSED_BEFORE_HANDSHAKE.test(fallback)
   ) {
     return copySshErrorMetadata(
       source,

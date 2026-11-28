@@ -56,6 +56,7 @@ import { record, records, withAsked } from "./cliAndroidFormat";
 import { buildAndroidSuitePlan } from "./cliAndroidSuite";
 import { buildAndroidDevicePlan } from "./cliAndroidDevice";
 import { BRAND } from "../../desktop/src/shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../desktop/src/shared/brandNames";
 
 /* ──────────────────────────────────────────────────────────────────────────
    ANDROID EMULATOR — `ade android`.
@@ -400,6 +401,8 @@ const ANDROID_PERSON_ONLY_SDK = new RegExp(
   "u",
 );
 
+const ANDROID_CLOUD_BOX_REFUSAL = new RegExp(`A full computer can|${PRODUCT_NAME_PATTERN} Cloud box`);
+
 /** The hint line for an `ANDROID_*: sentence` error, or null. */
 export function androidEmulatorErrorHint(message: string): string | null {
   const personOnly = ANDROID_PERSON_ONLY_SDK.exec(message);
@@ -417,7 +420,7 @@ export function androidEmulatorErrorHint(message: string): string | null {
       : `Only the user installs the Android SDK and accepts Google's licences, in the ${BRAND.NAME} desktop app: `
         + "the setup card in the Android tool, or Settings › Android devices. Ask the user.";
   }
-  if (message.includes("ANDROID_NO_ACCELERATION:") && /A full computer can|(?:ADE|DAEX) Cloud box/.test(message)) return CLOUD_BOX_ANDROID_HINT;
+  if (message.includes("ANDROID_NO_ACCELERATION:") && ANDROID_CLOUD_BOX_REFUSAL.test(message)) return CLOUD_BOX_ANDROID_HINT;
   return ANDROID_ERROR_HINT_ENTRIES.find(([code]) => message.includes(`${code}:`))?.[1] ?? null;
 }
 

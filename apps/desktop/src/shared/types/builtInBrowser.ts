@@ -8,6 +8,7 @@ import type {
 } from "./agentObservation";
 import { RECORDING_MAX_MS, type DemoArtifactMetadata } from "../demoVideo/demoContract";
 import { BRAND } from "../brand";
+import { PRODUCT_NAME_PATTERN } from "../brandNames";
 
 export type BuiltInBrowserProvider = "cdp";
 
@@ -351,6 +352,8 @@ export const BUILT_IN_BROWSER_APPROVAL_WAIT_MS = 2 * 60_000;
  */
 export const BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS = 15_000;
 
+const BROWSER_PERMISSION_WAIT = new RegExp(`waiting for the user to (allow this (?:chat|lane) to use the ${PRODUCT_NAME_PATTERN} browser)`);
+
 /**
  * What an `approval_pending: …` message is waiting for, as a phrase that reads
  * after "waiting for the user to" (e.g. "allow this chat to use the ADE
@@ -360,7 +363,7 @@ export function parseBuiltInBrowserApprovalPending(message: string): { waitingFo
   const index = message.indexOf(`${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}:`);
   if (index < 0) return null;
   const tail = message.slice(index);
-  const current = /waiting for the user to (allow this (?:chat|lane) to use the (?:ADE|DAEX) browser)/.exec(tail);
+  const current = BROWSER_PERMISSION_WAIT.exec(tail);
   if (current) return { waitingFor: current[1]! };
   // An older desktop's per-site prompt.
   const legacy = /approve (\S+) in ADE/.exec(tail);

@@ -394,6 +394,7 @@ import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { readInstalledDesktopAppVersion } from "../../../../desktop/src/main/services/native/nativeHelperPaths";
 import { hostUpdateFacts } from "../../lib/hostUpdateFacts";
+import { PRODUCT_NAME_PATTERN } from "../../../../desktop/src/shared/brandNames";
 export { selectChangesetBatchChunk } from "./changesetPump";
 // Existing importers of the wire adapters keep this path.
 export { compactChatEventEnvelopeForMobileSync, compactChatEventEnvelopeForSync } from "./syncChatWire";
@@ -2135,6 +2136,8 @@ function shouldAttemptTailnetServiceAdvertise(): boolean {
   return process.platform === "darwin" || process.platform === "linux" || process.platform === "win32";
 }
 
+const DNS_SD_SYNC_REGISTRATION = new RegExp(String.raw`\s-R\s+${PRODUCT_NAME_PATTERN} Sync\b`);
+
 export function parseNativeLanDiscoveryProcessList(stdout: string): NativeLanDiscoveryProcess[] {
   const out: NativeLanDiscoveryProcess[] = [];
   for (const line of stdout.split(/\r?\n/)) {
@@ -2146,7 +2149,7 @@ export function parseNativeLanDiscoveryProcessList(stdout: string): NativeLanDis
     if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
     if (!/\bdns-sd\b/.test(command)) continue;
     // A brain before the rename announced "ADE Sync …"; its orphans count too.
-    if (!/\s-R\s+(?:DAEX|ADE) Sync\b/.test(command)) continue;
+    if (!DNS_SD_SYNC_REGISTRATION.test(command)) continue;
     if (!/\b_ade-sync\._tcp\b/.test(command)) continue;
     out.push({ pid, ppid, command });
   }

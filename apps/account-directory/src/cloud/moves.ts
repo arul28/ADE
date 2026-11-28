@@ -59,6 +59,7 @@ import {
   type ComputerRow,
 } from "./store";
 import { readUpdateChannel } from "./updates";
+import { PRODUCT_NAME_PATTERN } from "../../../desktop/src/shared/brandNames";
 
 /**
  * A computer moved to the other kind (Standard ↔ Full), run by the server so
@@ -753,6 +754,8 @@ function asWasSentence(job: JobRow): string {
   return job.target_instance_id ? `${name} is as it was, and the new computer was deleted.` : `${name} is as it was.`;
 }
 
+const STARTS_WITH_PRODUCT_NAME = new RegExp(String.raw`^${PRODUCT_NAME_PATTERN}\b`);
+
 /**
  * Undoes a move that stopped before its old computer was deleted: lets the
  * old computer's ADE start again, ends the new computer's launch, deletes the
@@ -800,7 +803,7 @@ registerJobKind(MOVE_JOB_KIND, {
   run: runMoveStep,
   failed: (job, error) => {
     // A refusal's own sentence ("That size isn't…") reads on after the colon; ADE's name keeps its capital.
-    const why = /^(?:DAEX|ADE)\b/.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
+    const why = STARTS_WITH_PRODUCT_NAME.test(error) ? error : `${error.charAt(0).toLowerCase()}${error.slice(1)}`;
     const sentence = `DAEX couldn't move ${sourceNameOf(job)}: ${/[.!?…]$/.test(why) ? why : `${why}.`} ${asWasSentence(job)}`;
     return { state: "failed", message: sentence, error: sentence, approval_url: null };
   },

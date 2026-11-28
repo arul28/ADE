@@ -43,6 +43,7 @@ import {
   type AccountMachineRefusalCode,
 } from "../../../shared/accountMachineRefusal";
 import { BRAND } from "../../../shared/brand";
+import { REMOTE_SERVICE_PATTERN } from "../../../shared/runtimeErrors";
 
 // ---------------------------------------------------------------------------
 // Route identity + discovered-machine helpers (framework-free, unit-tested via
@@ -456,10 +457,13 @@ export function formatLastSeen(value: number | null): string {
   return phrase ? `Last connected ${phrase}` : "Last connection unknown";
 }
 
+const VERSION_SKEW_WARNING = new RegExp(
+  `${REMOTE_SERVICE_PATTERN} reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine`,
+  "i",
+);
+
 export function isVersionSkewWarning(warning: string): boolean {
-  return /Remote (?:ADE|DAEX) service reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine/i.test(
-    warning,
-  );
+  return VERSION_SKEW_WARNING.test(warning);
 }
 
 /**

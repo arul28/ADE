@@ -4,7 +4,7 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import type { CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
-import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+import { isUnavailableOnConnectedHostMessage, isUnknownAdeActionMessage, isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { deleteCloudLane, pushCloudLaneWork } from "../cloudLane/cloudLaneActions";
@@ -240,7 +240,9 @@ function isMissingSourceCheck(error: unknown): boolean {
   // ADE Web's own answer for a command the host doesn't list (`UnsupportedRemoteCommandError`).
   const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
   if (code === "unsupported_action") return true;
-  return /unknown (?:ade|daex) action|unsupported remote command|no handler registered|not callable|not exposed|is unavailable on the connected (?:ade|daex) host/i.test(message);
+  return isUnknownAdeActionMessage(message)
+    || isUnavailableOnConnectedHostMessage(message)
+    || /unsupported remote command|no handler registered|not callable|not exposed/i.test(message);
 }
 
 /** What the lane's files on the source are since the batch carried them. */

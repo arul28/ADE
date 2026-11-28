@@ -16,6 +16,7 @@
 
 import { remoteMachineHostPlatform } from "../machineIdentity";
 import { BRAND } from "../brand";
+import { PRODUCT_NAME_PATTERN } from "../brandNames";
 
 export const DEVICE_KINDS = ["ios", "android", "screen", "app"] as const;
 export type DeviceKind = (typeof DEVICE_KINDS)[number];
@@ -52,6 +53,8 @@ export const ADE_CLOUD_IPHONE_UNAVAILABLE = `${BRAND.CLOUD_NAME} iPhone is not o
 /** What a machine whose ADE predates the cloud iPhone (before 1.2.131) says instead. */
 export const ADE_CLOUD_IPHONE_NEEDS_UPDATE = `The ${BRAND.NAME} on this machine is too old for the ${BRAND.CLOUD_NAME} iPhone. Update ${BRAND.NAME} there, then try again.`;
 
+const CLOUD_PHONE_UNSUPPORTED_ANSWER = new RegExp(String.raw`Domain ['"]cloud_phone['"] is unavailable|Action ['"]cloud_phone\.[^'"]+['"] is not (?:callable|exposed)|Action ['"]cloudPhone\.[^'"]+['"] is unavailable on the connected ${PRODUCT_NAME_PATTERN} host|Update ${PRODUCT_NAME_PATTERN} on that computer to see the ${PRODUCT_NAME_PATTERN} Cloud iPhone`, "i");
+
 /**
  * The brain has no `cloud_phone` domain: an ADE from before the cloud iPhone.
  * Every newer brain registers the domain, so this answer never means the
@@ -59,7 +62,7 @@ export const ADE_CLOUD_IPHONE_NEEDS_UPDATE = `The ${BRAND.NAME} on this machine 
  */
 export function isCloudPhoneMissingAnswer(reason: string): boolean {
   // The last two are ADE Web's answers for a host without the cloudPhone commands.
-  return /Domain ['"]cloud_phone['"] is unavailable|Action ['"]cloud_phone\.[^'"]+['"] is not (?:callable|exposed)|Action ['"]cloudPhone\.[^'"]+['"] is unavailable on the connected (?:ADE|DAEX) host|Update (?:ADE|DAEX) on that computer to see the (?:ADE|DAEX) Cloud iPhone/i.test(reason);
+  return CLOUD_PHONE_UNSUPPORTED_ANSWER.test(reason);
 }
 
 export function isDeviceKind(value: unknown): value is DeviceKind {

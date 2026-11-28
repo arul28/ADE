@@ -690,10 +690,12 @@ import { repositoryReaderAddress, type StartOnChoice } from "../../../shared/rep
 import { recordStartOnLastMachine } from "./startOnLastMachine";
 import { plainErrorText } from "../../lib/plainError";
 import { BRAND } from "../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 /** The reason after a label such as "Delete failed:" when the error says nothing a person can use. */
 const CHAT_NO_ANSWER = "the chat did not answer.";
 const STOP_TASK_FAILED = `${BRAND.NAME} couldn't stop the task.`;
+const CHAT_COULD_NOT_AUTHENTICATE = new RegExp(`${PRODUCT_NAME_PATTERN} chat could not authenticate`, "i");
 
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
@@ -18275,7 +18277,7 @@ export function AgentChatPane({
         : message);
       await refreshSessions({ force: true }).catch(() => {});
       if (
-        /(?:ade|daex) chat could not authenticate/i.test(message)
+        CHAT_COULD_NOT_AUTHENTICATE.test(message)
         || /not authenticated/i.test(message)
         || /login required/i.test(message)
       ) {

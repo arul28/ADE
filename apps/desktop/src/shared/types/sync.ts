@@ -45,6 +45,7 @@ import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHo
 import { readAccountRefusalCode } from "../accountMachineRefusal";
 import { BRAND } from "../brand";
 import { installedDesktopAppDisplayName } from "../packageChannel";
+import { PRODUCT_NAME_PATTERN } from "../brandNames";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -620,6 +621,8 @@ export function competingSyncHostSkipReason(owner: CompetingSyncHostOwner): stri
   return `Another ${BRAND.NAME} app on this computer owns sync for this machine (${name}, pid ${pid}).`;
 }
 
+const OTHER_APP_OWNS_SYNC = new RegExp(String.raw`^Another ${PRODUCT_NAME_PATTERN} app on this computer owns sync for this machine \((.*), pid (\d+)\)\.$`);
+
 /**
  * Reads the owning process back out of a `no_active_sync_scope` skipReason.
  * Returns null for the plain, owner-less sentence and for any other state.
@@ -629,8 +632,7 @@ export function readCompetingSyncHostOwner(
 ): CompetingSyncHostOwner | null {
   const reason = health?.skipReason;
   if (!reason) return null;
-  const match =
-    /^Another (?:ADE|DAEX) app on this computer owns sync for this machine \((.*), pid (\d+)\)\.$/.exec(reason);
+  const match = OTHER_APP_OWNS_SYNC.exec(reason);
   if (!match) return null;
   const pid = Number.parseInt(match[2]!, 10);
   if (!Number.isFinite(pid) || pid <= 0) return null;

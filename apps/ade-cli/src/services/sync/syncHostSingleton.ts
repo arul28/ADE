@@ -17,6 +17,7 @@ import { commandLineIsDevTestMachine, isDevTestMachineProcess } from "./devTestM
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 import { ADE_CLI_COMMAND_NAMES, ADE_CLI_NAME_SOURCE } from "../../../../desktop/src/shared/cliCommandNames";
+import { PRODUCT_NAME_PATTERN } from "../../../../desktop/src/shared/brandNames";
 const LOCK_VERSION = 1;
 
 export type SyncHostSingletonOwner = {
@@ -612,11 +613,13 @@ function psCommandLines(pids: number[]): Map<number, string> {
   }
 }
 
+const MAC_APP_BINARY_PATH = new RegExp(String.raw`ADE(?: Beta| Alpha)?\.app\/Contents\/MacOS\/${PRODUCT_NAME_PATTERN}`, "i");
+
 function looksLikeAdeSyncHostProcess(commandLine: string): boolean {
   // A dev test machine is another machine with its own lease; never a conflict.
   if (commandLineIsDevTestMachine(commandLine)) return false;
   // The app's executable and its brain copy (`ADE`, `DAEX Brain`, older `ADE Brain`).
-  return /ADE(?: Beta| Alpha)?\.app\/Contents\/MacOS\/(?:ADE|DAEX)/i.test(commandLine)
+  return MAC_APP_BINARY_PATH.test(commandLine)
     || /ade-cli\/cli\.cjs\s+serve\b/i.test(commandLine)
     || CLI_SERVE_COMMAND.test(commandLine);
 }

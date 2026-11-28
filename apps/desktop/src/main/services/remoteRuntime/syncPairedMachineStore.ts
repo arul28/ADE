@@ -59,6 +59,7 @@ import {
 } from "./syncRuntimeTransport";
 import { MAX_ROUTE_ATTEMPTS } from "./pairedRuntimeRoutes";
 import { BRAND } from "../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 const STORE_FILE_NAME = "desktop-paired-machines.json";
 const DEFAULT_PAIRING_TIMEOUT_MS = 15_000;
@@ -237,6 +238,8 @@ function accountMachineAdoptionRouteHost(route: AccountMachineAdoptionRoute): st
   }
 }
 
+const PROTOCOL_MISMATCH_REASON = new RegExp(`older ${PRODUCT_NAME_PATTERN}|compatible cipher|update (?:it|${PRODUCT_NAME_PATTERN})`, "i");
+
 /**
  * Account adoption has a different meaning from a saved paired dial: account
  * authentication is being used to establish the pairing, so a host rejection
@@ -281,7 +284,7 @@ function classifyAccountMachineAdoptionFailure(
   ) {
     return "authentication";
   }
-  if (/older (?:ADE|DAEX)|compatible cipher|update (?:it|(?:ADE|DAEX))/i.test(reason)) return "protocol";
+  if (PROTOCOL_MISMATCH_REASON.test(reason)) return "protocol";
   if (/identity|signature|device id|cipher/i.test(reason)) return "identity";
   if (/ECONN|EHOST|ENET|unreach|offline|closed|socket|websocket|refused/i.test(reason)) {
     return "unreachable";

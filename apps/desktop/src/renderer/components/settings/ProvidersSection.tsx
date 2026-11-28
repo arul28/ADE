@@ -23,7 +23,7 @@ import type {
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
 import { MODEL_CATALOG_REFRESH_PROVIDERS } from "../../../shared/types/chat";
-import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+import { isUnknownAdeActionMessage, isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
 import {
@@ -1152,7 +1152,7 @@ function MachineProvidersSection({
           // (`Action 'ai.runAcpProviderDoctor' is not callable.`, `Unknown ADE action: …`).
           const message = error instanceof Error ? error.message : String(error);
           const unknownAction = message.includes("ai.runAcpProviderDoctor")
-            && (isUnsupportedAdeActionError(error) || /Unknown (?:ADE|DAEX) action: ai\.runAcpProviderDoctor/.test(message));
+            && (isUnsupportedAdeActionError(error) || isUnknownAdeActionMessage(message));
           if (!isAdeAvailable(read) || !unknownAction) throw error;
           console.warn("[providers] doctor fell back to the older diagnostics action", { provider, message });
           result = await read({ provider, runDoctor: true }, pin);

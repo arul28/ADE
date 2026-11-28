@@ -21,6 +21,7 @@ import {
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
 } from "../../../shared/types/iosSimulator";
 import { BRAND } from "../../../shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
 
 /**
  * Every helper, `simctl`, registry and IPC failure the Apple pane can meet,
@@ -108,7 +109,7 @@ const RULES: readonly Rule[] = [
   { test: matches(/simulator helper is not running yet/i), sentence: "The simulator helper is still starting.", action: "reconnect" },
   { test: matches(/simulator helper did not answer/i), sentence: "The simulator helper stopped answering.", action: "reconnect" },
   // A dev/local build that cannot boot the brain.
-  { test: matches(/cannot start the (?:ADE|DAEX) brain directly/), sentence: `Install ${BRAND.NAME} into Applications, then relaunch.`, action: "reinstall" },
+  { test: matches(new RegExp(`cannot start the ${PRODUCT_NAME_PATTERN} brain directly`)), sentence: `Install ${BRAND.NAME} into Applications, then relaunch.`, action: "reinstall" },
   // The stream.
   { test: includes(APPLE_STREAM_NOT_RUNNING_CODE), sentence: "Video stopped.", action: "reconnect" },
   { test: matches(/reported no stream address|live view returned no address/i), sentence: "Video stopped.", action: "reconnect" },
@@ -157,8 +158,8 @@ const RULES: readonly Rule[] = [
   { test: matches(/launch was superseded|service has been disposed/i), sentence: "The simulator was reset. Try again." },
   // Platform.
   { test: matches(/only available on macOS|only supported on macOS|need a Mac|macOS is required/i), sentence: "Apple simulators need a Mac runtime." },
-  { test: matches(/isn't available on the connected (?:ADE|DAEX) host|not available in this runtime/i), sentence: `This ${BRAND.NAME} host has no Apple device support.` },
-  { test: matches(/needs a connection to the (?:ADE|DAEX) machine|has no usable address/i), sentence: "Not connected to the machine that owns the device.", action: "reconnect" },
+  { test: matches(new RegExp(`isn't available on the connected ${PRODUCT_NAME_PATTERN} host|not available in this runtime`, "i")), sentence: `This ${BRAND.NAME} host has no Apple device support.` },
+  { test: matches(new RegExp(`needs a connection to the ${PRODUCT_NAME_PATTERN} machine|has no usable address`, "i")), sentence: "Not connected to the machine that owns the device.", action: "reconnect" },
   { test: matches(/No available iOS Simulator devices/i), sentence: "No iOS simulators are installed." },
   // Preview Lab.
   { test: matches(/mcpbridge|Xcode MCP/i), sentence: "Xcode's preview bridge is not available." },

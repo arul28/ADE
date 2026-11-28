@@ -48,6 +48,7 @@ import {
   type ParsedCli,
 } from "./cli";
 import { BRAND } from "../../desktop/src/shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../desktop/src/shared/brandNames";
 
 /* ──────────────────────────────────────────────────────────────────────────
    `ade devices` — every device this chat can use, on every machine, and the
@@ -186,6 +187,8 @@ async function chatDeviceAction(
   }
 }
 
+const NOT_A_DEVICE_CHAT_ANSWER = new RegExp(`device choice is kept for ${PRODUCT_NAME_PATTERN} chats|sessionId is required|was not found|is not an agent chat session`, "i");
+
 /**
  * A device command (`ade apple|android|screen|app-control …`) from a chat
  * that named no `--machine` and no `--lane`: when the chat chose another
@@ -215,7 +218,7 @@ export async function withChatDeviceChoice(parsed: ParsedCli): Promise<{ parsed:
   } catch (error) {
     const reason = errorText(error);
     // No choice can exist: an older brain, a session that is no ADE chat here.
-    if (isOlderBrainAnswer(reason) || /device choice is kept for (?:ADE|DAEX) chats|sessionId is required|was not found|is not an agent chat session/i.test(reason)) {
+    if (isOlderBrainAnswer(reason) || NOT_A_DEVICE_CHAT_ANSWER.test(reason)) {
       return asTyped;
     }
     // Not "devices use …@here": that would undo the person's choice for a
