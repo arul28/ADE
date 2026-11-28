@@ -704,8 +704,9 @@ export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string
     ...bootEnvOf(row),
     ADE_HOST_INSTANCE_ID: `cloud:${row.instance_id}`,
     ADE_CLOUD_INSTANCE_ID: row.instance_id,
-    // Unset (production), the brain's own default: DAEX's account server. A test Worker names itself.
-    ...(env.MAC_DIRECTORY_URL?.trim() ? { ADE_ACCOUNT_DIRECTORY_URL: env.MAC_DIRECTORY_URL.trim() } : {}),
+    // Unset (production), the brain's own default: DAEX's account server. A test Worker names itself, and a
+    // release build trusts a test server only with the override (`shouldIgnoreDevelopmentAccountDirectoryUrl`).
+    ...(env.MAC_DIRECTORY_URL?.trim() ? { ADE_ACCOUNT_DIRECTORY_URL: env.MAC_DIRECTORY_URL.trim(), ADE_ALLOW_DEVELOPMENT_CLERK: "1" } : {}),
   };
   const minVersion = (await readSetting(env, `mac_min_version_${row.channel === "beta" ? "beta" : "stable"}`))?.trim();
   if (minVersion && MAC_VERSION_SHAPE.test(minVersion)) bootEnv.ADE_MIN_VERSION = minVersion;

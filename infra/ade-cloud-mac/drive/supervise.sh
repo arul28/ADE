@@ -38,9 +38,10 @@ export ADE_BRAIN_SUPERVISOR=entrypoint
 # ADE_MIN_VERSION: the channel's release (the `mac_min_version_<channel>`
 # setting). A drive with an older DAEX installs it before its brain starts.
 if [ -n "${ADE_MIN_VERSION:-}" ] && [ "$(daex_newest "$daex_running_version" "$ADE_MIN_VERSION")" != "$daex_running_version" ]; then
+  # (No quote marks inside a ${…:-…} here: in double quotes bash reads one as an opening quote.)
   say "installing DAEX $ADE_MIN_VERSION (this drive has ${daex_running_version:-none})"
   "$daex_bin" brain update --version "$ADE_MIN_VERSION" --no-restart --foreground >> "$log" 2>&1 \
-    || say "installing DAEX $ADE_MIN_VERSION failed; starting ${daex_running_version:-the template's DAEX}"
+    || say "installing DAEX $ADE_MIN_VERSION failed; starting ${daex_running_version:-the DAEX on this drive}"
 fi
 if [ -x "$daex_home_ade" ] && [ ! -e "$ADE_HOME/bin/daex" ] && [ ! -L "$ADE_HOME/bin/daex" ]; then
   ln -s ade "$ADE_HOME/bin/daex" 2>/dev/null || true
