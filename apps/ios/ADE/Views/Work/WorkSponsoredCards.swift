@@ -777,12 +777,14 @@ struct WorkSponsoredConsentCard: View {
     busy = true
     error = nil
     let v3 = adWords != nil
+    // The account that answered; one signed in while the save was out keeps its own notice.
+    let generation = since ?? AccountCloudStore.shared.generation
     Task {
       switch await cloudSaveSponsoredConsent(consent, confirmed: confirmed, since: since, noticeSeen: v3) {
       case .failure(let failure): error = failure.message
       case .success:
         // Pricing v3: one answer for the account; the save already read the prices again.
-        if v3 { CloudSponsoredStore.shared.noteAdsNoticeAnswered() }
+        if v3, generation == AccountCloudStore.shared.generation { CloudSponsoredStore.shared.noteAdsNoticeAnswered() }
       }
       busy = false
     }

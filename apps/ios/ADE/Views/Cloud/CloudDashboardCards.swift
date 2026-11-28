@@ -642,12 +642,112 @@ struct CloudNotices: View {
           ADESettingsNotice(message: cloudTimedWakesCancelledSentence(wakes, resetsAt: account.billing?.periodEnd, words: CloudBalanceWords(account)), tone: .warn)
         }
         ForEach(account.dueForDeletion, id: \.instanceId) { entry in
-          ADESettingsNotice(message: cloudIdleCleanupMessage(entry, now: store.now.timeIntervalSince1970 * 1000), tone: .warn)
+          if let held = CloudIdleHeldWords(entry, now: store.now.timeIntervalSince1970 * 1000) {
+            CloudIdleHeldCard(store: store, instanceId: entry.instanceId, words: held)
+          } else {
+            ADESettingsNotice(message: cloudIdleCleanupMessage(entry, now: store.now.timeIntervalSince1970 * 1000), tone: .warn)
+          }
         }
       }
       if let error = store.actionError {
         ADESettingsNotice(message: error, tone: .crit, dismiss: { store.actionError = nil })
       }
+    }
+  }
+}
+
+/// A computer the idle cleanup kept because it couldn't save its work
+/// (ADE-223): what happened, what ends the hold, "Why?" (closed until
+/// tapped), then Keep it and Delete anyway. Delete anyway loses work, so it
+/// is always behind one confirm; there is no one-tap or swipe delete.
+struct CloudIdleHeldCard: View {
+  @ObservedObject var store: CloudPaneStore
+  let instanceId: String
+  let words: CloudIdleHeldWords
+  /// "Why?" open from the start (the fixture screens).
+  var whyOpen = false
+  @State private var showsWhy: Bool?
+  @State private var confirming = false
+
+  private var whyShown: Bool { showsWhy ?? whyOpen }
+
+  var body: some View {
+    let machine = store.machine(instanceId)
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(ADEKitTone.warn.color)
+      VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text(words.title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(words.action)
+            .font(.system(size: 13))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        Button {
+          withAnimation(.easeOut(duration: 0.18)) { showsWhy = !whyShown }
+        } label: {
+          HStack(spacing: 4) {
+            Text("Why?")
+            Image(systemName: "chevron.down")
+              .font(.system(size: 10, weight: .semibold))
+              .rotationEffect(.degrees(whyShown ? 180 : 0))
+          }
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(minHeight: 28)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(whyShown ? "Open" : "Closed")
+        if whyShown {
+          VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(words.why.enumerated()), id: \.offset) { _, line in
+              Text(line)
+                .font(.system(size: 12.5))
+                .foregroundStyle(ADEColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          }
+          .padding(.leading, 10)
+          .overlay(alignment: .leading) {
+            Rectangle().fill(ADEKit.edge).frame(width: 2)
+          }
+        }
+        // The two answers need the account's own sign-in and the computer's row.
+        if let machine, store.canManage {
+          HStack(spacing: 8) {
+            Button { ADEHaptics.light(); Task { await store.keep(machine) } } label: {
+              Label("Keep it", systemImage: "clock.arrow.circlepath")
+            }
+            .buttonStyle(ADEKitButtonStyle())
+            Button(role: .destructive) { confirming = true } label: {
+              Label("Delete anyway", systemImage: "trash")
+            }
+            .buttonStyle(ADEKitButtonStyle(tone: .crit))
+          }
+          .disabled(store.busy.contains(instanceId))
+        }
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 11)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEKitTone.warn.color.opacity(0.07), in: RoundedRectangle(cornerRadius: ADEKit.radius, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Cloud.IdleHeld.\(instanceId)")
+    .alert(words.confirmTitle, isPresented: $confirming) {
+      Button(CloudIdleHeldWords.confirmLabel, role: .destructive) {
+        guard let machine else { return }
+        Task { await store.deleteHeld(machine, words: words) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(words.confirmBody)
     }
   }
 }

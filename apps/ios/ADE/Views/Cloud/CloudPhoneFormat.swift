@@ -147,9 +147,8 @@ func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
 /// keep it: a message in the lane, or "Keep it" on the computer's page.
 func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
   let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
-  if let held = entry.held {
-    return "\(subject) wasn't deleted: \(Brand.name) couldn't save its work. \(held.reason) Open the lane once so \(Brand.name) saves its work when the computer rests, or delete the lane if you don't need it. \(Brand.name) checks again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
-  }
+  // A kept computer has its own card (`CloudIdleHeldWords`); as one line, its two sentences.
+  if let held = CloudIdleHeldWords(entry, now: now) { return "\(held.title) \(held.action)" }
   let save = entry.laneName != nil
     ? "Its work that isn't on GitHub is saved in \(Brand.cloudName), and the lane and its chats stay."
     : "Its work that isn't on GitHub is saved in \(Brand.cloudName) first."
@@ -160,19 +159,115 @@ func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double
 /// The ignored files a delete loses, in one short sentence (with a leading space), or "" when none were found.
 func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles?) -> String {
   guard let ignored else { return " Files git ignores, such as .env, aren't saved." }
-  let list: String?
-  if ignored.paths.isEmpty {
-    list = ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil
-  } else {
-    let shown = ignored.paths.joined(separator: ", ")
-    list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
-  }
+  let list = cloudIgnoredFilesList(ignored)
   if ignored.incomplete == true {
     guard let list else { return " \(Brand.name) couldn't read every lane to see which files git ignores, such as .env; those aren't saved." }
     return " Files git ignores aren't saved, so these won't be kept: \(list). \(Brand.name) couldn't read every lane, so there may be more."
   }
   guard let list else { return "" }
   return " Files git ignores aren't saved, so these won't be kept: \(list)."
+}
+
+/// The files git ignores as a list (`ignoredFilesList`): ".env, data.db and 3
+/// more", "4 files"; nil when none were found.
+func cloudIgnoredFilesList(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles) -> String? {
+  if ignored.paths.isEmpty { return ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil }
+  let shown = ignored.paths.joined(separator: ", ")
+  return ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
+}
+
+/// A computer the idle cleanup kept because it couldn't save its work
+/// (ADE-223), in the words every surface uses (`idleHeldWords` in the account
+/// server's contract). The server decides the kind; a missing or unknown one
+/// reads as `open_once`. Nil for an entry that isn't held.
+struct CloudIdleHeldWords: Equatable {
+  static let kinds: Set<String> = ["too_large", "account_full", "staged_only", "submodule", "no_commit", "fix_named", "stop_agent", "none", "open_once"]
+  static let confirmLabel = "Delete computer"
+
+  let kind: String
+  /// "web's computer", or the computer's name with no lane.
+  let subject: String
+  let hasLane: Bool
+  /// Sentence 1: what happened.
+  let title: String
+  /// Sentence 2: what ends the hold, then the way out.
+  let action: String
+  /// "Why?": the rule, the reason, the files git ignores, the next check.
+  let why: [String]
+  let confirmTitle: String
+  let confirmBody: String
+
+  init?(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) {
+    guard let held = entry.held else { return nil }
+    let laneName = entry.laneName.flatMap { nonEmptyTrimmed($0) }
+    let kind = held.kind.flatMap { Self.kinds.contains($0) ? $0 : nil } ?? "open_once"
+    let subject = laneName.map { "\($0)'s computer" } ?? entry.displayName
+    self.kind = kind
+    self.subject = subject
+    hasLane = laneName != nil
+    title = "\(Brand.name) didn't delete \(subject) because it couldn't save its work."
+    action = Self.action(kind, hasLane: laneName != nil)
+
+    let notSaved = "\(Brand.name) couldn't save this lane's work."
+    var reason = held.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Reasons stored before the rename open with the former name.
+    for name in [Brand.name, Brand.formerName] {
+      let prefix = "\(name) couldn't save this lane's work."
+      if reason.hasPrefix(prefix) {
+        reason = String(reason.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        break
+      }
+    }
+    if let laneName, reason.hasPrefix("\(laneName): ") { reason = String(reason.dropFirst(laneName.count + 2)) }
+    // A read that missed some lane and found nothing reads as not read yet:
+    // it doesn't mean no files git ignores are there.
+    let ignored = entry.ignoredFiles.flatMap { $0.incomplete == true && cloudIgnoredFilesList($0) == nil ? nil : $0 }
+    let list = ignored.flatMap(cloudIgnoredFilesList)
+    let ignoredLine: String? = {
+      guard let ignored else { return "Files git ignores, such as .env, are never saved." }
+      guard let list else { return nil }
+      return "Files git ignores are never saved: \(list).\(ignored.incomplete == true ? " \(Brand.name) couldn't read every lane, so there may be more." : "")"
+    }()
+    let whose = laneName != nil ? "lane's " : ""
+    let when = cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)
+    why = [
+      entry.idleDays.map { "\(Brand.cloudName) deletes a computer after \($0) days without use, and saves its \(whose)work first." }
+        ?? "\(Brand.cloudName) deletes a computer that isn't used, and saves its \(whose)work first.",
+      reason.isEmpty ? notSaved : reason,
+    ] + (ignoredLine.map { [$0] } ?? []) + [
+      kind == "none" ? "\(Brand.name) tries again by itself \(when)." : "\(Brand.name) checks again \(when).",
+    ]
+
+    let lost = ignored == nil ? "such as .env" : list
+    confirmTitle = "Delete \(subject) without saving its work?"
+    if laneName != nil {
+      let branch = entry.branch.flatMap { nonEmptyTrimmed($0) } ?? "the lane's branch"
+      confirmBody = "Its work that isn't on GitHub is lost for good: changes not pushed to \(branch)\(lost.map { ", and files git ignores (\($0))" } ?? ""). The lane and its chats stay; your next message makes a new computer from \(branch) on GitHub."
+    } else {
+      confirmBody = "Its work that isn't on GitHub is lost for good\(lost.map { ", with files git ignores (\($0))" } ?? "")."
+    }
+  }
+
+  /// The toast after "Delete anyway" worked.
+  var deletedTitle: String { "Deleted \(subject)." }
+  var deletedDetail: String? { hasLane ? "The lane and its chats stay. Your next message makes a new computer." : nil }
+
+  private static func action(_ kind: String, hasLane: Bool) -> String {
+    switch kind {
+    case "too_large": return "Push its work to GitHub, or delete it anyway."
+    case "account_full": return "Push or delete other lanes you don't need, or delete it anyway."
+    case "staged_only": return "Open the lane and commit or unstage its staged changes, or delete it anyway."
+    case "submodule": return "Open the lane and push the changes in its submodule, or delete it anyway."
+    case "no_commit": return "Open the lane and make its first commit, or delete it anyway."
+    case "fix_named": return "Open the lane and fix what Why? names, or delete it anyway."
+    case "stop_agent": return "Open the lane and stop its agent, or delete it anyway."
+    case "none": return "Delete it anyway, or keep it."
+    default:
+      return hasLane
+        ? "Open the lane once so \(Brand.name) can save its work, or delete it anyway."
+        : "Use it once so \(Brand.name) can save its work, or delete it anyway."
+    }
+  }
 }
 
 /// Why timed wake-ups were cancelled and how they come back

@@ -306,7 +306,7 @@ enum KeptCloudLane {
   /// A launch for it runs, or finished and its lane hasn't left the list yet.
   static func launchHolds(_ launch: AccountCloudLaunchStore.Entry?) -> Bool {
     guard let launch else { return false }
-    return launch.startError == nil && launch.record?.failed != true
+    return !launch.failed
   }
 
   /// One label in every case, as on the desktop: the confirm says what goes.

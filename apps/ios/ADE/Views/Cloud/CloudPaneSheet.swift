@@ -469,7 +469,8 @@ final class CloudPaneStore: ObservableObject {
   /// The phone can act on a computer: through the connected computer's
   /// `cloud.write`, or with its own sign-in straight on the account server
   /// (no computer of the person's own needed).
-  var canManage: Bool { canWrite || AccountService.shared.isSignedIn }
+  /// A fixture screen shows the actions too (they do nothing there).
+  var canManage: Bool { isFixture || canWrite || AccountService.shared.isSignedIn }
 
   /// Every action asks the account server with the phone's own sign-in: it
   /// is the account's, the same from any device. Only a phone that isn't
@@ -547,6 +548,20 @@ final class CloudPaneStore: ObservableObject {
   func clearCaches(_ machine: CloudPhoneMachine) async {
     await act(on: machine, title: "Cleared caches on \(machine.displayName)") { client in
       await client.clearCaches(instanceId: machine.instanceId)
+    }
+  }
+
+  /// "Delete anyway" for a computer the idle cleanup kept (ADE-223): an
+  /// account call by its id. It never wakes the computer and saves or pushes
+  /// nothing. A computer made for a lane keeps its lane and chats (the server
+  /// takes the lane's branch from its own row); one with no lane gets a plain
+  /// delete, since the server refuses to keep a lane it doesn't have.
+  func deleteHeld(_ machine: CloudPhoneMachine, words: CloudIdleHeldWords) async {
+    await act(on: machine, title: words.deletedTitle, gone: true) { client in
+      guard try await client.deleteInstanceConfirmed(machine.instanceId, keepLane: words.hasLane) else {
+        return CloudComputerOutcome(ok: false, message: "Try again in a moment.")
+      }
+      return words.deletedDetail.map { CloudComputerOutcome(ok: true, message: $0) }
     }
   }
 
