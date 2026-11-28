@@ -1,3 +1,4 @@
+import { noteFullPriceWork } from "./adPrice";
 import { authenticate } from "../callerToken";
 import { liveUsedWithPhones } from "./credits";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
@@ -1657,6 +1658,8 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     const report = parseActivityReport(await readJson(request), now);
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     await recordActivity(env, computer.instance_id, report, waitUntil);
+    // Pricing v3: CLI sessions, automations and outside agents running here give it the full price (`adPrice.ts`).
+    await noteFullPriceWork(env, computer, report.fullPriceWork, now);
     // The network its brain calls from, for Free Small's tripwire (`sponsoredSmall.ts`). Never fails the report.
     await noteComputerNetwork(env, computer, requestNetwork(request)).catch((error: unknown) => {
       reportCloudFailure("cloud.computer_network_failed", { message: error instanceof Error ? error.message : "unknown" });

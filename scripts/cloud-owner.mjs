@@ -41,6 +41,7 @@ Switches:
                                          gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
                                          (under the reply - inline - above the prompt box)
   ab [--days N]                          the sponsored formats' A/B scoreboard (default 14 days)
+  ad-price [--days N]                    Pricing v3: ad income against what the ad price took off, by product (default 30 days)
 
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
 
@@ -73,6 +74,7 @@ const COMMAND_OPTIONS = {
   limits: ["computers", "hours", "days", "note"],
   set: ["note"],
   ab: ["days"],
+  "ad-price": ["days"],
 };
 
 function readOptions(command, args) {
@@ -211,6 +213,23 @@ switch (command) {
   case "settings":
     printSettings(await call("settings", {}));
     break;
+  case "ad-price": {
+    const days = options.days === undefined ? undefined : Number(options.days);
+    if (days !== undefined && !Number.isInteger(days)) fail("--days is a whole number.");
+    const report = await call("ad-price", days === undefined ? {} : { days });
+    const money = (micros) => (micros == null ? "-" : `$${(micros / 1_000_000).toFixed(2)}`);
+    console.log(`pricing_v3 ${report.mode} · ${report.discountPct}% off · window ${report.windowMinutes} min · last ${report.days} days (since ${report.since}) · ad income ${money(report.incomeMicros)}`);
+    console.table(report.products.map((row) => ({
+      product: row.product,
+      replies: row.replies,
+      messages: row.messages,
+      "ad hours": row.adHours ?? "-",
+      "credits off": row.discountMilli / 100,
+      "discount worth": money(row.discountMicros),
+      "ad income (share)": money(row.incomeMicros),
+    })));
+    break;
+  }
   case "ab": {
     const days = options.days === undefined ? undefined : Number(options.days);
     if (days !== undefined && !Number.isInteger(days)) fail("--days is a whole number.");

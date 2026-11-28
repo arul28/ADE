@@ -1,5 +1,6 @@
 import { isSponsoredFormat, type GravityEnv } from "./gravity";
 import { sponsoredAbReport } from "./sponsoredReport";
+import { adPriceReport } from "./adPrice";
 import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsoredSmall";
 import { pricingV3Mode, gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
 import { freeModelsHoldOf } from "./freePlanGithub";
@@ -78,6 +79,14 @@ import {
 export const OWNER_ACCOUNT_PATH = "/cloud/owner/account";
 export const OWNER_SETTINGS_PATH = "/cloud/owner/settings";
 export const OWNER_AB_PATH = "/cloud/owner/ab";
+export const OWNER_AD_PRICE_PATH = "/cloud/owner/ad-price";
+
+/** `POST /cloud/owner/ad-price` `{ days? }`: ad income against what the ad price took off, by product (`adPriceReport`). */
+export async function handleOwnerAdPrice(env: GravityEnv, body: Record<string, unknown>, now: number): Promise<Response> {
+  const days = body.days === undefined ? 30 : body.days;
+  if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 365) return fail("bad_request", "days is a whole number from 1 to 365.", 400);
+  return json({ ok: true, ...(await adPriceReport(env, now, days)) });
+}
 
 /** `POST /cloud/owner/ab` `{ days? }`: the sponsored formats' A/B scoreboard (`sponsoredAbReport`). */
 export async function handleOwnerAb(env: GravityEnv, body: Record<string, unknown>, now: number): Promise<Response> {

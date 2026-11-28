@@ -245,13 +245,22 @@ const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFact
  * `extraHourCents` at the top is for builds that know one price: the
  * account's own plan's, or Plus's for a free account.
  */
-export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free", { smallUsesHours = false }: { smallUsesHours?: boolean } = {}): CloudCatalog {
+export function cloudCatalog(
+  offers: CloudOffers,
+  planId: CloudPlanId = "free",
+  { smallUsesHours = false, v3 }: { smallUsesHours?: boolean; v3?: { discountPct: number; smallFullMilli: number } } = {},
+): CloudCatalog {
   return {
-    sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => ({
-      type, cpu, memoryGb, tier, label, diskMaxGb,
+    sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => {
+      if (v3) {
+        // Pricing v3 (`adPrice.ts`): the full price, and the ad price beside it. Small: 500 on Free
+        // while the ad switch reaches the account, free with ads; free on paid plans.
+        const full = tier === "small" ? v3.smallFullMilli : v3FullRateMilli(multiplierMilli);
+        return { type, cpu, memoryGb, tier, label, diskMaxGb, multiplierMilli: full, adMultiplierMilli: tier === "small" ? 0 : adRateMilli(full, v3.discountPct) };
+      }
       // Free's Small with no sponsored cards uses hours (`gravity.ts` `smallUsesNoHours`): clients show and count it so.
-      multiplierMilli: tier === "small" && smallUsesHours ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli,
-    })),
+      return { type, cpu, memoryGb, tier, label, diskMaxGb, multiplierMilli: tier === "small" && smallUsesHours ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli };
+    }),
     plans: {
       free: catalogPlan(CLOUD_PLANS.free),
       // `paid` is Plus, for builds that know only two plans.
@@ -263,6 +272,10 @@ export function cloudCatalog(offers: CloudOffers, planId: CloudPlanId = "free", 
     paidPriceUsd: CLOUD_PLANS.plus.priceUsd,
     extraHourCents: CLOUD_PLANS[planId === "free" ? "plus" : planId].extraHourCents ?? 2,
     hourUnit: "medium",
+    ...(v3 ? {
+      creditScale: CREDIT_SCALE,
+      phone: { milliPerMinute: PHONE_MILLI_PER_MINUTE_V3, adMilliPerMinute: adRateMilli(PHONE_MILLI_PER_MINUTE_V3, v3.discountPct) },
+    } : {}),
   };
 }
 

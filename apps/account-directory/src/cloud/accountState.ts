@@ -2,6 +2,9 @@ import { PHONE_CREDIT_MILLI_PER_MINUTE, liveUsedWithPhones } from "./credits";
 import { sponsoredAccountState } from "./gravity";
 import { freeModelsAccountState } from "./freeModels";
 import { smallUsesNoHours } from "./sponsoredSmall";
+import { adContextFor, computerRatesMilli, pricingAccountState } from "./adPrice";
+import { adsCountryHas } from "./gravity";
+import { PHONE_MILLI_PER_MINUTE_V3 } from "./plans";
 import { sponsoredRequester } from "./sponsoredConsent";
 import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";
@@ -67,6 +70,12 @@ async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: nu
   return (rows.results ?? []).map((row) => row.instance_id);
 }
 
+/** The catalog's Pricing v3 terms for this account: the discount, and Small's full rate (`computerRatesMilli`). */
+async function v3CatalogTerms(env: CloudEnv, account: AccountRow): Promise<{ discountPct: number; smallFullMilli: number }> {
+  const { ctx } = await adContextFor(env, account);
+  return { discountPct: ctx.discountPct, smallFullMilli: computerRatesMilli({ type: "default", cpu: 2, memory_gb: 4, multiplier_milli: 0, ad_full_milli: null }, ctx).fullMilli };
+}
+
 export async function buildAccountState(env: CloudEnv, userId: string, now: number, request?: Request): Promise<CloudAccountState> {
   const account = await loadAccount(env, userId, now);
   const [computers, deletedInstanceIds, recentMilli, growth] = await Promise.all([
@@ -104,15 +113,23 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     reportCloudFailure("cloud.sponsored.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
+  // Pricing v3 (`adPrice.ts`): left out while `pricing_v3` doesn't reach the account; then nothing below changes.
+  const pricing = await pricingAccountState(env, account, computers, who, adsCountryHas(env, who.country), now).catch((error: unknown) => {
+    reportCloudFailure("cloud.ad_price.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+    return undefined;
+  });
+  const v3Catalog = pricing ? await v3CatalogTerms(env, account) : null;
   // ADE Free Models (`freeModels.ts`), any plan: left out while their switch doesn't reach the account or a key is missing.
   const freeModels = await freeModelsAccountState(env, account, who, now).catch((error: unknown) => {
     reportCloudFailure("cloud.free_models.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
   return {
+    ...(pricing ? { pricing } : {}),
     ...(sponsored ? { sponsored } : {}),
     ...(freeModels ? { freeModels } : {}),
-    credits: { phoneMilliPerMinute: PHONE_CREDIT_MILLI_PER_MINUTE },
+    // Under Pricing v3 the iPhone is 500 a minute, so an older app's minutes left stay right.
+    credits: { phoneMilliPerMinute: pricing ? PHONE_MILLI_PER_MINUTE_V3 : PHONE_CREDIT_MILLI_PER_MINUTE },
     plan: shownPlan === "free" ? "free" : "paid",
     rules,
     planId: shownPlan,
@@ -136,7 +153,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     freePlan: { ...freePlanOf(account, growth?.has_claim === 1), ...(freeGithub ? { github: freeGithub } : {}) },
     ...(referral ? { referral } : {}),
     // D1 only: the account read is polled, and never asks NoMac.
-    phone: await phoneAccountState(env, account, now, { liveUsedMilli: live }).catch((error: unknown) => {
+    phone: await phoneAccountState(env, account, now, { liveUsedMilli: live, phoneRateMilli: pricing ? PHONE_MILLI_PER_MINUTE_V3 : PHONE_CREDIT_MILLI_PER_MINUTE }).catch((error: unknown) => {
       reportCloudFailure("cloud.phone_account_state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return undefined;
     }),
@@ -154,7 +171,9 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     dueForDeletion: due,
     deletedInstanceIds,
     // Small's rate is the account's own: half a Medium-hour on Free with no sponsored cards (`gravity.ts` `smallUsesNoHours`).
-    catalog: cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) }),
+    catalog: v3Catalog
+      ? cloudCatalog(offers, shownPlan, { v3: v3Catalog })
+      : cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) }),
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,

@@ -3,6 +3,7 @@ import { createComputerSettled, forkComputerSettled, handleCloudRequest, isCloud
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
+import { handlePublicPricing, isPublicPricingRequest } from "./cloud/adPrice";
 import { runAccountErasureRepeats } from "./accountErasure";
 import { pruneSponsored } from "./cloud/sponsoredReport";
 import { syncAllSmallRates } from "./cloud/sponsoredSmall";
@@ -104,6 +105,8 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // "Update & restart" on other machines: account bearer, GET only, the
   // directory's exact-origin CORS for the web client.
   if (isLatestReleasesRequest(url)) return handleLatestReleasesRequest(request, env);
+  // DAEX Cloud's prices for the website (Pricing v3): public, no auth, CORS `*`.
+  if (isPublicPricingRequest(url)) return handlePublicPricing(request, env);
   // The oldest build each kind of install may run (the update gate). Public
   // and read-only: a signed-out app must still learn it has to update.
   if (isClientMinimumRequest(url)) return handleClientMinimumRequest(request, env);

@@ -1,3 +1,5 @@
+import { syncAdPricesInTick } from "./adPrice";
+import type { GravityEnv } from "./gravity";
 import { carryLaunchMessagesForComputer, expireChatMessages } from "./chatMessages";
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
@@ -192,6 +194,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   }
   statements.push(...await diskDayStatements(env, diskConfirmed, now));
   if (statements.length) await env.DB.batch(statements);
+  // Pricing v3: each running computer on its price now; a window that ended goes back at its end (`adPrice.ts`).
+  await syncAdPricesInTick(env as GravityEnv, live, now);
   // A chat launch's follow-ups that waited for the computer's key join its chat.
   for (const instanceId of keyed) await carryLaunchMessagesForComputer(env, instanceId, now);
 

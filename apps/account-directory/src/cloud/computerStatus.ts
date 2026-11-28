@@ -1,3 +1,4 @@
+import { readFullPriceWork } from "./adPrice";
 import { CLOUD_INSTANCE_ID, CLOUD_PATHS, type CloudComputerActivityReport, type CloudComputerStatus, type CloudResourcePressure } from "./contract";
 import { fail, json } from "./http";
 import type { CloudProvider, CloudInstanceHealth, CloudInstanceMetrics } from "./provider";
@@ -165,10 +166,12 @@ export function parseActivityReport(body: Record<string, unknown> | null, now: n
   const sleepsAt = body.sleepsAt == null ? null
     : typeof body.sleepsAt === "number" && Number.isFinite(body.sleepsAt) && Math.abs(body.sleepsAt - now) < 24 * 60 * 60_000 ? Math.round(body.sleepsAt) : undefined;
   if (idleSince === undefined || reportedAt == null || sleepsAt === undefined) return null;
+  // Pricing v3: the full-price work running now; an older brain sends none (left out, not empty).
+  const work = Array.isArray(body.fullPriceWork) ? { fullPriceWork: readFullPriceWork(body.fullPriceWork) } : {};
   // Busy has no idle stretch; an idle one has no sleep while busy.
   return body.busy
-    ? { busy: true, idleSince: null, sleepsAt: null, runningAgents, reportedAt }
-    : { busy: false, idleSince, sleepsAt, runningAgents, reportedAt };
+    ? { busy: true, idleSince: null, sleepsAt: null, runningAgents, reportedAt, ...work }
+    : { busy: false, idleSince, sleepsAt, runningAgents, reportedAt, ...work };
 }
 
 /** Keeps the report; an older one (sent late) never replaces a newer one. */

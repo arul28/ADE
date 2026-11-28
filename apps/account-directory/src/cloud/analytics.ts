@@ -309,13 +309,14 @@ export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil
  * - `rate_limited`: too many new computers or launches in an hour.
  * - `creates_paused`: a new computer or launch refused by the owner's kill switch.
  * - `signup_burst`: sign-ups from one address reached the hourly alarm.
+ * - `ad_cloud_request`: under Pricing v3, a proof or ad request came from ADE Cloud's network and didn't count (`adPrice.ts`; once a week per account).
  * - `small_cloud_look`: a US look or yes that keeps Free's Small free came from ADE Cloud's network (the account's own computers', or one an ADE Cloud computer joined from) (`sponsoredSmall.ts`; once a week per account).
  */
 export type CloudSafetyStep =
   | "first_chat"
   | "free_cap_50" | "free_cap_80" | "free_cap_100" | "free_cap_refused"
   | "blocked" | "unblocked" | "card_reused" | "blocked_returned"
-  | "rate_limited" | "creates_paused" | "signup_burst" | "small_cloud_look";
+  | "rate_limited" | "creates_paused" | "signup_burst" | "small_cloud_look" | "ad_cloud_request";
 
 /** The distinct id for an owner-wide event that belongs to no account (a cap threshold). */
 const SERVER_DISTINCT_ID = "ade-cloud-server";

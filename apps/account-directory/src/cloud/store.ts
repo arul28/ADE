@@ -168,6 +168,8 @@ export type ComputerRow = {
   net_asn?: number | null;
   /** The network it joined from (its launch join, the computer's own; `sponsoredSmall.ts`). */
   join_asn?: number | null;
+  /** Pricing v3 (`adPrice.ts`, migration 0073): its full rate while it runs at the ad price; null (or absent) at the full price. */
+  ad_full_milli?: number | null;
   /** While a move runs: the computer it moves (see `MOVE_GRACE_MS`). */
   moving_from: string | null;
   /** When an owner's block cut it off the internet (migration 0037, `safety.ts`); null again on unblock. */
@@ -643,18 +645,23 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
     chargedMilli += milli;
     // What the provider charges for this stretch, for the owner's daily report.
     const costMicros = computeCostMicrosFor(ms, shape);
+    // At the ad price (Pricing v3, `adPrice.ts`): what the discount took off, for the owner's report.
+    const adMs = computer.ad_full_milli != null ? ms : 0;
+    const adDiscount = computer.ad_full_milli != null ? Math.max(0, hoursMilliFor(ms, computer.ad_full_milli) - milli) : 0;
     // The stretch is stamped with the account's plan as it is now: run on free-plan rules, its cost also counts as free use (the owner's cap).
     statements.push(env.DB.prepare(`
-      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros, free_cost_micros)
-      select ?, ?, ?, ?, ?, ?, ?, ${freeShareSql("?", "?")}
+      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros, ad_ms, ad_discount_milli, free_cost_micros)
+      select ?, ?, ?, ?, ?, ?, ?, ?, ?, ${freeShareSql("?", "?")}
       where ${guard ? guard.sql : "1"}
       on conflict (instance_id, day) do update set
         metered_ms = metered_ms + excluded.metered_ms,
         metered_milli = metered_milli + excluded.metered_milli,
         multiplier_milli = excluded.multiplier_milli,
         cost_micros = cost_micros + excluded.cost_micros,
+        ad_ms = ad_ms + excluded.ad_ms,
+        ad_discount_milli = ad_discount_milli + excluded.ad_discount_milli,
         free_cost_micros = free_cost_micros + excluded.free_cost_micros
-    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, computer.user_id, costMicros, ...(guard?.binds ?? [])));
+    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, adMs, adDiscount, computer.user_id, costMicros, ...(guard?.binds ?? [])));
   }
   if (chargedMilli > 0) {
     statements.push(env.DB.prepare(`update cloud_accounts set used_milli = used_milli + ?, updated_at = ? where user_id = ?${guard ? ` and ${guard.sql}` : ""}`)
@@ -665,12 +672,22 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
 
 /** Charges the open stretch up to `now` and starts a new one there, guarded against a status change since this row was read. */
 export function restartStretchStatements(env: CloudEnv, computer: ComputerRow, now: number): D1PreparedStatement[] {
+  return restartStretchAtStatements(env, computer, now);
+}
+
+/**
+ * `restartStretchStatements` at `at` (from the stretch's start up to the
+ * caller's now): the time before `at` is charged at the rate the row reads,
+ * the new stretch starts at `at`. Pricing v3 restarts at the exact end of a
+ * computer's ad window (`adPrice.ts`), so no minute is charged twice or lost.
+ */
+export function restartStretchAtStatements(env: CloudEnv, computer: ComputerRow, at: number): D1PreparedStatement[] {
   const guard = statusGuard(computer);
   const statements = [
-    ...settleStatements(env, computer, now, guard),
-    env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`).bind(now, computer.instance_id, ...guard.binds),
+    ...settleStatements(env, computer, at, guard),
+    env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`).bind(at, computer.instance_id, ...guard.binds),
   ];
-  computer.awake_since = now;
+  computer.awake_since = at;
   return statements;
 }
 

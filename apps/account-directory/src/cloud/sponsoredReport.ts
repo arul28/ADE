@@ -3,6 +3,7 @@ import { ALL, INDEX_REPORT_URL, PLACEMENTS, PLATFORM_URL, SPLIT_ARMS, TURN_TTL_M
 import { utcDay } from "./plans";
 import { readCloudSettings } from "./settings";
 import { gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
+import { adPriceReportLines } from "./adPrice";
 
 // The owner's side of sponsored cards (`gravity.ts` serves them): the
 // twice-hourly clean-up, the formats' A/B scoreboard, and the daily report's
@@ -149,6 +150,7 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
       + `refused ${refused.length ? refused.join(", ") : "none"}.`,
     );
   }
+  lines.push(...await adPriceReportLines(env, day).catch(() => ["Ad price: the day's numbers couldn't be read."]));
   if (!env.GRAVITY_API_KEY?.trim()) return lines;
   const key = env.GRAVITY_API_KEY.trim();
   const read = async (url: string): Promise<Record<string, unknown> | null> => {

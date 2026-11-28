@@ -1,0 +1,686 @@
+import type { CloudWaitUntil } from "./analytics";
+import { sendOwnerAlert } from "./blocks";
+import {
+  CLOUD_FULL_PRICE_WORK,
+  CLOUD_PUBLIC_PRICING_PATH,
+  type CloudPublicPricing,
+  type CloudAdProofAnswer,
+  type CloudAdsState,
+  type CloudComputerPrice,
+  type CloudFullPriceReason,
+  type CloudFullPriceWork,
+  type CloudPrice,
+  type CloudPricingState,
+} from "./contract";
+import { PLATFORM_URL, adsCountryHas, type GravityEnv } from "./gravity";
+import { CREDIT_SCALE, EXTRA_HOUR_MICROS, PHONE_MILLI_PER_MINUTE_V3, SMALL_NO_CARDS_RATE_MILLI, adRateMilli, cloudSizeFor, isMeteredStatus, utcDay, v3FullRateMilli, type V3Rate } from "./plans";
+import { readCloudSettings, settingChangedAt, type CloudSettings } from "./settings";
+import { readConsent, sponsoredRequester, startsOnFor, yesHolds, type ConsentRow, type SponsoredRequester } from "./sponsoredConsent";
+import { freeRuleCharges } from "./sponsoredSmall";
+import { adTerms, gravitySwitches, pricingV3Mode, type PricingV3Mode, type SponsoredMode } from "./sponsoredSwitch";
+import { logCloud, reportCloudFailure, restartStretchAtStatements, statusGuard, type AccountRow, type ComputerRow } from "./store";
+
+/**
+ * Pricing v3: the ad price (`docs/features/ade-cloud/README.md`, "Plans,
+ * credits and sizes"). Account-wide, so the server decides it: for every
+ * minute of every cloud computer and cloud iPhone, the full price or the ad
+ * price. Behind the `pricing_v3` setting (`sponsoredSwitch.ts`); at `off`
+ * nothing here writes, and every answer is today's.
+ *
+ * A computer has the ad price for a minute when all hold:
+ * 1. ads are on for the account (a yes that held where the proof came from,
+ *    and the notice seen), or the proof came from an ADE Free Models chat,
+ *    whose ad shows with ads off;
+ * 2. a proof for that computer is younger than `ad_window_minutes`: a person
+ *    sent a message in one of its chats (`POST /cloud/sponsored/sent`), or a
+ *    finished reply asked for an ad (`POST /cloud/sponsored/ad`, whatever
+ *    Gravity answered). A proof counts only from a country with ads, from the
+ *    account that pays for the computer, once per (account, chat, turn);
+ * 3. its brain reports no full-price work this stretch awake (an agent CLI
+ *    session, an automation, a chat an outside agent started).
+ *
+ * The rate lives on the computer row (`multiplier_milli`) and the meter's
+ * stretches charge it, as a resize does: this module is the one writer that
+ * moves a computer between its full and ad rate. A proof or a report moves it
+ * at once; the minute tick moves it back at the exact end of its window
+ * (`restartStretchAtStatements`), so no minute is charged twice or lost. The
+ * cloud iPhone, which bills by its provider's minutes, keeps the credits its
+ * ad minutes took off on its row (`ad_saved_milli`).
+ */
+
+/** A row of `cloud_ad_targets` (migration 0073). */
+export type AdTargetRow = {
+  target: string;
+  user_id: string;
+  proof_at: number | null;
+  fm_proof_at: number | null;
+  unverified_at: number | null;
+  full_work: string | null;
+  full_work_at: number | null;
+};
+
+/** What the rules read for one account, read once. */
+export type AdContext = {
+  /** Pricing v3 reaches the account. */
+  v3: boolean;
+  /** The ad switch (`gravity_ads`) reaches the account: ads can exist. */
+  adsReach: boolean;
+  /** Free's Small rule may charge it (`freeRuleCharges`). */
+  freeRule: boolean;
+  /** Ads are on: a yes and the notice seen. The country is checked where a proof comes from. */
+  adsOn: boolean;
+  discountPct: number;
+  windowMs: number;
+  /** When `ad_window_minutes` last changed: a window that ends before it ends there, never earlier (no charge back in time). */
+  windowChangedAt: number;
+};
+
+const phoneTarget = (phoneId: string): string => `phone:${phoneId}`;
+
+/* ---- The rates ---- */
+
+/**
+ * A computer's two rates, thousandths of a Medium-hour an hour. The one hook
+ * every kind of computer goes through: Small on Free is 500 at the full price
+ * and free with ads while the ad switch reaches the account (switch off:
+ * free, as before Pricing v3); Small on a paid plan is free either way; the
+ * other sizes are their v3 full rate and that less the discount. A shape the
+ * catalog doesn't know keeps its row's rate at both prices.
+ */
+export function computerRatesMilli(computer: Pick<ComputerRow, "type" | "cpu" | "memory_gb" | "multiplier_milli" | "ad_full_milli">, ctx: Pick<AdContext, "adsReach" | "freeRule" | "discountPct">): V3Rate {
+  const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
+  if (!size) {
+    const full = computer.ad_full_milli ?? computer.multiplier_milli;
+    return { fullMilli: full, adMilli: full };
+  }
+  if (size.tier === "small") return ctx.freeRule && ctx.adsReach ? { fullMilli: SMALL_NO_CARDS_RATE_MILLI, adMilli: 0 } : { fullMilli: 0, adMilli: 0 };
+  const full = v3FullRateMilli(size.multiplierMilli);
+  return { fullMilli: full, adMilli: adRateMilli(full, ctx.discountPct) };
+}
+
+/** The iPhone's two rates a minute under Pricing v3 (its row's `rate_milli`, else today's). */
+export function phoneRatesMilli(rateMilli: number | null, discountPct: number): V3Rate {
+  const full = rateMilli ?? PHONE_MILLI_PER_MINUTE_V3;
+  return { fullMilli: full, adMilli: adRateMilli(full, discountPct) };
+}
+
+/* ---- The decision ---- */
+
+/** The full-price work a brain reported, as stored: known kinds only, each once. */
+export function readFullPriceWork(value: unknown): CloudFullPriceWork[] {
+  let list: unknown = value;
+  if (typeof value === "string") {
+    try {
+      list = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  return CLOUD_FULL_PRICE_WORK.filter((kind) => list.includes(kind));
+}
+
+export type PriceDecision = { now: "ad" | "full"; reason: CloudFullPriceReason | null; adUntil: number | null };
+
+/**
+ * Pure: the price of one computer or phone at `now`. `awakeSince`: the start
+ * of its stretch awake; work reported before it is from an earlier stretch
+ * and no longer counts (null: a phone, or a resting computer).
+ */
+export function decidePrice(target: Pick<AdTargetRow, "proof_at" | "fm_proof_at" | "unverified_at" | "full_work" | "full_work_at"> | null, ctx: AdContext, awakeSince: number | null, now: number): PriceDecision {
+  const adsProof = ctx.adsOn && ctx.adsReach ? target?.proof_at ?? null : null;
+  const proof = Math.max(adsProof ?? -Infinity, target?.fm_proof_at ?? -Infinity);
+  const live = Number.isFinite(proof) && proof + ctx.windowMs > now;
+  // Ads off and no Free Models chat holding it: nothing else matters.
+  if (!live && !(ctx.adsOn && ctx.adsReach)) return { now: "full", reason: "ads_off", adUntil: null };
+  const work = target?.full_work_at != null && awakeSince != null && target.full_work_at >= awakeSince ? readFullPriceWork(target.full_work) : [];
+  if (work.length) return { now: "full", reason: work[0]!, adUntil: null };
+  if (live) return { now: "ad", reason: null, adUntil: proof + ctx.windowMs };
+  const unverified = target?.unverified_at != null && target.unverified_at >= (Number.isFinite(proof) ? proof : 0) && target.unverified_at + ctx.windowMs > now;
+  return { now: "full", reason: unverified ? "unverified" : "not_in_use", adUntil: null };
+}
+
+/**
+ * Pure: where a move from the ad price back to the full price starts. At the
+ * end of the window when that is why (never before the window setting last
+ * changed, nor before the stretch began); now for any other reason.
+ */
+export function fullPriceEdge(previousAdUntil: number | null, ctx: Pick<AdContext, "windowChangedAt">, awakeSince: number, now: number): number {
+  if (previousAdUntil == null) return now;
+  return Math.min(now, Math.max(previousAdUntil, ctx.windowChangedAt, awakeSince));
+}
+
+/* ---- Reading what the rules need ---- */
+
+export type PricingSwitches = { mode: PricingV3Mode; adsMode: SponsoredMode; discountPct: number; windowMs: number; windowChangedAt: number };
+
+export async function pricingSwitches(env: GravityEnv, settings?: CloudSettings): Promise<PricingSwitches> {
+  const read = settings ?? (await readCloudSettings(env));
+  const [mode, ads, changed] = await Promise.all([pricingV3Mode(env, read), gravitySwitches(env, read), settingChangedAt(env, "ad_window_minutes")]);
+  const terms = adTerms(read);
+  return { mode, adsMode: ads.mode, discountPct: terms.discountPct, windowMs: terms.windowMinutes * 60_000, windowChangedAt: changed ?? 0 };
+}
+
+/** The tester list for these accounts: one read. */
+async function testersAmong(env: GravityEnv, userIds: readonly string[]): Promise<Set<string>> {
+  if (userIds.length === 0) return new Set();
+  const rows = await env.DB.prepare("select user_id from cloud_sponsored_testers where user_id in (select value from json_each(?))")
+    .bind(JSON.stringify(userIds)).all<{ user_id: string }>();
+  return new Set((rows.results ?? []).map((row) => row.user_id));
+}
+
+const reaches = (mode: string, tester: boolean): boolean => mode === "all" || (mode === "testers" && tester);
+
+/** Whether ads are on for the price: a yes and the notice seen. Where the proof came from was checked when it came. */
+export const adsOnOf = (consent: Pick<ConsentRow, "consent" | "notice_seen_at"> | null): boolean =>
+  consent?.consent === "granted" && consent.notice_seen_at != null;
+
+function contextOf(switches: PricingSwitches, account: AccountRow, tester: boolean, consent: Pick<ConsentRow, "consent" | "notice_seen_at"> | null): AdContext {
+  return {
+    v3: reaches(switches.mode, tester),
+    adsReach: reaches(switches.adsMode, tester),
+    freeRule: freeRuleCharges(account),
+    adsOn: adsOnOf(consent),
+    discountPct: switches.discountPct,
+    windowMs: switches.windowMs,
+    windowChangedAt: switches.windowChangedAt,
+  };
+}
+
+/** One account's `AdContext`. */
+export async function adContextFor(env: GravityEnv, account: AccountRow, switches?: PricingSwitches): Promise<{ ctx: AdContext; consent: ConsentRow | null }> {
+  const read = switches ?? (await pricingSwitches(env));
+  const [testers, consent] = await Promise.all([testersAmong(env, [account.user_id]), readConsent(env, account.user_id)]);
+  return { ctx: contextOf(read, account, testers.has(account.user_id), consent), consent };
+}
+
+async function targetsOf(env: GravityEnv, targets: readonly string[]): Promise<Map<string, AdTargetRow>> {
+  if (targets.length === 0) return new Map();
+  const rows = await env.DB.prepare("select target, user_id, proof_at, fm_proof_at, unverified_at, full_work, full_work_at from cloud_ad_targets where target in (select value from json_each(?))")
+    .bind(JSON.stringify(targets)).all<AdTargetRow>();
+  return new Map((rows.results ?? []).map((row) => [row.target, row]));
+}
+
+/* ---- Moving a computer between its rates ---- */
+
+/** The rate a computer runs at outside Pricing v3: its size's own (Small keeps its row's, which `sponsoredSmall.ts` owns). */
+function v2RateMilli(computer: ComputerRow): number {
+  const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
+  if (!size) return computer.ad_full_milli ?? computer.multiplier_milli;
+  return size.tier === "small" ? computer.ad_full_milli ?? computer.multiplier_milli : size.multiplierMilli;
+}
+
+/**
+ * The statements that put a computer on `rate` (with `adFull`, its full rate
+ * while at the ad price, or null), its stretch so far charged at the rate it
+ * ran at up to `edge`. The new rate first, held to the row as read; then the
+ * stretch restarts, so a race leaves the row on its old rate, charged once.
+ * Empty when it is already there.
+ */
+export function rateMoveStatements(env: GravityEnv, computer: ComputerRow, rate: number, adFull: number | null, edge: number): D1PreparedStatement[] {
+  if (computer.multiplier_milli === rate && (computer.ad_full_milli ?? null) === adFull) return [];
+  const guard = statusGuard(computer);
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`update cloud_computers set multiplier_milli = ?, ad_full_milli = ? where instance_id = ? and multiplier_milli = ? and ad_full_milli is ? and ${guard.sql}`)
+      .bind(rate, adFull, computer.instance_id, computer.multiplier_milli, computer.ad_full_milli ?? null, ...guard.binds),
+  ];
+  const running = computer.awake_since != null && isMeteredStatus(computer.status);
+  if (running) statements.push(...restartStretchAtStatements(env, computer, Math.max(computer.awake_since!, edge)));
+  computer.multiplier_milli = rate;
+  computer.ad_full_milli = adFull;
+  return statements;
+}
+
+/**
+ * Pure-ish: the move one computer needs now under `ctx`, given its target
+ * row. Outside Pricing v3 a computer on an ad rate (or on a v3 full rate that
+ * differs from its size's) goes back to its size's own rate.
+ */
+export function computerPriceStatements(env: GravityEnv, computer: ComputerRow, target: AdTargetRow | null, ctx: AdContext, now: number): D1PreparedStatement[] {
+  if (!ctx.v3) {
+    const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
+    const v3Full = size && size.tier !== "small" && computer.multiplier_milli === v3FullRateMilli(size.multiplierMilli) && computer.multiplier_milli !== size.multiplierMilli;
+    if (computer.ad_full_milli == null && !v3Full) return [];
+    return rateMoveStatements(env, computer, v2RateMilli(computer), null, now);
+  }
+  const rates = computerRatesMilli(computer, ctx);
+  const decision = decidePrice(target, ctx, computer.awake_since, now);
+  if (decision.now === "ad") return rateMoveStatements(env, computer, rates.adMilli, rates.fullMilli, now);
+  // Back to the full price: at the end of the window when that is why.
+  const lapsed = computer.ad_full_milli != null && (decision.reason === "not_in_use" || decision.reason === "unverified");
+  const previousUntil = lapsed ? lastAdUntil(target, ctx) : null;
+  const edge = computer.awake_since != null ? fullPriceEdge(previousUntil, ctx, computer.awake_since, now) : now;
+  return rateMoveStatements(env, computer, rates.fullMilli, null, edge);
+}
+
+/** When the last proof's window ended (or ends), or null with no proof that counts. */
+function lastAdUntil(target: AdTargetRow | null, ctx: AdContext): number | null {
+  const proof = Math.max(ctx.adsOn && ctx.adsReach ? target?.proof_at ?? -Infinity : -Infinity, target?.fm_proof_at ?? -Infinity);
+  return Number.isFinite(proof) ? proof + ctx.windowMs : null;
+}
+
+/**
+ * Puts every computer of the account on the rate its price says now (a
+ * consent change, a proof, a report). Never fails the caller.
+ */
+export async function syncAccountPrices(env: GravityEnv, account: AccountRow, now: number, { instanceIds }: { instanceIds?: readonly string[] } = {}): Promise<number> {
+  try {
+    const { ctx } = await adContextFor(env, account);
+    const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null").bind(account.user_id).all<ComputerRow>();
+    const computers = (rows.results ?? []).filter((computer) => !instanceIds || instanceIds.includes(computer.instance_id));
+    if (!ctx.v3 && !computers.some((computer) => computer.ad_full_milli != null)) return 0;
+    const targets = await targetsOf(env, computers.map((computer) => computer.instance_id));
+    const statements = computers.flatMap((computer) => computerPriceStatements(env, computer, targets.get(computer.instance_id) ?? null, ctx, now));
+    if (statements.length) await env.DB.batch(statements);
+    const phones = ctx.v3 ? await syncPhonePrices(env, [account.user_id], new Map([[account.user_id, ctx]]), now) : 0;
+    return statements.length + phones;
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.sync_failed", { userId: account.user_id, message: error instanceof Error ? error.message : "unknown" });
+    return 0;
+  }
+}
+
+/**
+ * The minute tick: the computers it read (`cron.ts`), each running one put on
+ * the rate its price says now; a window that ended moves back at its exact
+ * end. At `off`, only a computer still on an ad rate (or a v3 full rate) goes
+ * back, so the read is the tick's own and nothing else runs.
+ */
+export async function syncAdPricesInTick(env: GravityEnv, computers: readonly ComputerRow[], now: number): Promise<void> {
+  try {
+    const switches = await pricingSwitches(env);
+    const running = computers.filter((computer) => computer.awake_since != null && isMeteredStatus(computer.status));
+    const candidates = switches.mode === "off"
+      ? computers.filter((computer) => computer.ad_full_milli != null || isV3OnlyRate(computer))
+      : [...new Set([...running, ...computers.filter((computer) => computer.ad_full_milli != null)])];
+    const userIds = [...new Set(candidates.map((computer) => computer.user_id))];
+    const ctxs = await contextsFor(env, switches, userIds);
+    const targets = await targetsOf(env, candidates.map((computer) => computer.instance_id));
+    const statements = candidates.flatMap((computer) => {
+      const ctx = ctxs.get(computer.user_id);
+      return ctx ? computerPriceStatements(env, computer, targets.get(computer.instance_id) ?? null, ctx, now) : [];
+    });
+    if (statements.length) await env.DB.batch(statements);
+    if (switches.mode !== "off") await syncPhonePrices(env, null, null, now, switches);
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.tick_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
+const isV3OnlyRate = (computer: ComputerRow): boolean => {
+  const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
+  return Boolean(size && size.tier !== "small" && computer.multiplier_milli !== size.multiplierMilli && computer.multiplier_milli === v3FullRateMilli(size.multiplierMilli));
+};
+
+async function contextsFor(env: GravityEnv, switches: PricingSwitches, userIds: readonly string[]): Promise<Map<string, AdContext>> {
+  if (userIds.length === 0) return new Map();
+  const json = JSON.stringify(userIds);
+  const [accounts, consents, testers] = await Promise.all([
+    env.DB.prepare("select * from cloud_accounts where user_id in (select value from json_each(?))").bind(json).all<AccountRow>(),
+    env.DB.prepare("select user_id, consent, notice_seen_at from cloud_sponsored_consent where user_id in (select value from json_each(?))").bind(json).all<{ user_id: string; consent: ConsentRow["consent"]; notice_seen_at: number | null }>(),
+    testersAmong(env, userIds),
+  ]);
+  const consentBy = new Map((consents.results ?? []).map((row) => [row.user_id, row]));
+  return new Map((accounts.results ?? []).map((account) => [account.user_id, contextOf(switches, account, testers.has(account.user_id), consentBy.get(account.user_id) ?? null)]));
+}
+
+/* ---- The cloud iPhone ---- */
+
+type PhonePriceRow = { phone_id: string; user_id: string; rate_milli: number | null; ad_mark_at: number | null; ad_saved_milli: number };
+
+/**
+ * The live v3 phones (`rate_milli` set) of these accounts (null: all), each
+ * on its price now. Ad minutes go into `ad_saved_milli` a whole minute at a
+ * time from `ad_mark_at`; a window that ended stops them at its end. One
+ * write per phone that moved.
+ */
+async function syncPhonePrices(env: GravityEnv, userIds: readonly string[] | null, known: Map<string, AdContext> | null, now: number, switches?: PricingSwitches): Promise<number> {
+  const rows = await env.DB.prepare(`select phone_id, user_id, rate_milli, ad_mark_at, ad_saved_milli from cloud_phones where state = 'live' and credits = 1 and rate_milli is not null${userIds ? " and user_id in (select value from json_each(?))" : ""}`)
+    .bind(...(userIds ? [JSON.stringify(userIds)] : [])).all<PhonePriceRow>();
+  const phones = rows.results ?? [];
+  if (phones.length === 0) return 0;
+  const ctxs = known ?? (await contextsFor(env, switches ?? (await pricingSwitches(env)), [...new Set(phones.map((phone) => phone.user_id))]));
+  const targets = await targetsOf(env, phones.map((phone) => phoneTarget(phone.phone_id)));
+  const statements: D1PreparedStatement[] = [];
+  for (const phone of phones) {
+    const ctx = ctxs.get(phone.user_id);
+    if (!ctx) continue;
+    const target = targets.get(phoneTarget(phone.phone_id)) ?? null;
+    const decision = ctx.v3 ? decidePrice(target, ctx, null, now) : { now: "full" as const, reason: null, adUntil: null };
+    const move = phoneAdMove(phone, decision, phoneRatesMilli(phone.rate_milli, ctx.discountPct), lastAdUntil(target, ctx), ctx, now);
+    if (!move) continue;
+    statements.push(env.DB.prepare("update cloud_phones set ad_saved_milli = ad_saved_milli + ?, ad_mark_at = ? where phone_id = ? and state = 'live' and ad_mark_at is ?")
+      .bind(move.addMilli, move.markAt, phone.phone_id, phone.ad_mark_at));
+  }
+  if (statements.length) await env.DB.batch(statements);
+  return statements.length;
+}
+
+/**
+ * Pure: a phone's ad minutes since its mark. On the ad price, the whole
+ * minutes since the mark are taken off and the mark moves by them (no mark:
+ * one starts now). Back on the full price, the whole minutes up to the
+ * window's end go in and the mark clears. Null when nothing changes.
+ */
+export function phoneAdMove(phone: Pick<PhonePriceRow, "ad_mark_at">, decision: PriceDecision, rates: V3Rate, adUntil: number | null, ctx: Pick<AdContext, "windowChangedAt">, now: number): { addMilli: number; markAt: number | null } | null {
+  const perMinute = Math.max(0, rates.fullMilli - rates.adMilli);
+  if (decision.now === "ad") {
+    if (phone.ad_mark_at == null) return { addMilli: 0, markAt: now };
+    const minutes = Math.floor((now - phone.ad_mark_at) / 60_000);
+    return minutes > 0 ? { addMilli: minutes * perMinute, markAt: phone.ad_mark_at + minutes * 60_000 } : null;
+  }
+  if (phone.ad_mark_at == null) return null;
+  const end = decision.reason === "not_in_use" || decision.reason === "unverified" ? fullPriceEdge(adUntil, ctx, phone.ad_mark_at, now) : now;
+  return { addMilli: Math.max(0, Math.floor((end - phone.ad_mark_at) / 60_000)) * perMinute, markAt: null };
+}
+
+/* ---- Proofs ---- */
+
+/** How long a proof row is kept: a day, as a turn's stored answer is. */
+const PROOF_KEEP_MS = 24 * 60 * 60_000;
+/** How long a network an ADE Cloud computer joined from stays ADE Cloud's own (as the Small tripwire reads it). */
+const JOINED_NETWORK_MS = 30 * 24 * 60 * 60_000;
+/** The owner hears of one account's requests that don't count at most once a week. */
+const UNVERIFIED_ALERT_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Whether a request came from the network of the account's own cloud
+ * computers (the one its brains call from, or one any computer joined from
+ * lately): not a person at a screen. A request with no network data counts.
+ */
+export async function fromOwnCloudNetwork(env: GravityEnv, userId: string, asn: number | null, now: number): Promise<boolean> {
+  if (asn == null) return false;
+  const row = await env.DB.prepare(`
+    select (exists (select 1 from cloud_computers where user_id = ? and deleted_at is null and net_asn = ?)
+      or exists (select 1 from cloud_computers where join_asn = ? and created_at >= ?)) as own
+  `).bind(userId, asn, asn, now - JOINED_NETWORK_MS).first<{ own: number }>();
+  return Boolean(row?.own);
+}
+
+export type ProofTargets = { instanceId: string | null; phoneId: string | null };
+
+/** What a computer's or phone's product is, for the owner's counts. */
+const productOf = (targets: ProofTargets, freeModel: boolean): string => (targets.phoneId ? "phone" : freeModel && !targets.instanceId ? "free_model" : "linux");
+
+/**
+ * A request that doesn't count (`fromOwnCloudNetwork`): marked on its
+ * targets so their price row says why, and the owner hears of it once a week
+ * per account. No ban, no penalty.
+ */
+export async function noteUnverified(env: GravityEnv, account: AccountRow, targets: ProofTargets, asn: number | null, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
+  try {
+    const keys = targetKeys(targets);
+    if (keys.length) {
+      await env.DB.batch(keys.map((key) => env.DB.prepare(`
+        insert into cloud_ad_targets (target, user_id, unverified_at, updated_at) values (?, ?, ?, ?)
+        on conflict (target) do update set unverified_at = max(coalesce(unverified_at, 0), excluded.unverified_at), updated_at = excluded.updated_at
+      `).bind(key, account.user_id, now, now)));
+    }
+    logCloud("cloud.ad_price.unverified", { userId: account.user_id, asn });
+    await sendOwnerAlert(env, {
+      key: `ad_cloud_request:${account.user_id}:${Math.floor(now / UNVERIFIED_ALERT_MS)}`,
+      kind: "ad_cloud_request",
+      userId: account.user_id,
+      subject: "DAEX Cloud: an ad-price request came from a DAEX Cloud computer's network",
+      reason: "A request that would keep this account's cloud computer at the ad price came from the network DAEX Cloud computers call from, not from a phone or laptop. It did not count: no proof, nothing sent to the ad partner, and the computer has the full price. Nothing was blocked.",
+      counts: { Network: asn != null ? `AS${asn}` : "unknown" },
+      step: "ad_cloud_request",
+      abuse: true,
+    }, now, waitUntil);
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.unverified_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
+const targetKeys = (targets: ProofTargets): string[] => [
+  ...(targets.instanceId ? [targets.instanceId] : []),
+  ...(targets.phoneId ? [phoneTarget(targets.phoneId)] : []),
+];
+
+/**
+ * Counts one proof, once per (account, chat, turn): its targets' window
+ * starts again, and the computer or phone moves to the ad price now if its
+ * rules allow. `freeModel`: it came from an ADE Free Models chat, whose ad
+ * shows with ads off, so it holds with ads off. The caller checked the
+ * targets are the account's own, the country, and the network.
+ */
+export async function countAdProof(
+  env: GravityEnv,
+  account: AccountRow,
+  proof: { chatId: string; turnId: string; kind: "reply" | "sent"; freeModel: boolean } & ProofTargets,
+  now: number,
+): Promise<CloudAdProofAnswer> {
+  const keys = targetKeys(proof);
+  if (keys.length === 0) return { counted: false, reason: "not_cloud" };
+  const column = proof.freeModel ? "fm_proof_at" : "proof_at";
+  const [, claimed] = await env.DB.batch([
+    env.DB.prepare("delete from cloud_ad_proofs where at < ?").bind(now - PROOF_KEEP_MS),
+    env.DB.prepare(`
+      insert into cloud_ad_proofs (user_id, chat_id, turn_id, kind, instance_id, phone_id, at) values (?, ?, ?, ?, ?, ?, ?)
+      on conflict (user_id, chat_id, turn_id) do nothing
+    `).bind(account.user_id, proof.chatId, proof.turnId, proof.kind, proof.instanceId, proof.phoneId, now),
+    // Only when that proof is new: a replay of the same turn moves nothing.
+    ...keys.map((key) => env.DB.prepare(`
+      insert into cloud_ad_targets (target, user_id, ${column}, updated_at)
+      select ?, ?, ?, ? where exists (select 1 from cloud_ad_proofs where user_id = ? and chat_id = ? and turn_id = ? and at = ?)
+      on conflict (target) do update set ${column} = max(coalesce(${column}, 0), excluded.${column}), updated_at = excluded.updated_at
+    `).bind(key, account.user_id, now, now, account.user_id, proof.chatId, proof.turnId, now)),
+    countProofStatement(env, utcDay(now), `${proof.kind === "reply" ? "proof" : "sent"}:${productOf(proof, proof.freeModel)}`, account.user_id, proof.chatId, proof.turnId, now),
+  ]);
+  if (!claimed?.meta?.changes) return { counted: false, reason: "repeat" };
+  await syncAccountPrices(env, account, now, { instanceIds: proof.instanceId ? [proof.instanceId] : [] });
+  return { counted: true };
+}
+
+/** The day's count of proofs by product (`proof:<product>` for replies, `sent:<product>` for messages), for the owner's report: added only with the proof's own row. */
+function countProofStatement(env: GravityEnv, day: string, kind: string, userId: string, chatId: string, turnId: string, now: number): D1PreparedStatement {
+  return env.DB.prepare(`
+    insert into cloud_sponsored_days (day, user_id, kind, count)
+    select ?, '*', ?, 1 where exists (select 1 from cloud_ad_proofs where user_id = ? and chat_id = ? and turn_id = ? and at = ?)
+    on conflict (day, user_id, kind) do update set count = count + 1
+  `).bind(day, kind, userId, chatId, turnId, now);
+}
+
+/* ---- The brain's full-price work ---- */
+
+/**
+ * Keeps the full-price work a computer's brain reported (`POST .../activity`),
+ * and moves the computer to the price it now has. An older brain (no list)
+ * writes nothing. Never fails the report.
+ */
+export async function noteFullPriceWork(env: GravityEnv, computer: ComputerRow, work: CloudFullPriceWork[] | undefined, now: number): Promise<void> {
+  if (work === undefined) return;
+  try {
+    const text = JSON.stringify(work);
+    const saved = await env.DB.prepare(`
+      insert into cloud_ad_targets (target, user_id, full_work, full_work_at, updated_at) values (?, ?, ?, ?, ?)
+      on conflict (target) do update set full_work = excluded.full_work, full_work_at = excluded.full_work_at, updated_at = excluded.updated_at
+        where coalesce(cloud_ad_targets.full_work, '[]') <> excluded.full_work or cloud_ad_targets.full_work_at is null
+          or cloud_ad_targets.full_work_at < ?
+    `).bind(computer.instance_id, computer.user_id, text, now, now, computer.awake_since ?? now).run();
+    if (!saved.meta?.changes) return;
+    const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(computer.user_id).first<AccountRow>();
+    if (account) await syncAccountPrices(env, account, now, { instanceIds: [computer.instance_id] });
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.work_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
+/* ---- What the apps read ---- */
+
+/** Whether this request's country has ads (Gravity's countries; an unknown one, a local run, counts). */
+export type AdsWhere = { available: boolean };
+
+/** Pure: one target's `CloudPrice`, with the reason a person reads where they are. */
+export function priceOf(decision: PriceDecision, rates: V3Rate, here: AdsWhere): CloudPrice {
+  const ad = decision.now === "ad";
+  const reason: CloudFullPriceReason | null = ad ? null : !here.available ? "no_ads_here" : decision.reason;
+  return {
+    now: ad ? "ad" : "full",
+    reason,
+    adUntil: ad ? decision.adUntil : null,
+    rateMilli: ad ? rates.adMilli : rates.fullMilli,
+    otherRateMilli: ad ? rates.fullMilli : rates.adMilli,
+  };
+}
+
+/**
+ * `CloudAccountState.pricing`, or undefined while Pricing v3 doesn't reach
+ * the account. `available`: the request's country has ads and the ad switch
+ * reaches the account.
+ */
+export async function pricingAccountState(
+  env: GravityEnv,
+  account: AccountRow,
+  computers: readonly ComputerRow[],
+  who: SponsoredRequester,
+  available: boolean,
+  now: number,
+): Promise<CloudPricingState | undefined> {
+  const { ctx, consent } = await adContextFor(env, account);
+  if (!ctx.v3) return undefined;
+  const live = await env.DB.prepare("select phone_id, rate_milli from cloud_phones where user_id = ? and state = 'live' and credits = 1 order by created_at desc limit 1")
+    .bind(account.user_id).first<{ phone_id: string; rate_milli: number | null }>();
+  const targets = await targetsOf(env, [...computers.map((computer) => computer.instance_id), ...(live ? [phoneTarget(live.phone_id)] : [])]);
+  const here: AdsWhere = { available: available && ctx.adsReach };
+  const ads: CloudAdsState = {
+    available: here.available,
+    on: ctx.adsOn && ctx.adsReach && yesHolds(env, consent, who),
+    startsOn: here.available && startsOnFor(env, who),
+    noticeSeen: consent?.notice_seen_at != null,
+    discountPct: ctx.discountPct,
+    windowMinutes: Math.round(ctx.windowMs / 60_000),
+  };
+  const computerPrices: CloudComputerPrice[] = computers.map((computer) => {
+    const awake = computer.awake_since != null && isMeteredStatus(computer.status) ? computer.awake_since : null;
+    const decision = decidePrice(targets.get(computer.instance_id) ?? null, ctx, awake, now);
+    return { instanceId: computer.instance_id, ...priceOf(decision, computerRatesMilli(computer, ctx), here) };
+  });
+  const phone = live
+    ? { phoneId: live.phone_id, ...priceOf(decidePrice(targets.get(phoneTarget(live.phone_id)) ?? null, ctx, null, now), phoneRatesMilli(live.rate_milli, ctx.discountPct), here) }
+    : null;
+  return { creditScale: CREDIT_SCALE, ads, computers: computerPrices, phone };
+}
+
+/* ---- The public read for the website ---- */
+
+const PUBLIC_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, OPTIONS",
+  "access-control-max-age": "86400",
+  "cache-control": "no-store",
+} as const;
+
+export const isPublicPricingRequest = (url: URL): boolean => url.pathname.replace(/\/+$/, "") === CLOUD_PUBLIC_PRICING_PATH;
+
+/**
+ * `GET /public/pricing` (`CloudPublicPricing`): no auth, CORS `*`, never
+ * cached. `pricingV3` only at `all` (a tester's prices stay theirs); `mac`
+ * only while `mac_computers` is `all`; `ads` only where the request's country
+ * has ads and the ad switch reaches everyone. One settings read.
+ */
+export async function handlePublicPricing(request: Request, env: GravityEnv): Promise<Response> {
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: PUBLIC_HEADERS });
+  if (request.method !== "GET") return new Response(JSON.stringify({ error: { code: "not_found", message: "Not found." } }), { status: 404, headers: { ...PUBLIC_HEADERS, "content-type": "application/json" } });
+  const answer = await publicPricing(env, request).catch((error: unknown) => {
+    reportCloudFailure("cloud.ad_price.public_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return { pricingV3: false } satisfies CloudPublicPricing;
+  });
+  return new Response(JSON.stringify(answer), { status: 200, headers: { ...PUBLIC_HEADERS, "content-type": "application/json" } });
+}
+
+async function publicPricing(env: GravityEnv, request: Request): Promise<CloudPublicPricing> {
+  const settings = await readCloudSettings(env);
+  if ((await pricingV3Mode(env, settings)) !== "all") return { pricingV3: false };
+  // The cloud Mac's switch, once its branch adds it (`mac_computers`); none here reads as off.
+  const mac = (settings as unknown as Record<string, string | undefined>).mac_computers === "all";
+  const who = sponsoredRequester(request);
+  const ads = (await gravitySwitches(env, settings)).mode === "all" && who.country != null && adsCountryHas(env, who.country);
+  if (!ads) return { pricingV3: true, mac, ads: null };
+  const terms = adTerms(settings);
+  return { pricingV3: true, mac, ads: { startsOn: startsOnFor(env, who), discountPct: terms.discountPct, adWindowMinutes: terms.windowMinutes } };
+}
+
+/* ---- The owner's report: ad income against what the discount costs ---- */
+
+/** What one thousandth of a credit is worth: the price of an extra credit (4 cents a Medium-hour, `EXTRA_HOUR_MICROS`). */
+const MICROS_PER_MILLI = EXTRA_HOUR_MICROS.plus / 1000;
+
+export type AdPriceProductReport = {
+  product: string;
+  /** Finished replies that asked for an ad and counted as proofs. */
+  replies: number;
+  /** Messages sent that counted as proofs. */
+  messages: number;
+  /** Credits the ad price took off (thousandths), and their worth at the extra-credit price (micros). */
+  discountMilli: number;
+  discountMicros: number;
+  /** Hours a computer ran at the ad price (computers only). */
+  adHours: number | null;
+  /** The ad income attributed by its share of the replies' ad requests (micros), or null when the partner's report can't be read. */
+  incomeMicros: number | null;
+};
+
+/**
+ * `POST /cloud/owner/ad-price` `{ days? }`: for the last `days` UTC days, by
+ * product, the proofs, what the ad price took off (and its worth at the
+ * extra-credit price), and the ad income attributed by each product's share
+ * of the replies that asked for an ad. So the owner sets `ad_discount_pct`
+ * from data.
+ */
+export async function adPriceReport(env: GravityEnv, now: number, days: number) {
+  const since = utcDay(now - (days - 1) * 24 * 60 * 60_000);
+  const sinceMs = Date.parse(`${since}T00:00:00Z`);
+  const [counts, computers, phones, settings] = await Promise.all([
+    env.DB.prepare("select kind, sum(count) as total from cloud_sponsored_days where user_id = '*' and day >= ? and (kind like 'proof:%' or kind like 'sent:%') group by kind")
+      .bind(since).all<{ kind: string; total: number }>(),
+    env.DB.prepare("select coalesce(sum(ad_discount_milli), 0) as discount, coalesce(sum(ad_ms), 0) as ms from cloud_computer_days where day >= ?")
+      .bind(since).first<{ discount: number; ms: number }>(),
+    env.DB.prepare("select coalesce(sum(ad_saved_milli), 0) as discount from cloud_phones where created_at >= ?")
+      .bind(sinceMs).first<{ discount: number }>(),
+    readCloudSettings(env),
+  ]);
+  const count = new Map((counts.results ?? []).map((row) => [row.kind, row.total]));
+  const income = await gravityIncomeMicros(env, since, utcDay(now));
+  const products = ["linux", "phone", "free_model"];
+  const replies = products.reduce((sum, product) => sum + (count.get(`proof:${product}`) ?? 0), 0);
+  const rows: AdPriceProductReport[] = products.map((product) => {
+    const discountMilli = product === "linux" ? computers?.discount ?? 0 : product === "phone" ? phones?.discount ?? 0 : 0;
+    const share = replies > 0 ? (count.get(`proof:${product}`) ?? 0) / replies : 0;
+    return {
+      product,
+      replies: count.get(`proof:${product}`) ?? 0,
+      messages: count.get(`sent:${product}`) ?? 0,
+      discountMilli,
+      discountMicros: Math.round(discountMilli * MICROS_PER_MILLI),
+      adHours: product === "linux" ? Math.round(((computers?.ms ?? 0) / 3_600_000) * 10) / 10 : null,
+      incomeMicros: income == null ? null : Math.round(income * share),
+    };
+  });
+  return { days, since, mode: await pricingV3Mode(env, settings), ...adTerms(settings), products: rows, incomeMicros: income };
+}
+
+/** The partner's ad revenue over these UTC days, in micros, or null when it can't be read. */
+async function gravityIncomeMicros(env: GravityEnv, from: string, to: string): Promise<number | null> {
+  const key = env.GRAVITY_API_KEY?.trim();
+  if (!key) return null;
+  try {
+    const response = await fetch(`${PLATFORM_URL}/publisher-dashboard/stats?start_date=${from}&end_date=${to}`, { headers: { "x-api-key": key, accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) return null;
+    const body = await response.json() as Record<string, unknown>;
+    return typeof body.totalRevenue === "number" ? Math.round(body.totalRevenue * 1_000_000) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The daily report's line: yesterday's ad price by product. Empty while Pricing v3 is off and nothing was counted. */
+export async function adPriceReportLines(env: GravityEnv, day: string): Promise<string[]> {
+  const report = await adPriceReport(env, Date.parse(`${day}T12:00:00Z`), 1);
+  const any = report.products.some((row) => row.replies + row.messages + row.discountMilli > 0);
+  if (report.mode === "off" && !any) return [];
+  const money = (micros: number | null) => (micros == null ? "unknown" : `$${(micros / 1_000_000).toFixed(2)}`);
+  const parts = report.products.filter((row) => row.replies + row.messages + row.discountMilli > 0)
+    .map((row) => `${row.product} ${row.replies} replies + ${row.messages} messages, discount ${money(row.discountMicros)}${row.adHours != null ? ` over ${row.adHours} h` : ""}, ad income ${money(row.incomeMicros)}`);
+  return [`Ad price (${report.mode}, ${report.discountPct}% off, ${report.windowMinutes} min): ${parts.length ? parts.join("; ") : "nothing counted"}.`];
+}
