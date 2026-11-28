@@ -340,8 +340,13 @@ struct WorkSmartLink: Equatable {
 }
 
 enum WorkSmartLinkDetector {
+  // Every scheme the app registers (`Brand.linkSchemes`, the Beta ones too), longest first.
+  private static let schemeAlternation = Brand.linkSchemes
+    .sorted { $0.count != $1.count ? $0.count > $1.count : $0 < $1 }
+    .map { NSRegularExpression.escapedPattern(for: $0) }
+    .joined(separator: "|")
   private static let regex = try! NSRegularExpression(
-    pattern: "(?:https?://|(?:ade|daex)://)[^\\s<>\\\"'`]+",
+    pattern: "(?:https?://|(?:\(schemeAlternation))://)[^\\s<>\\\"'`]+",
     options: [.caseInsensitive]
   )
   private static let trailingPunctuation = CharacterSet(charactersIn: ".,;:!?")
