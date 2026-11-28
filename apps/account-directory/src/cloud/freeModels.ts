@@ -35,7 +35,9 @@ import { utcDay } from "./plans";
 import { readCloudSettings, type CloudSettings } from "./settings";
 import { gpcOptsOut, sponsoredRequester, type SponsoredRequester } from "./sponsoredConsent";
 import { inferenceReaches, inferenceSwitch, type InferenceSwitch } from "./sponsoredSwitch";
-import { logCloud, reportCloudFailure, takeRequest } from "./store";
+import { freeModelsHoldOf, freeModelsLockOf, settleForFreeModels, type FreeModelsLockFields } from "./freePlanGithub";
+import { markThrottle, meterCallStatement, meterTokensStatement, readFreeModelMeter, throttleOf } from "./freeModelsMeter";
+import { loadAccount, logCloud, reportCloudFailure, takeRequest, type AccountRow } from "./store";
 
 /**
  * ADE Free Models: Gravity's hosted models (inference.trygravity.ai), paid
@@ -50,18 +52,26 @@ import { logCloud, reportCloudFailure, takeRequest } from "./store";
  * A call goes only when all hold, in this order:
  * - the switch: the `gravity_inference` setting held under `GRAVITY_INFERENCE`,
  *   both keys set, and `all` reaching non-testers only while ads are live;
+ * - the Free plan's GitHub rule (`freePlanGithub.ts` `freeModelsHoldOf`): a
+ *   Free account with no card on file needs a GitHub account 30 days old, not
+ *   used by another ADE account. Locked otherwise (`free_models_locked`); a
+ *   card saved with no charge, or a paid plan, unlocks them;
  * - the account's yes to the ADE Free Models sheet, for the current terms;
  * - someone has the chat open in ADE (`POST /seen` from their device): a
  *   record no older than 10 minutes, or a turn still running (a call in the
  *   last 5 minutes) with a record no older than an hour. Automations,
  *   scheduled wakes and chats nobody watches get nothing;
  * - the watcher is in Gravity's countries (`GRAVITY_INFERENCE_COUNTRIES`);
+ * - cards (`freeModelsMeter.ts`): an account that keeps calling with no card
+ *   asked for in these chats is slowed to 2 calls a minute (a 429 with
+ *   `retry-after`, which OpenCode waits out), then paused
+ *   (`free_models_no_cards`) until its next card request;
  * - the account's minute, ADE's minute, and the account's day.
  *
  * Refusals are OpenAI-shaped errors with ADE's words and a
- * `CloudFreeModelsErrorCode`. Only Gravity's own retry-safe 429 stays a 429:
- * OpenCode's client retries 429 and 5xx answers, so everything else is a 4xx
- * it shows at once.
+ * `CloudFreeModelsErrorCode`. Only Gravity's own retry-safe 429 and a slowed
+ * account's 429 are 429s: OpenCode's client retries 429 and 5xx answers, so
+ * everything else is a 4xx it shows at once.
  */
 
 /** Gravity's own id for each ADE Free Model. A model can move here without an app release. */
@@ -115,6 +125,9 @@ const STATUS: Record<CloudFreeModelsErrorCode, number> = {
   free_models_no_cards: 403,
 };
 
+/** A slowed account's 429 (`free_models_no_cards`), which OpenCode shows while it waits. */
+const SLOWED_MESSAGE = "Cards pay for ADE Free Models. Keep this chat on screen so a card can show; until then they run slower.";
+
 /** `/cloud/free-models/*`, or null for any other path. */
 export async function routeFreeModels(request: Request, path: string, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
   if (path === CLOUD_PATHS.freeModelsChat) {
@@ -131,7 +144,7 @@ export async function routeFreeModels(request: Request, path: string, env: Gravi
     if (!(await takeRequest(env, userId, "free_models_seen", now))) {
       return json({ error: { code: "rate_limited", message: "Too many requests from this account in the last minute. Try again in a minute." } }, 429);
     }
-    return path === CLOUD_PATHS.freeModelsConsent ? handleConsent(request, env, userId, now) : handleSeen(request, env, userId, now);
+    return path === CLOUD_PATHS.freeModelsConsent ? handleConsent(request, env, userId, now, waitUntil) : handleSeen(request, env, userId, now, waitUntil);
   }
   return null;
 }
@@ -140,19 +153,27 @@ export async function routeFreeModels(request: Request, path: string, env: Gravi
  * The account state's `freeModels`: undefined while the switch doesn't reach
  * this account (or a key is missing), so a client shows none of them.
  */
-export async function freeModelsAccountState(env: GravityEnv, userId: string, who: SponsoredRequester, now: number): Promise<CloudFreeModelsState | undefined> {
+export async function freeModelsAccountState(env: GravityEnv, account: AccountRow, who: SponsoredRequester, now: number): Promise<CloudFreeModelsState | undefined> {
   // No key: no read at all (the account state is polled).
   if (!env.GRAVITY_INFERENCE_KEY?.trim() || !env.GRAVITY_API_KEY?.trim()) return undefined;
   const settings = await readCloudSettings(env);
   const inference = await inferenceSwitch(env, settings);
-  if (!(await inferenceReaches(env, userId, inference))) return undefined;
-  return stateOf(env, userId, who, now, inference, settings);
+  if (!(await inferenceReaches(env, account.user_id, inference))) return undefined;
+  return stateOf(env, account, who, now, inference, settings);
 }
 
-async function stateOf(env: GravityEnv, userId: string, who: SponsoredRequester, now: number, inference: InferenceSwitch, settings: CloudSettings): Promise<CloudFreeModelsState> {
+/**
+ * The state every client reads. `locked` and `throttle` are the server's
+ * answer: a client shows the rows locked, or a calm notice, and never
+ * decides either itself.
+ */
+async function stateOf(env: GravityEnv, account: AccountRow, who: SponsoredRequester, now: number, inference: InferenceSwitch, settings: CloudSettings): Promise<CloudFreeModelsState> {
+  const userId = account.user_id;
   // A browser's Global Privacy Control from the US opts the whole account out.
   const consent = await honorFreeGpc(env, userId, await readFreeConsent(env, userId), who, now);
   const outside = outsideInferenceCountries(env, who.country);
+  const [locked, meter] = await Promise.all([freeModelsLockOf(env, account), readFreeModelMeter(env, userId)]);
+  const throttle = throttleOf(meter, now);
   return {
     modelIds: ADE_FREE_MODELS.map((model) => model.id),
     available: !outside,
@@ -161,6 +182,8 @@ async function stateOf(env: GravityEnv, userId: string, who: SponsoredRequester,
     // The cards in these chats show where the account's sponsored cards do: its A/B arm, the same on every machine.
     format: await sponsoredFormatOf(env, userId, settings, now, !outside),
     test: !inference.live,
+    ...(locked ? { locked } : {}),
+    ...(throttle ? { throttle } : {}),
   };
 }
 
@@ -172,7 +195,7 @@ async function stateOf(env: GravityEnv, userId: string, who: SponsoredRequester,
  * read: a no saved meanwhile, on another screen while the email was read,
  * holds. A no saves while the switch is off too.
  */
-async function handleConsent(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+async function handleConsent(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const consent: CloudSponsoredConsent | null = body.consent === "granted" || body.consent === "declined" ? body.consent : null;
@@ -202,8 +225,13 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   if (!reaches) {
     return json({ modelIds: [], available: false, reason: "unavailable", consent: "declined", format: "below_reply", test: true } satisfies CloudFreeModelsState);
   }
-  return json(await stateOf(env, userId, who, now, inference, settings));
+  // Answered with the lock as it is now: the yes may come before or after the card.
+  const account = await loadAccount(env, userId, now);
+  await settleForFreeModels(env, account, { now, waitUntil: waitUntilOr(waitUntil) });
+  return json(await stateOf(env, account, who, now, inference, settings));
 }
+
+const waitUntilOr = (waitUntil?: CloudWaitUntil): CloudWaitUntil => waitUntil ?? ((work) => { void work; });
 
 /**
  * A person has this ADE Free Models chat open, on this device, from here.
@@ -211,7 +239,7 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
  * with the chat's calls (the person's, never the chat machine's) and the
  * proof someone watches.
  */
-async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const chatId = shortString(body.chatId, 160);
@@ -235,6 +263,8 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
     userId, chatId, ip, clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, who.country, who.region, now,
     userId, CLOUD_FREE_MODELS_TERMS_VERSION,
   ).run();
+  // The GitHub rule is settled here too, so an account that never read its state is held before its first call.
+  await settleForFreeModels(env, await loadAccount(env, userId, now), { now, waitUntil: waitUntilOr(waitUntil) });
   return json({ ok: true });
 }
 
@@ -269,15 +299,20 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
 
   const inference = await inferenceSwitch(env);
   if (!(await inferenceReaches(env, userId, inference))) return refuse("free_models_off");
+  // The stored hold (settled at the account read and each `/seen`): no GitHub call here. No row yet: nothing settled.
+  const lockFields = await env.DB.prepare("select plan, stripe_status, free_github_hold, free_card_unlocked_at, stripe_subscription_id from cloud_accounts where user_id = ?")
+    .bind(userId).first<FreeModelsLockFields>();
+  if (!lockFields || freeModelsHoldOf(lockFields)) return refuse("free_models_locked");
   const consent = await readFreeConsent(env, userId);
   if (!freeYesHolds(consent, MACHINE)) return refuse("free_models_consent");
   const chatId = shortString(request.headers.get(CLOUD_FREE_MODELS_CHAT_HEADER), 160);
   if (!chatId || !isChatId(chatId)) return refuse("free_models_not_watched", "ADE Free Models run only in an ADE chat.");
   const readViewer = () => env.DB.prepare("select ip, ua, os, tracking, country, seen_at from cloud_free_model_viewers where user_id = ? and chat_id = ?")
     .bind(userId, chatId).first<ViewerRow>();
-  const [found, chat] = await Promise.all([
+  const [found, chat, meter] = await Promise.all([
     readViewer(),
     env.DB.prepare("select last_at from cloud_free_model_chats where user_id = ? and chat_id = ?").bind(userId, chatId).first<{ last_at: number }>(),
+    readFreeModelMeter(env, userId),
   ]);
   // A chat nobody reported yet may be the one a person just launched on ADE Cloud (`noteFreeModelLaunch`).
   const viewer = found ?? (chat ? null : (await claimLaunchViewer(env, userId, chatId, now)) ? await readViewer() : null);
@@ -290,6 +325,13 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
     return refuse("free_models_consent", consent.email_hash
       ? "ADE Free Models need tracking allowed for ADE on the iPhone watching this chat (iOS Settings > Privacy > Tracking)."
       : "ADE couldn't read your account's email when you turned on ADE Free Models. Turn them off and on again in ADE.");
+  }
+  // No card asked for in too long: paused, or slowed to a few calls a minute across every chat.
+  const throttle = throttleOf(meter, now);
+  if (throttle) {
+    void keep(markThrottle(env, userId, throttle, now).then((first) => (first ? countStatement(env, utcDay(now), ALL, `fm_${throttle}`).run() : null)));
+    if (throttle === "paused") return refuse("free_models_no_cards");
+    if (!(await takeRequest(env, userId, "free_models_slowed", now))) return slowed(refuse("free_models_no_cards", SLOWED_MESSAGE, 429), now);
   }
   const day = utcDay(now);
   if (!(await takeRequest(env, userId, "free_models", now))) return refuse("free_models_limit");
@@ -325,6 +367,7 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
       on conflict (user_id, chat_id) do update set last_at = excluded.last_at, requests = requests + 1, last_model = excluded.last_model
     `).bind(userId, chatId, now, now, model.alias),
     countStatement(env, day, ALL, "fm_request"),
+    meterCallStatement(env, userId, now),
   ]);
 
   let upstream: Response;
@@ -361,6 +404,18 @@ async function handleChat(request: Request, env: GravityEnv, userId: string, now
     return new Response(text, { status: upstream.status, headers });
   }
   return new Response(upstream.body.pipeThrough(usageWatcher(record)), { status: upstream.status, headers });
+}
+
+/**
+ * A slowed account's refusal as a 429 OpenCode waits out: `retry-after` is
+ * the next minute, so the turn goes on, slowly, while the person watches.
+ */
+function slowed(refusal: Response, now: number): Response {
+  const waitMs = Math.max(1_000, Math.floor(now / 60_000) * 60_000 + 60_000 - now);
+  const headers = new Headers(refusal.headers);
+  headers.set("retry-after", String(Math.ceil(waitMs / 1000)));
+  headers.set("retry-after-ms", String(waitMs));
+  return new Response(refusal.body, { status: 429, headers });
 }
 
 /** A chat's id, never a launch's stand-in record (`launch:<id>`). */
@@ -506,6 +561,7 @@ async function recordUsage(env: GravityEnv, userId: string, chatId: string, mode
         last_usage_json = ?, last_usage_at = ?
       where user_id = ? and chat_id = ?
     `).bind(inputTokens, cachedInputTokens, outputTokens, JSON.stringify({ model, inputTokens, cachedInputTokens, outputTokens }), now, userId, chatId),
+    meterTokensStatement(env, userId, inputTokens, now),
     add("fm_input_tokens", inputTokens),
     add("fm_cached_input_tokens", cachedInputTokens),
     add("fm_output_tokens", outputTokens),

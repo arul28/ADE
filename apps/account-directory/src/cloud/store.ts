@@ -369,6 +369,8 @@ const REQUESTS_PER_MINUTE = {
   free_models: 50,
   /** Every account's ADE Free Models calls together (counted under `*`): under Gravity's 600 a minute for ADE. */
   free_models_all: 550,
+  /** A slowed account's ADE Free Models calls (`freeModelsMeter.ts`): no cards asked for in too long. */
+  free_models_slowed: 2,
   /** ADE Free Models' answer and "this chat is open" notes: a few per open chat and minute. */
   free_models_seen: 60,
 } as const;

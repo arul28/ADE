@@ -3,7 +3,7 @@ import { unsettledPhoneMilli } from "./credits";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
 import { CLOUD_WEB_BILLING_RETURN_PARAM, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
-import { unlockFreePlanWithCard } from "./freePlanGithub";
+import { freeModelsHoldOf, unlockFreePlanWithCard } from "./freePlanGithub";
 import { claimCardForFreeUnlock, isCloudBlocked } from "./blocks";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
@@ -326,7 +326,9 @@ const CARD_REFUSED_MESSAGE = "This card can't unlock free credits. Pick a plan, 
 
 /**
  * `POST /cloud/billing/free-unlock`: a card saved with no charge starts the
- * free hours of a GitHub account younger than 30 days (`freePlanGithub.ts`).
+ * free hours of a GitHub account younger than 30 days (`freePlanGithub.ts`),
+ * and unlocks ADE Free Models for any GitHub hold but a check still running
+ * (no GitHub, or one another ADE account used: the free hours stay held then).
  * A card already on file unlocks at once; otherwise this answers a Stripe
  * Checkout in setup mode (nothing is charged), and its
  * `checkout.session.completed` unlocks.
@@ -335,7 +337,9 @@ export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: B
   const waitUntil: CloudWaitUntil = ctx.waitUntil ?? ((promise) => { void promise; });
   const account = await loadAccount(env, userId, ctx.now);
   if (account.free_card_unlocked_at != null) return { url: null, unlocked: true };
-  if (accountRules(account) !== "free" || account.free_github_hold !== "github_too_new") {
+  // `freeModelsHoldOf`: on a Free account with no card on file; a check still running clears on its own.
+  const hold = freeModelsHoldOf(account);
+  if (!hold || hold === "github_checking") {
     throw new CloudBillingError("nothing_to_unlock", "Your free credits don't need a card.", 409);
   }
   if (!env.STRIPE_SECRET_KEY?.trim()) {

@@ -43,7 +43,8 @@ import {
   type ConsentRow,
   type SponsoredRequester,
 } from "./sponsoredConsent";
-import { lookKeepsSmallFree, noteSmallLook, smallFreeFrom, smallLookNetwork, smallLookTripwire, smallStateOf, syncSmallRates } from "./sponsoredSmall";
+import { noteSmallLook, smallStateOf, syncSmallRates } from "./sponsoredSmall";
+import { resetFreeModelMeter } from "./freeModelsMeter";
 import type { CloudWaitUntil } from "./analytics";
 import { gravitySwitches, inferenceReaches, inferenceSwitch, isTester, switchReaches, type Switches } from "./sponsoredSwitch";
 import { freeYesHolds, honorFreeGpc, outsideInferenceCountries, readFreeConsent, readFreeModelChat } from "./freeModelsConsent";
@@ -428,8 +429,8 @@ export const gravitySessionId = async (userId: string, chatId: string): Promise<
 /** `/cloud/sponsored/*`, or null for any other path. */
 export async function routeSponsored(request: Request, path: string, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
   if (path === CLOUD_PATHS.sponsoredConsent) return request.method === "PUT" ? handleConsent(request, env, userId, now, waitUntil) : notFound();
-  if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now, waitUntil) : notFound();
-  if (path === CLOUD_PATHS.sponsoredAd) return request.method === "POST" ? handleAd(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredAd) return request.method === "POST" ? handleAd(request, env, userId, now, waitUntil) : notFound();
   if (path === CLOUD_PATHS.sponsoredIndex) return request.method === "POST" ? handleIndex(request, env, userId, now) : notFound();
   if (path === CLOUD_PATHS.sponsoredHide) return request.method === "POST" ? handleHide(request, env, userId, now) : notFound();
   return null;
@@ -480,24 +481,20 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // say on another screen while the email was read, holds. With no row read, any answer saved
   // meanwhile holds. A no always saves.
   const guard = consent === "declined" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
-  // A yes from the US makes Small free from now, like a look, and keeps the network it came from
-  // (Free Small's tripwire). Over a yes, the later of this and the row's look when it is written holds
-  // (a trip's, or one saved while the email was read), with its network: never moved back. A no keeps neither.
-  const lookedAt = consent === "granted" && smallFreeFrom(who.country) ? now : null;
-  const lookedAsn = lookedAt == null ? null : smallLookNetwork(account, requestNetwork(request));
-  const heldLook = "case when cloud_sponsored_consent.consent = 'granted' then coalesce(cloud_sponsored_consent.looked_at, 0) else 0 end";
+  // A yes is no look: Small is free only from the next card asked for in a cloud chat from the US
+  // (`handleAd`). Over a yes, the row's look and its network stay (a trip's, or one saved while the
+  // email was read); a no keeps neither.
+  const heldYes = "cloud_sponsored_consent.consent = 'granted' and excluded.consent = 'granted'";
   const write = env.DB.prepare(`
-    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn) values (?, ?, ?, ?, ?, ?, ?, null, null)
     on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
       source = excluded.source, country = excluded.country, gpc = excluded.gpc,
-      looked_at = case when excluded.consent = 'granted' then nullif(max(coalesce(excluded.looked_at, 0), ${heldLook}), 0) end,
-      looked_asn = case when excluded.consent = 'granted' then
-        case when coalesce(excluded.looked_at, 0) >= ${heldLook} then excluded.looked_asn else cloud_sponsored_consent.looked_asn end end${guard}
+      looked_at = case when ${heldYes} then cloud_sponsored_consent.looked_at end,
+      looked_asn = case when ${heldYes} then cloud_sponsored_consent.looked_asn end${guard}
   `).bind(
     userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country,
     // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
     choice === "granted" && gpcOptsOut(who) ? 1 : 0,
-    lookedAt, lookedAsn,
     ...(guard && before ? [before.decided_at] : []),
   );
   // A no keeps nothing of where the person watched from: their address and device go too, in the same transaction.
@@ -505,11 +502,9 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // Lost to an answer saved meanwhile: that one holds, and the state says so.
   if (!saved?.meta?.changes) return answered();
   logCloud("cloud.sponsored.consent", { consent: choice });
-  // Small's rate follows the answer at once (`smallUsesNoHours`). A US yes over a yes whose looks
-  // lapsed frees Small again, as a look does.
-  await syncSmallRates(env, account, now, { waitUntil, restore: lookedAt != null && before?.consent === "granted" && !lookKeepsSmallFree(before, now) });
-  // A yes from the US restarts Small's week, so a script could send yeses instead of looks: the same tripwire.
-  if (lookedAt != null) await smallLookTripwire(env, account, lookedAsn, now, waitUntil);
+  // Small's rate follows the answer at once (`smallUsesNoHours`): a no has it use credits; a yes
+  // over a yes keeps its look.
+  await syncSmallRates(env, account, now, { waitUntil });
   return answered();
 }
 
@@ -536,8 +531,9 @@ async function ownCloudComputer(env: GravityEnv, userId: string, value: unknown)
  * A person has one of this computer's chats or terminals open. Kept only for
  * an account that may see cards and said yes: it is the address and device
  * the Index sends with an agent's search, and the proof someone watches.
+ * It keeps nothing free: a look is a card request (`handleAd`).
  */
-async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
+async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const device = readDevice(body.device);
@@ -567,8 +563,7 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
       os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country,
       region = excluded.region, seen_at = excluded.seen_at
   `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, who.region, now, userId).run();
-  // From the US, the look keeps Free's Small free (`sponsoredSmall.ts`); its network feeds the tripwire.
-  await noteSmallLook(env, account, consent, country, requestNetwork(request), now, waitUntil);
+  // An open chat or terminal is no look for Free's Small: only a card asked for under a reply is (`handleAd`).
   return json({ ok: true });
 }
 
@@ -668,7 +663,7 @@ function modelUsageOf(text: string | null): ModelUsage | null {
  * the chat open; every rule is checked again here. An answer of no card is a
  * 200 with its reason, never an error: the client shows nothing either way.
  */
-async function handleAd(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+async function handleAd(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const chatId = shortString(body.chatId, 160);
@@ -684,6 +679,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   if (free && "reason" in free) return none(free.reason);
   let live: boolean;
   let emailHash: string | null;
+  // The yes a real ADE Cloud chat's card request counts as a look under (Free's Small).
+  let lookUnder: ConsentRow | null = null;
   if (free) {
     live = free.live;
     emailHash = free.emailHash;
@@ -705,6 +702,7 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     if (!copy || copy.parent_chat_id) return none("not_cloud");
     live = switches.live;
     emailHash = consent.email_hash;
+    lookUnder = consent;
   }
   const format = isSponsoredFormat(body.format) ? body.format : "below_reply";
   // The inline format is ADE's own linked sentence at the reply's end, never a
@@ -724,6 +722,7 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     await releaseTurn(env, userId, chatId, turnId);
     return none("limit");
   }
+  await noteCardRequest(env, account, request, who, free != null, lookUnder, now, waitUntil);
 
   const ip = clientIp(request);
   // The A/B test's counts: requests, fills and hides per format.
@@ -786,6 +785,34 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   if (ad) await count(env, now, userId, ["ad_fill", `ad_fill:${format}`, ...(free ? ["fm_ad_fill"] : [])]);
   await saveTurn(env, userId, chatId, turnId, answer);
   return json(answer);
+}
+
+/**
+ * The one card event, at a reply's first card request that goes to Gravity,
+ * whatever it answers (a card, a test card, or none to show): ADE's apps ask
+ * only while the card's spot is on screen in a window in front, and nothing
+ * rewards a view or a click. A chat ADE Free Models served starts their
+ * no-cards meter over (`freeModelsMeter.ts`); a real ADE Cloud chat's request
+ * from the US is a look that keeps Free's Small free, its network read by the
+ * tripwire (`sponsoredSmall.ts`). An ask refused at the daily limit is none.
+ * Never fails the card.
+ */
+async function noteCardRequest(
+  env: GravityEnv,
+  account: AccountRow,
+  request: Request,
+  who: SponsoredRequester,
+  freeModelChat: boolean,
+  lookUnder: ConsentRow | null,
+  now: number,
+  waitUntil?: CloudWaitUntil,
+): Promise<void> {
+  try {
+    if (freeModelChat) await resetFreeModelMeter(env, account.user_id, now);
+    else if (lookUnder) await noteSmallLook(env, account, lookUnder, who.country, requestNetwork(request), now, waitUntil);
+  } catch (error) {
+    reportCloudFailure("cloud.sponsored.card_event_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
 }
 
 /**

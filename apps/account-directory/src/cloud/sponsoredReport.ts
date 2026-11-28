@@ -145,7 +145,8 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
     lines.push(
       `ADE Free Models (${inference.mode}${inference.live ? ", live" : ", test ads"}): ${n("fm_request")} requests from ${accounts?.total ?? 0} accounts; `
       + `${n("fm_input_tokens")} tokens in (${n("fm_cached_input_tokens")} cached), ${n("fm_output_tokens")} out; `
-      + `cards ${n("fm_ad")} asked, ${n("fm_ad_fill")} filled; refused ${refused.length ? refused.join(", ") : "none"}.`,
+      + `cards ${n("fm_ad")} asked, ${n("fm_ad_fill")} filled; with no cards, ${n("fm_slowed")} accounts slowed and ${n("fm_paused")} paused; `
+      + `refused ${refused.length ? refused.join(", ") : "none"}.`,
     );
   }
   if (!env.GRAVITY_API_KEY?.trim()) return lines;

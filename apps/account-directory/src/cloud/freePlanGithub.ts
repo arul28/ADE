@@ -4,6 +4,8 @@ import { captureCloudFreePlan, type CloudFreePlanStep, type CloudWaitUntil } fro
 import {
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
   cloudFreeGithubSentence,
+  formatCloudFreeGithubDay,
+  type CloudFreeModelsLock,
   type CloudFreePlanGithub,
   type CloudFreePlanGithubState,
 } from "./contract";
@@ -305,8 +307,7 @@ async function settle(env: CloudEnv, account: AccountRow, ctx: Ctx): Promise<voi
   if (createdAt == null) createdAt = await fetchGithubAge(env, account.user_id, facts, ctx.now);
   if (createdAt === "disconnected") return applyHold(env, account, "no_github", ctx);
   if (createdAt == null) return applyHold(env, account, facts.grant_state === "active" ? "github_checking" : "no_github", ctx);
-  const cardOnFile = account.free_card_unlocked_at != null || account.stripe_subscription_id != null;
-  if (ctx.now - createdAt < CLOUD_FREE_GITHUB_MIN_AGE_MS && !cardOnFile) return applyHold(env, account, "github_too_new", ctx);
+  if (ctx.now - createdAt < CLOUD_FREE_GITHUB_MIN_AGE_MS && !cardOnFile(account)) return applyHold(env, account, "github_too_new", ctx);
   // A stored age outlives the connection: before the claim, the GitHub account must still be connected (not revoked or deleted).
   if (facts.grant_state !== "active") return applyHold(env, account, "no_github", ctx);
   const live = await githubConnected(env, account.user_id, ctx.now);
@@ -322,11 +323,11 @@ async function settle(env: CloudEnv, account: AccountRow, ctx: Ctx): Promise<voi
  * call). `ok` for a paid plan, an exempt account, and one that claimed.
  */
 export async function freePlanGithubOf(env: CloudEnv, account: AccountRow): Promise<CloudFreePlanGithub> {
-  const hold = account.free_github_hold != null && HOLDS.has(account.free_github_hold) ? account.free_github_hold as FreeGithubHold : null;
+  const hold = holdOf(account);
   if (!hold || accountRules(account) !== "free") {
     return { state: "ok", oldEnoughAt: null, canUnlockWithCard: false, githubLogin: null, sentence: null };
   }
-  const state: CloudFreePlanGithubState = hold === "no_github" ? "no_github" : hold === "github_too_new" ? "too_new" : hold === "github_used" ? "used" : "checking";
+  const state = STATE_OF[hold];
   const facts = state === "too_new" || state === "used" ? await readFacts(env, account.user_id) : null;
   const oldEnoughAt = state === "too_new" && facts?.github_created_at != null ? facts.github_created_at + CLOUD_FREE_GITHUB_MIN_AGE_MS : null;
   return {
@@ -336,6 +337,83 @@ export async function freePlanGithubOf(env: CloudEnv, account: AccountRow): Prom
     githubLogin: facts?.github_login ?? null,
     sentence: cloudFreeGithubSentence(state, { oldEnoughAt, plusIncludedMilli: CLOUD_PLANS.plus.includedMilli }),
   };
+}
+
+const STATE_OF: Record<FreeGithubHold, Exclude<CloudFreePlanGithubState, "ok">> = {
+  no_github: "no_github",
+  github_too_new: "too_new",
+  github_used: "used",
+  github_checking: "checking",
+};
+
+const holdOf = (account: Pick<AccountRow, "free_github_hold">): FreeGithubHold | null =>
+  account.free_github_hold != null && HOLDS.has(account.free_github_hold) ? account.free_github_hold as FreeGithubHold : null;
+
+/** A card saved with no charge, or a paid plan before (a subscription on file). */
+const cardOnFile = (account: Pick<AccountRow, "free_card_unlocked_at" | "stripe_subscription_id">): boolean =>
+  account.free_card_unlocked_at != null || account.stripe_subscription_id != null;
+
+/* ---- ADE Free Models (`freeModels.ts`) ---- */
+
+/** The account fields the ADE Free Models lock reads. */
+export type FreeModelsLockFields = Pick<AccountRow, "plan" | "stripe_status" | "free_github_hold" | "free_card_unlocked_at" | "stripe_subscription_id">;
+
+/**
+ * ADE Free Models follow the free plan's GitHub rule: the hold that keeps
+ * them locked, or null. A paid plan never is. A card on file unlocks them
+ * whatever the hold, a GitHub account that is missing or already gave its
+ * free plan to another ADE account included (the free hours stay held then:
+ * a card unlocks those only for a GitHub account that is too new). The hold
+ * read is the one `settle` keeps; `settleForFreeModels` settles it where
+ * these models are used.
+ */
+export function freeModelsHoldOf(account: FreeModelsLockFields): FreeGithubHold | null {
+  if (accountRules(account) !== "free" || cardOnFile(account)) return null;
+  return holdOf(account);
+}
+
+/**
+ * Settles the GitHub rules where ADE Free Models are used (their answer and
+ * "this chat is open" notes), so an account that never read its state is
+ * held as well. Only an account the rules can lock: a paid plan or a card on
+ * file skips it. The settle's own backoff keeps GitHub calls rare.
+ */
+export async function settleForFreeModels(env: CloudEnv, account: AccountRow, ctx: Ctx): Promise<void> {
+  if (accountRules(account) !== "free" || cardOnFile(account)) return;
+  await settleFreePlanGithub(env, account, ctx);
+}
+
+/** The account state's `freeModels.locked`, or undefined while they are unlocked. */
+export async function freeModelsLockOf(env: CloudEnv, account: AccountRow): Promise<CloudFreeModelsLock | undefined> {
+  const hold = freeModelsHoldOf(account);
+  if (!hold) return undefined;
+  const reason = STATE_OF[hold];
+  const facts = reason === "too_new" || reason === "used" ? await readFacts(env, account.user_id) : null;
+  const oldEnoughAt = reason === "too_new" && facts?.github_created_at != null ? facts.github_created_at + CLOUD_FREE_GITHUB_MIN_AGE_MS : null;
+  return {
+    reason,
+    oldEnoughAt,
+    githubLogin: facts?.github_login ?? null,
+    // A check still running clears on its own.
+    canUnlockWithCard: reason !== "checking",
+    sentence: freeModelsLockSentence(reason, oldEnoughAt),
+  };
+}
+
+/** The one sentence for each reason ADE Free Models are locked. */
+export function freeModelsLockSentence(reason: CloudFreeModelsLock["reason"], oldEnoughAt: number | null = null): string {
+  switch (reason) {
+    case "no_github":
+      return "ADE Free Models need a GitHub account at least 30 days old, or a card. Connect GitHub, or add a card (no charge) to unlock them.";
+    case "too_new":
+      return oldEnoughAt != null
+        ? `Your GitHub account is new, so ADE Free Models unlock on ${formatCloudFreeGithubDay(oldEnoughAt)}. Add a card (no charge) to unlock them now.`
+        : "Your GitHub account is new, so ADE Free Models unlock when it is 30 days old. Add a card (no charge) to unlock them now.";
+    case "used":
+      return "This GitHub account already unlocked ADE Free Models on another ADE account. Add a card (no charge) to unlock them here.";
+    case "checking":
+      return "Checking your GitHub account… ADE Free Models unlock once that's done.";
+  }
 }
 
 /** Marks the account unlocked by a saved card (once), then settles the rules so the hours come back now. */

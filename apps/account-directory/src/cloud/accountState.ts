@@ -105,7 +105,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     return undefined;
   });
   // ADE Free Models (`freeModels.ts`), any plan: left out while their switch doesn't reach the account or a key is missing.
-  const freeModels = await freeModelsAccountState(env, userId, who, now).catch((error: unknown) => {
+  const freeModels = await freeModelsAccountState(env, account, who, now).catch((error: unknown) => {
     reportCloudFailure("cloud.free_models.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });

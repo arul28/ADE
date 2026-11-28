@@ -266,7 +266,7 @@ export const CLOUD_PATHS = {
    * (`gravity.ts`). `PUT /consent` `{ consent: CloudSponsoredChoice }` records
    * the account's answer, or the notice that cards are on, and answers
    * `CloudSponsoredState` (409 for a notice where cards don't start on); `POST /seen` `CloudSponsoredSeenRequest` says a
-   * person has one of the account's cloud chats open; `POST /ad`
+   * person has one of the account's cloud chats open (for the Index only); `POST /ad`
    * `CloudSponsoredAdRequest` answers `CloudSponsoredAdAnswer`; `POST /index`
    * `CloudSponsoredIndexRequest` answers `CloudSponsoredIndexAnswer`.
    */
@@ -275,13 +275,6 @@ export const CLOUD_PATHS = {
   sponsoredAd: "/cloud/sponsored/ad",
   sponsoredIndex: "/cloud/sponsored/index",
   sponsoredHide: "/cloud/sponsored/hide",
-  /**
-   * `POST` `CloudSponsoredViewedRequest`: a card the server answered for that
-   * reply was on screen (half of it, for a second, while the window or app
-   * was in front). The one proof of a card seen: it keeps Free's Small free
-   * and keeps ADE Free Models running (`sponsoredSmall.ts`, `freeModels.ts`).
-   */
-  sponsoredViewed: "/cloud/sponsored/viewed",
   /**
    * ADE Free Models (`freeModels.ts`): Gravity's hosted models, paid for by
    * the sponsored cards in the chats that use them, on any plan and machine.
@@ -1235,6 +1228,18 @@ export function overPlanLimitsMoveSentence(cleanup: Pick<CloudPlanCleanup, "plan
 
 /** "1 cloud computer", "3 cloud computers". */
 export const cloudComputersPhrase = (count: number): string => `${count} cloud ${count === 1 ? "computer" : "computers"}`;
+
+/**
+ * What an `out_of_hours` refusal (a create, copy, wake, start or launch)
+ * carries next to `code` and `message` when a GitHub rule holds the Free
+ * plan's credits (`CloudFreePlanGithub`, `freePlanGithub.ts`): the hold is
+ * the reason, not credits spent. `message` is then `freeGithub.sentence`. A
+ * client shows the hold (with "Add a card (no charge)" when
+ * `canUnlockWithCard`, "Connect GitHub" for `no_github`) instead of an
+ * out-of-credits notice. Absent otherwise. The account state's
+ * `freePlan.github` says the same before any refusal.
+ */
+export type CloudOutOfHoursDetail = { freeGithub?: CloudFreePlanGithub };
 
 /* ---- The computer limit (Pricing v2) ---- */
 
@@ -3592,11 +3597,12 @@ export type CloudSponsoredState = {
    */
   smallNeedsCards?: boolean;
   /**
-   * The account said yes, but neither that yes nor a look at one of its ADE
-   * Cloud chats (or terminals) came from the US in the last 7 days (plus
-   * the hour a look's save may lag; away, or a yes given from
-   * elsewhere): Small uses credits until the next such chat. Read in the US
-   * only. Settings says so. Absent otherwise.
+   * The account said yes, but no card was asked for under a finished reply
+   * in one of its ADE Cloud chats from the US in the last 7 days (plus the
+   * hour a look's save may lag; a new yes, away, or only terminals and
+   * empty chats open): Small uses credits until the next such card. The yes
+   * itself, an open chat or a terminal is no look. Read in the US only.
+   * Settings says so. Absent otherwise.
    */
   smallNeedsLook?: boolean;
   /**
@@ -3697,8 +3703,11 @@ export type CloudFreeModelsLock = {
 };
 /**
  * ADE Free Models are paid for by the cards in their chats. An account that
- * keeps using them with no card on screen is `slowed` (a few requests a
- * minute), then `paused` (refused) until a card is seen.
+ * keeps using them with no card asked for in those chats (a finished reply
+ * on screen asks for one) is `slowed` (2 requests a minute across them,
+ * answered 429 with `retry-after`), then `paused` (refused
+ * `free_models_no_cards`) until the next card request, whatever Gravity
+ * answers.
  */
 export type CloudFreeModelsThrottle = "slowed" | "paused";
 /** `PUT /cloud/free-models/consent`. */
@@ -3730,9 +3739,6 @@ export type CloudFreeModelsErrorCode =
   | "free_models_unavailable"
   | "free_models_locked"
   | "free_models_no_cards";
-
-/** `POST /cloud/sponsored/viewed`: the card of this chat's reply was on screen. */
-export type CloudSponsoredViewedRequest = { chatId: string; turnId: string };
 
 /** One message of the chat as an ad request sends it: the latest request and reply only. */
 export type CloudSponsoredMessage = { role: "user" | "assistant"; content: string };
