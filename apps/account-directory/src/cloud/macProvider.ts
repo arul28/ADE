@@ -68,10 +68,17 @@ export const MAC_DRIVE_SAVE_MICROS_PER_GB = 10_000;
 export const MAC_RUN_MINUTES = 240;
 /** NoMac's spend cap per minute of the time limit: $0.90 an hour, so the time limit stops a Mac first. */
 const MAC_SPEND_CAP_MICROS_PER_MINUTE = 15_000;
-/** How long a start may wait in NoMac's line (its longest). */
-const MAC_QUEUE_SECONDS = 3_600;
 /** A start ADE holds itself (NoMac's line was full) gives up after this long. */
 const MAC_OWN_QUEUE_MS = 60 * 60_000;
+/**
+ * NoMac's line gets what is left of one hour since the start first queued (ADE's own hold included), so a whole
+ * start waits an hour at most: inside a Mac launch's join window (`MAC_QUEUE_JOIN_GRACE_MS`), never failed by the
+ * sweep of unjoined launches while it still waits for a Mac.
+ */
+function macQueueSecondsLeft(row: Pick<ComputerRow, "mac_state" | "mac_state_at">, now: number): number {
+  const waited = row.mac_state === "queued" && row.mac_state_at != null ? Math.max(0, now - row.mac_state_at) : 0;
+  return Math.max(60, Math.floor((MAC_OWN_QUEUE_MS - waited) / 1000));
+}
 /** The tick extends a session whose time limit is this close. */
 const MAC_EXTEND_WITHIN_MS = 20 * 60_000;
 /** NoMac deletes a drive after 30 days with no session; ADE wakes a kept drive after this many. */
@@ -495,7 +502,7 @@ async function startMac(env: CloudEnv, row: ComputerRow, now: number, macId = ro
     label,
     reuse: true,
     require_drive: true,
-    queue_seconds: MAC_QUEUE_SECONDS,
+    queue_seconds: macQueueSecondsLeft(row, now),
     access: { drive_from: template },
     limits: limitsFor(minutes),
   }, `ade-mac-${macId}-${token}`);
