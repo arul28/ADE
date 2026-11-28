@@ -6,6 +6,7 @@ import path from "node:path";
 // for a check that grants.
 import { pathIsWithinRoot } from "./pathContainment";
 import type { AgentChatPermissionPolicy } from "./types/chat";
+import { CTO_MCP_SERVER_NAME, LEGACY_CTO_MCP_SERVER_NAME } from "./callerMcpServers";
 
 /**
  * The structured tool-permission policy an embedder supplies at create time.
@@ -187,7 +188,7 @@ export function claudeToolNameToNeutral(name: string): string {
  * still covers `daex-cto`, but a rule for `daex-cto` does not cover some other
  * server that calls itself `ade-cto`.
  */
-const MCP_SERVER_RENAMES: Readonly<Record<string, string>> = { "ade-cto": "daex-cto" };
+const MCP_SERVER_RENAMES: Readonly<Record<string, string>> = { [LEGACY_CTO_MCP_SERVER_NAME]: CTO_MCP_SERVER_NAME };
 
 /**
  * `server` and every other name of the same server, `server` first: what a
