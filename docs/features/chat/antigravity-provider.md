@@ -165,7 +165,7 @@ proves the login; a flow times out after 5 min.
 | Google account (`oauth-personal`, default) | Runs `agy acp --login`. The link's redirect is `https://antigravity.google/oauth-callback`, which shows a code; the user pastes the code (or that page's address). Nothing listens locally, so it works from any machine, phone, web or DAEX Cloud. DAEX validates the link and pasted value before writing to stdin. |
 | Gemini Enterprise (`oauth-business`) | ACP `authenticate`. agy opens the OS browser itself and waits on a `localhost` listener, so it completes only in a browser on the agent's machine. Licence errors become guidance (`enterpriseFailureSentence`); DAEX does not write agy's `gcp` settings block. Not yet run against a real Enterprise account. |
 | Gemini API key (`gemini-api-key`) | `GEMINI_API_KEY` from DAEX's key store (slot `antigravity-gemini`), passed only for this method. agy's `modelProvider: "gemini"` setting outranks `auth.type`, so DAEX reads it as this method. |
-| Agent Platform (`agent-platform`) | `GOOGLE_API_KEY` (slot `antigravity-agent-platform`), or ADC variables plus a project and location kept in `<ADE home>/providers/antigravity.json`. |
+| Agent Platform (`agent-platform`) | `GOOGLE_API_KEY` (slot `antigravity-agent-platform`), or ADC variables plus a project and location kept in `<ADE_HOME>/providers/antigravity.json`. |
 
 The link, `state`, code and tokens are never logged.
 

@@ -724,7 +724,7 @@ password field; the value saves to the project's secrets and the agent sees only
 the name.
 
 - Optional **Temporary private file** delivery (`--delivery file`): written on
-  the chat's machine under `<ADE home>/secrets/temp-files/` (owner-only), TTL ≤
+  the chat's machine under `<ADE_HOME>/secrets/temp-files/` (owner-only), TTL ≤
   24 h, swept on start (`secretTempFiles.ts`).
 - Mechanism: a pending-input question marked
   `providerMetadata.projectSecretRequest`; the value is an `isSecret` answer

@@ -7,7 +7,7 @@ continuity and handoff on top. DAEX runs 13 providers (Claude, Codex, Cursor,
 Droid, OpenCode, Pi, Muse, Qwen, Kimi, Grok, GitHub Copilot, Devin,
 Antigravity; `AgentChatProvider` in `apps/desktop/src/shared/types/chat.ts`),
 each as a **chat** (DAEX drives an SDK or protocol) and as a **CLI** in a DAEX
-terminal. The CLI is `daex` (`ade` still works).
+terminal. The CLI is `daex` (`ade` still works). Paths written `<ADE_HOME>` mean the DAEX home folder (`~/.ade` by default), named `ADE_HOME` for historical reasons.
 
 Detail docs: [agent routing](agent-routing.md) (providers, models, permissions),
 [composer and UI](composer-and-ui.md), [transcript and turns](transcript-and-turns.md),
@@ -1663,7 +1663,7 @@ that directory plus a label; a per-launch env carries the variable (`HOME` is
 never changed). Other providers have one identity per machine.
 
 - Registry: machine-local `provider-instances.json` under the DAEX home; new
-  accounts get `<ADE home>/provider-homes/<provider>/<instanceId>/`. The default
+  accounts get `<ADE_HOME>/provider-homes/<provider>/<instanceId>/`. The default
   account is synthesized from the machine's existing login.
 - **A chat's account is pinned to the chat** (`instanceId`). New chats record
   their launch account; older chats are tied once by

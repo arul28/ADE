@@ -565,7 +565,7 @@ The source chat never changes.
 ## Machine launch defaults
 
 The model and settings a person last launched are kept per machine in
-`<ADE home>/chat-launch-defaults.json` (`chatLaunchDefaults.ts`). Written by a
+`<ADE_HOME>/chat-launch-defaults.json` (`chatLaunchDefaults.ts`). Written by a
 person's top-level chat creation or settings change; never by `runtimeActor`
 calls, subagents, identity chats or automations. Clients read
 `chat.getLaunchDefaults` (desktop draft composer, iOS new chat).

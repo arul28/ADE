@@ -245,7 +245,7 @@ task list per chat. Desktop reads it; iOS still draws a plan card per turn.
 (`{ domains }` ≤ 48 → `{ icons }`). HTTPS:443 only; private/loopback/local names
 refused; DNS answers vetted and pinned; ≤ 3 redirects; 3 s, 256 KB HTML, 64 KB
 per icon; image bytes sniffed; scripted SVG refused. Cache:
-`<ADE home>/cache/favicons/<sha1(host)>.json` (7 days icon, 1 day none, 8 MB
+`<ADE_HOME>/cache/favicons/<sha1(host)>.json` (7 days icon, 1 day none, 8 MB
 cap). Renderer: `useSourceFavicon` requests only on-screen domains, batched.
 
 ### Provider retry and reconnect presentation
