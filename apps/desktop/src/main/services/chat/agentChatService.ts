@@ -78527,7 +78527,10 @@ export function createAgentChatService(args: {
    * provider's discovery) publishes these, not the reads it made when it
    * started, so it cannot put back a list another build has since replaced.
    */
-  const latestProviderModelReads = new Map<ModelProviderGroup, AgentChatModelInfo[]>();
+  const latestProviderModelReads = new Map<string, AgentChatModelInfo[]>();
+  /** One entry per read that lists different models: Cursor's differ by source. */
+  const providerModelReadKey = (provider: ModelProviderGroup, cursorSource?: AgentChatCursorModelSource): string =>
+    provider === "cursor" ? `cursor:${cursorSource ?? "all"}` : provider;
   // A newly applied model manifest can add, hide, or re-default models, so the
   // cached catalog is stale until the next rebuild — served once more while a
   // background refresh picks up the change, never rebuilt on the caller.
@@ -79269,7 +79272,7 @@ export function createAgentChatService(args: {
           }
         })();
         // Recorded as it lands, so the map holds the last read to complete.
-        latestProviderModelReads.set(provider, read);
+        latestProviderModelReads.set(providerModelReadKey(provider, catalogArgs?.cursorSource), read);
         return { provider, models: read };
       }),
     );
@@ -79302,7 +79305,7 @@ export function createAgentChatService(args: {
     // whichever build publishes last carries the newest lists, and no build
     // has to be ranked against another.
     const modelsByProvider = await Promise.all(readModelsByProvider.map(async ({ provider }) => {
-      const models = latestProviderModelReads.get(provider) ?? [];
+      const models = latestProviderModelReads.get(providerModelReadKey(provider, catalogArgs?.cursorSource)) ?? [];
       return isAcpChatProvider(provider) && models.length
         ? { provider, models: await listAcpModelInfos(provider).catch(() => models) }
         : { provider, models };
