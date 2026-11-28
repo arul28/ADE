@@ -622,7 +622,7 @@ export async function createMachineRemoteConnection(
     const laneId = isRecord(primary) ? asString(primary.id) : null;
     if (!laneId) {
       throw new CliUsageError(
-        `The project on ${machine} has no primary lane to start the chat in. Pass --lane <lane there> (see \`daex lanes list --machine ${JSON.stringify(machine)}\`).`,
+        `The project on ${machine} has no main checkout to start the chat in. Pass --lane <lane there> (see \`daex lanes list --machine ${JSON.stringify(machine)}\`).`,
       );
     }
     return laneId;

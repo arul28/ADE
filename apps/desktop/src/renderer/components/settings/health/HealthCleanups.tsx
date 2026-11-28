@@ -488,7 +488,7 @@ function CleanupRules({
     <ModernSection
       group="Cleanups"
       title="Automatic cleanup"
-      hint={`${BRAND.NAME} only cleans up lanes whose work is safe: never the primary lane, never a lane with uncommitted or unpushed work, an open PR, or anything running.`}
+      hint={`${BRAND.NAME} only cleans up lanes whose work is safe: never the main checkout, never a lane with uncommitted or unpushed work, an open PR, or anything running.`}
       actions={<span className="ade-cleanup-status" aria-live="polite">{status}</span>}
     >
       <div className="ade-cleanup-group" id="lane-storage-rules" data-settings-anchor="lane-storage-rules">

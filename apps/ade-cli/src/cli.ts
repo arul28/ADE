@@ -2929,7 +2929,7 @@ ${LANES_CLOUD_HELP}  daex lanes defaults [--text|--json]
   active owner session automatically.
 
     $ daex shell start --lane <lane> -- npm test    Start a tracked shell session
-    $ daex shell start -- npm test                  Without --lane: your own lane, else the project's primary lane
+    $ daex shell start -- npm test                  Without --lane: your own lane, else the project's main checkout
     $ daex shell start --lane <lane> -c "npm test"  Start with a command string
     $ daex new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --permission-mode edit --prompt "fix tests"
     $ daex shell start-cli codex --lane <lane> --model openai/gpt-5.6-sol --permission-mode edit
@@ -3088,7 +3088,7 @@ ${LANES_CLOUD_HELP}  daex lanes defaults [--text|--json]
     $ daex chat list --all-machines --text          Every machine in one table, with a machine column
     $ daex chat create --machine "Mac mini" --lane <lane there> --provider <p> --model <id> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
-                                                    Without --lane it starts in the project's primary lane there.
+                                                    Without --lane it starts in the project's main checkout there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
 ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List machine personal-chat actions
@@ -11374,7 +11374,7 @@ function primaryLaneId(value: unknown): string {
   const primary = lanes.find((lane) => lane.laneType === "primary");
   const id = primary ? asString(primary.id) : null;
   if (!id) {
-    throw new CliUsageError("This project has no primary lane to run the shell in. Pass --lane <id> (see `daex lanes list --text`).");
+    throw new CliUsageError("This project has no main checkout to run the shell in. Pass --lane <id> (see `daex lanes list --text`).");
   }
   return id;
 }
