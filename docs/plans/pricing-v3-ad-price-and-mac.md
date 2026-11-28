@@ -237,21 +237,6 @@ DAEX Cloud, then Linux or Mac. A Mac has one size.
 - **When no Mac is free,** the lane waits in a queue and says so.
 - A first drive is a copy of a template that holds no secrets.
 
-## Why the numbers hold
-
-| Product | Cost to DAEX an hour | Full price at $4 for 1,000 |
-|---|---|---|
-| Small | 0.6¢ | 2¢ |
-| Medium | 1.2¢ | 4¢ |
-| Large | 3.0¢ | 10¢ |
-| X-Large | 4.9¢ | 16¢ |
-| Mac, iPhone | 60¢ | $1.20 |
-
-- The Mac and the iPhone are thin. The one case with a loss is a Max account
-  that has ads on and spends every credit on a Mac or an iPhone: about $3.50
-  a month before ad income.
-- A Free account that spends every credit on a Mac costs about $1.25 a month.
-
 ## Work, in order
 
 | # | Piece | Depends on |
