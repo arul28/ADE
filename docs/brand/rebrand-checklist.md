@@ -1,9 +1,14 @@
 # Rebrand checklist: every place a person can still see "ADE"
 
-Audit of the ADE -> Daex rename for edge cases the copy workers and the plan
+Audit of the ADE -> DAEX rename for edge cases the copy workers and the plan
 can miss. Snapshot of branch `ade/ade-to-daex-rebrand-assessment` at
 `23c64c6df` (2026-11-27). Workers were still committing while this was
 written, so re-run the scans at the end before ticking items off.
+
+**Spelling (owner decision 2026-11-27):** the name is written DAEX, in
+capitals, everywhere a person or agent reads it. The earlier title-case
+spelling never shipped, so readers accept only the old ADE forms and the DAEX
+forms.
 
 Read `README.md` (rules, frozen identifiers) and `desktop-packaging.md`
 (installer, bundle and OS names per platform) first. This page does not repeat
@@ -53,8 +58,8 @@ purple rounded "ADE" app icon.
 | iOS app icons | `apps/ios/ADE/Assets.xcassets/AppIcon.appiconset/icon.png`, `AppIconBeta.appiconset/icon.png` (1024) | png | pbxproj `ASSETCATALOG_COMPILER_APPICON_NAME` (app, App Clip and widgets use `AppIcon`; Beta uses `AppIconBeta`) | 6521c1ef7, 623c30c82 |
 | iOS in-app marks | `BrandMark.imageset/brand-mark@1-3x.png`, `BrandGlyph.imageset/brand-glyph@1-3x.png` | png | SwiftUI `Image("BrandMark")` | 5db317381, 623c30c82 |
 | App Store generator art | `apps/ios/marketing/appstore-screenshots/app-icon.png`, `logo.png` | png | `index.html:175,253-273` | c55cccac6 |
-| Email logo | `LOGO_URL = https://ade-app.dev/logo.png` (`apps/account-directory/src/cloud/email.ts:11`) | served from `apps/web/public/logo.png` (kept 1012x493) | every Daex Cloud and welcome email | fixed by the file swap; live after the site deploys |
-| PR "Open in Daex" footer logo | `https://ade-app.dev/logo.png` (`apps/desktop/src/shared/adeDeeplinkFooter.ts:12`, `height="18"`) | same file | every PR body ADE ever wrote | fixed by the file swap, **including old PRs** (same URL). GitHub's camo cache may show the old logo for a while. |
+| Email logo | `LOGO_URL = https://ade-app.dev/logo.png` (`apps/account-directory/src/cloud/email.ts:11`) | served from `apps/web/public/logo.png` (kept 1012x493) | every DAEX Cloud and welcome email | fixed by the file swap; live after the site deploys |
+| PR "Open in DAEX" footer logo | `https://ade-app.dev/logo.png` (`apps/desktop/src/shared/adeDeeplinkFooter.ts:12`, `height="18"`) | same file | every PR body ADE ever wrote | fixed by the file swap, **including old PRs** (same URL). GitHub's camo cache may show the old logo for a while. |
 
 No custom NSIS sidebar/header bitmaps and no DMG background exist (installer
 uses electron-builder defaults plus `icon.ico`; DMG is plain `hdiutil`), so
@@ -85,14 +90,14 @@ wallpapers. No Lottie/Rive files exist. No tracked SVG contains "ADE" text.
 
 ### 2a. Live bugs: matchers that no longer match the renamed text
 
-A producer now says "Daex", but its consumer still looks for "ADE". These
+A producer now says "DAEX", but its consumer still looks for "ADE". These
 are regressions introduced by the rename and should be fixed before merge.
 
 | # | Where | Producer (renamed) | Effect | Action |
 |---|---|---|---|---|
-| M1 | `apps/desktop/src/renderer/components/chat/chatNotice.ts:68` `MACHINE_CONNECTION_DROPPED = /remote (?:runtime\|ADE service) connection .../` | `Remote ${BRAND.NAME} service connection closed/failed/was interrupted` (`runtimeRpcClient.ts:178-189`, `remoteConnectionPool.ts:1988`, `pairedRuntimeErrors.ts:223,240`, `localRuntimeConnectionPool.ts:2350`) | A dropped connection to another machine shows the raw error instead of the friendly "connection dropped" notice. | Accept both: `(?:ADE\|Daex) service`. |
-| M2 | `apps/desktop/src/renderer/lib/plainError.ts:39` `UPDATE_ADE_SENTENCE = /\bUpdate ADE on\b/i` | `Update ${BRAND.NAME} on that computer …` (`accountConnectionRoutes.ts:86`, `accountMachineInventoryLiveRefresh.ts:287`, `ownerAwareNavigation.ts:255`, `runtimeBridge.ts:2138`, …) | The "update" next-step button no longer appears on those errors. | Accept both: `/\bUpdate (?:ADE\|Daex) on\b/i`. |
-| M3 | `apps/ade-cli/src/cliAndroid.ts:419` `message.includes("ADE Cloud box")` | `cloudAndroidNeedsVmMessage` (`shared/adeCloud.ts:384`) no longer contains "box" either | Dead matcher (already stale before the rename): the cloud Android hint never shows. | Match on the error code plus "Daex Cloud"/"ADE Cloud", or on a stable code. |
+| M1 | `apps/desktop/src/renderer/components/chat/chatNotice.ts:68` `MACHINE_CONNECTION_DROPPED = /remote (?:runtime\|ADE service) connection .../` | `Remote ${BRAND.NAME} service connection closed/failed/was interrupted` (`runtimeRpcClient.ts:178-189`, `remoteConnectionPool.ts:1988`, `pairedRuntimeErrors.ts:223,240`, `localRuntimeConnectionPool.ts:2350`) | A dropped connection to another machine shows the raw error instead of the friendly "connection dropped" notice. | Accept both: `(?:ADE\|DAEX) service`. |
+| M2 | `apps/desktop/src/renderer/lib/plainError.ts:39` `UPDATE_ADE_SENTENCE = /\bUpdate ADE on\b/i` | `Update ${BRAND.NAME} on that computer …` (`accountConnectionRoutes.ts:86`, `accountMachineInventoryLiveRefresh.ts:287`, `ownerAwareNavigation.ts:255`, `runtimeBridge.ts:2138`, …) | The "update" next-step button no longer appears on those errors. | Accept both: `/\bUpdate (?:ADE\|DAEX) on\b/i`. |
+| M3 | `apps/ade-cli/src/cliAndroid.ts:419` `message.includes("ADE Cloud box")` | `cloudAndroidNeedsVmMessage` (`shared/adeCloud.ts:384`) no longer contains "box" either | Dead matcher (already stale before the rename): the cloud Android hint never shows. | Match on the error code plus "DAEX Cloud"/"ADE Cloud", or on a stable code. |
 
 Already fixed by ac559ee89 / be95dee96 / 8483f879b: browser error prefix
 (`builtInBrowserRemote.ts`), device sources, chat launch, code-block run,
@@ -102,9 +107,9 @@ OAuth preview errors, cloud sign-in retry, `expectedFailure.ts`,
 
 ### 2b. Matchers that must accept both names the day their producer changes
 
-**Also flipped by the CLI and Workers (daex-flip-server):** `Failed to initialize the Daex brain …` and `Daex kept trying` (reader: `cloudBoxSignInStart.ts`), the `daex --version` output (readers accept `ade` and `daex`), the `daex:` CLI error prefix (readers accept `ade:` and `daex:`), and the CLI and Worker user agents (`Daex MCP events`, …). Producers now write Daex; readers accept both.
+**Also flipped by the CLI and Workers (daex-flip-server):** `Failed to initialize the DAEX brain …` and `DAEX kept trying` (reader: `cloudBoxSignInStart.ts`), the `daex --version` output (readers accept `ade` and `daex`), the `daex:` CLI error prefix (readers accept `ade:` and `daex:`), and the CLI and Worker user agents (`DAEX MCP events`, …). Producers now write DAEX; readers accept both.
 
-**Update (2026-11-27, the flip):** every producer below now writes Daex and
+**Update (2026-11-27, the flip):** every producer below now writes DAEX and
 every matcher accepts both names; see "Old names in output" in `README.md`
 for the list. The minimum version must be set at launch first (README,
 "Launch steps").
@@ -117,62 +122,62 @@ commit, and keep accepting "ADE" forever where the text is stored.
 |---|---|---|
 | `[ADE] Large … was shortened` / `[ADE] … bytes were left out` (`shared/chatEventCompaction.ts:53-259`); person-visible in the chat | `chatEventCompaction.ts:198`, `renderer/components/chat/chatTranscriptRows.ts:1757`, `ios/ADE/Views/Work/WorkEventMapping.swift:1095`, `main/services/storage/legacyChatTranscripts.ts:116,120` (`[ADE] chat transcript limit reached`) | Yes, in transcripts: accept both forever. |
 | `ADE restarted while …` (`shared/chatAutoResume.ts:331,918`) | `ios/ADE/Views/Work/WorkTimelineHelpers.swift:5532` `hasPrefix("ADE restarted while ")`; desktop already has `LEGACY_RESTART_INTERRUPTED_NOTICE_PREFIX` (`chatAutoResume.ts:573`) | Yes. |
-| `CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted"`, `CHAT_STOP_REASON_FOREIGN_BRAIN` (`shared/types/chat.ts:47-48`); shown as a stop reason | compared in `chatAutoResume.ts:645-646` against stored stop reasons | Yes: add the Daex strings, keep the ADE ones in the comparison set. |
+| `CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted"`, `CHAT_STOP_REASON_FOREIGN_BRAIN` (`shared/types/chat.ts:47-48`); shown as a stop reason | compared in `chatAutoResume.ts:645-646` against stored stop reasons | Yes: add the DAEX strings, keep the ADE ones in the comparison set. |
 | Session preambles: `ADE session guidance`, `You are working in ADE lane`, `## ADE CLI primer`, `[ADE launch directive]`, `## ADE`, `System context (… ADE continuity …)` (`shared/cliLaunch.ts:1091-1096`, `chat/cursorSdkSystemPrompt.ts:155`, `chat/personalSession.ts:183`, `shared/adeCliGuidance.ts:337`) | `shared/cliLaunch.ts:390,406`; `main/services/externalSessions/discoveryUtils.ts:524,540-554`; `discoverAcpShared.ts:97` | Yes, inside provider session files on disk: these strip ADE's preamble from imported session titles. |
 | `[ADE lane]` (`shared/devinCloud.ts:135,141`) | `devinCloud.ts:109` | Yes (Devin sessions). |
 | OpenCode background-task titles `ADE <task>` | `externalSessions/discoverOpenCode.ts:42` | Yes (the person's OpenCode session list). |
 | iOS simulator names `ADE · <lane>` (`ios/laneDeviceRegistry.ts:315,692`) | `ios/appleDeviceMarker.ts:111` `looksLikeAdeDeviceName` (storage view ownership) | Yes (Xcode device list). See 3, item W6. |
 | macOS virtual display names `ADE · <lane>` (`native/ADEDesktopDriver/.../VirtualDisplayHost.swift:28`) | any cleanup that finds displays by prefix | Yes (System Settings > Displays). |
 | `A device choice is kept for ADE chats` (`agentChatService.ts:85665`) | `apps/ade-cli/src/cliDevices.ts:217` | No: change both together. |
-| `Unknown Daex action: <name>`, `… is not exposed through Daex actions` (`apps/ade-cli/src/adeRpcServer.ts`) | `ProvidersSection.tsx`, `chatLaunchActions.ts`, `codedError.ts`, `useGitHubPrFilterSearch.ts` | Done: the brain writes Daex; readers accept both (older brains say ADE). |
-| `Daex brain listening on` (brain log line) | `apps/desktop/scripts/old-database-launch-check.mjs` | Done: the brain writes Daex; the check accepts the old release's ADE line and the new Daex one. |
-| CLI `--help` lead "Agent-focused command-line interface for Daex." (`apps/ade-cli/src/cli.ts`, `apps/ade-cli/package.json`) | `apps/ade-cli/scripts/verify-built-cli.mjs`, `apps/desktop/scripts/validate-mac-artifacts.mjs`, `validate-win-artifacts.mjs`, the help digest `apps/desktop/resources/ade-cli-help.txt` | Done: changed together with the validators and the digest. |
-| `Daex Sync <host> <port>` Bonjour instance name (`ade-cli/src/services/sync/syncHostService.ts`) | `syncHostService.ts` orphan cleanup | Done: new brains announce Daex Sync; the cleanup also finds an older brain's "ADE Sync …". The service type `_ade-sync._tcp` stays (frozen). |
+| `Unknown DAEX action: <name>`, `… is not exposed through DAEX actions` (`apps/ade-cli/src/adeRpcServer.ts`) | `ProvidersSection.tsx`, `chatLaunchActions.ts`, `codedError.ts`, `useGitHubPrFilterSearch.ts` | Done: the brain writes DAEX; readers accept both (older brains say ADE). |
+| `DAEX brain listening on` (brain log line) | `apps/desktop/scripts/old-database-launch-check.mjs` | Done: the brain writes DAEX; the check accepts the old release's ADE line and the new DAEX one. |
+| CLI `--help` lead "Agent-focused command-line interface for DAEX." (`apps/ade-cli/src/cli.ts`, `apps/ade-cli/package.json`) | `apps/ade-cli/scripts/verify-built-cli.mjs`, `apps/desktop/scripts/validate-mac-artifacts.mjs`, `validate-win-artifacts.mjs`, the help digest `apps/desktop/resources/ade-cli-help.txt` | Done: changed together with the validators and the digest. |
+| `DAEX Sync <host> <port>` Bonjour instance name (`ade-cli/src/services/sync/syncHostService.ts`) | `syncHostService.ts` orphan cleanup | Done: new brains announce DAEX Sync; the cleanup also finds an older brain's "ADE Sync …". The service type `_ade-sync._tcp` stays (frozen). |
 
 ### 2c. Shared constants and helpers that render later (the lint rule cannot see them)
 
 | # | Where | Sees | Action | Who |
 |---|---|---|---|---|
-| C1 | `apps/desktop/src/shared/adeCloud.ts` `CLOUD_MACHINE_DEFAULT_NAME` | Done: new cloud computers are stored as "Daex Cloud computer" (`storedCloudMachineName` removed); saved "ADE Cloud computer" rows read as Daex on display. | - | - |
-| C2 | `apps/desktop/src/shared/adeCloud.ts:639` `CLOUD_WAKE_PORT_LABEL = "ADE wake"`; `apps/account-directory/src/cloud/launches.ts:913,1076`, `routes.ts:648,1661` | A label on the provider's public port; not shown in Daex. | Keep: provider-side label, may be matched by label. | - |
-| C3 | `apps/desktop/src/shared/packageChannel.ts` | Being moved to `BRAND` right now ("Daex", "Daex Alpha", `installedDesktopAppDisplayName`). | Verify it landed; it drives the Windows "Updating …" window (`main.ts:3951`). | code |
+| C1 | `apps/desktop/src/shared/adeCloud.ts` `CLOUD_MACHINE_DEFAULT_NAME` | Done: new cloud computers are stored as "DAEX Cloud computer" (`storedCloudMachineName` removed); saved "ADE Cloud computer" rows read as DAEX on display. | - | - |
+| C2 | `apps/desktop/src/shared/adeCloud.ts:639` `CLOUD_WAKE_PORT_LABEL = "ADE wake"`; `apps/account-directory/src/cloud/launches.ts:913,1076`, `routes.ts:648,1661` | A label on the provider's public port; not shown in DAEX. | Keep: provider-side label, may be matched by label. | - |
+| C3 | `apps/desktop/src/shared/packageChannel.ts` | Being moved to `BRAND` right now ("DAEX", "DAEX Alpha", `installedDesktopAppDisplayName`). | Verify it landed; it drives the Windows "Updating …" window (`main.ts:3951`). | code |
 | C4 | `apps/desktop/src/shared/integrationConnect.ts:151` `…/settings/tokens/new?…&description=ADE` | GitHub pre-fills the classic token's name as "ADE". | Rename to `BRAND.NAME` (the fine-grained one already is). | code |
 | C5 | `apps/desktop/src/renderer/components/github/GitHubAppInstallPanel.tsx:43,555,677,755,911` "ADE for GitHub" | The GitHub App's name in Settings. | Must match the real app name on GitHub: owner decision O3. Change together. | owner then code |
-| C6 | `apps/desktop/src/renderer/components/chat/McpAppFrame.tsx`, iOS `WorkMcpAppView.swift` | Done: `hostInfo.name` and `userAgent` are Daex on both. | - | - |
+| C6 | `apps/desktop/src/renderer/components/chat/McpAppFrame.tsx`, iOS `WorkMcpAppView.swift` | Done: `hostInfo.name` and `userAgent` are DAEX on both. | - | - |
 | C7 | `apps/desktop/src/renderer/components/chat/AppControlCapture.tsx:169` `appName="ADE"` | Check: if this is a label, rename; if it is the target app name for capture, keep. | code (verify) |
 | C8 | `apps/desktop/src/renderer/components/app/commandPaletteSuggestions.ts:104` fallback "Open the ADE action …" | Palette suggestion text. | Rename. | code |
 | C9 | `apps/desktop/src/renderer/components/terminals/terminalImagePaste.ts:71` "ADE clipboard image attached.", `workToolContextInsertion.ts:61` "ADE visual attachment saved…" | Typed into the terminal / composer; the person sees it. | Rename. | code |
-| C10 | `apps/web/src/components/SiteFooter.tsx:106` `© {year} ADE.` | Footer of every page on the site. | Rename (`© {year} Daex.`; legal entity name is owner decision O14). | code |
+| C10 | `apps/web/src/components/SiteFooter.tsx:106` `© {year} ADE.` | Footer of every page on the site. | Rename (`© {year} DAEX.`; legal entity name is owner decision O14). | code |
 | C11 | `apps/web/src/components/ui/AppScreenshot.tsx:28,78` ("ADE / apps / web", a fake title string), `illustrations/ArchitectureDiagram.tsx:9` (aria-label) | Site illustration and screen-reader text. | Rename. | code |
 | C12 | `apps/desktop/src/shared/sentry/expectedFailure.ts`, `runtimeErrors.ts`, etc. | Already accept both. | Nothing. | - |
-| C13 | `BRAND.INTRO_NAME` / `Brand.introName` ("Daex (formerly ADE)") are defined but used nowhere in the apps (only the site's Terms/Privacy, README and `welcome.mdx` say it). | Nobody is told the product was renamed. | Add a one-time "ADE is now Daex" announcement (desktop `announcements/`, iOS What's New) and use `INTRO_NAME` in onboarding and the About panel. | code |
+| C13 | `BRAND.INTRO_NAME` / `Brand.introName` ("DAEX (formerly ADE)") are defined but used nowhere in the apps (only the site's Terms/Privacy, README and `welcome.mdx` say it). | Nobody is told the product was renamed. | Add a one-time "ADE is now DAEX" announcement (desktop `announcements/`, iOS What's New) and use `INTRO_NAME` in onboarding and the About panel. | code |
 
 ### 2d. Search: people will keep typing "ADE"
 
 | # | Where | Today | Action | Who |
 |---|---|---|---|---|
-| S1 | Settings search `apps/desktop/src/shared/settingsManifest.ts:2337` `scoreSettingsEntry` (label + keywords, substring) | Pages are now titled "Daex MCP", "Daex Cloud", "Daex browser"; typing "ade" finds only the few entries that happen to list "ade relay" or "ade/". | Treat the query `ade` as `daex` (one line in `scoreSettingsEntry`, e.g. also try `q.replace(/\bade\b/, "daex")`), so every Daex-titled entry matches. Same for `ade settings find` (CLI) and iOS settings search. | code |
+| S1 | Settings search `apps/desktop/src/shared/settingsManifest.ts:2337` `scoreSettingsEntry` (label + keywords, substring) | Pages are now titled "DAEX MCP", "DAEX Cloud", "DAEX browser"; typing "ade" finds only the few entries that happen to list "ade relay" or "ade/". | Treat the query `ade` as `daex` (one line in `scoreSettingsEntry`, e.g. also try `q.replace(/\bade\b/, "daex")`), so every DAEX-titled entry matches. Same for `ade settings find` (CLI) and iOS settings search. | code |
 | S2 | Command palette (`renderer/components/app/commandPalette*`) | Same issue for command titles. | Same alias. | code |
-| S3 | OS search | macOS Spotlight and Windows Start also index the file name (`ADE.app`, `ADE.exe`), so "ADE" keeps finding the app; once the Windows shortcut is renamed (packaging decision 1), "Daex" finds it too. | Nothing. | - |
-| S4 | Voice dictation glossary: `apps/desktop/resources/voice/voice-glossary.json`, `apps/ios/ADE/Resources/VoiceGlossary.json` (`contextualTerms` has "ADE"; `corrections` maps `"ade": "ADE"`) | Saying "Daex" (pronounced "dax") will be transcribed as "dax"/"Dax"/"dacks". | Add "Daex" to `contextualTerms` and conservative corrections (`"dax"`, `"dacks"` -> "Daex"), keep the ADE entries. | code |
+| S3 | OS search | macOS Spotlight and Windows Start also index the file name (`ADE.app`, `ADE.exe`), so "ADE" keeps finding the app; once the Windows shortcut is renamed (packaging decision 1), "DAEX" finds it too. | Nothing. | - |
+| S4 | Voice dictation glossary: `apps/desktop/resources/voice/voice-glossary.json`, `apps/ios/ADE/Resources/VoiceGlossary.json` (`contextualTerms` has "ADE"; `corrections` maps `"ade": "ADE"`) | Saying "DAEX" (pronounced "dax") will be transcribed as "dax"/"Dax"/"dacks". | Add "DAEX" to `contextualTerms` and conservative corrections (`"dax"`, `"dacks"` -> "DAEX"), keep the ADE entries. | code |
 
 ### 2e. OS surfaces and installers not covered by the packaging doc
 
 | # | Where | Sees | Action | Who |
 |---|---|---|---|---|
 | P1 | `apps/desktop/scripts/linux-appimage-launcher.sh:30-48` | `zenity`/`kdialog` dialog titled "ADE" and "ADE: …" stderr lines when the Chromium sandbox is unavailable. | Rename titles and text (keep `ADE_ALLOW_NO_SANDBOX`). | code |
-| P2 | `apps/desktop/scripts/windows-firewall-rules.ps1:94-153` | Firewall rule names "ADE Sync Host (…)", "ADE LAN Discovery (…)" in Windows Defender Firewall, plus `Write-Output` lines shown by the uninstaller. | Keep the rule **names** (the uninstaller finds them by name); rename the `Write-Output` text and the rule `Description`. Optional: set a `-DisplayName` of "Daex …" on new rules only if lookup moves to `-Name`. | code |
+| P2 | `apps/desktop/scripts/windows-firewall-rules.ps1:94-153` | Firewall rule names "ADE Sync Host (…)", "ADE LAN Discovery (…)" in Windows Defender Firewall, plus `Write-Output` lines shown by the uninstaller. | Keep the rule **names** (the uninstaller finds them by name); rename the `Write-Output` text and the rule `Description`. Optional: set a `-DisplayName` of "DAEX …" on new rules only if lookup moves to `-Name`. | code |
 | P3 | `apps/desktop/scripts/windows-uninstall-cleanup.ps1:270-543`, `windows-install-setup.ps1:280` | Scheduled task "ADE Runtime (…)" in Task Scheduler; warnings during install/uninstall. | Keep task name (lookup key); rename warning text. | code |
 | P4 | `apps/desktop/build/installer.nsh` custom `DetailPrint` lines ("Looking for what kept the old ADE files in use…") | Installer details pane. | Change together with packaging decision 1 (the doc says so); never touch the `PRODUCT_NAME` comparisons. | code |
-| P5 | `apps/desktop/scripts/ade-cli-macos-wrapper.sh:102-168`, `ade-cli-windows-wrapper.cmd:74` | "ade: Node.js 22+ or the packaged ADE.app runtime is required…" | Rename the prose ("the packaged Daex app"); keep `ADE.app`/`ADE.exe` lookups. | code |
+| P5 | `apps/desktop/scripts/ade-cli-macos-wrapper.sh:102-168`, `ade-cli-windows-wrapper.cmd:74` | "ade: Node.js 22+ or the packaged ADE.app runtime is required…" | Rename the prose ("the packaged DAEX app"); keep `ADE.app`/`ADE.exe` lookups. | code |
 | P6 | Music host windows: `native/ADEMusicHostMac/Sources/ADEMusicHost/main.swift:203,403` ("ADE Music", "Connect Apple Music - ADE"), `native/ADEMusicHostWin/src/AdeMusicHost.cs:197,274` | Window titles of the Apple Music sign-in and player windows; the helper's name in Now Playing / the Windows media overlay. | Rename titles; check the helper bundle/exe display name. | code |
-| P7 | `native/ADEDesktopDriver` messages: `WindowReadiness.swift:76` "ADE is not trusted for Accessibility…", `WindowControl.swift:88` | Shown in lane-screen errors; the Accessibility list in System Settings will say "Daex" (localized name), so "ADE is not trusted" points at a name the person cannot find. | Rename. | code |
-| P8 | `apps/desktop/src/main/services/macDesktop/macDesktopService.ts:436` (`responsibleAppName` from `ADE_DESKTOP_APP_NAME`, default "ADE") | Copy telling the person which app to switch on in System Settings > Privacy, which now lists "Daex". | Show `installedDesktopAppDisplayName(...)` in copy; keep the env value. (Flagged in the packaging doc too.) | code |
+| P7 | `native/ADEDesktopDriver` messages: `WindowReadiness.swift:76` "ADE is not trusted for Accessibility…", `WindowControl.swift:88` | Shown in lane-screen errors; the Accessibility list in System Settings will say "DAEX" (localized name), so "ADE is not trusted" points at a name the person cannot find. | Rename. | code |
+| P8 | `apps/desktop/src/main/services/macDesktop/macDesktopService.ts:436` (`responsibleAppName` from `ADE_DESKTOP_APP_NAME`, default "ADE") | Copy telling the person which app to switch on in System Settings > Privacy, which now lists "DAEX". | Show `installedDesktopAppDisplayName(...)` in copy; keep the env value. (Flagged in the packaging doc too.) | code |
 | P9 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts:997,4475` "ADE iOS Simulator Preview Lab" / "Allow prompt for ADE Preview Lab" | Xcode's permission prompt and the project name the person sees. | Rename the display name only if the Xcode prompt text comes from it; keep any bundle id. | code (verify) |
 | P10 | `apps/ade-cli/src/serviceManager/installSystemd.ts:110` `Description=ADE runtime service`; launchd/systemd/Windows service messages (`installLaunchd.ts`, `installSystemd.ts`, `installWindows.ts` (45 lines), `detachedSupervisor.ts`) | `systemctl --user status` output, `ade brain start/status` text, Settings > Machine repair results. | Rename the description and messages; keep unit names, labels (`com.ade.runtime`) and file names. | code |
-| P11 | macOS Login Items (System Settings > General > Login Items) for the brain's launch agent | Listed under the app named by `AssociatedBundleIdentifiers` (`com.ade.desktop`), so it should follow the localized name "Daex". | Verify on a Mac after the packaging change. | code (verify) |
+| P11 | macOS Login Items (System Settings > General > Login Items) for the brain's launch agent | Listed under the app named by `AssociatedBundleIdentifiers` (`com.ade.desktop`), so it should follow the localized name "DAEX". | Verify on a Mac after the packaging change. | code (verify) |
 | P12 | `apps/ade-cli/src/services/runtime/machineResetLauncher.ts:53-54` (`~/Library/Logs/ADE Reset`) | A folder name the person may open. | Keep (path). | - |
-| P13 | Homebrew cask (`scripts/update-brew-tap.sh`, tap `arul28/homebrew-ade`, `Casks/ade.rb`), `brew install --cask arul28/ade/ade` (`apps/web/src/lib/installTargets.ts:66`), `brew upgrade --cask ade` (`main/services/updates/clientUpdateGate.ts:65`) | Cask display name moved to Daex in da11283f8; token stays `ade`. | Keep the token and tap (renaming breaks `brew upgrade` for everyone); optionally add a `daex` cask alias later. | owner (tap repo) |
+| P13 | Homebrew cask (`scripts/update-brew-tap.sh`, tap `arul28/homebrew-ade`, `Casks/ade.rb`), `brew install --cask arul28/ade/ade` (`apps/web/src/lib/installTargets.ts:66`), `brew upgrade --cask ade` (`main/services/updates/clientUpdateGate.ts:65`) | Cask display name moved to DAEX in da11283f8; token stays `ade`. | Keep the token and tap (renaming breaks `brew upgrade` for everyone); optionally add a `daex` cask alias later. | owner (tap repo) |
 | P14 | winget, Scoop, Chocolatey | No manifests in the repo. | If a winget manifest exists outside the repo, update `PackageName`/`Publisher` display fields, keep `PackageIdentifier`. | owner |
 
 ### 2f. CLI human output and help (no worker owns it yet)
@@ -207,11 +212,11 @@ anywhere. Person-visible parts, by priority:
 
 | # | Where | Action | Who |
 |---|---|---|---|
-| D1 | `changelog/*.mdx` (178 pages), `CHANGELOG.md` (321), in-app release notes bundled by `apps/desktop/scripts/bundle-release-notes.mjs` | Keep historical entries as written (they describe releases that shipped as ADE). Rename only the month index headings ("Every ADE release published in …" -> "Every Daex release (formerly ADE) …") and add the rename as the first line of the launch release notes. | code |
+| D1 | `changelog/*.mdx` (178 pages), `CHANGELOG.md` (321), in-app release notes bundled by `apps/desktop/scripts/bundle-release-notes.mjs` | Keep historical entries as written (they describe releases that shipped as ADE). Rename only the month index headings ("Every ADE release published in …" -> "Every DAEX release (formerly ADE) …") and add the rename as the first line of the launch release notes. | code |
 | D2 | `getting-started/install.mdx`, `sdk/bundling.mdx`, `sdk/license.mdx`, `sdk/runtime.mdx`, `welcome.mdx` (one line each) | Check each; most are "formerly ADE" or legal names. | code |
 | D3 | `docs.json:236,264,318` GitHub `arul28/ADE`, `:263,322` X `x.com/ade_dev`, `:226,247` Download -> `ade-app.dev` | Change with owner decisions O9/O11 and the domain step. | owner then code |
 | D4 | `packages/sdk/README.md`, `packages/chat-ui/README.md`, `packages/demo/README.md`, package `description`s (`packages/*/package.json:4`, `apps/ade-cli/package.json:4`), SDK error text (`packages/sdk/src/accounts.ts:128-216`, `packages/chat-ui/src/adapters/sdkClient.ts:426`) | Rename prose with the `@daex-dev` publish step; npm shows the description. | code |
-| D5 | `RUNTIME-EMBEDDING-EXCEPTION.md` (15), `NOTICE`, `RUNTIME-SYNC-RECONCILIATION.md` | Legal text names "ADE". Owner decision O14: add a definition line ("Daex, formerly ADE") rather than rewriting the grant. | owner |
+| D5 | `RUNTIME-EMBEDDING-EXCEPTION.md` (15), `NOTICE`, `RUNTIME-SYNC-RECONCILIATION.md` | Legal text names "ADE". Owner decision O14: add a definition line ("DAEX, formerly ADE") rather than rewriting the grant. | owner |
 
 ---
 
@@ -220,15 +225,15 @@ anywhere. Person-visible parts, by priority:
 | # | What | Where | Action | Who |
 |---|---|---|---|---|
 | W1 | Lane branch prefix `ade/<slug>` | `apps/desktop/src/shared/laneBranchName.ts:14` `DEFAULT_LANE_BRANCH_PATTERN`, `laneNameFallback.ts:241`, `laneBranchNaming.ts:234,240`; Settings keyword "ade/" (`settingsManifest.ts:1677`) | Owner decision O1. Recommendation: keep `ade/` as the default (branches are in every repo, scripts and CI filters may match `ade/*`, and it reads as the old CLI name which stays installed). The pattern is already a setting, so a person can choose `daex/{slug}`. If changed, change only the default for new projects; never rewrite existing branches. | owner |
-| W2 | PR body footer "Open in Daex" + logo | `shared/adeDeeplinkFooter.ts` | Done (text and logo). Hidden markers `<!-- ade:link -->` stay (frozen). Old PRs keep "Open in ADE" text; nothing to do. | - |
-| W3 | PR body blocks: transcript gists ("Daex chat transcripts"), proof, Linear/GitHub links | `shared/adePrTranscriptGists.ts:17-30`, `prBodyProof.ts`, `linearMagicWords.ts`, `githubMagicWords.ts` | Done; markers frozen. | - |
-| W4 | Git identity on snapshot commits | `desktop/.../chat/handoffGitBundle.ts`, `lanes/deletedLaneSnapshots.ts` (desktop), `ade-cli/src/services/cloudChats/cloudLaneBackup.ts` (CLI) | Done on desktop: author/committer and subjects say Daex; deleted-lane saves write `Daex-*` trailers and the readers accept `ADE-*`. The `@ade.invalid`/`ade@localhost` emails stay. | - |
+| W2 | PR body footer "Open in DAEX" + logo | `shared/adeDeeplinkFooter.ts` | Done (text and logo). Hidden markers `<!-- ade:link -->` stay (frozen). Old PRs keep "Open in ADE" text; nothing to do. | - |
+| W3 | PR body blocks: transcript gists ("DAEX chat transcripts"), proof, Linear/GitHub links | `shared/adePrTranscriptGists.ts:17-30`, `prBodyProof.ts`, `linearMagicWords.ts`, `githubMagicWords.ts` | Done; markers frozen. | - |
+| W4 | Git identity on snapshot commits | `desktop/.../chat/handoffGitBundle.ts`, `lanes/deletedLaneSnapshots.ts` (desktop), `ade-cli/src/services/cloudChats/cloudLaneBackup.ts` (CLI) | Done on desktop: author/committer and subjects say DAEX; deleted-lane saves write `DAEX-*` trailers and the readers accept `ADE-*`. The `@ade.invalid`/`ade@localhost` emails stay. | - |
 | W5 | `.ade/.gitignore` written into every project | `shared/adeLayout.ts:156-175` (`# ADE ignores local runtime state…`, `# Shared ADE project config`) | **Keep as is.** `adeScaffoldFileContents()` (`adeLayout.ts:149`) compares the exact content to decide "changed by a person"; new comments would make every existing project's file look edited (an untracked/modified file in every repo). If ever changed, accept both contents first. | - |
-| W6 | Simulator / virtual display names: `ADE · <lane>` | `ios/laneDeviceRegistry.ts`, `shared/types/macDesktop.ts` `macDesktopDisplayName`; matcher `ios/appleDeviceMarker.ts` | Done: new lane simulators are `Daex · <lane>`, the display prefix defaults to Daex, `looksLikeAdeDeviceName` accepts both. Existing devices keep their names. Left: the native driver's fallback `VirtualDisplayHost.namePrefix` (`native/ADEDesktopDriver`, used only when no name is sent) and the CLI help line for `--name`. | code |
+| W6 | Simulator / virtual display names: `ADE · <lane>` | `ios/laneDeviceRegistry.ts`, `shared/types/macDesktop.ts` `macDesktopDisplayName`; matcher `ios/appleDeviceMarker.ts` | Done: new lane simulators are `DAEX · <lane>`, the display prefix defaults to DAEX, `looksLikeAdeDeviceName` accepts both. Existing devices keep their names. Left: the native driver's fallback `VirtualDisplayHost.namePrefix` (`native/ADEDesktopDriver`, used only when no name is sent) and the CLI help line for `--name`. | code |
 | W7 | Default device names on the account: `ADE CLI on <host>`, `ADE agents on <host>` | `ade-cli/src/services/account/accountMachineDirectoryService.ts:550`, `agentMachineBridge.ts:218` | Shown in Settings > Account / Devices and on the phone. Rename for new registrations; map saved names on display (see 6). | code |
 | W8 | OAuth client names ADE registers with third-party MCP servers: `client_name: "ADE"` (dynamic client registration) and `clientInfo: { name: "ADE" }` | `desktop/src/main/services/mcp/mcpOAuth.ts:140,244` | Consent screens of Notion, Linear, Sentry, etc. MCP servers say "ADE wants access". Rename for new registrations; already-registered clients keep their name until re-registered (acceptable). | code |
 | W9 | Client identity sent to agent runtimes: ACP `clientInfo.title: "ADE"` (`chat/acpHost/acpDialects/shared.ts:31`, used by Devin, Grok, Kimi, Qwen, Antigravity), Codex `clientInfo.title: "ADE Desktop"` / `"ADE voice"` (`agentChatService.ts:48430`, `codexEphemeralFork.ts:120`, `codexVoiceHost.ts:169`), proxy name "ADE proxy" (`harnessPresetLaunch.ts:649`), Codex config `name = "ADE"` (`harnessPresetConfigHomes.ts:418`, `harnessRouteLaunch.ts:650`) | Some agents show the client title in their own UI or session lists. Rename `title` fields only; keep `name` fields (`ade_desktop_fork`, Copilot `clientName: "ade"` is matched by `discoverCopilot.ts:160`, Muse `clientInfo.name` must stay lowercase). | code |
-| W10 | User-Agent strings | `ai/tools/webFetch.ts`, `chat/smartLinkPreviewService.ts`, `chat/sourceFaviconService.ts`, `chat/chatWebhookRegistry.ts`, `automations/customWebhookService.ts`, `jev/jevService.ts`, `remoteRuntime/remoteSidecarCache.ts`, iOS `CloudSponsored.swift` | Done on desktop and iPhone: product-named agents say Daex (`Daex-Agent/1.0`, `Daex-iOS/<v>`, …); Gravity's reader accepts `ADE-iOS/` and `Daex-iOS/`. Kept: lowercase machine tokens (`ade-desktop`, `ade-cli`). | - |
+| W10 | User-Agent strings | `ai/tools/webFetch.ts`, `chat/smartLinkPreviewService.ts`, `chat/sourceFaviconService.ts`, `chat/chatWebhookRegistry.ts`, `automations/customWebhookService.ts`, `jev/jevService.ts`, `remoteRuntime/remoteSidecarCache.ts`, iOS `CloudSponsored.swift` | Done on desktop and iPhone: product-named agents say DAEX (`DAEX-Agent/1.0`, `DAEX-iOS/<v>`, …); Gravity's reader accepts `ADE-iOS/` and `DAEX-iOS/`. Kept: lowercase machine tokens (`ade-desktop`, `ade-cli`). | - |
 | W11 | Built-in browser HAR/trace `creator: { name: "ADE built-in browser" }` | `builtInBrowser/builtInBrowserCapabilities.ts:250` | In exported files a person opens. Rename. | code |
 | W12 | `gh`/git shim files written into session homes ("# ADE: runs the real gh…", marker "ADE GitHub shim folder"), stderr "gh: ADE could not reach its GitHub token…" | `github/githubShellShim.ts:114-529` | Keep file comments and the marker text (marker may be matched); rename the stderr sentence the person sees in a terminal. | code |
 | W13 | Emulator log header `# ADE started …` | `android/androidEmulatorProcess.ts:469,583` | Log only: keep. | - |
@@ -244,21 +249,21 @@ anywhere. Person-visible parts, by priority:
 | # | Service | What a person sees today | Recommendation | Risk |
 |---|---|---|---|---|
 | O1 | Lane branch default (W1) | `ade/…` branches | Keep default; offer `daex/` in Settings copy. | Scripts/CI matching `ade/*`. |
-| O2 | Device names (W6) | `ADE · lane` | Done: new ones are Daex, the matcher accepts both. | None. |
-| O3 | GitHub App "ADE for GitHub" (slug `ade-for-github`, `githubRelayConfig.ts:15`, install URL in `GitHubAppInstallPanel.tsx:44`, `githubDirectStateCopy.ts:18`, iOS `PrDirectViews.swift:34`) | App name on GitHub install/permission pages, bot author on anything the app writes. | The app copy now says "Daex for GitHub" (slug constant unchanged). Rename the display name to "Daex for GitHub" in the app settings. **Verify first** whether GitHub changes the slug (and the `<slug>[bot]` login) on rename; if it does, released clients link to the old install URL and the relay may match the slug: then keep the name, or ship both slugs first. Update the logo in the app settings. | High if the slug changes. |
-| O4 | Linear OAuth app "ADE" (client id `ADE_LINEAR_APP_CLIENT_ID`, `cto/linearAppClient.ts:14`) and the Linear agent (`actor=app`) | Authorize screen, the agent's name and avatar in issues and comments, @-mention name. | Rename app name and avatar in Linear's app settings; client id and webhook config stay. Existing installs show the new name. | Low. People who type "@ADE" must learn "@Daex". |
+| O2 | Device names (W6) | `ADE · lane` | Done: new ones are DAEX, the matcher accepts both. | None. |
+| O3 | GitHub App "ADE for GitHub" (slug `ade-for-github`, `githubRelayConfig.ts:15`, install URL in `GitHubAppInstallPanel.tsx:44`, `githubDirectStateCopy.ts:18`, iOS `PrDirectViews.swift:34`) | App name on GitHub install/permission pages, bot author on anything the app writes. | The app copy now says "DAEX for GitHub" (slug constant unchanged). Rename the display name to "DAEX for GitHub" in the app settings. **Verify first** whether GitHub changes the slug (and the `<slug>[bot]` login) on rename; if it does, released clients link to the old install URL and the relay may match the slug: then keep the name, or ship both slugs first. Update the logo in the app settings. | High if the slug changes. |
+| O4 | Linear OAuth app "ADE" (client id `ADE_LINEAR_APP_CLIENT_ID`, `cto/linearAppClient.ts:14`) and the Linear agent (`actor=app`) | Authorize screen, the agent's name and avatar in issues and comments, @-mention name. | Rename app name and avatar in Linear's app settings; client id and webhook config stay. Existing installs show the new name. | Low. People who type "@ADE" must learn "@DAEX". |
 | O5 | Clerk (`clerk.ade-app.dev`) | Sign-in page app name and logo, verification/magic-link email subject and sender ("Your ADE code"), the OAuth consent shown to the desktop (`CLERK_OAUTH_CLIENT_ID` app name). | Rename application name, logo, email templates and sender name in Clerk. Keep the domain (released clients). | Low. |
-| O6 | Stripe | Business/public name on Checkout, receipts, invoices, the customer portal; card statement descriptor; product names (the setup script already says Daex Cloud: 6aafdff08). | Change public business name, branding logo/icon, statement descriptor (and shortened descriptor) in the dashboard; run `apps/account-directory/scripts/stripe-setup.mjs` for product/portal text. Note privacy/terms URLs there still point at ade-app.dev (`stripe-setup.mjs:255-256`): fine until the domain step. | Bank statements change wording: mention it in the launch email. |
-| O7 | Resend sender | `FROM_ADDRESS = "Daex <notifications@ade-app.dev>"` (`account-directory/src/cloud/email.ts:9`) | Display name done. Verify `daex.dev` in Resend (SPF, DKIM, DMARC), warm it, then switch the address. Until then keep ade-app.dev. | Deliverability if switched before warm-up. |
-| O8 | App Store Connect / TestFlight (bundle `com.ade.ios`, app id 6762759870; public links `ZSdJGKPy`, `SsxDjqbF`) | App name, subtitle, keywords, description, promotional text, screenshots (L7), App Clip card header image and subtitle, What's New text, support/marketing URLs, the TestFlight beta name and "What to Test". | Rename name and subtitle (needs a new version submission), add "ADE" to keywords so search still finds it, new screenshots and App Clip card image. Bundle IDs stay. | App names must be unique on the App Store: check "Daex" is free before launch day. |
+| O6 | Stripe | Business/public name on Checkout, receipts, invoices, the customer portal; card statement descriptor; product names (the setup script already says DAEX Cloud: 6aafdff08). | Change public business name, branding logo/icon, statement descriptor (and shortened descriptor) in the dashboard; run `apps/account-directory/scripts/stripe-setup.mjs` for product/portal text. Note privacy/terms URLs there still point at ade-app.dev (`stripe-setup.mjs:255-256`): fine until the domain step. | Bank statements change wording: mention it in the launch email. |
+| O7 | Resend sender | `FROM_ADDRESS = "DAEX <notifications@ade-app.dev>"` (`account-directory/src/cloud/email.ts:9`) | Display name done. Verify `daex.dev` in Resend (SPF, DKIM, DMARC), warm it, then switch the address. Until then keep ade-app.dev. | Deliverability if switched before warm-up. |
+| O8 | App Store Connect / TestFlight (bundle `com.ade.ios`, app id 6762759870; public links `ZSdJGKPy`, `SsxDjqbF`) | App name, subtitle, keywords, description, promotional text, screenshots (L7), App Clip card header image and subtitle, What's New text, support/marketing URLs, the TestFlight beta name and "What to Test". | Rename name and subtitle (needs a new version submission), add "ADE" to keywords so search still finds it, new screenshots and App Clip card image. Bundle IDs stay. | App names must be unique on the App Store: check "DAEX" is free before launch day. |
 | O9 | GitHub repo `arul28/ADE` (update feed, releases, issues, docs links) | Repo name in links and release pages. | Recommendation: keep until a release has published both asset names (packaging decision 5). If renamed, GitHub redirects the API, git and release downloads, so released auto-updaters keep working, **but never create a new repo named `ADE` afterwards** (it kills the redirect and breaks every released build's update feed). | High if a new `ADE` repo is ever created. |
-| O10 | Homebrew tap `arul28/homebrew-ade`, cask `ade` | `brew install --cask arul28/ade/ade` | Keep token and tap; display name already Daex. Optionally add a `daex` alias cask later. | `brew upgrade` breaks if the token changes. |
-| O11 | X `@ade_dev`, Discord, YouTube, LinkedIn | Handle and display name. | Claim `@daex_dev` (or similar) now; rename display names; keep the old handles with a pinned "we are Daex now" post. Update `docs.json` and site footer links after. | Squatting if not claimed early. |
+| O10 | Homebrew tap `arul28/homebrew-ade`, cask `ade` | `brew install --cask arul28/ade/ade` | Keep token and tap; display name already DAEX. Optionally add a `daex` alias cask later. | `brew upgrade` breaks if the token changes. |
+| O11 | X `@ade_dev`, Discord, YouTube, LinkedIn | Handle and display name. | Claim `@daex_dev` (or similar) now; rename display names; keep the old handles with a pinned "we are DAEX now" post. Update `docs.json` and site footer links after. | Squatting if not claimed early. |
 | O12 | npm `@ade-dev/*` (`packages/sdk`, `chat-ui`, `demo`) | Package pages. | Per README: publish `@daex-dev/*`, keep old packages depending on/pointing at the new ones, `npm deprecate` with a message. | Low. |
 | O13 | User-Agents (W10) | Seen by third parties. | Done for product-named UAs; machine tokens kept. | Allow-lists keyed on UA. |
-| O14 | Legal: Terms, Privacy, license exception, NOTICE, copyright line, legal entity | Site footer "© ADE" (C10), legal docs. | Decide the legal name ("Daex"); add "Daex (formerly ADE)" definitions (the site's Terms and Privacy already do). | Legal review. |
+| O14 | Legal: Terms, Privacy, license exception, NOTICE, copyright line, legal entity | Site footer "© ADE" (C10), legal docs. | Decide the legal name ("DAEX"); add "DAEX (formerly ADE)" definitions (the site's Terms and Privacy already do). | Legal review. |
 | O15 | Google OAuth (if Clerk uses a custom Google client) and any other social sign-in apps | "ADE wants to access your Google account" on the consent screen. | Rename app name and logo on the Google Cloud consent screen (may need re-verification). | Google re-verification delay. |
-| O16 | Spotify | Each person makes their own Spotify app; Daex shows "App name: Daex" (`MusicProviderControls.tsx:115`). | Nothing on our side; existing personal apps keep "ADE". | - |
+| O16 | Spotify | Each person makes their own Spotify app; DAEX shows "App name: DAEX" (`MusicProviderControls.tsx:115`). | Nothing on our side; existing personal apps keep "ADE". | - |
 | O17 | Apple Developer certificates (Developer ID, Apple Distribution), provisioning profile names, Windows code-signing certificate publisher | Certificate common names; Windows SmartScreen and UAC show the publisher. | **Do not change signing identities** (`channelSignIdentity.mjs`; a new identity breaks Squirrel.Mac updates and resets SmartScreen reputation). Profile *names* are cosmetic; leave them. | High if touched. |
 | O18 | Sentry org `ade-app`, PostHog project, Cloudflare Worker names | Internal only. | Keep (low priority; dashboards and event names are frozen). | - |
 | O19 | Domain `daex.dev` | - | Site, docs and `/open` links first (planned); HSTS/redirects from ade-app.dev pages to daex.dev; keep API, sign-in and relay hosts on ade-app.dev. | - |
@@ -312,8 +317,8 @@ and people's saved prompts say `ade`.
 
 | # | Saved where | Example | Shows in | Recommendation |
 |---|---|---|---|---|
-| N1 | Account directory (D1) machine names for cloud computers | "ADE Cloud computer", "ADE Cloud computer 2" | Desktop Settings > Machines (rename field, tooltip), CLI lists, phone | **Map on display**, do not migrate rows: the CLI already maps `ADE Cloud…` -> `Daex Cloud…` (`cliMachineTargeting.ts:1318-1324`) and iOS matches both (`MachineRowView.swift:157`); the desktop renderer has no such mapping. Add one shared helper (`shared/`) used by desktop, web and CLI; change C1 so new names are Daex. Never rewrite a name the person typed. |
-| N2 | Account device names | "ADE CLI on host", "ADE agents on host" | Account / Devices lists | Map the exact defaults on display (`^ADE (CLI\|agents) on ` -> `Daex …`); new registrations use Daex (W7). |
+| N1 | Account directory (D1) machine names for cloud computers | "ADE Cloud computer", "ADE Cloud computer 2" | Desktop Settings > Machines (rename field, tooltip), CLI lists, phone | **Map on display**, do not migrate rows: the CLI already maps `ADE Cloud…` -> `DAEX Cloud…` (`cliMachineTargeting.ts:1318-1324`) and iOS matches both (`MachineRowView.swift:157`); the desktop renderer has no such mapping. Add one shared helper (`shared/`) used by desktop, web and CLI; change C1 so new names are DAEX. Never rewrite a name the person typed. |
+| N2 | Account device names | "ADE CLI on host", "ADE agents on host" | Account / Devices lists | Map the exact defaults on display (`^ADE (CLI\|agents) on ` -> `DAEX …`); new registrations use DAEX (W7). |
 | N3 | iOS saved pairing profiles (`serviceName`) | "Saved ADE machine", "ADE account machine", "ADE Tailnet <host>" (`ios/ADE/Services/SyncService.swift:8518,8829,28140`) | Settings > Pairing (`SettingsPairingSection.swift:250,294` falls back to `serviceName`) | Map the three exact defaults on display; rename the producers. `serviceName` is also compared for de-duplication (`SyncService.swift:3060`, `SettingsPinSheet.swift:299`), so do not migrate stored values. |
 | N4 | Installed app name `ADE_DESKTOP_APP_NAME` published by machines ("ADE", "ADE Beta", "ADE Alpha") | Older machines | Machine rows, update prompts | Already mapped by `installedDesktopAppDisplayName` (`packageChannel.ts`). Verify every place that prints an installed app name goes through it. |
 | N5 | Chat transcripts | `[ADE] …` notices, "ADE restarted…" notices, stop reasons, "Open in ADE" in old PR bodies | Chat history, phone, shared chats | Leave the stored text; accept both in matchers (2b). Old messages saying ADE are history. |
@@ -332,9 +337,9 @@ display time, and accept both names wherever stored text is parsed.**
 
 **P0: fix before this branch merges (regressions or release blockers)**
 
-1. M1 `chatNotice.ts:68` and M2 `plainError.ts:39`: accept "Daex" (the
+1. M1 `chatNotice.ts:68` and M2 `plainError.ts:39`: accept "DAEX" (the
    rename broke the dropped-connection notice and the update button).
-2. Done: the CLI help lead says Daex, changed together with the release
+2. Done: the CLI help lead says DAEX, changed together with the release
    validators and the help digest (2b).
 3. Keep `.ade/.gitignore` content byte-for-byte (W5).
 4. L2 remote MCP consent logo is squashed (fixed 62x30 for a 1138x868 image).
@@ -347,10 +352,10 @@ display time, and accept both names wherever stored text is parsed.**
 8. og-image and README hero re-captured (L5); re-scrape social caches.
 9. Rebuild the site demo (L8, `npm run build:demo`).
 10. Remote MCP consent page text, `resource_name` and `serverInfo.title` (2f item 2).
-11. New cloud computers named "Daex Cloud computer" (C1) and a display map for
+11. New cloud computers named "DAEX Cloud computer" (C1) and a display map for
     saved "ADE Cloud…" and "ADE CLI/agents on …" names in the desktop (N1, N2).
-12. "ADE is now Daex" announcement in desktop and iOS, using `INTRO_NAME` (C13).
-13. Settings and command-palette search: "ade" finds Daex entries (S1, S2).
+12. "ADE is now DAEX" announcement in desktop and iOS, using `INTRO_NAME` (C13).
+13. Settings and command-palette search: "ade" finds DAEX entries (S1, S2).
 14. Owner: App Store Connect name, subtitle, keywords (keep "ADE"), screenshots
     (L7), App Clip card; Clerk app name, logo and emails; Stripe public name,
     logo, statement descriptor; Linear app name and avatar; Google consent
@@ -368,7 +373,7 @@ display time, and accept both names wherever stored text is parsed.**
     systemd description (P10), OAuth `client_name` for MCP servers (W8),
     ACP/Codex client titles (W9), classic GitHub token name (C4), TOTP default
     (W15), HAR creator (W11).
-18. Voice dictation learns "Daex"/"dax" (S4).
+18. Voice dictation learns "DAEX"/"dax" (S4).
 19. Simulator/emulator/virtual display names with both-name matchers (W6).
 20. Website and docs screenshots, onboarding welcome images, tips (L6).
 21. Owner decisions: GitHub App rename (O3, verify slug behaviour first),
@@ -394,5 +399,5 @@ git ls-files apps/desktop/src/renderer | grep -E '\.(ts|tsx)$' | grep -vE '\.tes
 # Matchers that still look only for ADE:
 git ls-files apps packages | grep -E '\.(ts|tsx|swift|mjs)$' | grep -vE '\.test\.' \
   | xargs grep -nE "(startsWith|includes|hasPrefix|test|exec)\(.*\bADE\b|/[^/]*\bADE\b[^/]*/[a-z]*\.(test|exec)" \
-  | grep -v 'ADE|Daex' | grep -v 'Daex|ADE'
+  | grep -v 'ADE|DAEX' | grep -v 'DAEX|ADE'
 ```

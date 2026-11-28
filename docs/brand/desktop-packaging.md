@@ -1,9 +1,9 @@
-# Desktop packaging: showing Daex without moving installs
+# Desktop packaging: showing DAEX without moving installs
 
-The desktop app is renamed Daex, but every installed copy of ADE has to keep
+The desktop app is renamed DAEX, but every installed copy of ADE has to keep
 working after it updates: same folders, same keychain items, same updater,
 same shortcuts and `ade://` links. This page lists, per platform, what a
-person sees, what now shows Daex, what keeps the old name and why, and what
+person sees, what now shows DAEX, what keeps the old name and why, and what
 is left for the owner to decide.
 
 Read `README.md` in this folder first for the general rule (rename what a
@@ -70,19 +70,19 @@ use the microphone"), the DMG volume.
 
 - `apps/desktop/scripts/after-pack-runtime-fixes.cjs` writes
   `Contents/Resources/<locale>.lproj/InfoPlist.strings` into every locale
-  folder with `CFBundleName` and `CFBundleDisplayName` = `Daex` (`Daex Alpha`
+  folder with `CFBundleName` and `CFBundleDisplayName` = `DAEX` (`DAEX Alpha`
   for an `ADE Alpha` product). `build.mac.extendInfo.LSHasLocalizedDisplayName`
   is `true`.
 - Permission prompt text (`NS*UsageDescription`), the URL type name
-  (`CFBundleURLName`, "Daex link") and the document type names
-  ("Daex files and folders", "Daex files") in `apps/desktop/package.json`.
-- `apps/desktop/src/main/main.ts`: the application menu ("About Daex",
-  "Hide Daex", "Quit Daex"), `app.setAboutPanelOptions({ applicationName })`,
+  (`CFBundleURLName`, "DAEX link") and the document type names
+  ("DAEX files and folders", "DAEX files") in `apps/desktop/package.json`.
+- `apps/desktop/src/main/main.ts`: the application menu ("About DAEX",
+  "Hide DAEX", "Quit DAEX"), `app.setAboutPanelOptions({ applicationName })`,
   window titles, dialogs and notifications.
-- `apps/desktop/scripts/create-mac-dmg.mjs`: the DMG volume is named "Daex".
+- `apps/desktop/scripts/create-mac-dmg.mjs`: the DMG volume is named "DAEX".
 - The macOS 26 icon (see "macOS 26 app icon" below): `Assets.car` and
   `CFBundleIconName` from `build/icon*.icon`, beside the unchanged `icon.icns`.
-- The brain's executable is `Contents/MacOS/Daex Brain` (was `ADE Brain`), the
+- The brain's executable is `Contents/MacOS/DAEX Brain` (was `ADE Brain`), the
   name macOS shows in "Background Items Added" and Login Items (see "The brain
   copy's name" below).
 
@@ -108,12 +108,12 @@ requires.
 **Risks:**
 
 - A person who renamed `ADE.app` by hand sees "ADE" in Finder (the file name
-  no longer matches `CFBundleDisplayName`). The menu bar still shows Daex.
-- `open -a Daex` and AppleScript `application "Daex"` may not find the app;
+  no longer matches `CFBundleDisplayName`). The menu bar still shows DAEX.
+- `open -a DAEX` and AppleScript `application "DAEX"` may not find the app;
   `open -a ADE` keeps working. Nothing in ADE uses either.
 - Copy that tells people which app to switch on in System Settings > Privacy
   (`macDesktopService.ts` `responsibleAppName`, from `ADE_DESKTOP_APP_NAME`)
-  still says ADE while System Settings will list "Daex". Outside this change.
+  still says ADE while System Settings will list "DAEX". Outside this change.
 
 ### macOS 26 app icon
 
@@ -152,7 +152,7 @@ comes from an asset catalog: `Contents/Resources/Assets.car`, named by
 
 The brain service, its watchdog and its PTY host run a copy of the app's
 executable (`brainExecutable.ts`, mode `brain-copy`). macOS names the
-background item after that file. It is now `Daex Brain` (`Daex Alpha Brain`
+background item after that file. It is now `DAEX Brain` (`DAEX Alpha Brain`
 for `ADE Alpha`); it was `ADE Brain`.
 
 Why this is safe for existing installs:
@@ -163,13 +163,13 @@ Why this is safe for existing installs:
   The desktop installs on every launch (`installServiceBestEffort`), the CLI on
   `ade brain start`, a repair, and every update path (Squirrel update, CLI
   update, `ade brain update`). An old plist names `ADE Brain`, so the first
-  install by a new build rewrites it to `Daex Brain` and restarts the brain.
+  install by a new build rewrites it to `DAEX Brain` and restarts the brain.
   Labels and plist file names do not change, so nothing is left behind.
 - The bundle also carries `Contents/MacOS/ADE Brain`, a second signed copy
   (34 KB), so an old plist still starts after an update that replaced the
   bundle without installing the service (a Homebrew upgrade or a drag-and-drop
   install, then a restart before the app opens).
-- Readers accept both names: `electronMacExecutables` maps `Daex Brain` and
+- Readers accept both names: `electronMacExecutables` maps `DAEX Brain` and
   `ADE Brain` to the same app (so `isSameElectronRuntime`, the build hash and
   `hostAppPath` agree), and the sync-host scan (`syncHostSingleton.ts`) matches
   both process names, including lsof's cut-off 9-character form.
@@ -181,14 +181,15 @@ and the launch minimum version has been in force for a while, drop the second
 name from `brainCopyPaths` (`scripts/mac-brain-copy.cjs`); keep the readers.
 
 Checked on macOS 26.6.2 (NoMac, 2026-11-27, `dist:mac:dir`, ad-hoc sealed the
-way `package-channel.mjs` seals): the app installed both launch agents with
-`Daex Brain`, the notice read "Daex Brain can run in the background", and
+way `package-channel.mjs` seals; the copy was then spelled `Daex Brain`, and the
+later change to `DAEX Brain` changes only the string): the app installed both launch agents with
+`DAEX Brain`, the notice read "DAEX Brain can run in the background", and
 `codesign --verify --deep --strict` passed with both copies signed as
 `com.ade.desktop`. Then both plists were rewritten to `ADE Brain` and
 reloaded, as an older build leaves them: the brain started as `ADE Brain`
-(the legacy copy). Reopening the app rewrote both plists to `Daex Brain`, the
-brain ran as `Daex Brain`, and `sfltool dumpbtm` and Login Items listed only
-`Daex Brain`.
+(the legacy copy). Reopening the app rewrote both plists to `DAEX Brain`, the
+brain ran as `DAEX Brain`, and `sfltool dumpbtm` and Login Items listed only
+`DAEX Brain`.
 
 ## Windows
 
@@ -201,21 +202,21 @@ AUMID), Task Manager ("ADE", the exe's FileDescription), the installer
 **What changed (shipped in this branch):**
 
 - Window titles, dialogs, notifications and the jump-list task ("Install a
-  downloaded Daex update") in `main.ts`; the file type description written to
-  the ProgID (`--config.fileAssociations.description`, "Daex files", in
+  downloaded DAEX update") in `main.ts`; the file type description written to
+  the ProgID (`--config.fileAssociations.description`, "DAEX files", in
   `run-electron-builder.mjs`).
 - Decision 1: the Start menu shortcut and the installed apps entry
-  ("Apps & features" / "Installed apps") say **Daex**, **Daex Beta** or
-  **Daex Alpha**, for new installs and for every existing install on its next
+  ("Apps & features" / "Installed apps") say **DAEX**, **DAEX Beta** or
+  **DAEX Alpha**, for new installs and for every existing install on its next
   update. `run-electron-builder.mjs` passes `--config.nsis.shortcutName` and
   `--config.nsis.uninstallDisplayName` from `displayName` in
   `windows-package-identity.mjs`. The taskbar group and toasts take their name
-  from that shortcut, so they say Daex too.
+  from that shortcut, so they say DAEX too.
 - The custom installer and uninstaller text in `build/installer.nsh`
-  (`DetailPrint` lines and message boxes, "Daex could not stop its background
-  service…") says Daex. Every `PRODUCT_NAME` comparison and path is unchanged.
+  (`DetailPrint` lines and message boxes, "DAEX could not stop its background
+  service…") says DAEX. Every `PRODUCT_NAME` comparison and path is unchanged.
 - `windows-installed-product-smoke.ps1` (the release gate) looks for the
-  installed apps entry by its Daex name and checks that the Daex Start menu
+  installed apps entry by its DAEX name and checks that the DAEX Start menu
   shortcut exists.
 
 **How decision 1 works** (electron-builder 26.15.3, `app-builder-lib`):
@@ -232,14 +233,14 @@ AUMID), Task Manager ("ADE", the exe's FileDescription), the installer
   `ShortcutName` ("ADE"), the old uninstaller runs with `--keep-shortcuts`
   (the install key has `KeepShortcuts=true` and the exe exists), so it leaves
   `ADE.lnk` alone, and `addStartMenuLink` (`include/installer.nsh`) renames
-  `ADE.lnk` to `Daex.lnk` and stamps the AUMID `com.ade.desktop` on it again.
+  `ADE.lnk` to `DAEX.lnk` and stamps the AUMID `com.ade.desktop` on it again.
   A person who deleted the shortcut does not get one back, as before.
-- That `Rename` fails if `Daex.lnk` already exists, which would leave both.
+- That `Rename` fails if `DAEX.lnk` already exists, which would leave both.
   `customInstall` then deletes the old one, only when it opens this install's
   exe (`adeRemoveStaleStartMenuLink`; one PowerShell run, only in that case).
 - Downgrading to an older release reverses it: the old installer reads
-  `ShortcutName` "Daex" and renames the shortcut back to "ADE".
-- Uninstall reads `ShortcutName`, so it removes `Daex.lnk`.
+  `ShortcutName` "DAEX" and renames the shortcut back to "ADE".
+- Uninstall reads `ShortcutName`, so it removes `DAEX.lnk`.
 
 **What stays, and why:**
 
@@ -269,8 +270,8 @@ AUMID), Task Manager ("ADE", the exe's FileDescription), the installer
 "ADE" as the deb maintainer.
 
 **What changed (shipped in this branch):** `run-linux-electron-builder.mjs`
-passes `--config.linux.desktop.entry.Name=Daex` (`Daex Alpha` for Alpha);
-`build.linux.maintainer` is "Daex".
+passes `--config.linux.desktop.entry.Name=DAEX` (`DAEX Alpha` for Alpha);
+`build.linux.maintainer` is "DAEX".
 
 **What stays:** `productName` `ADE` (so `/opt/ADE`), the executable
 `ade-desktop`, the deb package name `ade-desktop`, the desktop file name
@@ -321,13 +322,13 @@ platform for now and takes only Paradev's display-name mechanism (the
 ## Owner decisions
 
 1. **Windows Start menu shortcut, taskbar and toast name, Apps list entry.**
-   Done: the owner chose Daex for everyone, existing installs included. See
+   Done: the owner chose DAEX for everyone, existing installs included. See
    "Windows" above for what changed and how, and "Windows update test" below
    for the result. `productName` stays "ADE"; Task Manager keeps "ADE" until
    it changes (decision 3).
 2. **macOS `.app` file name and executable.** Recommendation: keep `ADE.app`.
-   The display change already shows Daex everywhere a person looks. Renaming
-   the bundle for new installs (Paradev's route) means `productName` "Daex",
+   The display change already shows DAEX everywhere a person looks. Renaming
+   the bundle for new installs (Paradev's route) means `productName` "DAEX",
    `CFBundleExecutable` pinned to "ADE", and every place that looks for
    `ADE.app` learning both names: `create-mac-dmg.mjs`,
    `notarize-mac-dmg.mjs`, `resign-mac-universal-app.mjs`,
@@ -339,7 +340,7 @@ platform for now and takes only Paradev's display-name mechanism (the
    `ADE.app` either way, so two names would live side by side forever.
 3. **Windows `productName`, exe name and install folder.** Recommendation:
    keep `ADE`, like Paradev kept Linux. Changing it moves new installs to
-   `Programs\Daex\Daex.exe`, breaks the `PRODUCT_NAME` channel checks in
+   `Programs\DAEX\DAEX.exe`, breaks the `PRODUCT_NAME` channel checks in
    `installer.nsh`, the CLI wrapper's `ADE.exe` lookup
    (`ade-cli-windows-wrapper.cmd`) and the update scripts, for one name in
    Task Manager.
@@ -370,10 +371,10 @@ networking off; the script records the state after each step.
 | Step | Start menu (`%APPDATA%\…\Programs`) | Installed apps `DisplayName` | `ShortcutName` | Install folder |
 |---|---|---|---|---|
 | Install 1.2.137 (`/S`) | `ADE.lnk` -> `…\Programs\ADE\ADE.exe`, AUMID `com.ade.desktop` | `ADE` (1.2.137) | `ADE` | `…\Programs\ADE` |
-| Update (`--updated /S`, as the updater runs it) | `Daex.lnk` -> same exe, AUMID `com.ade.desktop`; no `ADE.lnk` | `Daex` (1.2.138), same uninstall key | `Daex` | `…\Programs\ADE`, `ADE.exe` |
+| Update (`--updated /S`, as the updater runs it) | `DAEX.lnk` -> same exe, AUMID `com.ade.desktop`; no `ADE.lnk` | `DAEX` (1.2.138), same uninstall key | `DAEX` | `…\Programs\ADE`, `ADE.exe` |
 | Downgrade to 1.2.137 (`/S`) | `ADE.lnk` (renamed back) | `ADE` | `ADE` | unchanged |
-| Add a stray `Daex.lnk`, then install 1.2.138 (`/S`) | `Daex.lnk` only (the old one removed by `customInstall`) | `Daex` | `Daex` | unchanged |
-| Uninstall (`QuietUninstallString`) | no ADE or Daex shortcut | no entry | no key | removed |
+| Add a stray `DAEX.lnk`, then install 1.2.138 (`/S`) | `DAEX.lnk` only (the old one removed by `customInstall`) | `DAEX` | `DAEX` | unchanged |
+| Uninstall (`QuietUninstallString`) | no ADE or DAEX shortcut | no entry | no key | removed |
 
 All installers exited 0. A copy of the original `ADE.lnk` (what a taskbar
 pin holds) still pointed at an existing `ADE.exe` after the update.
@@ -382,7 +383,7 @@ Not covered: the taskbar and toast names on a real desktop (no one clicked
 in the sandbox; they follow the shortcut, per Windows), Beta and Alpha
 builds (same code path; their names come from `displayName`), and a signed
 CI build. Before release, `windows-installed-product-smoke.ps1` checks the
-Daex entry and shortcut on the CI runner.
+DAEX entry and shortcut on the CI runner.
 
 ## Mac test
 
@@ -390,7 +391,7 @@ Run on 2026-11-27 on a NoMac Mac (macOS 26.6.2, Xcode 27.2, Apple silicon):
 `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1 npm run dist:mac:dir`, the app
 ad-hoc sealed and copied to `/Applications/ADE.app`.
 
-- The menu bar, About panel and Dock show Daex; the Dock and About icon are
+- The menu bar, About panel and Dock show DAEX; the Dock and About icon are
   full size with no grey frame (the `.icon` above). `Info.plist` has
   `CFBundleIconFile` = `icon.icns` (the committed file) and
   `CFBundleIconName` = `AppIcon`; `Contents/Resources` has both.
@@ -412,7 +413,7 @@ the Linux flag.
 Before release, on a Mac (`npm run dist:mac:dir`), the items the Mac test
 above did not cover:
 
-- Finder shows Daex; a signed and notarized build passes
+- Finder shows DAEX; a signed and notarized build passes
   `codesign --verify --deep --strict` and Gatekeeper with both brain copies.
 - It uses `~/Library/Application Support/ade-desktop` and reads its saved
   secrets with no keychain prompt.
@@ -420,9 +421,9 @@ above did not cover:
   `/Applications/ADE.app`.
 
 On Linux: `dpkg -c` lists `/opt/ADE/…`;
-`/usr/share/applications/ade-desktop.desktop` has `Name=Daex` and
+`/usr/share/applications/ade-desktop.desktop` has `Name=DAEX` and
 `StartupWMClass=ade-desktop`; the running window groups under that launcher.
 
 On Windows: the installed exe and folder are unchanged
-(`windows-installed-product-smoke.ps1`); window titles read "… - Daex"; the
-Start menu entry, taskbar hover and a toast say Daex after a real update.
+(`windows-installed-product-smoke.ps1`); window titles read "… - DAEX"; the
+Start menu entry, taskbar hover and a toast say DAEX after a real update.

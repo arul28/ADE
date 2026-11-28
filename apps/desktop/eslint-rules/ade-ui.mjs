@@ -378,7 +378,7 @@ const noLegacyBannerImport = {
 // no-legacy-brand-name
 // ---------------------------------------------------------------------------
 
-// The product is Daex; "ADE" is the former name. Copy reads the name from
+// The product is DAEX; "ADE" is the former name. Copy reads the name from
 // shared/brand.ts. Whole word, case-sensitive: `ADE_HOME`, `.ade/`, `ade://`,
 // `AdeFoo` and Linear keys like `ADE-264` do not match.
 const LEGACY_BRAND_WORD = /\bADE\b(?!-\d)/;
@@ -497,7 +497,7 @@ const noLegacyBrandName = {
     schema: [],
     messages: {
       legacy:
-        "\"ADE\" is the former product name. Use `BRAND.NAME` (or `BRAND.CLOUD_NAME`, `BRAND.BETA_NAME`, `BRAND.CLI`) from shared/brand instead of writing the name in copy. See docs/brand/README.md.",
+        "\"ADE\" is the former product name; the product is DAEX, in capitals. Use `BRAND.NAME` (or `BRAND.CLOUD_NAME`, `BRAND.BETA_NAME`, `BRAND.CLI`) from shared/brand instead of writing the name in copy. See docs/brand/README.md.",
     },
   },
   create(context) {

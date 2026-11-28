@@ -1,7 +1,7 @@
 /**
  * The product's public names: what a person sees, types or links to.
  *
- * The product was called ADE and is now Daex. Copy, CLI help, links and
+ * The product was called ADE and is now DAEX. Copy, CLI help, links and
  * install commands read these names from here. Internal identifiers (bundle
  * IDs, keychain services, `.ade/`, `ADE_*` env names, `window.ade`, wire
  * strings, Worker names) keep the old name on purpose; the list and the
@@ -12,11 +12,11 @@
  * import this file directly.
  */
 
-const NAME = "Daex";
+const NAME = "DAEX";
 const FORMER_NAME = "ADE";
 
 export const BRAND = Object.freeze({
-  /** Display name. Always "Daex", never "DAEX". */
+  /** Display name, written in capitals: "DAEX" (said "dax"; "a DAEX chat"). */
   NAME,
   /** The name the product had before; for "formerly ADE" notes and search. */
   FORMER_NAME,

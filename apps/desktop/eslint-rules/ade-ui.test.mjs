@@ -170,7 +170,7 @@ tester.run("no-legacy-banner-import", rule("no-legacy-banner-import"), {
 tester.run("no-legacy-brand-name", rule("no-legacy-brand-name"), {
   valid: [
     "<p>{BRAND.NAME} keeps your lanes in sync.</p>;",
-    "<p>Open in Daex</p>;",
+    "<p>Open in DAEX</p>;",
     // Internal identifiers and code strings are not copy.
     "const home = process.env.ADE_HOME;",
     "const dir = '.ade/worktrees';",

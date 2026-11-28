@@ -1,7 +1,7 @@
-# Brand: Daex (formerly ADE)
+# Brand: DAEX (formerly ADE)
 
 The product was called ADE (agentic development environment). That became the
-name of a whole category of tools, so the product is now **Daex**, pronounced
+name of a whole category of tools, so the product is now **DAEX**, pronounced
 "dax", at daex.dev.
 
 The rule: rename everything a person sees or types. Keep every internal
@@ -13,9 +13,9 @@ ever sees it.
 
 | What | New | Former | Notes |
 |---|---|---|---|
-| Display name | Daex | ADE | Always "Daex", never "DAEX". First mention in onboarding and release notes: "Daex (formerly ADE)". |
+| Display name | DAEX | ADE | Always "DAEX", in capitals (owner decision 2026-11-27; it replaced an earlier title-case spelling that never shipped). Said "dax", so the article is "a": "a DAEX chat". Lowercase `daex` only for the command, domain, scheme and package names. First mention in onboarding and release notes: "DAEX (formerly ADE)". |
 | CLI | `daex` | `ade` | `daex` is the primary command; `ade` stays installed as a permanent alias. |
-| Feature names | Daex Cloud, Daex Beta, `daex code` | ADE Cloud, ADE Beta, `ade code` | Same pattern for any "ADE <feature>" name. |
+| Feature names | DAEX Cloud, DAEX Beta, `daex code` | ADE Cloud, ADE Beta, `ade code` | Same pattern for any "ADE <feature>" name. |
 | Domain | daex.dev | ade-app.dev | ade-app.dev keeps working. Sign-in (`clerk.ade-app.dev`) and API hosts stay on ade-app.dev for now, because released clients call them. |
 | npm scope | `@daex-dev` | `@ade-dev` | |
 | URL scheme | `daex://` | `ade://` | `ade://` is accepted forever. |
@@ -29,9 +29,9 @@ build configs can all import it by relative path.
 ```ts
 import { BRAND } from "../../shared/brand";
 
-`Restart ${BRAND.NAME} to finish.`;  // "Restart Daex to finish."
-BRAND.CLOUD_NAME;                    // "Daex Cloud"
-BRAND.INTRO_NAME;                    // "Daex (formerly ADE)"
+`Restart ${BRAND.NAME} to finish.`;  // "Restart DAEX to finish."
+BRAND.CLOUD_NAME;                    // "DAEX Cloud"
+BRAND.INTRO_NAME;                    // "DAEX (formerly ADE)"
 `Run ${BRAND.CLI} code`;             // "Run daex code"
 ```
 
@@ -98,7 +98,7 @@ working. Later steps read both.
 | `ade` CLI | `daex` | `daex` becomes the binary (`bin` in `apps/ade-cli/package.json`); `ade` stays as a permanent alias. |
 | `@ade-dev/*` packages | `@daex-dev/*` | Publish under the new scope; keep the old packages pointing at it (`packages/sdk/package.json`, `packages/chat-ui/package.json`). |
 
-## Old names in output: producers write Daex, readers accept both
+## Old names in output: producers write DAEX, readers accept both
 
 Owner decision, 2026-11-27: at launch the account server's minimum version
 (`GET /client/minimum`, `apps/desktop/src/shared/clientUpdateGate.ts`, iOS
@@ -106,7 +106,7 @@ Owner decision, 2026-11-27: at launch the account server's minimum version
 iPhones below it must update before they keep working. Nothing is written in
 the old form for old versions any more:
 
-- **Producers write Daex / `daex`**: links, markers, prefixes, user agents,
+- **Producers write DAEX / `daex`**: links, markers, prefixes, user agents,
   defaults and commands.
 - **Readers keep accepting the old form forever.** Transcripts, provider
   session files, git history, PR bodies, saved automations, D1 rows and pasted
@@ -119,22 +119,22 @@ What flipped, with the reader that still accepts the old form:
 |---|---|---|
 | `daex://` new links and forwarded links | `ade://` | `deeplinks.ts` (`ADE_DEEPLINK_SCHEMES`), iOS `Brand.linkSchemes`, push relay |
 | `daex` and `daex-*` skill names in renderer-written agent text | `ade`, `ade-*` | `ade` alias, `LEGACY_BUNDLED_AGENT_SKILL_ALIASES` |
-| `[Daex] …` compaction, trim and test-log notices | `[ADE] …` | `chatEventCompaction.ts`, `chatTranscriptRows.ts`, iOS `WorkEventMapping.swift` |
-| `[Daex launch directive]`, `## Daex CLI primer`, `## Daex`, `Daex session guidance.`, `System context (Daex continuity, …)` | the ADE forms | `discoveryUtils.ts`, `discoverAcpShared.ts`, `cliLaunch.ts` |
-| `[Daex lane]` (Devin pin) | `[ADE lane]` | `devinCloud.ts` |
-| Stop reasons `the Daex brain restarted`, `another Daex brain took over this chat` | ADE | `chatAutoResume.ts`, `SubagentActivityCards.tsx` |
-| Handoff default prompt (`another Daex machine`) | `another ADE machine` | `isCrossMachineHandoffDefaultPrompt` |
-| Sync skipReason `Another Daex app …`; autolinks `Daex's GitHub sign-in` | ADE | `readCompetingSyncHostOwner`, `GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN` |
+| `[DAEX] …` compaction, trim and test-log notices | `[ADE] …` | `chatEventCompaction.ts`, `chatTranscriptRows.ts`, iOS `WorkEventMapping.swift` |
+| `[DAEX launch directive]`, `## DAEX CLI primer`, `## DAEX`, `DAEX session guidance.`, `System context (DAEX continuity, …)` | the ADE forms | `discoveryUtils.ts`, `discoverAcpShared.ts`, `cliLaunch.ts` |
+| `[DAEX lane]` (Devin pin) | `[ADE lane]` | `devinCloud.ts` |
+| Stop reasons `the DAEX brain restarted`, `another DAEX brain took over this chat` | ADE | `chatAutoResume.ts`, `SubagentActivityCards.tsx` |
+| Handoff default prompt (`another DAEX machine`) | `another ADE machine` | `isCrossMachineHandoffDefaultPrompt` |
+| Sync skipReason `Another DAEX app …`; autolinks `DAEX's GitHub sign-in` | ADE | `readCompetingSyncHostOwner`, `GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN` |
 | `daex:` CLI error prefix (CLI and desktop-written lines) | `ade:` | `computerUseActionOutput.ts`, `runtimeRpcClient.ts`, iOS `WorkComputerUseOutput.swift` |
 | `daex --version` output (`daex X.Y.Z`) | `ade X.Y.Z` | desktop and CLI version checks |
-| Brain messages `Daex brain listening on`, `Failed to initialize the Daex brain …`, `Daex kept trying` | ADE | `old-database-launch-check.mjs`, `cloudBoxSignInStart.ts` |
-| `Unknown Daex action: …`, `… not exposed through Daex actions` | ADE | `codedError.ts`, `chatLaunchActions.ts`, `ProvidersSection.tsx`, `useGitHubPrFilterSearch.ts` |
-| Bonjour instance name `Daex Sync <host> <port>` (type `_ade-sync._tcp` stays) | `ADE Sync …` | `syncHostService.ts` orphan cleanup |
-| Lane simulators `Daex · <lane>`, virtual display prefix `Daex` | `ADE · <lane>` | `looksLikeAdeDeviceName` |
-| Deleted-lane trailers `Daex-Lane-Id` …, snapshot author Daex | `ADE-Lane-Id` …, ADE | `deletedLaneSnapshots.ts` |
-| Stored cloud computer default `Daex Cloud computer` | `ADE Cloud computer` | `isCloudMachineDefaultName`, `displayLegacyDefaultName` (desktop, iOS, CLI) |
-| User agents `Daex-Agent/1.0`, `Daex-LinkPreview/1.0`, `Daex-iOS/<v>`, `Daex MCP events`, the Worker agents, … | ADE | Gravity `hashedEmailFor` |
-| MCP Apps `hostInfo.name` and `userAgent` Daex | ADE | none |
+| Brain messages `DAEX brain listening on`, `Failed to initialize the DAEX brain …`, `DAEX kept trying` | ADE | `old-database-launch-check.mjs`, `cloudBoxSignInStart.ts` |
+| `Unknown DAEX action: …`, `… not exposed through DAEX actions` | ADE | `codedError.ts`, `chatLaunchActions.ts`, `ProvidersSection.tsx`, `useGitHubPrFilterSearch.ts` |
+| Bonjour instance name `DAEX Sync <host> <port>` (type `_ade-sync._tcp` stays) | `ADE Sync …` | `syncHostService.ts` orphan cleanup |
+| Lane simulators `DAEX · <lane>`, virtual display prefix `DAEX` | `ADE · <lane>` | `looksLikeAdeDeviceName` |
+| Deleted-lane trailers `DAEX-Lane-Id` …, snapshot author DAEX | `ADE-Lane-Id` …, ADE | `deletedLaneSnapshots.ts` |
+| Stored cloud computer default `DAEX Cloud computer` | `ADE Cloud computer` | `isCloudMachineDefaultName`, `displayLegacyDefaultName` (desktop, iOS, CLI) |
+| User agents `DAEX-Agent/1.0`, `DAEX-LinkPreview/1.0`, `DAEX-iOS/<v>`, `DAEX MCP events`, the Worker agents, … | ADE | Gravity `hashedEmailFor` |
+| MCP Apps `hostInfo.name` and `userAgent` DAEX | ADE | none |
 
 Kept on purpose: the lowercase machine tokens (`ade-desktop`, `ade-cli`,
 `ade-harness-test` user agents and RPC client names), `TERM_PROGRAM=ADE`
@@ -151,5 +151,5 @@ and everything in **Frozen identifiers**.
    not-yet-updated app can be sent a `daex://` link it does not register.
 2. Builds released before the gate existed (v1.2.130 and older) are not
    blocked by it and cannot open `daex://`; only their own updater moves them.
-3. Rename the GitHub App to "Daex for GitHub" in its settings; the slug
-   `ade-for-github` stays, and the app copy already says Daex.
+3. Rename the GitHub App to "DAEX for GitHub" in its settings; the slug
+   `ade-for-github` stays, and the app copy already says DAEX.

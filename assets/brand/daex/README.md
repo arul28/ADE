@@ -1,4 +1,4 @@
-# Daex icon masters — v2 (less glossy)
+# DAEX icon masters — v2 (less glossy)
 
 Chosen 2026-11-27: a white "æ" ligature on deep violet glass with a calm finish (faint depth, no hard reflections). Beta is orange, Alpha is teal.
 
