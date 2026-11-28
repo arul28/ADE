@@ -1,10 +1,9 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useMemo } from "react";
 import { FREE_MODEL_BADGE_LABELS, type FreeModelBadge as FreeModelBadgeKind } from "../../../../shared/freeModels";
 import { FreeModelBadge } from "./FreeModelBadge";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Brain, Check, ImageSquare, Lightning, SignIn, Star } from "@phosphor-icons/react";
 import {
-  getModelById,
   modelSupportsFastMode,
   modelSupportsServiceTier,
   modelSupportsUltrafast,
@@ -12,6 +11,7 @@ import {
   type ModelDescriptor,
 } from "../../../../shared/modelRegistry";
 import type { CursorCloudServiceTier } from "../../../../shared/types/config";
+import { newerVersionOf } from "../../../../shared/modelSuccessors";
 import { ModelRowLogo } from "../ProviderLogos";
 import {
   capitalizeWord,
@@ -145,7 +145,7 @@ export const ModelListRow = memo(function ModelListRow({
   const localBadge = isLocalModel(model);
   const maxModeBadge = model.cursorMaxModeOnly === true;
   // An older version of a model the provider has replaced (ADE-300).
-  const newerVersion = model.successorId ? getModelById(model.successorId) ?? null : null;
+  const newerVersion = useMemo(() => newerVersionOf(model.id), [model.id]);
   const showFastChip = !serviceTierMode && Boolean(onFastModeChange) && modelSupportsFastMode(model);
   const fastBlocked = showFastChip && Boolean(fastUnavailableReason);
   const showServiceTierChip = serviceTierMode

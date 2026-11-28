@@ -37,13 +37,14 @@ export function pickFirstChatModel(status: AiSettingsStatus | null): FirstChatMo
     if (!available.has(id)) continue;
     return { id, label: getModelById(id)?.displayName ?? id };
   }
+  const availableIds = [...available];
   let cheapest: { id: string; label: string; price: number } | null = null;
   for (const id of available) {
     const descriptor = getModelById(id);
     const price = descriptor?.inputPricePer1M;
     if (!descriptor || descriptor.deprecated || typeof price !== "number") continue;
     // Never an older version whose newer one runs here too (Sonnet 5 beside Sonnet 5.5).
-    if (findModelUpgrade(id, [...available])) continue;
+    if (findModelUpgrade(id, availableIds)) continue;
     if (!cheapest || price < cheapest.price) cheapest = { id, label: descriptor.displayName, price };
   }
   return cheapest ? { id: cheapest.id, label: cheapest.label } : null;

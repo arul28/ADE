@@ -16867,6 +16867,8 @@ final class SyncService: ObservableObject {
       chatModelCatalogCache[cacheKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
       // The composer's `@` menu and model chips name models from this list.
       WorkModelMentionDirectory.shared.record(catalog: catalog)
+      // A fresh list: the composer's newer-version suggestion reads it again.
+      WorkModelCatalogRevision.shared.bump()
       if mode == "force", let refreshProvider {
         let refreshStaleKey = chatModelsCacheKey(
           provider: "catalog:refresh-stale:\(refreshProvider)\(cursorSourceKeySuffix)"

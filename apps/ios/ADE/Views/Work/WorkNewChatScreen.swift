@@ -749,6 +749,9 @@ struct WorkNewChatScreen: View {
   /// ADE never changes the model itself.
   @State private var modelUpgrade: WorkModelUpgrade?
   @State private var modelUpgradeAvailable: [String] = []
+  /// An older version picked by hand: its pair is turned down once the
+  /// machine's list is read (`refreshModelUpgrade`).
+  @State private var modelUpgradeHandPicked: String?
   /// The free model ADE started this chat on because nothing is signed in on
   /// the chosen machine. ADE chose it, not the person, so it is never saved as
   /// the remembered model; any pick here clears it.
@@ -1182,7 +1185,7 @@ struct WorkNewChatScreen: View {
     }
     .task { await applyHostLaunchDefaults() }
     // "A newer version is out" for the composer's model on the chosen machine.
-    .task(id: modelUpgradeTaskKey) { await refreshModelUpgrade() }
+    .modifier(WorkModelUpgradeRefreshTask(key: modelUpgradeTaskKey) { await refreshModelUpgrade() })
     .task(id: launchAccountsTaskKey) { await loadLaunchAccounts() }
     .sheet(isPresented: $linearIssuePickerPresented) {
       WorkLinearIssuePickerSheet(syncService: syncService, onPick: addLinearLaunchIssue)
@@ -1231,7 +1234,7 @@ struct WorkNewChatScreen: View {
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           modelPickedByPerson = true
           // An older version picked by hand turns its newer-version pair down.
-          WorkModelUpgradeMemory.notePicked(option.id, available: modelUpgradeAvailable)
+          noteModelHandPicked(option.id)
           freeDefaultSelection = nil
           selectedPreset = nil
           selectedModelOption = option
@@ -1323,17 +1326,17 @@ struct WorkNewChatScreen: View {
 
   /// The suggestion while the composer is still on the older version.
   private var shownModelUpgrade: WorkModelUpgrade? {
-    guard let modelUpgrade, modelUpgrade.fromModelId == modelId,
-          sessionMode == .chat, selectedPreset == nil else { return nil }
+    guard let modelUpgrade, modelUpgrade.fromModelId == modelId, selectedPreset == nil else { return nil }
     return modelUpgrade
   }
 
   /// Reads the chosen machine's models and suggests the newest version of
-  /// the composer's model it runs, unless that pair was turned down.
+  /// the composer's model it runs, unless that pair was turned down. Chat
+  /// and CLI alike: the CLI launches with the composer's model too.
   @MainActor
   private func refreshModelUpgrade() async {
     let from = modelId
-    guard sessionMode == .chat, selectedPreset == nil, workModelNewerVersionName(from) != nil else {
+    guard selectedPreset == nil, workModelNewerVersionName(from) != nil else {
       modelUpgrade = nil
       return
     }
@@ -1342,7 +1345,23 @@ struct WorkNewChatScreen: View {
       return
     }
     modelUpgradeAvailable = available
+    if modelUpgradeHandPicked == from {
+      WorkModelUpgradeMemory.notePicked(from, available: available)
+      modelUpgradeHandPicked = nil
+    }
     modelUpgrade = WorkModelUpgradeMemory.suggestion(for: from, available: available)
+  }
+
+  /// A model picked by hand: when it is an older version, its pair is turned
+  /// down, now if it is the one the strip offers for, else once the list is read.
+  private func noteModelHandPicked(_ pickedId: String) {
+    guard workModelNewerVersionName(pickedId) != nil else { return }
+    if let shown = modelUpgrade, shown.fromModelId == pickedId {
+      WorkModelUpgradeMemory.dismiss(shown)
+      modelUpgrade = nil
+    } else {
+      modelUpgradeHandPicked = pickedId
+    }
   }
 
   /// The models the chosen machine runs, from its own list. Nil for another
@@ -1355,13 +1374,15 @@ struct WorkNewChatScreen: View {
     }
     guard selectedMachineKey == nil,
           let catalog = try? await syncService.getChatModelCatalog(mode: "cached") else { return nil }
-    return workAvailableCatalogModelIds(catalog)
+    return workAvailableCatalogModelIds(catalog, mode: sessionMode == .cli ? .cli : .chat)
   }
 
   /// Switch: the same change a pick in the picker makes.
   private func switchToNewerModelVersion(_ upgrade: WorkModelUpgrade) {
     guard !busy, modelId == upgrade.fromModelId else { return }
     modelPickedByPerson = true
+    // A saved Custom harness still loading must not land over the switch.
+    restoredPresetId = nil
     freeDefaultSelection = nil
     selectedPreset = nil
     selectedModelOption = nil

@@ -399,9 +399,7 @@ import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive, rowSays
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { useFreeModelsDraft } from "./useFreeModelsDraft";
 import { useModelUpgradeSuggestion } from "./useModelUpgradeSuggestion";
-import { ComposerNoticeStack, ModelUpgradeStrip } from "./ModelUpgradeStrip";
-import { dismissModelUpgrade } from "./modelUpgradeMemory";
-import { findModelUpgrade } from "../../../shared/modelSuccessors";
+import { ModelUpgradeStrip } from "./ModelUpgradeStrip";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -440,7 +438,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { cardShowsOwnError, readNativeInputCard } from "../../../shared/nativeInputCards";
 import { providerSettingsEntryId, providerSignInKnownBeforeSend, providerSignInSpec, type ProviderSignInNeed } from "./ProviderSignInCard";
 import { AccountSwitchRecoveryCard, ChatSignInCard } from "./ProviderLoginRecoveryCards";
-import { ProviderSignInCardHolder, ProviderSignInStrip } from "./ProviderSignInSlot";
+import { ComposerNoticeStack, ProviderSignInCardHolder, ProviderSignInStrip } from "./ProviderSignInSlot";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore, type WorkDraftCloudTarget } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
@@ -20163,15 +20161,6 @@ export function AgentChatPane({
     }
     return null;
   }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, connectionsByProvider, signInLoginProvider, signInProvider, subagentView, turnActive]);
-  // A fresh chat draft the person runs here with the composer's own model:
-  // not a subagent, a cloud or CLI draft, a parallel set or a narrowed list.
-  const composerFreshDraft = !selectedSessionId
-    && selectedEvents.length === 0
-    && !chatScope
-    && !subagentView
-    && !draftSkipsLocalSignIn
-    && !parallelDraftActive
-    && !modelSelectionConstrained;
   // Free models (`shared/freeModels.ts`), from the composer machine's status
   // like the sign-in check above.
   const { offerFreeModel, handleUseFreeModel } = useFreeModelsDraft({
@@ -20181,7 +20170,13 @@ export function AgentChatPane({
     runtimeBinding: activeComposerRuntimeBinding ?? null,
     composerIsRemote: composerRuntimePin != null,
     draftKey: companionStateKey,
-    freshDraft: composerFreshDraft,
+    freshDraft: !selectedSessionId
+      && selectedEvents.length === 0
+      && !chatScope
+      && !subagentView
+      && !draftSkipsLocalSignIn
+      && !parallelDraftActive
+      && !modelSelectionConstrained,
     modelId,
     composerReady: preferencesReady && !loading,
     personModelChangeRef,
@@ -20423,20 +20418,24 @@ export function AgentChatPane({
     || projectTransitionBlocksChat || Boolean(subagentView);
   // A newer version of the composer's model (ADE-300): offered, never applied
   // by ADE. Only a model this composer can pick on the chat's machine.
-  const modelUpgrade = useModelUpgradeSuggestion({
+  // Not a parallel or Devin Cloud draft: they launch their slots' models or
+  // Devin's version pick, not `modelId`.
+  const { suggestion: modelUpgrade, notePicked: noteModelPicked } = useModelUpgradeSuggestion({
     modelId,
     availableModelIds: composerAvailableModelIds,
-    canSwitch: Boolean(modelId) && !composerModelLocked && !hideModelControls && !isPersistentIdentitySurface
-      && !activeHarnessPresetId,
+    canSwitch: !composerModelLocked && !hideModelControls && !isPersistentIdentitySurface
+      && !activeHarnessPresetId && !parallelDraftActive && !devinCloudMode,
     personModelChangeRef,
   });
-  const modelUpgradeStrip = modelUpgrade ? (
+  // Held while the suggestion holds: a fresh element each render would
+  // re-render the composer through the slot memos below.
+  const modelUpgradeStrip = useMemo(() => (modelUpgrade ? (
     <ModelUpgradeStrip
       key={`${modelUpgrade.fromModelId}>${modelUpgrade.toModelId}`}
       upgrade={modelUpgrade}
       catalogScopeKey={composerModelCatalogScopeKey}
     />
-  ) : null;
+  ) : null), [composerModelCatalogScopeKey, modelUpgrade]);
   // Sits above the prompt box, which stays mounted: typed text never hides.
   const providerSignInSlot = useMemo(() => {
     if (!providerSignInShown && accountSwitchShown) {
@@ -20456,6 +20455,7 @@ export function AgentChatPane({
       );
     }
     if (!providerSignInShown) {
+      if (!adeCloudSignInNeed && !modelUpgradeStrip) return null;
       return (
         <ComposerNoticeStack>
           {adeCloudSignInNeed ? (
@@ -20869,7 +20869,6 @@ export function AgentChatPane({
     enabled: Boolean(selectedSessionId) && !chatScope && !subagentView && !machineChipAction
       && (selectedSession?.surface ?? "work") === "work",
   });
-
 
   // A personal pane has no lane by design; everything below handles that.
   // A draft on an ADE Cloud tab needs none either: it starts or picks an ADE
@@ -22291,8 +22290,7 @@ export function AgentChatPane({
   // request, which ADE or a caller made.
   const handlePickerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
     const applied = handlePersonModelChange(nextModelId, options);
-    const upgrade = applied && !options?.presetId ? findModelUpgrade(nextModelId, composerAvailableModelIds) : null;
-    if (upgrade) dismissModelUpgrade(upgrade);
+    if (applied && !options?.presetId) noteModelPicked(nextModelId);
     return applied;
   };
   personModelChangeRef.current = handlePersonModelChange;
@@ -22460,7 +22458,7 @@ export function AgentChatPane({
             appControlContextItems={appControlContextItems}
             builtInBrowserContextItems={builtInBrowserContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : EMPTY_EXECUTION_MODE_OPTIONS}
-            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat || Boolean(subagentView)}
+            modelSelectionLocked={composerModelLocked}
             // Effort can change mid-turn: the service applies it when the turn ends.
             effortSelectionLocked={modelSelectionLocked || effortSelectionLocked || sessionMutationKind === "model" || projectTransitionBlocksChat || Boolean(subagentView)}
             permissionModeLocked={permissionModeLocked || Boolean(permissionModeLockReason) || identitySessionSettingsBusy || projectTransitionBlocksChat}

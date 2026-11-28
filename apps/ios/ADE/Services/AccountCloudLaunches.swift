@@ -547,6 +547,7 @@ final class AccountCloudLaunchStore: ObservableObject {
       guard generation == accountGeneration else { return }
       catalog = read
       catalogError = nil
+      WorkModelCatalogRevision.shared.bump()
     } catch {
       guard generation == accountGeneration else { return }
       catalogError = cloudServerFailureMessage(error)

@@ -1,6 +1,7 @@
 /*
- * The sign-in slot above the prompt box (ProviderSignInSlot.tsx). Every strip
- * colour and size is here, so the design pass tunes one file. Surfaces mix the
+ * The strips above the prompt box (`ComposerStrip` in ProviderSignInSlot.tsx):
+ * the sign-in strip and the newer-version strip. Every strip colour and size
+ * is here, so the design pass tunes one file. Surfaces mix the
  * provider tint (--psi-accent) into theme tokens; nothing is hard-coded white
  * or black.
  */
@@ -71,7 +72,7 @@
   border-radius: 12px 12px 0 0;
 }
 
-/* Two strips at once (ComposerNoticeStack in ModelUpgradeStrip.tsx): one tab
+/* Two strips at once (ComposerNoticeStack in ProviderSignInSlot.tsx): one tab
    on the box, each strip a line of it with a hairline between, each keeping
    its own tint. */
 .ade-psi-stack {

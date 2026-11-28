@@ -684,12 +684,12 @@ struct WorkSessionDestinationView: View {
       let machineKey = personalChatMachineKey
       return {
         (try? await sync.getPersonalChatModelCatalog(mode: "cached", machineKey: machineKey))
-          .map(workAvailableCatalogModelIds)
+          .map { workAvailableCatalogModelIds($0) }
       }
     }
     guard !isRemoteMachineChat, registeredRemoteMachineKey == nil,
           !sync.isRemoteMachineChat(sessionId: sessionId) else { return nil }
-    return { (try? await sync.getChatModelCatalog(mode: "cached")).map(workAvailableCatalogModelIds) }
+    return { (try? await sync.getChatModelCatalog(mode: "cached")).map { workAvailableCatalogModelIds($0) } }
   }
 
   /// The account machine key this chat's held messages are filed under:

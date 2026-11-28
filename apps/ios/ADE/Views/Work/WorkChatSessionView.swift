@@ -1186,6 +1186,9 @@ struct WorkChatSessionView: View {
   /// its model until the person switches.
   @State var modelUpgradeOffer: WorkModelUpgrade?
   @State var modelUpgradeAvailable: [String] = []
+  /// An older version picked by hand in the picker: its pair is turned down
+  /// once the chat's machine's list is read (`refreshModelUpgradeOffer`).
+  @State var modelUpgradeHandPicked: String?
   /// Bumped each time a NEW blocking pending input arrives so the body can fire
   /// a single light haptic — keeps a question/plan gate from being missed.
   @State var blockingPendingHapticToken = 0
@@ -1806,57 +1809,6 @@ struct WorkChatSessionView: View {
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
       || showsComposerThreadCommentsChip || showsComposerCompactFirstPill || showsComposerSideChatChip
-  }
-
-  /// The chat's composer can change its model now (the model chip opens the picker).
-  var canSwitchChatModel: Bool {
-    chatSummaryContext.isAvailable
-      && !chatSummaryContext.isSideChat
-      && !(isPersonalChat && (!personalModelCatalogAvailable || !personalSessionUpdatesAvailable))
-  }
-
-  /// "A newer version is out", while the chat is still on the older one.
-  /// The sign-in card takes the composer's place, and this with it.
-  var shownModelUpgradeOffer: WorkModelUpgrade? {
-    guard inputLockMessage == nil, canSwitchChatModel, let modelUpgradeOffer,
-          modelUpgradeOffer.fromModelId == chatSummaryContext.currentModelId else { return nil }
-    return modelUpgradeOffer
-  }
-
-  var modelUpgradeTaskKey: String {
-    "\(session.id)|\(chatSummaryContext.currentModelId)|\(canSwitchChatModel)|\(loadModelUpgradeCandidates != nil)|\(modelPickerCloudCatalog != nil)"
-  }
-
-  /// Reads the chat machine's models and suggests the newest version of the
-  /// chat's model it runs, unless the person turned that pair down.
-  @MainActor
-  func refreshModelUpgradeOffer() async {
-    modelUpgradeOffer = nil
-    let modelId = chatSummaryContext.currentModelId
-    guard canSwitchChatModel, let load = loadModelUpgradeCandidates, !modelId.isEmpty,
-          workModelNewerVersionName(modelId) != nil else { return }
-    guard let available = await load(), !Task.isCancelled,
-          chatSummaryContext.currentModelId == modelId else { return }
-    modelUpgradeAvailable = available
-    modelUpgradeOffer = WorkModelUpgradeMemory.suggestion(for: modelId, available: available)
-  }
-
-  /// "Switch": the same model change the picker makes, on the chat's machine.
-  func switchToNewerModelVersion() {
-    guard let offer = modelUpgradeOffer, !modelUpdateInFlight else { return }
-    ADEHaptics.light()
-    Task { @MainActor in
-      modelUpdateInFlight = true
-      defer { modelUpdateInFlight = false }
-      if await onSelectModel(offer.toModelId) { modelUpgradeOffer = nil }
-    }
-  }
-
-  /// ×: this pair is turned down on this device, in every chat.
-  func dismissModelUpgradeOffer() {
-    guard let offer = modelUpgradeOffer else { return }
-    WorkModelUpgradeMemory.dismiss(offer)
-    modelUpgradeOffer = nil
   }
 
   /// The Side chat chip: only for a chat that has a side chat.
@@ -3554,7 +3506,7 @@ struct WorkChatSessionView: View {
         .onChange(of: ctoLiveFacts, initial: true) { _, facts in
           publishCtoLiveFacts(facts)
         }
-        .task(id: modelUpgradeTaskKey) { await refreshModelUpgradeOffer() }
+        .modifier(WorkModelUpgradeRefreshTask(key: modelUpgradeTaskKey) { await refreshModelUpgradeOffer() })
   }
 
   /// Hands the CTO thread's turn facts to its live model (header pill,
@@ -3696,7 +3648,7 @@ struct WorkChatSessionView: View {
                 let wasCurrentModel = workModelIdsEquivalent(option.id, currentModelId)
                 if !wasCurrentModel {
                   // An older version picked by hand turns its newer-version pair down.
-                  WorkModelUpgradeMemory.notePicked(option.id, available: modelUpgradeAvailable)
+                  noteModelHandPicked(option.id)
                   _ = await onSelectModel(option.id)
                 }
                 guard !Task.isCancelled else { return }

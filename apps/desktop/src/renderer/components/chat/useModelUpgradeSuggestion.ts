@@ -1,9 +1,9 @@
-import { useMemo, useSyncExternalStore, type MutableRefObject } from "react";
+import { useCallback, useMemo, useRef, useSyncExternalStore, type MutableRefObject } from "react";
 import { findModelUpgrade, type ModelUpgrade } from "../../../shared/modelSuccessors";
 import {
   dismissModelUpgrade,
-  isModelUpgradeDismissed,
-  modelUpgradeDismissalsVersion,
+  modelUpgradePairKey,
+  readDismissedModelUpgrades,
   subscribeModelUpgradeDismissals,
 } from "./modelUpgradeMemory";
 
@@ -19,6 +19,9 @@ export type ModelUpgradeSuggestion = ModelUpgrade & {
  * `shared/modelSuccessors.ts`). Only a suggestion: ADE never changes the
  * model itself. Switch on a new chat changes it now; on an open chat it
  * applies with the next message, like any pick in the picker.
+ *
+ * `notePicked` is for the composer's own picker and @ menu: an older version
+ * chosen there by hand is the person's answer, so its pair is turned down.
  */
 export function useModelUpgradeSuggestion(args: {
   modelId: string;
@@ -28,19 +31,27 @@ export function useModelUpgradeSuggestion(args: {
   canSwitch: boolean;
   /** The composer's own pick handler: false when it refuses the model. */
   personModelChangeRef: MutableRefObject<((modelId: string) => boolean) | null>;
-}): ModelUpgradeSuggestion | null {
+}): { suggestion: ModelUpgradeSuggestion | null; notePicked: (modelId: string) => void } {
   const { modelId, availableModelIds, canSwitch, personModelChangeRef } = args;
-  const dismissals = useSyncExternalStore(subscribeModelUpgradeDismissals, modelUpgradeDismissalsVersion);
-  return useMemo(() => {
-    if (!canSwitch || !modelId) return null;
+  const dismissed = useSyncExternalStore(subscribeModelUpgradeDismissals, readDismissedModelUpgrades);
+  const availableRef = useRef(availableModelIds);
+  availableRef.current = availableModelIds;
+
+  const suggestion = useMemo(() => {
+    if (!canSwitch) return null;
     const upgrade = findModelUpgrade(modelId, availableModelIds);
-    if (!upgrade || isModelUpgradeDismissed(upgrade)) return null;
+    if (!upgrade || dismissed.includes(modelUpgradePairKey(upgrade))) return null;
     return {
       ...upgrade,
       switchTo: () => { personModelChangeRef.current?.(upgrade.toModelId); },
       dismiss: () => dismissModelUpgrade(upgrade),
     };
-    // `dismissals`: a pair turned down here or in another window.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableModelIds, canSwitch, dismissals, modelId, personModelChangeRef]);
+  }, [availableModelIds, canSwitch, dismissed, modelId, personModelChangeRef]);
+
+  const notePicked = useCallback((pickedModelId: string) => {
+    const upgrade = findModelUpgrade(pickedModelId, availableRef.current);
+    if (upgrade) dismissModelUpgrade(upgrade);
+  }, []);
+
+  return { suggestion, notePicked };
 }

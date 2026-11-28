@@ -104,6 +104,7 @@ export type ModelDescriptor = {
    * A chat on this model is offered the newest successor its machine can run
    * ("A newer version is out", `shared/modelSuccessors.ts`); ADE never
    * switches by itself. Only a same-line release, never a different tier.
+   * iOS mirrors these pairs by hand (`apps/ios/ADE/Views/Work/WorkModelUpgrade.swift`).
    */
   successorId?: string;
   /** Price per million input tokens (USD). Used for cost estimation. */
