@@ -103,20 +103,23 @@ async function quietCloudSignIn(
   const windowBinds = [userId, at + CLOCK_SKEW_MS, at];
   if (address) {
     if (args.spend) {
-      const repeat = await db.prepare("select 1 as hit from cloud_quiet_sign_ins where email_id = ?").bind(emailId).first<{ hit: number }>();
-      if (repeat) return "cloud_computer";
+      // One statement, so two deliveries of one email at once spend one join
+      // between them: the one that loses finds the email id the other kept.
       const spent = await db.prepare(`
         update cloud_quiet_sign_ins set used_at = ?, email_id = ?
         where id = (select id from cloud_quiet_sign_ins where ${window} and address = ? and used_at is null order by created_at desc limit 1)
-      `).bind(Date.now(), emailId, ...windowBinds, address).run();
+          and not exists (select 1 from cloud_quiet_sign_ins where email_id = ?)
+      `).bind(Date.now(), emailId, ...windowBinds, address, emailId).run();
       if ((spent.meta?.changes ?? 0) > 0) return "cloud_computer";
+      const repeat = await db.prepare("select 1 as hit from cloud_quiet_sign_ins where email_id = ?").bind(emailId).first<{ hit: number }>();
+      if (repeat) return "cloud_computer";
     } else {
       const open = await db.prepare(`select 1 as hit from cloud_quiet_sign_ins where ${window} and address = ? and used_at is null`)
         .bind(...windowBinds, address).first<{ hit: number }>();
       if (open) return "cloud_computer";
     }
   }
-  const joined = await db.prepare(`select 1 as hit from cloud_quiet_sign_ins where ${window}`).bind(...windowBinds).first<{ hit: number }>();
+  const joined = await db.prepare(`select 1 as hit from cloud_quiet_sign_ins where ${window} and used_at is null`).bind(...windowBinds).first<{ hit: number }>();
   return joined ? "other_address" : "none";
 }
 
