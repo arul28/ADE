@@ -497,6 +497,148 @@ struct CloudAgentLimitsState: Decodable, Equatable {
 }
 
 /// A Linear answer the server read with the project's own Linear connection.
+/// One lane's file and folder names in a saved `@` menu, as its file index lists them.
+struct CloudMentionSnapshotFiles: Decodable, Equatable {
+  let files: [String]
+  let directories: [String]
+  /// The lane had more files than were saved: the shallowest were kept.
+  let truncated: Bool
+
+  private enum CodingKeys: String, CodingKey { case files, directories, truncated }
+
+  init(files: [String], directories: [String], truncated: Bool) {
+    self.files = files
+    self.directories = directories
+    self.truncated = truncated
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    files = c.lenient(ADELossyArray<String>.self, forKey: .files)?.wrappedValue ?? []
+    directories = c.lenient(ADELossyArray<String>.self, forKey: .directories)?.wrappedValue ?? []
+    truncated = c.lenient(Bool.self, forKey: .truncated) ?? false
+  }
+}
+
+/// The `@` menu an ADE Cloud computer saved before it rested
+/// (`cloudMentionSnapshot.ts`): every kind's rows but machines, and each
+/// lane's file names. Another version is not read (the caller keeps today's
+/// rows).
+struct CloudMentionSnapshot: Decodable, Equatable {
+  static let version = 1
+  let savedAt: Double
+  let rows: [ChatMentionSuggestionRow]
+  let files: [String: CloudMentionSnapshotFiles]
+
+  private enum CodingKeys: String, CodingKey { case version, savedAt, rows, files }
+
+  init(savedAt: Double, rows: [ChatMentionSuggestionRow], files: [String: CloudMentionSnapshotFiles]) {
+    self.savedAt = savedAt
+    self.rows = rows
+    self.files = files
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    guard c.lenient(Int.self, forKey: .version) == Self.version, let savedAt = c.lenient(Double.self, forKey: .savedAt) else {
+      throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "unknown mention snapshot")
+    }
+    self.savedAt = savedAt
+    rows = c.lenient(ADELossyArray<ChatMentionSuggestionRow>.self, forKey: .rows)?.wrappedValue ?? []
+    files = c.lenient([String: CloudMentionSnapshotFiles].self, forKey: .files) ?? [:]
+  }
+}
+
+/// `GET /cloud/mentions/:machine`: the saved copy, or "unchanged" when the
+/// caller already holds the copy saved at `since`.
+struct CloudMentionSnapshotAnswer: Decodable, Equatable {
+  let unchanged: Bool
+  let snapshot: CloudMentionSnapshot?
+
+  private enum CodingKeys: String, CodingKey { case unchanged, snapshot }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    unchanged = c.lenient(Bool.self, forKey: .unchanged) ?? false
+    snapshot = c.lenient(CloudMentionSnapshot.self, forKey: .snapshot)
+  }
+}
+
+/// A saved `@` menu answering one query, ranked as the computer ranks its own
+/// menu awake: rows by `WorkChatMentionMenuRanker` (the twin of
+/// `rankChatMentionMenu`), files by `scoreQuickOpenPath`
+/// (`apps/desktop/src/shared/quickOpenScore.ts`).
+enum CloudMentionSnapshotMenu {
+  /// The copy's rows (the chat itself and any machine row left out) and the
+  /// account's machines.
+  static func rows(
+    _ snapshot: CloudMentionSnapshot,
+    excludeSessionId: String?,
+    machines: [ChatMentionSuggestionRow]
+  ) -> [ChatMentionSuggestionRow] {
+    snapshot.rows.filter { row in
+      row.kind != "machine" && !(row.kind == "chat" && row.id == excludeSessionId)
+    } + machines.filter { $0.kind == "machine" }
+  }
+
+  /// One lane's files and folders for a composer `@` query, best first.
+  static func files(
+    _ snapshot: CloudMentionSnapshot,
+    laneId: String,
+    query: String,
+    limit: Int
+  ) -> [(path: String, isDirectory: Bool)] {
+    guard let lane = snapshot.files[laneId] else { return [] }
+    var scored: [(path: String, isDirectory: Bool, score: Double)] = []
+    for path in lane.files {
+      let score = scoreQuickOpenPath(path, query: query, allowComposerPrefixFallback: true)
+      if score >= 0 { scored.append((path, false, score)) }
+    }
+    for path in lane.directories {
+      let score = scoreQuickOpenPath(path, query: query, allowComposerPrefixFallback: true)
+      if score >= 0 { scored.append((path, true, score)) }
+    }
+    scored.sort { lhs, rhs in
+      lhs.score != rhs.score ? lhs.score > rhs.score : lhs.path.localizedCompare(rhs.path) == .orderedAscending
+    }
+    return scored.prefix(max(0, limit)).map { ($0.path, $0.isDirectory) }
+  }
+
+  /// `scoreQuickOpenPath`: negative when the path does not match. Offsets
+  /// count UTF-16 units, as JavaScript's do.
+  static func scoreQuickOpenPath(_ path: String, query: String, allowComposerPrefixFallback: Bool) -> Double {
+    let normalized = path.lowercased()
+    let needle = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    if needle.isEmpty {
+      let depth = normalized.reduce(0) { $1 == "/" || $1 == "\\" ? $0 + 1 : $0 }
+      return Double(max(1, 100 - depth))
+    }
+    let direct = score(normalized, needle: needle)
+    if direct >= 0 { return direct }
+    guard allowComposerPrefixFallback else { return -1 }
+    // Prose after an extensionless path: try shorter space-delimited
+    // prefixes, longest match wins.
+    let isRootLevel = !normalized.contains("/") && !normalized.contains("\\")
+    let words = needle.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+    var best = -1.0
+    var end = words.count - 1
+    while end > 0 {
+      let prefix = words[0..<end].joined(separator: " ")
+      let hit = isRootLevel ? (normalized.hasPrefix(prefix) ? 600 : -1) : score(normalized, needle: prefix)
+      if hit >= 0 { best = max(best, hit + Double(min(prefix.utf16.count, 999)) / 1000) }
+      end -= 1
+    }
+    return best
+  }
+
+  private static func score(_ normalized: String, needle: String) -> Double {
+    if normalized == needle { return 1000 }
+    if normalized.hasSuffix("/\(needle)") || normalized.hasSuffix("\\\(needle)") { return 900 }
+    guard let range = normalized.range(of: needle, options: .literal) else { return -1 }
+    return Double(600 - range.lowerBound.utf16Offset(in: normalized))
+  }
+}
+
 struct CloudLinearAnswer {
   /// Linear's own `data` for the op's document.
   let data: [String: Any]
@@ -522,6 +664,15 @@ extension CloudServerClient {
   /// One lane's Git summary, with its changed files.
   func gitSummary(machineKey: String, laneId: String) async throws -> CloudGitSummary {
     try decode(CloudGitSummary.self, from: try await send("GET", "cloud/git/\(segment(machineKey))/\(segment(laneId))"))
+  }
+
+  /// The `@` menu one computer saved for a project; `since` is the saved
+  /// time the caller holds. Throws `.noAccess` when none is saved (or an older server).
+  func mentionSnapshot(machineKey: String, projectKey: String, laneId: String?, since: Double?) async throws -> CloudMentionSnapshotAnswer {
+    var query = [URLQueryItem(name: "project", value: projectKey)]
+    if let laneId { query.append(URLQueryItem(name: "lane", value: laneId)) }
+    if let since { query.append(URLQueryItem(name: "since", value: String(format: "%.0f", since))) }
+    return try decode(CloudMentionSnapshotAnswer.self, from: try await send("GET", "cloud/mentions/\(segment(machineKey))", query: query))
   }
 
   /// The copy of one CLI or shell session.
@@ -583,6 +734,10 @@ final class CloudAtRestStore: ObservableObject {
   @Published private(set) var summaries: [String: Read<CloudGitSummary>] = [:]
   private var overviewReadAt: [String: Date] = [:]
   private var summaryReadAt: [String: Date] = [:]
+  /// Saved `@` menus by `machineKey|projectKey|laneId`, and when each was last asked.
+  private var mentionMenus: [String: (snapshot: CloudMentionSnapshot?, checkedAt: Date)] = [:]
+  private var mentionReads: [String: Task<CloudMentionSnapshot?, Never>] = [:]
+  private static let mentionRecheck: TimeInterval = 30
   /// Bumped on an account change: an answer for the last account drops.
   private var generation = 0
 
@@ -594,6 +749,57 @@ final class CloudAtRestStore: ObservableObject {
     summaries = [:]
     overviewReadAt = [:]
     summaryReadAt = [:]
+    mentionMenus = [:]
+    mentionReads = [:]
+  }
+
+  private static func mentionKey(machineKey: String, projectKey: String, laneId: String?) -> String {
+    "\(machineKey.lowercased())|\(projectKey)|\(laneId ?? "")"
+  }
+
+  /// The saved `@` menu the phone holds for a resting computer's project, with no read.
+  func heldMentionSnapshot(machineKey: String, projectKey: String, laneId: String?) -> CloudMentionSnapshot? {
+    mentionMenus[Self.mentionKey(machineKey: machineKey, projectKey: projectKey, laneId: laneId)]?.snapshot
+  }
+
+  /// The saved `@` menu of a resting computer's project (`/cloud/mentions`),
+  /// asked at most every 30 s while someone types. One download per sleep: a
+  /// later read sends the saved time it holds and the server answers
+  /// "unchanged". Nil when none is saved (an older computer or server):
+  /// the caller keeps today's rows.
+  func mentionSnapshot(machineKey: String, projectKey: String, laneId: String?, using sync: SyncService) async -> CloudMentionSnapshot? {
+    let key = Self.mentionKey(machineKey: machineKey, projectKey: projectKey, laneId: laneId)
+    let held = mentionMenus[key]
+    if let held, Date().timeIntervalSince(held.checkedAt) < Self.mentionRecheck { return held.snapshot }
+    if let read = mentionReads[key] { return await read.value }
+    #if DEBUG
+    if isFixture { return held?.snapshot }
+    #endif
+    let started = generation
+    let read = Task { () -> CloudMentionSnapshot? in
+      guard let client = await sync.cloudServerClient() else { return held?.snapshot }
+      do {
+        let answer = try await client.mentionSnapshot(
+          machineKey: machineKey, projectKey: projectKey, laneId: laneId, since: held?.snapshot?.savedAt
+        )
+        guard started == generation else { return nil }
+        let snapshot = answer.unchanged ? held?.snapshot : answer.snapshot
+        mentionMenus[key] = (snapshot, Date())
+        return snapshot
+      } catch CloudServerClient.Failure.noAccess {
+        guard started == generation else { return nil }
+        mentionMenus[key] = (nil, Date())
+        return nil
+      } catch {
+        // A failed read keeps what the phone holds and asks again on the next query.
+        cloudAtRestLog.error("cloud_at_rest read=mention_snapshot failed error=\(String(describing: error), privacy: .public)")
+        return held?.snapshot
+      }
+    }
+    mentionReads[key] = read
+    let snapshot = await read.value
+    if started == generation { mentionReads[key] = nil }
+    return snapshot
   }
 
   static func summaryKey(machineKey: String, laneId: String) -> String {

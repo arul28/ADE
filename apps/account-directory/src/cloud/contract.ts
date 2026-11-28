@@ -223,6 +223,8 @@ export const CLOUD_PATHS = {
   sessions: "/cloud/sessions",
   /** Git summaries saved at rest (`gitSummaries.ts`). */
   git: "/cloud/git",
+  /** The `@` menu a computer saved at rest, one per (computer, project) (`mentionSnapshots.ts`). */
+  mentions: "/cloud/mentions",
   /** Fork capsules saved at rest (`forkCapsules.ts`). */
   capsules: "/cloud/capsules",
   /** Lane backups saved at rest: the work of each lane that is not on GitHub yet (`laneBackups.ts`). */
@@ -289,6 +291,8 @@ export const cloudInstanceUsePath = (instanceId: string): string => `${CLOUD_PAT
 /** `/cloud/sessions/:machine/:session`. */
 export const cloudSessionPath = (machineKey: string, sessionId: string): string =>
   `${CLOUD_PATHS.sessions}/${encodeURIComponent(machineKey)}/${encodeURIComponent(sessionId)}`;
+/** `/cloud/mentions/:machine`: `PUT` (the computer, at rest) or `GET ?project=&lane=&since=` (any of the person's clients). */
+export const cloudMentionsPath = (machineKey: string): string => `${CLOUD_PATHS.mentions}/${encodeURIComponent(machineKey)}`;
 /** `/cloud/git/:machine/:lane`. */
 export const cloudGitPath = (machineKey: string, laneId: string): string =>
   `${CLOUD_PATHS.git}/${encodeURIComponent(machineKey)}/${encodeURIComponent(laneId)}`;

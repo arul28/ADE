@@ -27,6 +27,7 @@ import {
   cloudChatMessagesPath,
   cloudChatMovePath,
   cloudGitPath,
+  cloudMentionsPath,
   cloudInstanceMessagesPath,
   cloudInstanceUsePath,
   cloudSessionPath,
@@ -96,6 +97,7 @@ import {
   type CloudServerLaunchRequest,
 } from "../../../account-directory/src/cloud/contract";
 import type { CloudLaneMovedRequest, CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
+import type { CloudMentionSnapshot } from "./cloudMentionSnapshot";
 import {
   CLOUD_EDGE_PATHS,
   cloudInstanceEventWakesPath,
@@ -466,6 +468,20 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       orNullOn404(() => request<{ summaries: CloudGitSummary[] }>("GET", `${CLOUD_PATHS.git}?project=${encodeURIComponent(projectKey)}`)),
     gitSummary: (machineKey: string, laneId: string) =>
       orNullOn404(() => request<CloudGitSummary>("GET", cloudGitPath(machineKey, laneId))),
+    /**
+     * The `@` menu a computer saved at rest for one project (`cloudMentionSnapshot.ts`), with only `laneId`'s
+     * files when given. `since` (the copy held) answers `{ unchanged: true }` when it is still the newest.
+     * Null when it saved none, or from an older server.
+     */
+    mentionSnapshot: (machineKey: string, query: { projectKey: string; laneId?: string | null; since?: number | null }) => {
+      const params = new URLSearchParams({ project: query.projectKey });
+      if (query.laneId) params.set("lane", query.laneId);
+      if (query.since != null) params.set("since", String(query.since));
+      return orNullOn404(() => request<{ unchanged: true; savedAt: number } | { unchanged?: false; snapshot: CloudMentionSnapshot }>(
+        "GET",
+        `${cloudMentionsPath(machineKey)}?${params.toString()}`,
+      ));
+    },
     /** The account lane index (every machine), for lane mentions only; null from an older server. */
     accountLanes: (args: { project?: string | null; pr?: number | null } = {}) => {
       const query = new URLSearchParams();
@@ -561,6 +577,9 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** `kept`: the server holds a newer read and kept it. */
     putGitSummary: (machineKey: string, laneId: string, upload: CloudGitSummaryUpload) =>
       request<{ ok: true; kept: boolean }>("PUT", cloudGitPath(machineKey, laneId), { body: upload }),
+    /** From the computer at rest: its `@` menu for one project. `kept`: the server holds a newer save and kept it. */
+    putMentionSnapshot: (machineKey: string, upload: { instanceId: string; projectKey: string; snapshot: CloudMentionSnapshot }) =>
+      request<{ ok: true; kept: boolean }>("PUT", cloudMentionsPath(machineKey), { body: upload, timeoutMs: timeoutMs * 2 }),
     /**
      * Part `part` (1-based, at most 6 MiB) of a capsule; a put of part 1 starts a new upload and answers its
      * `uploadId`, which later parts send (`upload.uploadId`). `upload.timeoutMs` shortens the request's own limit.

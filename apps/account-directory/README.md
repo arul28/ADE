@@ -453,7 +453,7 @@ account bearer. The plan rules, hours, disk and cleanups are in
 | `POST /cloud/instances/:id/<action>` | `sleep`, `idle` (the brain asks to sleep; `{backupReportId}` rests it with that lane backup report), `start` (every wake is use; none at 0 hours), `stop`, `update`, `booted`, `keep`, `resize`, `fork`, `exec`, `disk-usage`, `cpu-report`, `backups`, `signed-url`, `public-ports`, `sign-ins`, and `use` (a person's use during the idle save, `last_active_at`; 409 `computer_deleting` once the delete runs). `PUT` `auto-sleep`, `name`, `metadata` |
 | `GET /cloud/instances/:id/update-check` | Whether the computer is behind its channel's image |
 | `PUT /cloud/instances/:id/event-wakes`, `PUT/DELETE /cloud/wake` | [Timed wakes and event wakes](#ade-cloud-timed-wakes-and-event-wakes) |
-| `/cloud/instances/:id/messages…`, `/cloud/chats…`, `/cloud/sessions…`, `/cloud/git…`, `/cloud/capsules…`, `/cloud/backups…`, `/cloud/projects/overview` | [Saved copies](#saved-chats-and-other-saved-copies) and [the queue](#the-message-queue-of-an-existing-chat-or-cli) |
+| `/cloud/instances/:id/messages…`, `/cloud/chats…`, `/cloud/sessions…`, `/cloud/git…`, `/cloud/mentions…`, `/cloud/capsules…`, `/cloud/backups…`, `/cloud/projects/overview` | [Saved copies](#saved-chats-and-other-saved-copies) and [the queue](#the-message-queue-of-an-existing-chat-or-cli) |
 | `/cloud/launches…`, `/cloud/sign-ins…`, `/cloud/models` | [Launches](#launches-from-the-web-and-the-phone) |
 | `POST /cloud/billing/{checkout,portal,extra-hours,plan-cleanup,free-unlock}` | [Payments](#payments) |
 | `GET /cloud/referrals`, `POST /cloud/referrals/redeem` | Referral summary and invite redeem |
@@ -842,13 +842,14 @@ under the prefixes `chats/`, `sessions/`, `capsules/` and `backups/`.
 | `POST /cloud/chats/:m/:c/move` (`chats.ts`) | From the new computer after a continue: the D1 row takes the new machine key and keeps its R2 key, so old parts stay readable. It records `forked_from_*`, deletes the old capsule, and moves the queued messages. A GET of the old key finds the moved row; a PUT to it answers 409. The same move again answers `moved: false`. | |
 | `GET/PUT/DELETE /cloud/sessions[/:m/:s]` (`sessionCopies.ts`) | CLI and shell copies, one sealed object each. A shell keeps its last 5,000 lines. | 2 MiB a copy; 512 MiB an account; 50 copies a computer |
 | `GET/PUT /cloud/git/:m/:lane` (`gitSummaries.ts`) | One sealed Git summary per lane. A PUT with an older `checkedAt` answers `kept: false`. | |
+| `GET/PUT /cloud/mentions/:m` (`mentionSnapshots.ts`) | The `@` menu a computer saves when it rests, one per computer and project (`?project=`): its rows but machines, and each lane's file and folder names. Gzipped, then sealed. Only the computer whose machine key is `:m` writes; a PUT with an older `savedAt` answers `kept: true` and changes nothing. A GET with `since` equal to the saved time answers `{ unchanged: true }`; `lane` keeps one lane's files. Deleted with the lane's saved chats and with the account. | 900 KB a copy (413 `snapshot_too_large`) |
 | `PUT /cloud/capsules/:m/:c/parts/:n`, `POST .../commit`, `GET` (`forkCapsules.ts`) | A provider's native history for a continue on a new computer. Part 1 starts a new upload; parts come in order (409 `capsule_out_of_order`). The commit checks each part and deletes the old parts. | 6 MiB a part; 20 MiB a capsule; 1 GiB an account |
 | `/cloud/backups[/:m/:lane[/...]]` (`laneBackups.ts`) | One lane backup per lane and machine key: the lane's work that is not on GitHub (a sealed git bundle and a sealed patch). An upload goes to its own prefix (`backups/<user>/<m>/<lane>/<upload>/`) and replaces the row only at its commit, so the old backup stays whole until then. Only a computer whose machine key is `:m` writes. A browser (`Origin`) gets the list, the manifest and the patch, never the bundle, and writes nothing. `POST /cloud/backups/report` records the computer's state after each save. | 6 MiB a part; 50 MiB a lane (bundle and patch); 1 GiB an account (413 `backup_too_large`, `backup_account_full`, with the sentence) |
 | `GET /cloud/projects/overview?origin=` (`projectOverview.ts`) | One project's view: computers, lanes without a computer, the first 50 chats, 100 sessions and the Git summaries. One fixed set of indexed reads, no provider call. | |
 
 Deleting a computer keeps its copies. Deleting a chat removes its parts,
-messages and capsule. Deleting a lane removes its sessions, capsules and Git
-summaries, and its backups (`DELETE /cloud/instances/:id` with no `keepLane`,
+messages and capsule. Deleting a lane removes its sessions, capsules, Git
+summaries and its computer's saved `@` menu, and its backups (`DELETE /cloud/instances/:id` with no `keepLane`,
 or `DELETE /cloud/lanes/without-computer/:lane`). A computer deletes the
 backup of a lane whose work is all on GitHub, with every backup of that lane
 it restored. Deleting the account (Clerk `user.deleted`) removes the R2

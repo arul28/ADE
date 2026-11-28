@@ -28,6 +28,7 @@ import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedCompu
 import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
+import { deleteMentionSnapshotsForMachineStatement } from "./mentionSnapshots";
 import { callingComputer, deleteSessionCopiesForLane, readCappedJson } from "./sessionCopies";
 import { readBoundedBytes } from "../sinkUtils";
 import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload } from "./storageSweeps";
@@ -913,6 +914,8 @@ export async function deleteSavedChatsForLane(env: CloudEnv, userId: string, mac
   await deleteSessionCopiesForLane(env, userId, machineKey, laneId);
   await deleteCapsulesForLane(env, userId, machineKey, laneId);
   await deleteGitSummaryForLaneStatement(env, userId, machineKey, laneId).run();
+  // So does the computer's saved `@` menu: a cloud computer holds one lane, and the menu lists its files.
+  await deleteMentionSnapshotsForMachineStatement(env, userId, machineKey).run();
   return removed;
 }
 
@@ -953,6 +956,7 @@ export async function deleteAllAccountChats(env: Pick<CloudEnv, "DB" | "CLOUD_CH
     env.DB.prepare("delete from cloud_chat_messages where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_session_copies where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_git_summaries where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_mention_snapshots where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_fork_capsules where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_lane_backups where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_user_keys where user_id = ?").bind(userId),

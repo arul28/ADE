@@ -525,6 +525,8 @@ import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeC
 import { CloudQueuedBubbleContext, CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
 import { cloudQueueWaitLine, useCloudQueuedBubbles } from "./useCloudQueuedBubbles";
 import { chatMentionMenu } from "./chatMentionClientRows";
+import { restingMentionSnapshot } from "./cloudMentionSnapshotCache";
+import { cloudMentionSnapshotFiles } from "../../../shared/cloudMentionSnapshot";
 import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
@@ -12298,6 +12300,20 @@ export function AgentChatPane({
     if (!laneId) return [];
     const trimmed = query.trim();
 
+    // A chat whose ADE Cloud computer rests: its files come from the names it
+    // saved before it rested, ranked as its own index ranks them. A read never
+    // wakes it, so it is asked nothing.
+    if (selectedSessionId && chatComputerAwayRef.current) {
+      const saved = await restingMentionSnapshot(selectedSessionId).catch(() => null);
+      if (!saved) return [];
+      return cloudMentionSnapshotFiles(saved.snapshot, { laneId: saved.laneId ?? laneId, query: trimmed, limit: 60, includeDirectories: true })
+        .map((hit) => ({
+          path: hit.path,
+          type: inferAttachmentType(hit.path),
+          ...(hit.isDirectory ? { isDirectory: true as const } : {}),
+        }));
+    }
+
     // Try Codex fuzzy file search if we have an active Codex session
     if (trimmed.length && selectedSessionId && sessionProvider === "codex") {
       try {
@@ -12359,6 +12375,9 @@ export function AgentChatPane({
     const suggestions = await chatMentionMenu({
       query,
       away,
+      restingSnapshot: selectedSessionId
+        ? async () => (await restingMentionSnapshot(selectedSessionId))?.snapshot ?? null
+        : undefined,
       excludeSessionId: selectedSessionId,
       localMachineKey: selectedSessionId
         ? chatQueueMachineKey(pin, savedChatLocation(pin, selectedSessionId, () => false))

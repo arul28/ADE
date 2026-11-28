@@ -30,6 +30,7 @@ import { routeCloudLimits } from "./limits";
 import { carryLaunchMessagesForComputer, routeChatMessages, routeComputerMessages, type ChatWake } from "./chatMessages";
 import { routeSessionCopies } from "./sessionCopies";
 import { routeGitSummaries } from "./gitSummaries";
+import { routeMentionSnapshots } from "./mentionSnapshots";
 import { routeForkCapsules } from "./forkCapsules";
 import { handleProjectOverview } from "./projectOverview";
 import { handleCloudModels } from "./models";
@@ -2136,6 +2137,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   if (path === CLOUD_PATHS.sessions || path.startsWith(`${CLOUD_PATHS.sessions}/`)) return routeSessionCopies(request, url, path, env, caller.userId, now);
   if (path === CLOUD_PATHS.git || path.startsWith(`${CLOUD_PATHS.git}/`)) return routeGitSummaries(request, url, path, env, caller.userId, now);
+  if (path.startsWith(`${CLOUD_PATHS.mentions}/`)) return routeMentionSnapshots(request, url, path, env, caller.userId, now);
   if (path.startsWith(`${CLOUD_PATHS.capsules}/`)) return routeForkCapsules(request, path, env, caller.userId, now);
   // Lane backups: rows and R2 only, so a person gets their work back with no wake and no hours.
   if (path === CLOUD_PATHS.backups || path.startsWith(`${CLOUD_PATHS.backups}/`)) return routeLaneBackups(request, url, path, env, caller.userId, now);

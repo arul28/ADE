@@ -7,6 +7,7 @@ import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
+import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
 import { smallCloudLookAlarms, syncAllSmallRates } from "../src/cloud/sponsoredSmall";
 import { expireAccountTests } from "../src/cloud/ownerAccounts";
@@ -371,6 +372,7 @@ describe("ADE Cloud account", () => {
     ["another account moving from a computer", OTHER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: INSTANCE }],
     ["another account's timed wake", OTHER, "PUT", "/cloud/wake", { instanceId: INSTANCE, url: "https://wake-abc.agent37.app", at: NOW + HOUR }],
     ["another account saving a chat against a computer", OTHER, "PUT", "/cloud/chats/key-a/chat-a/parts/1", { text: "hello", instanceId: INSTANCE, row: {} }],
+    ["another account saving a computer's @ menu", OTHER, "PUT", "/cloud/mentions/key-a", { instanceId: INSTANCE, projectKey: "github.com/acme/web", snapshot: { version: 1, savedAt: NOW, rows: [], files: {} } }],
     ["another account setting a computer's event wakes", OTHER, "PUT", `${instancePath}/event-wakes`, { topics: [] }],
   ])("%s is refused as if it weren't there", async (_label, caller, method, url, body) => {
     const data = harness;
@@ -3331,6 +3333,62 @@ describe("ADE Cloud without a computer", () => {
     instanceId, text, row: { lastSeq: seq, laneId: LANE, projectKey: "github.com/acme/widgets", provider: "claude", model: "claude-sonnet", ...row },
   });
 
+  it("a resting computer's @ menu: only it saves it, sealed; an older save never replaces a newer one; a client reads one lane's files once per sleep; it goes with its lane and with the account", async () => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-a" });
+    seedComputer(harness, { instance_id: SECOND, machine_key: "key-b" });
+    provide(harness);
+    const project = "github.com/acme/widgets";
+    const OTHER_LANE = "7b2c9d4e-1a3f-4b5c-8d6e-0f9a8b7c6d5e";
+    const menu = (savedAt: number, title: string) => ({
+      version: 1,
+      savedAt,
+      rows: [{ kind: "lane", id: LANE, title }, { kind: "machine", id: "key-b", title: "Desk" }],
+      files: { [LANE]: { files: ["src/secret-plan.ts"], directories: ["src"], truncated: false }, [OTHER_LANE]: { files: ["other.ts"], directories: [], truncated: false } },
+    });
+    const save = (instanceId: string, machineKey: string, savedAt: number, title: string) =>
+      harness.send(OWNER, "PUT", `/cloud/mentions/${machineKey}`, { instanceId, projectKey: project, snapshot: menu(savedAt, title) });
+    const read = async (query: string) => {
+      const response = await harness.send(OWNER, "GET", `/cloud/mentions/key-a?project=${encodeURIComponent(project)}${query}`);
+      return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+    };
+
+    // Another of the person's computers can't save under this computer's key.
+    expect((await save(SECOND, "key-a", NOW, "upload-fix")).status).toBe(404);
+    expect((await read("")).status).toBe(404);
+
+    expect(await (await save(INSTANCE, "key-a", NOW, "upload-fix")).json()).toEqual({ ok: true, kept: false });
+    // Names and paths are the person's: stored sealed, never as text.
+    const [stored] = harness.rows("select sealed from cloud_mention_snapshots where user_id = ?", OWNER) as Array<{ sealed: string }>;
+    expect(stored!.sealed).not.toContain("secret-plan");
+    expect(stored!.sealed).not.toContain("upload-fix");
+
+    // A late save from before the last one changes nothing.
+    expect(await (await save(INSTANCE, "key-a", NOW - 1, "stale")).json()).toEqual({ ok: true, kept: true });
+    const first = await read(`&lane=${LANE}`);
+    expect(first.body).toEqual({
+      snapshot: {
+        version: 1,
+        savedAt: NOW,
+        // Machines come live from the account, never from the saved copy.
+        rows: [{ kind: "lane", id: LANE, title: "upload-fix" }],
+        files: { [LANE]: { files: ["src/secret-plan.ts"], directories: ["src"], truncated: false } },
+      },
+    });
+    // The client holds that copy: the next read downloads nothing.
+    expect((await read(`&lane=${LANE}&since=${NOW}`)).body).toEqual({ unchanged: true, savedAt: NOW });
+
+    // Deleting the lane's saved chats deletes the menu its computer saved.
+    expect((await harness.send(OWNER, "DELETE", `/cloud/chats/key-a/lanes/${LANE}`)).status).toBe(200);
+    expect((await read("")).status).toBe(404);
+
+    // And deleting the account's saved data does too.
+    await save(INSTANCE, "key-a", NOW + 1, "upload-fix");
+    expect((await read("")).status).toBe(200);
+    await deleteAllAccountChats(harness.env, OWNER);
+    expect(harness.rows("select machine_key from cloud_mention_snapshots")).toEqual([]);
+  });
+
   it("a message to a resting chat is kept once and sent once: a refused send stores nothing, two claims race and one wins, only it finishes the message, its checked settings go sealed to the computer only", async () => {
     seedAccount(harness, OWNER, { used_milli: 100_000 });
     seedComputer(harness, { machine_key: "key-a", status: "sleeping", awake_since: null });
@@ -3860,6 +3918,7 @@ describe("ADE Cloud without a computer", () => {
     ["a chat part", CLOUD_CHAT_MAX_PART_BYTES, async () => "/cloud/chats/key-a/c1/parts/1"],
     ["a chat's proof picture", CLOUD_CHAT_PROOF_MAX_BYTES, async () => "/cloud/chats/key-a/c1/proof/shot-1"],
     ["a session copy", CLOUD_SESSION_MAX_BYTES, async () => "/cloud/sessions/key-a/cli-1"],
+    ["a saved @ menu", CLOUD_MENTION_SNAPSHOT_MAX_BYTES, async () => "/cloud/mentions/key-a"],
     ["a fork capsule part", CLOUD_CAPSULE_MAX_PART_BYTES, async () => "/cloud/capsules/key-a/c1/parts/1"],
     ["a lane backup part", CLOUD_BACKUP_MAX_PART_BYTES, async () => {
       const started = await harness.send(OWNER, "POST", "/cloud/backups/key-a/lane_big/uploads", {

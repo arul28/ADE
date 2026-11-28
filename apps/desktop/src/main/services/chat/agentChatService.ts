@@ -1145,6 +1145,7 @@ import type {
   ChatMentionPersonSource,
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
+  ChatMentionSuggestion,
 } from "../../../shared/types/chatMentions";
 import type { RuntimeProcessSummary } from "../../../shared/types/sessions";
 import { formatWorkingDuration } from "../../../shared/sessionStatusPresentation";
@@ -86066,6 +86067,8 @@ ${schedule.prompt}`
   const listMentionSuggestions = (
     args: ChatMentionSuggestArgs = {},
   ): Promise<ChatMentionSuggestResult> => chatMentionService.listChatMentionSuggestions(args);
+  /** The menu's rows an ADE Cloud computer saves before it rests (`cloudMentionSnapshot.ts`). */
+  const listMentionSnapshotRows = (): Promise<ChatMentionSuggestion[]> => chatMentionService.listMentionSnapshotRows();
 
   /**
    * Expand `@chat:` / `@lane:` / `@term:` chips into `<ade-mention>` pointer
@@ -86829,6 +86832,7 @@ ${schedule.prompt}`
     updateThreadComment,
     deleteThreadComment,
     listMentionSuggestions,
+    listMentionSnapshotRows,
     messageSession: (messageArgs: AgentChatMessageSessionArgs, options?: { trustedSpawnCompletion?: boolean }) => {
       noteCliChildSelfReport(messageArgs);
       // A tracked agent CLI takes the text in its terminal (`agentCliSessionActions.ts`).

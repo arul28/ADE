@@ -228,3 +228,74 @@ describe("createCloudRestSave capsules", () => {
     expect(unpack(forkTransport.sideFiles[2]!)).toMatch(/^\{"ok":true\}\n[\s\S]*\nafter\n$/);
   });
 });
+
+describe("createCloudRestSave @ menu", () => {
+  it("saves each project's @ menu once, again only after it changes, and tries again after a refused upload", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-mentions-"));
+    fs.mkdirSync(path.join(root, ".git"));
+    fs.writeFileSync(path.join(root, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/acme/widgets.git\n');
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-mentions-lane-"));
+    let title = "upload-fix";
+    const runtime = {
+      projectId: "project-1",
+      projectRoot: root,
+      sessionService: { list: () => [] },
+      laneService: {
+        list: async () => [
+          { id: "lane-main", laneType: "primary", worktreePath: root },
+          { id: "lane-1", laneType: "worktree", worktreePath: worktree },
+        ],
+      },
+      agentChatService: { listMentionSnapshotRows: async () => [{ kind: "lane", id: "lane-1", title }] },
+      fileService: {
+        listQuickOpenPaths: vi.fn(async () => [
+          { path: "src", score: 99, isDirectory: true },
+          { path: "src/app.ts", score: 98 },
+        ]),
+      },
+    } as unknown as AdeRuntime;
+    let refuse = false;
+    const saved: Array<{ projectKey: string; snapshot: Record<string, unknown> }> = [];
+    const api = {
+      putMentionSnapshot: vi.fn(async (_machine: string, body: { projectKey: string; snapshot: Record<string, unknown> }) => {
+        if (refuse) throw new Error("ADE Cloud has no such computer.");
+        saved.push(body);
+        return { ok: true, kept: false };
+      }),
+      putGitSummary: async () => ({ kept: false }),
+      putEventWakes: async () => null,
+    } as unknown as CloudApiClient;
+    const saver = createCloudRestSave({
+      adeHome: fs.mkdtempSync(path.join(os.tmpdir(), "ade-rest-save-")),
+      instanceId: "instance-1",
+      logger: { info: () => {}, warn: () => {} },
+      api: async () => api,
+      machineKey: () => "machine-1",
+      openRuntimes: async () => [{ projectId: "project-1", runtime }],
+      flushChats: async () => ({}) as CloudChatUploadPendingResult,
+      accountUserId: () => null,
+    });
+    const save = () => saver.save({ budgetMs: 60_000, reason: "idle", stillIdle: () => true });
+
+    await save();
+    // The computer's own lane: its main checkout is left out, as the lane lists leave it out.
+    expect(saved).toEqual([{
+      instanceId: "instance-1",
+      projectKey: "github.com/acme/widgets",
+      snapshot: expect.objectContaining({
+        rows: [{ kind: "lane", id: "lane-1", title: "upload-fix" }],
+        files: { "lane-1": { files: ["src/app.ts"], directories: ["src"], truncated: false } },
+      }),
+    }]);
+    await save();
+    expect(api.putMentionSnapshot).toHaveBeenCalledTimes(1);
+
+    title = "upload-fix-2";
+    refuse = true;
+    await save();
+    refuse = false;
+    await save();
+    expect(api.putMentionSnapshot).toHaveBeenCalledTimes(3);
+    expect(saved.map((body) => (body.snapshot.rows as Array<{ title: string }>)[0]!.title)).toEqual(["upload-fix", "upload-fix-2"]);
+  });
+});
