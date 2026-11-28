@@ -931,7 +931,7 @@ struct WorkFreeModelsLockSheet: View {
         VStack(alignment: .leading, spacing: 8) {
           fact("person.badge.shield.checkmark", lock.reasonLine)
           if lock.canUnlockWithCard {
-            fact("creditcard", "\(cloudCardElsewhereLine) It unlocks them on every device.")
+            fact("laptopcomputer", "\(cloudCardElsewhereLine) It unlocks them on every device.")
           }
         }
         if let problem = github.problem, lock.reason == CloudFreeModelsLock.noGithub {
@@ -1004,6 +1004,7 @@ struct WorkFreeModelsChatNotice: View {
 
   private var line: (symbol: String, text: String)? {
     if let lock = state.locked { return ("lock.fill", lock.chatLine) }
+    if state.throttle == CloudFreeModelsState.paused { return ("pause.circle", CloudFreeModelsState.pausedLine) }
     if state.throttle != nil { return ("rectangle.on.rectangle", CloudFreeModelsState.throttleLine) }
     return nil
   }

@@ -165,6 +165,8 @@ struct CloudFreeModelsState: Decodable, Equatable {
 
   /// The calm line a throttled chat shows above its prompt box (the desktop's words).
   static let throttleLine = "Ads pay for \(Brand.name) Free Models. Keep this chat on screen so an ad can show."
+  /// A paused chat's line: its next reply waits for an ad (the desktop's words, prefixed "Paused.").
+  static let pausedLine = "Paused. \(throttleLine)"
 
   /// This model is listed but the GitHub rule holds it: picking it opens the lock sheet.
   func isLocked(_ modelId: String) -> Bool {
@@ -254,7 +256,7 @@ struct CloudFreeModelsLock: Decodable, Equatable {
 
   /// The row's short second line in the picker.
   var rowLine: String {
-    isChecking ? "Checking your GitHub account…" : canUnlockWithCard ? "Locked · unlock in \(Brand.name) on your computer" : "Locked"
+    isChecking ? "Checking your GitHub account…" : "Locked"
   }
 
   /// One line for the chat that runs one (its next request is refused).
