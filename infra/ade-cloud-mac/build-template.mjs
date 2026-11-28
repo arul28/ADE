@@ -79,17 +79,20 @@ async function stop(why) {
       if (answer.status < 300 || answer.status === 404 || answer.status === 410) break;
       await new Promise((resolve) => setTimeout(resolve, 3_000));
     }
-    // The drive is saved as the Mac stops: wait for it, so the setting never names a drive mid-save.
+    // NoMac saves the drive after the Mac reads `stopped` (minutes for a full template): wait for the session's
+    // drive to read `saved`, so no lane copies the version before this build and the setting never names a drive mid-save.
     for (let waited = 0; waited < 20 * 60_000; waited += 10_000) {
       const answer = await call("GET", `/mac/sessions/${encodeURIComponent(sessionId)}`).catch(() => ({ status: 0 }));
       const session = answer.body?.session;
-      if (answer.status === 404 || (session && !["queued", "provisioning", "starting", "ready", "stopping"].includes(session.state))) {
-        log(`the Mac stopped (${session?.state ?? "gone"}; ready ${session?.ready_at ?? "never"}, shut down ${session?.shutdown_at ?? "?"}, cost ${JSON.stringify(session?.cost ?? null)})`);
+      const stopped = session && !["queued", "provisioning", "starting", "ready", "stopping"].includes(session.state);
+      const saved = session?.drive?.state === "saved" && session.drive.saved_version != null;
+      if (answer.status === 404 || (stopped && saved)) {
+        log(`the Mac stopped and its drive is saved (${session?.state ?? "gone"}; drive version ${session?.drive?.saved_version ?? "?"}; ready ${session?.ready_at ?? "never"}, shut down ${session?.shutdown_at ?? "?"}, cost ${JSON.stringify(session?.cost ?? null)})`);
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 10_000));
     }
-    log("the Mac did not report stopped within 20 minutes: check it at nomac.app");
+    log("the drive did not report saved within 20 minutes: check it at nomac.app before pointing a setting at it");
   })();
   return stopping;
 }
