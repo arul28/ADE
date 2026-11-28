@@ -1,642 +1,290 @@
 # Cross-machine session handoff
 
-Cross-machine handoff lets a user stop work in one DAEX Work chat and continue the same task on another connected DAEX machine. The source lane and chat remain intact; the destination receives a compatible lane (created or safely reused) and a deterministic handoff chat recreated from portable state.
+A handoff stops work in one Work chat and continues it on another connected
+DAEX machine. The source lane and chat stay; the destination gets a compatible
+lane (created or safely reused) and a chat rebuilt from portable state. It is
+not database sync and not a provider-session migration.
 
-This document defines the v1 product, transport, recovery, and security contract.
+## Source file map
+
+- `apps/desktop/src/main/services/chat/crossMachineHandoffOrchestrator.ts` — the
+  source brain's move: the durable record, approval, permission mapping, the
+  outbox capsule, retry and restart.
+- `apps/desktop/src/main/services/chat/crossMachineHandoffSource.ts` — the `kv`
+  store, outbox files, `inspectLane` (every source blocker with its fix).
+- `apps/desktop/src/main/services/chat/handoffGitBundle.ts` — opt-in transfer of
+  uncommitted and unpushed work.
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — capsule creation
+  and validation, destination preflight and acceptance, fork materialization.
+- `apps/desktop/src/shared/crossMachineHandoff.ts`,
+  `apps/desktop/src/shared/types/chat.ts` — capsule DTO, decoders, contracts.
+- UI: `renderer/components/chat/CrossMachineHandoffModal.tsx`,
+  `CrossMachineHandoffChooseStage.tsx`, `CrossMachineHandoffBanner.tsx`,
+  `renderer/components/terminals/CrossMachineMoveSubmenu.tsx`,
+  `renderer/components/shared/BlockedAction.tsx`.
+- iOS: `Views/Work/WorkCrossMachineHandoffViews.swift`,
+  `WorkSessionHandoffSheets.swift`, `Services/SyncService+SessionHandoff.swift`.
+- `apps/ade-cli/src/services/cloudChats/cloudChatRestore.ts` — continue on a new
+  DAEX Cloud computer.
 
 ## The source brain runs the move
 
-A move is run by the brain that owns the source chat, in
-`apps/desktop/src/main/services/chat/crossMachineHandoffOrchestrator.ts`. Every
-entry point calls the same `chat` action, `startCrossMachineHandoff`:
+The brain that owns the source chat runs every move through one `chat` action,
+`startCrossMachineHandoff`, whatever started it: the desktop modal and session
+menu (**Hand off › Another machine ▸**, including **Quick brief**),
+`daex chat handoff <session> --to <name>` (an agent can move its own chat), or
+the phone's `chat.startCrossMachineHandoff`.
 
-- the desktop modal and the session menu's **Hand off › Another machine ▸**
-  (including **Quick brief to <machine>**, which uses the chat's current model
-  and settings);
-- `daex chat handoff <session> --to <name> …` (`--machine` is a hidden alias), so an agent can move its own
-  chat ("wrap up and continue this on the Mac mini");
-- the phone, through the sync remote command `chat.startCrossMachineHandoff`.
+Pickers offer the account's own computers; DAEX Cloud shows as one disabled row
+("DAEX Cloud can't take a moved lane yet. Pick one of your computers.").
 
-The pickers on desktop, web and iOS offer the account's own computers only.
-`getCrossMachineHandoffOptions` still lists DAEX Cloud computers (clients that
-read the full list keep it); the UI drops them and shows one disabled
-**DAEX Cloud** row: "DAEX Cloud can't take a moved lane yet. Pick one of your
-computers."
-
-The brain reaches the destination over its agents' paired connection (the same
-path as `ade … --machine`), and the destination applies its own action policy to
-each step: `preflightCrossMachineDestination`, then
-`fastForwardCrossMachineHandoffLane` when its lane is clean and only behind,
-then `acceptCrossMachineHandoff`. The source runs `prepare`, `validate` and
-`mark` locally. The setup UI's review step asks the same transport what the
-destination would say (`previewCrossMachineHandoff`: a read-only
-`preflightCrossMachineDestination`, nothing prepared, packed or cloned), so it
-describes the path the move actually takes.
-
-In the desktop handoff modal, the new-chat model picker's Claude sign-in uses
-the selected destination machine's open project binding. Claude sign-in stays
-hidden until that binding is available; sign-in actions for other providers
-continue to open their existing Settings flow.
-
-No move binds acceptance to a route kind. The brain uses the account's paired
-agent connection for every step; the modal only states which kind of route
-that is (see [Transport and security](#transport-and-security)).
-
-The plain CLI has no move banner and no send
-routing: they start, cancel, retry and inspect single-chat moves (`daex chat
-handoff …`) and batches (`ade chat move …`).
+The brain reaches the destination over its agents' paired connection (as
+`--machine` calls do); the destination applies its own action policy to
+`preflightCrossMachineDestination`, `fastForwardCrossMachineHandoffLane` (clean
+lane that is only behind) and `acceptCrossMachineHandoff`. The source runs
+prepare, validate and mark locally. The modal's review step runs a read-only
+preflight (`previewCrossMachineHandoff`).
 
 ### The move record
 
-Each source chat has at most one current move, an
-`AgentChatCrossMachineHandoffRecord` stored in the project's `kv` table
-(`agent-chat-cross-machine-move:v1:<sessionId>`) and projected onto the chat's
-session summary as `crossMachineHandoff`. Live clients also get a live-only
-`system_notice` with status `cross_machine_handoff_state` on every change.
+One current move per chat, `AgentChatCrossMachineHandoffRecord` in the project
+`kv` (`agent-chat-cross-machine-move:v1:<sessionId>`), projected onto the
+summary as `crossMachineHandoff`, with a live `cross_machine_handoff_state`
+notice on each change.
 
 | State | Meaning |
 |---|---|
-| `awaiting_approval` | An agent asked to move an unrelated chat. The person approves or denies it from the banner. |
-| `pending` | Waiting for the current turn to end. Any newer user message cancels it, because new instructions win. |
-| `sending` | In flight. `checkpoint` names the last step passed: `prepared`, `destination_ready`, `accepted`, `marked`. |
-| `continued` | The destination chat started. The source locks turns and automatic work until the person chooses Work here instead (see below). |
-| `returned` | A chat that arrived here came back to its original chat. The original chat keeps its ID, accepts the returned history, and unlocks. |
-| `failed` | A step failed, or the destination refused the capsule. `reason` says which. A destination that fails after it already created the lane can leave that lane behind; DAEX does not delete it, and a later move to that machine reports it as a blocker there rather than silently making a second chat. |
-| `unknown` | The destination may have accepted but DAEX can't tell: the answer was lost, the answer came back without the new lane and chat, or a restart couldn't check the chat before resending. Never replayed automatically. It blocks new moves until it is retried or dismissed (see below). |
-| `cancelled` | The person kept it here, denied the agent, sent a new message, or dismissed an `unknown` move. |
+| `awaiting_approval` | An agent asked to move an unrelated chat. |
+| `pending` | Waits for the turn to end; a newer user message cancels it. |
+| `sending` | In flight; `checkpoint` is `prepared`, `destination_ready`, `accepted` or `marked`. |
+| `continued` | The destination chat started; the source is locked. |
+| `returned` | A chat came back to its original chat (same id). |
+| `failed` | A step failed or the destination refused; a lane it already created stays and blocks a later move there. |
+| `unknown` | The destination may have accepted; never replayed automatically; blocks new moves until retried or dismissed. |
+| `cancelled` | Kept here, denied, superseded by a message, or dismissed. |
 
-The record is written before each step runs. The moment acceptance is about
-to start, the source also writes the exact prepared capsule and its fingerprint
-to an outbox file (`.ade/cache/cross-machine/outbox/<handoffId>.json`, written
-atomically). A retry or a restart that finds it skips prepare, preflight and
-validate and resends that capsule, because the destination binds a `handoffId`
-to one capsule fingerprint and would refuse a re-prepared one. Only a move whose
-acceptance never started prepares again.
-
-A stored capsule is resent only while it still describes the chat. Before
-reusing it, the source re-runs `validateCrossMachineSource` against it: same
-branch, commit, working tree (for a move with changes), origin and model, and
-no chat activity since it was prepared. The move's own durable notes don't
-count as activity: a `system_notice` whose status starts with
-`cross_machine_handoff_` (a failed attempt's notice) and the approval card
-(`cross-machine-move-approval:<handoffId>`). Only these mismatches count as
-stale (`CrossMachineSourceStaleError`, code `source_stale`). When the check
-itself fails (git unreachable, a source blocker, a corrupt capsule), nothing
-is known about the capsule, so nothing changes: a retry answers "Couldn't
-check the chat before retrying: <reason>" and leaves the record and outbox as
-they were, and a restart ends a `sending` move `unknown` ("DAEX couldn't check
-this chat after a restart: <reason>. Retry when it's reachable.") with its
-outbox kept. When the capsule is stale:
-
-- the retry is refused and the move stays as it was, `failed` or `unknown`:
-  "This chat changed after the move was sent. Open <machine> to check whether
-  it arrived; if it didn't, start a new move" (an `unknown` move says "dismiss
-  this move and start a new one"). A stored capsule exists only once
-  acceptance had started, so even a `failed` move may have started its chat
-  there; a new `handoffId` would bypass the destination's record and could
-  start a second agent on the same branch;
-- a restart that finds a stale capsule for a `sending` move ends it `unknown`
-  with the same words.
-
-A move that may have landed blocks a new one. That is an `unknown` move, and a
-`failed` move that failed after acceptance started (its capsule is kept: the
-destination can fail after the chat began, and a new `handoffId` could start a
-second chat there). `startCrossMachineHandoff` refuses ("A move
-to <machine> may have landed. Retry it, or open <machine> to check, or dismiss
-it."), and the options list it as the `move_unknown` blocker. The person (or the
-chat's own agent) clears it with **Retry**, or dismisses it with
-`cancelCrossMachineHandoff` (`daex chat handoff <session> --cancel`), which ends
-it `cancelled` ("You dismissed the move."), deletes its outbox and keeps
-`continuedOn`. The outbox file is removed when the
-move continues, is cancelled, fails before acceptance, or the chat is deleted;
-a failure or lost answer after acceptance keeps it for the retry.
-
-A fork that fails while it is packed (for example, its history is too large)
-sent nothing. Its banner offers **Send as brief instead**:
-`retryCrossMachineHandoff { asBrief: true }` reruns the saved request under the
-same `handoffId` with only the mode changed, so the machine, model, effort,
-permissions, prompt and clone consent stay as the person chose them. The brain
-refuses it for any other move ("Only a fork that failed before it was sent can
-continue as a brief.").
-
-On startup the brain sweeps the `kv` prefix: a `sending` move resumes (the
-destination transaction is idempotent by `handoffId`), and a `pending` move
-whose turn already ended starts. Only a brain with a transport sweeps (an
-embedded guest has none), so a runtime never fails a move it cannot run.
-Deleting a chat clears its move: a step that finishes after the chat was
-deleted clears the `kv` row and the outbox instead of writing, posts no
-transcript notice and no phone notification, and the startup sweep drops moves
-whose chat no longer exists without running them. A brain that loses its transport mid-move ends it
-`failed` but keeps the outbox when acceptance may have started.
-
-A move counts as lost only when the request may have reached the destination:
-a timeout or a connection that dropped mid-call (`runtimeErrors.ts`, and the
-machine bridge's `MachineCallTimeoutError` / `MachineConnectionDroppedError`).
-An offline machine, "this machine", and any refusal from the destination
-itself are `failed`.
+- The record is written before each step. When acceptance is about to start,
+  the exact capsule and fingerprint go to an outbox file
+  (`.ade/cache/cross-machine/outbox/<handoffId>.json`). A retry or restart
+  resends that capsule, because the destination binds a `handoffId` to one
+  fingerprint.
+- Before resending, `validateCrossMachineSource` re-checks branch, commit,
+  working tree, origin, model and chat activity (the move's own notices don't
+  count). A changed chat is `source_stale`: the retry is refused and the person
+  is told to check the destination. A check that cannot run changes nothing.
+- A move that may have landed (`unknown`, or `failed` after acceptance started)
+  blocks a new one (`move_unknown`); clear it with **Retry** or dismiss it
+  (`daex chat handoff <session> --cancel`).
+- A fork that failed while packing offers **Send as brief instead**
+  (`retryCrossMachineHandoff { asBrief: true }`, same `handoffId`).
+- On startup the brain resumes `sending` moves and starts `pending` ones whose
+  turn ended. Deleting a chat clears its move.
+- A move counts as lost only when the request may have reached the destination
+  (timeout or dropped connection); an offline machine or a refusal is `failed`.
 
 ### Who asked, and approval
 
-`requestedBy` is stamped by each trusted entry point; the argument is never
-trusted, and the service treats anything not explicitly `user` as `agent`.
-`adeRpcServer` stamps the desktop (the same bar as user-only actions) or the
-CTO as `user`; the desktop IPC and the phone's `chat.startCrossMachineHandoff`
-remote command are always `user`; an automation rule is always `agent`.
-Anything else, including an `ade` shell with no chat identity, is `agent`,
-because an agent's shell looks the same as a person's terminal.
+`requestedBy` is stamped by trusted entry points; anything not explicitly
+`user` is `agent` (an agent's shell looks like a person's terminal). Automation
+rules lose every relation stamp, so their single moves ask and their batches are
+refused.
 
-The relation is fail-closed: an agent request with no `requestedFor` (an
-automation, an older caller, a record written before relations existed) counts
-as `other` and waits for approval. An automation rule's
-`startCrossMachineHandoff` and `startCrossMachineBatchMove` arguments lose every
-relation and identity stamp (`requestedFor`, `requestedBySessionId`,
-`requestedByTitle`, `requestingSessionId`, `approvedByPerson`), so its single
-move asks the person and its batch, which has no requesting chat for a card, is
-refused. A start persists only the public target fields of
-`AgentChatStartCrossMachineHandoffArgs`; batch context (source lane, parent
-link, destination lane, approval) comes only from the batch runner, and
-`adeRpcServer` drops those fields from every caller.
+- **Agent scope follows lineage.** An agent may move its own chat or a
+  descendant (`orchestrationParentSessionId` chain, max 32 links) without
+  approval. An unrelated chat waits for the person, even if it is full-auto.
+- **An agent's move runs at the chat's own permission level**: the orchestrator
+  drops the agent's permission fields and maps the source's unified level
+  (`permissionLadder.ts`, `permissionFieldsForLevel`) onto the target provider,
+  stepping down, never up (`resolvePermissionLevel`).
+- **Approval** cards and the batch resolver are user-only, so an agent cannot
+  approve itself. Limits and the two-minute deny cooldown are per target chat; a
+  card also spends the shared `ask_user` budget.
+- The phone push for a failed move says only "Open the chat for details."
 
-- **Agent scope follows persisted lineage.** A chat-bound agent may move its own
-  chat or a descendant whose `orchestrationParentSessionId` chain reaches the
-  caller (at most 32 links; cycles stop the walk) without approval, regardless
-  of permission level. DAEX chats keep that parent in their own lineage (the
-  chat service's live session or persisted state, `getChatParentSessionId`);
-  the session row is the fallback, for tracked agent CLIs. A single start against an unrelated chat waits for the
-  person's approval even when that chat is full-auto. Batch starts compute the
-  same relation for every selected chat. The host stamps the relationship and
-  requester identity; caller-supplied stamps are discarded. Unbound agent
-  shells still count as `agent`; a batch that needs approval requires a
-  chat-bound caller so the card has a chat to appear in.
-- **An agent's move runs at the chat's own permission level.** The
-  orchestrator (the one place this happens) drops every permission field an
-  agent's start passed, reads the source chat's unified level
-  (`permissionLadder.ts`), and sets the fields for the target model's
-  provider with `permissionFieldsForLevel`. A provider that can't express the
-  level steps down the ladder (`resolvePermissionLevel`), never up, so a Claude
-  chat at "ask before changes" moving to Codex runs there at Codex's
-  ask-level sandbox and approval policy. Kimi can't run
-  auto-accept edits, so it steps down to ask there. Copilot can run auto edit. The generic
-  `permissionMode` for the same level always travels too, so a destination
-  that ignores the provider's own field can't fall back to the source's
-  broader one. An ACP model's `acpPermissionMode` rides the capsule's
-  `target` (validated against the five ACP modes) into the new chat; the
-  machine-local `acpConfigSnapshot` never does. The record's
-  `targetPermissionLabel` names the level actually applied, and the approval
-  card says it.
-  `adeRpcServer` and automation rules only force `requestedBy: "agent"`.
-- **Approval.** An agent may move its own chat and descendants it started
-  without approval, at each moved chat's existing permission level. A batch
-  containing any unrelated chat waits in `awaiting_approval` before any lane or
-  chat moves. One card on the requesting agent's chat lists every chat in the
-  batch; approve runs the whole batch and deny cancels it. A self/descendant-only
-  agent batch and a person's batch need no approval. The batch resolver and
-  `resolveCrossMachineHandoffApproval` are user-only actions, so an agent cannot
-  approve its own request.
-- **No nagging.** Single-chat approval limits and the two-minute deny cooldown
-  are scoped to the target chat. Denying a batch applies that cooldown to each
-  chat it listed. Batch starts use one rate-limit slot on the requesting chat,
-  so splitting one batch into separate moves cannot spend a different chat's
-  approval budget. A start that puts a card in front of the person (an
-  unrelated single chat, or a batch that names an unrelated chat or uses
-  `--all`) also spends the global `ask_user` budget every agent shares; a move
-  of the agent's own chat or descendants asks nobody and needs only the
-  per-chat limit.
-- **Push privacy.** The phone push for a move that failed says only "Open the
-  chat for details."; the reason stays in the chat.
+### After the move
 
-### After the move: where new messages go
-
-After `continued`, the source brain locks the chat until the person chooses
-**Work here instead**. Scheduled work, tracked CLI resumes, restart recovery,
-automations, subagent reports, PR Watch, usage-limit resumes, drafts, chat
-waits, held background completions and session-board moves do not start a turn
-there. Skipped scheduled work, drafts and watches remain pending; a subagent
-completion is recorded in the parent transcript without waking it. Agent, CLI
-and remote turn requests receive a typed refusal naming the destination chat.
-
-A window that watched the move under way (pending, awaiting approval or
-sending) follows the chat when it lands: it opens the destination chat as
-soon as this window lists it (the other machine's next read, up to a minute),
-so the move reads as one chat. A chat opened after it moved stays where it is.
-
-On desktop, new messages from the source composer still go to the destination
-chat; the banner reads **Continues on <machine>** with **Open on <machine>**
-and **Work here instead**. That choice calls `acknowledgeCrossMachineHandoff`
-(sets `resumedHere`), immediately unlocking the source and keeping later sends
-here. iOS cannot send to another machine's chat from that screen, so before a
-send it asks **Continue on <machine>** (opens the destination chat) or **Work
-here instead** (the same acknowledgement). A new move clears `resumedHere` only
-when it lands; one that is cancelled, fails or is denied leaves the person's
-choice as it was.
-
-A locked chat can't be moved again, or there would be two live copies: a
-single start refuses it with the typed moved-away refusal (`chat_moved_away`,
-naming the destination chat) until the person chooses Work here instead, a
-batch refuses it when it is named explicitly, and `--all` and descendant
-expansion skip it.
+After `continued` the source is locked: scheduled work, CLI resumes, recovery,
+automations, subagent reports, PR Watch, usage-limit resumes and drafts start no
+turn there; agent and remote turn requests get a typed refusal naming the
+destination. The banner reads **Continues on <machine>** with **Open on
+<machine>** and **Work here instead** (`acknowledgeCrossMachineHandoff`, sets
+`resumedHere`). Desktop sends from the source composer route to the destination;
+iOS asks first. A locked chat cannot be moved again (`chat_moved_away`).
 
 ### Coming back
 
-When an arrived chat is moved to the machine in its saved origin, DAEX continues
-the original chat with the same chat ID. A fork returns the provider session
-and only the DAEX transcript events written while the chat was away: the
-imported prefix, the arrived copy's own **Arrived from** notice and the
-continuation prompt DAEX sent on arrival (brief or fork) are left out, so the
-original chat never gets them twice. A brief return appends the brief and the
-continuation instruction without replacing the provider session. Its summary
-contains only activity after the destination arrival boundary; it excludes the
-arrival notice and the first continuation prompt, as a fork return does.
-
-The original lane is reused. DAEX fast-forwards it only when it is clean and
-strictly behind, accepts it when it is already at the returned commit, and
-refuses dirty or diverged lanes. A returned Git bundle lands through the same
-per-branch queue and safeguards as an initial handoff. Returned work never
-lands in the machine's primary checkout: a return whose original lane is the
-primary checkout is accepted only when nothing would be written (no changes,
-already at the returned commit), and is refused otherwise. The original chat's
-scheduled work is restored, a durable **Back from <machine>** notice is added,
-and its move lock ends in `returned`. The moved copy stays locked on the
-machine it left.
-
-Batch returns keep parent-first chat order and map imported lanes back to their
-origin lane IDs. Each lane returns before its chats, so a refusal blocks its
-dependent chats while the failed lane item remains retryable. If DAEX cannot
-prove the original chat, lane, provider or move record still matches, it
-refuses the return with a reason. That refusal is definitive (nothing was
-committed): it carries `cross_machine_return_refused` across the RPC envelope
-and the machine bridge, the source ends the move `failed` with the reason, and
-records `returnRefused` on its move record. The refusal says what happens next:
-a retry, or any later move of that chat to the same machine, goes as a new chat
-there (no `returnTo`, under a new handoff id, with this chat as its return
-address), and the original chat there stays as it is. A batch item can't be
-re-keyed, so a refused batch return asks for a single move of that chat.
+A chat moved to the machine in its saved origin continues the original chat
+(same id). A fork returns only the events written while away; a brief appends a
+brief. The original lane is reused only when clean and behind (fast-forward) or
+already at the commit; returned work never lands in a primary checkout that
+would change. A refused return is definitive (`cross_machine_return_refused`),
+ends the move `failed` with `returnRefused`, and later moves go as a new chat.
 
 ## The source is the chat's machine, not the tab
 
-Handoff is a fact about the machine the **source chat** runs on, not about whichever project the tab it is being viewed from happens to be bound to. A local chat viewed from a remote-bound tab can still hand off; a chat pinned to a remote machine cannot, regardless of the tab. A Work tab unions chats from every machine on the account, so the tab's binding and the chat's binding routinely disagree, and reading the tab's is wrong in exactly the case that matters.
-
-Eligibility is therefore decided from the chat's effective binding — `chatRuntimePin ?? projectBinding`, derived once per pane by `useChatScopeDerivation` in `apps/desktop/src/renderer/components/chat/ChatRuntimeScope.tsx` and carried down the drawer subtree — never from the tab's binding. When that binding is remote, the **Continue on another machine** card is disabled and names the machine the chat runs on, so the user is told where to open the project rather than handed a control that would fail at confirm time.
-
-`CrossMachineHandoffModal` (`apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx`) takes that binding as a `runtimePin?: OpenProjectBinding | null` prop — the machine the source chat runs on, or `null` when it runs on the machine this tab is bound to — and pins every source-side call it makes to that machine: `agentChat.getCrossMachineHandoffOptions`, `agentChat.previewCrossMachineHandoff`, `agentChat.startCrossMachineHandoff`, and `git.push` / `git.pull` behind **Publish branch** / **Update branch**. Prepare, validate and mark are not renderer calls any more: that chat's brain runs them (see [The source brain runs the move](#the-source-brain-runs-the-move)). Destination calls go through that brain's transport, not the renderer.
-
-The pin is held in a ref and frozen once per operation rather than read fresh after each await, so one move never splits between two machines.
-
-The lane picker's source lanes come from the chat's machine as well (`handoffLaneSourceLanes` — the pinned machine's slice of the cross-machine lane union, falling back to the tab's list only for an unpinned chat). A brief handoff lands in a lane on the chat's machine, so both the offered lanes and the auto-created one have to target that machine.
-
-The destination model, reasoning-effort, and permission pickers are unaffected by the source pin; they decide what the *destination* chat starts with, and are described under **Product flow** below.
+Eligibility uses the chat's effective binding (`chatRuntimePin ??
+projectBinding`, from `useChatScopeDerivation` in `ChatRuntimeScope.tsx`), never
+the tab's. `CrossMachineHandoffModal` takes `runtimePin` and pins every
+source-side call (`getCrossMachineHandoffOptions`, `previewCrossMachineHandoff`,
+`startCrossMachineHandoff`, the Publish/Update branch Git calls) to that machine,
+frozen once per operation. Lanes offered come from the chat's machine
+(`handoffLaneSourceLanes`).
 
 ## Product flow
 
-The action lives on any chat row's right-click **Hand off…** submenu (Local handoff, Another machine, Auto handoff). Local and remote route through `lib/chatHandoffIntent.ts`; Auto handoff opens the rule editor directly.
+1. DAEX checks the source chat and lane.
+2. The user picks a connected machine (repository presence shown from the same
+   `listProjects` call) and may add a note.
+3. The user sets the destination model, effort, fast mode and permission with
+   the composer's own pickers; the capsule carries them. Fork mode stays on the
+   source provider.
+4. A missing repository shows the destination path, free space and an explicit
+   clone confirmation.
+5. DAEX checks destination provider access, the published commit and any
+   existing lane, then the user confirms.
+6. The source is re-checked; the destination creates or reuses the lane, starts
+   the chat, and dispatches the first turn (or completes a no-turn fork).
+7. Only after that acknowledgement is the source marked.
 
-1. DAEX checks the source chat and Git lane.
-2. The user selects an eligible connected machine and may add a continuation note. The picker reports each machine's repository presence while it is open, resolved from the same `listProjects` call the prepare step consumes, so the hint costs no extra round trip.
-3. In the same setup step the user sets the destination chat's model, reasoning effort, fast mode, and permission mode. These are the composer's own control pills — the shared `PermissionModePicker` and `ReasoningEffortPicker`, not lookalikes — and each hides itself when the chosen model cannot honor it. Fast mode's Codex Ultrafast tier rides the capsule as `fastTier` when the destination model offers it, and the modal names it either way so a move never inherits a tier the modal hid. The capsule carries these fields and the destination applies them, so this picker is the only place they are decided; nothing is inherited from the local handoff drawer. In fork mode the model picker stays constrained to the source provider.
-4. DAEX finds the same repository in the destination project registry.
-5. If the repository is missing, DAEX shows the destination path, free-space result, route warning, and an explicit clone confirmation.
-6. DAEX checks destination provider/model access, the published branch commit, and any existing destination lane.
-7. The user reviews the bounded-context and transport disclosures, then confirms.
-8. DAEX rechecks the source chat, clean worktree, upstream, remote branch, and exact commit (the move's own `includeChanges` choice decides which rules apply).
-9. The destination recreates or reuses the lane, starts the chat, and either dispatches the first continuation turn or completes a fork whose default continuation needs no new turn.
-10. Only after the destination runtime acknowledges a requested turn, or the no-turn fork reaches its durable dispatched checkpoint, does DAEX mark the source chat as handed off.
-
-The modal closes as soon as the brain accepts the request. From then on the source chat's banner (above the composer, on desktop and iOS) reports the real durable checkpoints the move has passed rather than an indeterminate spinner, whoever started it. The destination chat gets a durable `cross_machine_handoff_arrived` notice and an **Arrived from <machine>** banner. The machine is named as the account lists it ("p1 test vm"), not by its host name, which on a cloud machine is only the instance id; the host name is the fallback when the account list can't be read.
-
-The chat's sign-in route travels in the capsule's `route` (`crossMachineRouteFor` in `chatLaunchRoute.ts`), by the same rule a model switch on one machine follows: a preset or `--via` route stays only for the same model, a stored API key or a Claude/Codex account only for the same provider. The destination keeps a key or preset as it is. An account id means nothing on another machine ("claude-2" can be another login there), so an account travels as its signed-in email, and the destination keeps it only when a signed-in account there has the same email. Before the first turn it shows one `cross_machine_handoff_route` line that says which sign-in the chat uses there: "Uses API key · openai here, as on p1 route a", or, as a warning, that the move changed the model, that the account isn't signed in on this machine, or why the kept route can't run here yet. A return to the original chat keeps that chat's own route and shows no line. Older destinations ignore `route`.
-
-The setup modal can be opened while a turn is active. It offers **Move when this turn ends**, which queues the move as `pending`, or stopping the current response. Pending approvals or questions must be resolved in the source chat.
-
-Once destination acceptance has been dispatched, a requester timeout or
-connection loss does not prove that destination work stopped. The source chat's
-banner reports that DAEX lost confirmation, that the destination chat may still appear, and
-that the user should check the other machine before retrying. Preflight and
-source-validation failures that happen before destination acceptance starts
-remain ordinary hard failures.
+The modal closes once the brain accepts; the banner then shows real checkpoints.
+The destination gets an **Arrived from <machine>** notice (account name, not
+host name). The sign-in route travels in the capsule (`crossMachineRouteFor` in
+`chatLaunchRoute.ts`): a preset or key only for the same model/provider; an
+account travels by email and is kept only when the destination has the same
+signed-in email. A `cross_machine_handoff_route` line says which sign-in the
+chat uses there. The modal can queue the move for the end of the turn.
 
 ## Batch moves
 
-`daex chat move --to <name> <session> [<session>…]` (`--machine` is a hidden alias) moves a set of active
-Work chats to one destination. `--all` selects every non-archived, non-settled
-Work chat owned by this project brain. Selected chats include their descendants
-by default; `--no-descendants` limits the batch to the named chats. The source
-brain adds each selected chat's lane and every ancestor lane, including lanes
-that carry code but have no selected chat.
-
-An agent batch checks every selected chat against the caller's persisted
-lineage. If any chat is unrelated, the batch waits before moving anything and
-asks once on the caller's chat: Approve and Deny sit above that chat's composer
-on every client (the summary's `crossMachineBatchApproval`), and a transcript
-card with the chats it would move records the request. Approve starts all
-items; deny cancels the batch. A person can move any batch
-without approval, while an agent moving only its own chat and descendants it
-started proceeds without a card.
-
-The brain saves one batch record in project storage. Lanes are imported
-root-first and chats parent-first. Chat moves still use the single-chat
-handoff record and outbox, so retries keep the same handoff ids and prepared
-capsules. A lane import also has an idempotent destination record. On restart,
-the source brain resumes remaining items in dependency order. A failed,
-unknown, or cancelled parent blocks its descendants, while unrelated lane and
-chat trees can continue. `daex chat move --status <batch-id>` shows each lane and chat state;
-`daex chat move --retry <batch-id>` resumes failed, unknown, and blocked items.
-Only that retry retries a chat move that failed or lost its answer; a batch run
-woken by a finished move or by the startup sweep maps the move's state onto
-its item and never replays it. A batch item whose chat has since moved, or is
-moving, on its own is failed with that reason instead of starting a second
-move. The startup sweep prunes settled batch records (completed, cancelled, or
-partial with nothing pending) a week after their last change; summaries read
-batches awaiting approval from an in-memory index of open batches, never a
-`kv` scan.
-
-A lane payload is kept in the outbox (`<importId>.lane.json`) with a `sent`
-marker written right before the import is sent. A retry resends a sent payload
-unchanged (the destination dedupes by import id); a payload that was never sent
-is dropped and prepared again from the lane as it is now. An answer the source
-can't read leaves the lane item `unknown`.
-
-Batch moves fork by default. `--brief` requests brief handoffs; if a provider
-cannot move its full history, that chat falls back to a brief and its arrival
-explains why. `--no-changes` leaves uncommitted and unpushed work on the source.
-Otherwise lane changes are carried once with the lane import and the chat
-capsule reuses that imported lane. Active turns wait by default; `--interrupt`
-stops them first. `--note` is included in every chat's first continuation.
-
-The destination preserves parent chat links when both chats travel. A chat whose parent stays at the source arrives without a local parent link and says so.
-
-The destination imports the lane and starts its environment setup itself (the
-default lane template, else the project's lane env config), whichever
-transport carried the import; a host that can't run setup records
-`not_configured`. Setup runs only on a lane the import created: a return to the
-original lane, a reused lane on the same branch, or a primary checkout already
-at the commit records `not_needed`. Setup runs once per import, in the background, and a failure
-is logged and recorded without failing the lane. Carried changes land through
-the per-branch queue and never in the primary checkout: a bundle whose branch
-is checked out there, or a return lane that is the primary checkout and would
-have to change, is refused.
-
-Every move, single or batch, carries the chat's live scheduled work. The
-destination recreates it on the arrived chat and names the ids it recreated in
-its answer; once the move reaches `continued` the source cancels exactly those.
-An older destination names none, so the source keeps every job (held by the
-move lock). The
-arrived agent receives a durable notice and a first continuation describing
-the new machine and worktree, lane setup, files and processes that did not
-travel, and any batch note. Its original machine, lane, and chat ids remain as
-the return address for a later move back.
-
-The destination advertises batch-move capability before any item is prepared.
-An older destination that cannot preserve the batch metadata refuses the batch
-with an update message instead of silently dropping lane or chat relationships
-or scheduled work.
+`daex chat move --to <name> <session>…` (or `--all`) moves chats with their
+descendants (`--no-descendants` to limit) and every ancestor lane. An agent
+batch with any unrelated chat waits for one approval card on the caller's chat.
+Lanes import root-first, chats parent-first; chat moves reuse the single-move
+record and outbox; lane payloads have their own outbox (`<importId>.lane.json`
+with a `sent` marker). A failed parent blocks its descendants.
+`daex chat move --status <id>` and `--retry <id>`. Batches fork by default
+(`--brief`, `--no-changes`, `--interrupt`, `--note`). The destination starts lane
+environment setup itself for lanes the import created. Every move carries live
+scheduled work; the source cancels exactly the ids the destination recreated.
+A destination that does not advertise batch support refuses with an update
+message.
 
 ## Source contract
 
-By default DAEX requires a clean, published Git branch (the opt-in below relaxes this):
-
-- no tracked, staged, or untracked working-tree changes;
-- no rebase or merge in progress;
-- a named branch with an upstream;
-- local `HEAD`, the upstream ref, and `git ls-remote origin refs/heads/<branch>` must resolve to the same commit; and
-- an origin remote must exist.
-
-The renderer provides a **Publish branch** action when a normal push is sufficient, and an **Update branch** action when the branch is strictly behind. Diverged branches still block: DAEX does not pick a reconciliation strategy for the user.
-
-Every one of these source blockers must render. They are modeled as `BlockedActionReason` values from `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` — a title, a detail, and the action that clears it — rendered by `BlockedReasons`, and the primary button is a `BlockedActionButton` that takes those reasons instead of a `disabled` flag, so a surface cannot disable the action without also surfacing why. This is a deliberate guard against a bug DAEX keeps regrowing: a blocking-error list that only ever feeds a `disabled` prop turns "update the source branch" into three green checks above a dead control. If a surface computes a blocker, that blocker must reach the user; a disabled control may never be the only signal.
+By default: clean worktree, no rebase or merge in progress, a named branch with
+an upstream, and local `HEAD`, upstream and `git ls-remote origin
+refs/heads/<branch>` at the same commit. **Publish branch** and **Update
+branch** fix the simple cases; diverged branches block. Every blocker is a
+`BlockedActionReason` rendered beside a `BlockedActionButton`, so a disabled
+control is never the only signal.
 
 ### Moving uncommitted and unpushed work (opt-in)
 
-With `includeChanges` (`AgentChatPrepareCrossMachineHandoffArgs`), the clean/published requirement is relaxed: the lane may be dirty, ahead of its upstream, or never pushed. A rebase or merge in progress still blocks, and so does a **diverged** branch — when the upstream or `origin/<branch>` (read with `ls-remote`) has commits HEAD lacks, DAEX refuses rather than pick a reconciliation. The work travels as `capsule.gitBundle`, built by `packHandoffGitBundle` in `apps/desktop/src/main/services/chat/handoffGitBundle.ts`:
-
-- **What travels.** A snapshot commit on top of HEAD holding the working tree — tracked edits, deletions, and untracked files — made in a private copy of the index (`GIT_INDEX_FILE` in a temp dir), so the user's staging and refs are untouched. The bundle holds only what origin does not have (`git bundle create … --not --remotes=origin`; the destination fetches the base from origin, so another remote does not count): unpushed commits plus the snapshot. A clean, fully pushed branch yields no bundle and takes the normal path.
-- **What does not.** Ignored files (`.env`, build output), stashes, hooks, Git config, and the staged/unstaged split: on arrival every change is unstaged.
-- **Refused, not half-moved.** A changed submodule pointer ("Submodule changes can't travel; commit and push them first.") and a changed Git LFS file ("Git LFS files can't travel; push them first."): a bundle carries neither the submodule's commits nor LFS content. Both are checked in the uncommitted snapshot and in every unpushed commit the bundle carries (`git log --raw -z --no-renames <tip> --not --remotes=origin`, then `check-attr filter` on those paths), with the same messages. Untracked files far past the cap are refused before anything is hashed.
-- **Cap.** Over 50 MiB raw, or when its base64 would push the whole capsule past the ~20 MiB transport budget (it counts against the same budget as fork history), the handoff is refused with "Push the branch, then hand off again."
-- **Source validation.** Before sending, DAEX re-checks HEAD, recomputes the working tree's tree id and compares it with the prepared snapshot (or the tip when it was clean), and re-checks origin for divergence. Any change means preparing again.
-
-The destination advertises `gitBundleSupport: true` in its preflight result; an older destination omits it and would silently drop the changes, so the source must refuse a bundle handoff to it. The source sends `hasGitBundle: true` in preflight args, which lifts the "remote branch is at the source commit" requirement (origin must still be readable, because it supplies the bundle's base commits). `applyHandoffGitBundle` then:
-
-- verifies the bundle, and when base commits are missing fetches `origin` and verifies again; still missing → refused;
-- fetches the bundle's head into a temporary `refs/ade-handoff/<hash>/head` ref, deleted on every exit path;
-- creates the branch, or moves an existing one **only forward** with a compare-and-swap `update-ref <ref> <new> <old>`; a branch with commits the handoff lacks is refused as diverged, and one checked out in a non-lane worktree is refused;
-- imports a new lane for it (or reuses an existing lane only when it is clean and at or behind the tip, fast-forwarding it), never the machine's primary checkout: a branch checked out there is refused in preflight. It then checks out the snapshot and resets the index to the tip, so the commits are history and the edits are uncommitted. A snapshot file that would overwrite an existing file in the lane is refused.
-
-Any failing step undoes the earlier ones in reverse: the lane is deleted, the branch ref restored (or removed), the fast-forwarded lane reset, and temp refs and files removed. Nothing is written into a path DAEX did not create.
+With `includeChanges`, the lane may be dirty, ahead or unpushed (not diverged,
+not mid-rebase). `packHandoffGitBundle` snapshots the working tree in a private
+index and bundles only what origin lacks (`--not --remotes=origin`). Ignored
+files, stashes, hooks, config and the staged split do not travel. Submodule
+pointer and Git LFS changes are refused. Over 50 MiB raw, or past the ~20 MiB
+capsule budget, is refused ("Push the branch, then hand off again."). The
+destination must advertise `gitBundleSupport`; `applyHandoffGitBundle` verifies,
+fetches into a temporary `refs/ade-handoff/<hash>/head`, moves the branch only
+forward (compare-and-swap), imports a new lane (never the primary checkout), and
+undoes every step on failure.
 
 ## Portable capsule
 
-Brief mode does not treat provider-native thread or session identifiers as portable. Those identifiers can depend on machine-local provider storage, CLI state, credentials, or an auth account. A brief handoff therefore creates a bounded DAEX capsule containing:
-
-- source machine label, chat identifier, provider/model label, and chat title;
-- repository origin, branch, and exact commit;
-- destination model and permission settings, excluding machine-local Cursor configuration values;
-- a compact handoff brief (maximum 16,000 characters);
-- bounded recent file-change, command, and error references;
-- up to 12 referenced Linear issues; and
-- an optional user continuation note (maximum 4,000 characters), or DAEX's default continuation instruction.
-
-The brief capsule excludes:
-
-- provider-native thread/session IDs and full provider history;
-- full DAEX transcripts;
-- secrets and secret stores;
-- PTYs and terminal scrollback;
-- caches, dependency directories, and runtime processes;
-- uncommitted file contents, unless the user opts into moving changes (above); and
-- local artifact bytes.
-
-DAEX redacts common secret-shaped values and replaces source-only absolute repository/home paths before hashing the capsule. It also removes Git/issue URL credentials, query strings, and fragments, and applies the same sanitizer to user-controlled titles and lane names. The destination verifies the capsule fingerprint and all size/type bounds before using it.
+A brief capsule holds machine label, chat id, provider/model and title, repo
+origin, branch and commit, destination settings, a brief (≤16,000 characters),
+bounded file/command/error references, up to 12 Linear issues and a note
+(≤4,000 characters). It never holds provider thread ids, full transcripts,
+secrets, PTYs, caches or file contents (unless changes are opted in). Secret
+shapes, absolute paths and URL credentials are redacted before hashing; the
+destination verifies the fingerprint and bounds.
 
 ## Fork mode
 
-Fork mode transports the provider-native session data needed to continue full history, plus DAEX transcript envelopes so the destination UI can render the conversation before any optional continuation note. Native files and DAEX envelopes are gzip-compressed and base64-encoded inside the fingerprinted capsule. The uncompressed limits are 18 MiB for the provider's main session file, 4 MiB total for Claude sidecars, and 3 MiB for DAEX transcript envelopes. Encoded payloads also have independent base64 bounds so validation can reject oversized input before decoding.
+Fork carries provider-native session data plus DAEX transcript envelopes,
+gzip+base64 inside the capsule: main session ≤18 MiB, Claude sidecars ≤4 MiB
+(dropped as a group if over budget), transcript ≤3 MiB (oldest dropped), all
+under a ~20 MiB transport budget. Too large → a typed failure so the source can
+offer a brief.
 
-Beyond the per-part limits, the whole fork capsule's base64 payload is held under a single ~20 MiB transport budget so it fits inside the sync envelope and WebSocket payload caps (both 25 MiB). When the main history plus transcript already fit but the Claude sidecars would push the total over budget, the sidecar group is dropped and the main conversation still travels. When the main history plus transcript alone exceed the budget, DAEX returns the same "too large" failure the 18 MiB main-file cap produces, so the source can offer a brief instead.
+- **Claude:** session JSONL and sidecars; the destination assigns a new UUID and
+  rewrites `sessionId` and `cwd`.
+- **Codex:** the rollout JSONL installed under `CODEX_HOME/sessions/…`, then
+  `thread/fork` with `excludeTurns: true` (`.jsonl.zst` falls back to brief).
+- **OpenCode:** `session.export` → `session.import`, `session.fork`,
+  `session.move`.
 
-Provider handling is explicit:
-
-- **Claude:** DAEX sends the session JSONL and, when they fit, its sibling `subagents/` and `tool-results/` sidecars. The destination assigns a new UUID and rewrites JSONL `sessionId` and `cwd` fields in both the main transcript and JSONL sidecars before wiring the Claude resume pointer.
-- **Codex:** DAEX sends the discovered rollout JSONL. The destination installs it under its own `CODEX_HOME/sessions/YYYY/MM/DD/` store, then calls app-server `thread/fork` with `excludeTurns: true` and persists the returned thread as the chat resume target. `.jsonl.zst` rollouts are not relocated in this phase and fall back to brief mode.
-- **OpenCode:** the source calls `session.export({ sessionID, sanitize: true })`. The destination calls `session.import` with the exported payload, then `session.fork` on the imported session and `session.move` to the destination lane, and persists the forked session ID.
-
-DAEX transcript envelopes keep their existing provenance and gain `providerOrigin: "handoff_fork"` plus the source DAEX session ID. If the transcript exceeds 3 MiB, DAEX drops the oldest envelopes and keeps the newest JSONL tail in order. Provider-native blobs are not secret-redacted because full provider history is the feature being requested; the review UI discloses that scope before transport.
-
-If the 18 MiB main-history limit is exceeded, DAEX returns a typed “too large” failure so the source can offer a brief handoff instead. Claude sidecars that exceed their separate 4 MiB allowance are omitted as a group while the main conversation still travels.
-
-Cross-machine fork requires the same provider and a usable destination runtime or CLI. Claude, Codex, and OpenCode support it. Cursor and Droid are brief-only across machines, for different reasons. Local Droid fork works, but its machine-local session index and relocated-file resume behavior are not yet proven portable. Local Cursor fork also works, but it is ADE-side context seeding rather than a provider fork — there is no provider session file, thread id, or artifact of any kind to package — so a Cursor fork has nothing to transport.
-
-That distinction is encoded as `providerSupportsCrossMachineHandoffFork`, separate from the local-fork `providerSupportsHandoffFork`. Its backing list, `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS`, is derived from the local `HANDOFF_FORK_PROVIDERS` by filtering out Droid and every replay-forked provider (`providerForkReplaysTranscript`) rather than being restated, so adding a provider to one list cannot silently leave the other behind. The UI must gate its fork affordance on the cross-machine helper; gating on the local one leaves Droid's and Cursor's fork options selectable and guaranteed to throw at confirm time. `validateForkTransport` on the receiving side applies the same helper, so a provider whose fork produces no transportable artifact is refused by the provider gate rather than by the transport-kind allowlist. The destination applies it again when it computes `forkHandoffSupport`, so a refused provider is named with a plain reason instead of failing late.
+Cursor and Droid are brief-only across machines (other providers too):
+`providerSupportsCrossMachineHandoffFork` / `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS`
+is derived from the local fork list minus Droid and replay-forked providers.
+UI, `validateForkTransport` and the destination's `forkHandoffSupport` all gate
+on it.
 
 ## Destination contract
 
-Eligible machines must be connected, support multi-project RPC, and advertise the handoff storage-preflight capability. Fork destinations additionally advertise provider-specific fork support; an older destination that omits that field is never allowed to silently downgrade a fork into a brief. Older runtimes remain connected for compatible features but are excluded from the picker with an update message.
+Eligible machines are connected, support multi-project RPC and advertise the
+handoff storage preflight; forks also need provider fork support (an older
+destination never downgrades a fork). Repositories match by normalized origin.
+With no match, only GitHub repos get automatic setup: path, write access,
+collision, free space (1 GiB minimum), `git ls-remote` with destination
+credentials, then an explicit clone (re-listed after a lost answer, never cloned
+twice).
 
-Repository matching uses a normalized Git origin identity, so SSH and HTTPS forms of the same remote compare consistently. If no registered project matches:
+The destination verifies origin, provider auth and model, that the remote branch
+is at the source commit, fetches it, and reuses a lane only when clean and at the
+commit. A clean strict-ancestor lane gets a **Fetch & fast-forward there** offer
+(`fastForwardCrossMachineHandoffLane`, `--ff-only`, everything re-validated);
+until it resolves, Send stays blocked. A different local branch with the same
+name blocks.
 
-- automatic setup is offered only for GitHub repositories;
-- the destination reports the target path, write access, target collision, free bytes, and required bytes;
-- the destination runs `git ls-remote` against the published branch with destination-local Git credentials and blocks before clone when access fails;
-- reported free space below the 1 GiB minimum blocks setup, while an unavailable disk-space reading is shown as a warning; and
-- clone requires explicit confirmation.
-
-The clone service owns partial-directory rollback. If cloning and project registration succeed but the response is lost during a disconnect, the setup re-lists destination projects and resumes from the matching origin instead of cloning again.
-
-Once the project exists, the destination:
-
-- verifies its origin matches the capsule;
-- verifies provider authentication and selected-model availability;
-- verifies the remote branch still points at the source commit;
-- fetches that exact branch;
-- reuses an existing lane only when it is clean, not rebasing, and at the exact commit;
-- reports `laneFastForward` when that lane is instead clean and a *strict ancestor* of the source commit, so the source can offer **Fetch & fast-forward there** rather than dead-ending. The destination re-validates independently and only ever runs `git merge --ff-only`; it never resets and never touches a dirty or diverged lane. This is what makes handing off a shared branch such as `main` workable, since two machines' `main` are rarely at the same commit;
-- blocks when a different local branch with the same name exists; or
-- imports a new lane from the fetched remote branch.
-
-The fast-forward offer is a separate destination call — the `chat` action-domain
-action `fastForwardCrossMachineHandoffLane` (`{ laneId, expectedHead }`), also
-registered as the sync remote command `chat.fastForwardCrossMachineHandoffLane`
-— run before the handoff itself, with the source's preflight refreshed
-afterwards. `laneFastForward` is reported as a warning so the offer can render,
-but an unresolved one still gates Send: acceptance requires the destination lane
-to be at the exact source commit, so sending first would fail hard after
-destination work had already begun.
-
-Nothing in the offer is trusted at execution time: the destination
-re-fetches the branch, re-checks that `origin/<branch>` still points at the
-expected commit, re-reads lane status for rebase and uncommitted changes,
-re-verifies strict ancestry, and refuses a lane already at the expected commit.
-The source-side decoder correspondingly rejects a `behindBy` that is not a
-positive integer, so a zero-distance offer the destination would refuse can
-never render.
+<a id="continue-on-a-new-ade-cloud-computer"></a>
 
 ## Continue on a new DAEX Cloud computer
 
-A chat or CLI whose DAEX Cloud computer was deleted continues on a new computer
-in the same row (fork-continue). There is no source brain: the old computer
-saved a fork capsule to the account server at each rest save (the idle step,
-`prepare-stop`, `daex cloud save-for-rest`), and the new computer reads it from
-there. This capsule holds only the provider's history
-(`prepareCloudRestCapsule`): no Git check, no `gitBundle`, and empty
-`source.headSha` and `source.originUrl`. The lane's code comes from the lane
-backup, and the restore reads no Git facts from the capsule. It is refused
-while a turn runs, and it leaves a CLI running. The server side is in
-[DAEX Cloud](../ade-cloud/README.md#continue-a-chat-whose-computer-is-gone-fork-continue).
-
-The new brain (`apps/ade-cli/src/services/cloudChats/cloudChatRestore.ts`)
-makes the lane, then:
-
-1. Moves the saved copy to its own machine key. A failed move stops the
-   continue before the restore, so a retry finds the copy again.
-2. Holds the chat's uploads, restores it, then goes on from the server's last
-   part.
-3. Restores the chat or CLI under its SAME id, through the move destination
-   code below:
+A chat or CLI whose cloud computer was deleted continues on a new one in the same
+row. There is no source brain: the old computer saved a provider-history capsule
+at each rest save (`prepareCloudRestCapsule`; no Git facts, code comes from the
+lane backup). `cloudChatRestore.ts` makes the lane, moves the saved copy to its
+own machine key, holds uploads, then restores under the **same** id:
 
 | Provider | Chat | CLI |
 |---|---|---|
-| Claude | Fork capsule (`materializeCrossMachineFork`) | Claude Code: CLI capsule, resumed with `launchMovedCli` |
-| Codex | Fork capsule (a `.jsonl.zst` rollout replays) | Codex CLI: CLI capsule, resumed with `launchMovedCli` |
+| Claude | Fork capsule (`materializeCrossMachineFork`) | Claude Code capsule, `launchMovedCli` |
+| Codex | Fork capsule | Codex CLI capsule, `launchMovedCli` |
 | OpenCode | Fork capsule (`session.import`) | Starts fresh |
-| Cursor, Droid, Pi, Muse, Qwen, Kimi, Grok, Copilot, Devin, Antigravity | Replays the saved transcript | Starts fresh |
+| Every other provider | Replays the saved transcript | Starts fresh |
 
-- A chat's saved transcript becomes its history, each event once
-  (`restoreSavedCloudChat`). A chat with no usable capsule replays that
-  transcript at its next turn. Running the restore again skips the events it
-  already has.
-- A CLI with a capsule for the same provider gets its conversation back
-  (`placeCliConversation`), resumes under the same session id, and then gets
-  the message typed in. Every other CLI starts fresh under the same session id
-  with an info line and the message as its first prompt
-  (`restoreSavedCloudCli`).
-- The server marks a CLI continue with `continueChat.kind: "cli"`. Without the
-  kind (an older server), the brain tries a saved chat first, then a CLI.
-- The CLI's old session copy stays under the old machine key. The new computer
-  saves a new copy at its next rest.
+A replayed transcript is written once (`restoreSavedCloudChat`); a fresh CLI gets
+an info line and the message as its first prompt (`restoreSavedCloudCli`). The
+server marks a CLI continue with `continueChat.kind: "cli"`. Server side:
+[DAEX Cloud](../ade-cloud/README.md#continue-a-chat-whose-computer-is-gone-fork-continue).
 
 ## Idempotency and recovery
 
-The destination owns the transaction record because it is the authority on what was created. Records are keyed by `handoffId` and bind that identifier to the capsule SHA-256 fingerprint.
-
-The transaction states are:
-
-`preparing` → `lane_ready` → `chat_ready` → `dispatched` → `complete`
-
-`failed` retains any known lane/chat identifiers so retry can reconcile instead of restarting blindly.
-
-The chat session ID is deterministically derived from the handoff replay key. A retry therefore returns the same compatible chat. Lane import is reconciled by branch and exact commit. Destination acceptance is serialized by handoff ID, and the durable `dispatched` state is written only after the provider backend acknowledges the prompt; an optimistic user-message event is never treated as acknowledgement.
-
-A bundle handoff binds the imported lane to the record before the changes land, so a crash mid-apply retries into that lane: if it already holds exactly this handoff (tip and working tree match the snapshot) the apply is a no-op, and once the record reaches `lane_ready` the apply is skipped entirely.
-
-Fork re-materialization is guarded by the same durable state. Installing the provider-native session files, calling the provider fork (`thread/fork`, `session.fork`, or the Claude resume rewrite), and seeding the DAEX transcript envelopes run only when the record is not already `dispatched` or `complete`. A retry that finds the record past that point re-marks `dispatched` without importing again, so a resumed or reconnected fork never creates a duplicate forked thread or session. A fork whose continuation note is DAEX's default sends no first turn — materializing the history and transcript is the continuation — and reaches `dispatched` directly; only a non-default note is dispatched as an acknowledged first user turn.
-
-This covers process restarts and mid-transfer disconnects at each boundary:
-
-- after lane creation, retry finds and validates the lane;
-- after chat creation, retry resolves the deterministic chat;
-- after first-turn dispatch, retry sees the durable dispatch acknowledgement; and
-- after destination completion but before source marking, the UI reports success with a retryable source-marker warning.
-
-Partial destination resources are never anonymous: they remain associated with the durable handoff record until the transaction completes or is retried.
-
-The destination acceptance call is not cancellable through the paired runtime
-transport. A request-local timeout or interrupted connection therefore leaves
-the caller with an unknown outcome rather than a truthful cancellation. DAEX
-does not convert that state into a hard failure: the source UI uses the
-still-completing notice above, and a user retry reconciles through the durable
-handoff record instead of creating a second lane or chat.
+The destination owns the transaction record, keyed by `handoffId` and bound to
+the capsule SHA-256: `preparing` → `lane_ready` → `chat_ready` → `dispatched` →
+`complete` (`failed` keeps known ids). The chat id is derived from the replay
+key; lane import reconciles by branch and commit; acceptance is serialized per
+handoff; `dispatched` is written only after the provider acknowledges. Fork
+materialization runs only before `dispatched`, so a retry never forks twice.
+Acceptance cannot be cancelled over the transport, so a lost answer is an
+unknown outcome that a retry reconciles.
 
 ## Transport and security
 
-The handoff uses the existing authenticated remote runtime connection selected by DAEX:
-
-- SSH and Tailscale routes are shown as encrypted;
-- direct LAN paired WebSocket and DAEX relay routes are shown as authenticated but not end-to-end encrypted by DAEX; and
-- that LAN/relay disclosure renders as an informational notice on the review step, whose Send button is the confirmation, rather than as a separate checkbox.
-
-The renderer follows live connection snapshots while setup is open. No move binds final acceptance to a route kind: the brain rides the account's paired agent connection, and the modal only states which kind of route that is. DAEX never replays this sensitive action automatically after a disconnect.
-
-The source side is not desktop-only either. The `chat` action-domain actions
-`prepareCrossMachineHandoff`, `validateCrossMachineSource`, and
-`markCrossMachineHandoff` are registered sync remote commands
-(`chat.prepareCrossMachineHandoff`, `chat.validateCrossMachineSource`,
-`chat.markCrossMachineHandoff`), alongside
-`chat.fastForwardCrossMachineHandoffLane` and
-`chat.acceptCrossMachineHandoff`. A non-Electron controller therefore drives
-the whole source half over the same command routing rather than needing preload
-methods; see [remote commands](./remote-commands.md).
-
-For a paired desktop destination, the action is multi-project runtime JSON-RPC
-carried through the sync WebSocket's `rpc_data` channel. The sync host forwards
-those channel frames; its remote-command responder timeout does not wrap the
-full `chat.acceptCrossMachineHandoff` execution. SSH destinations use the same
-runtime RPC contract over `daex rpc --stdio`. In both cases the desktop applies
-the request-local handoff timeout and preserves the unknown-outcome contract
-when confirmation is lost.
-
-The UI names what is included and excluded before final confirmation. Handoff clone authentication is always resolved on the destination: the main process strips renderer-supplied auth headers and disables DAEX's normal one-shot source-token forwarding for this path. DAEX does not put GitHub tokens in the capsule or the machine RPC. Artifact references are contextual text only and do not grant cross-machine file access.
+The modal labels SSH and Tailscale routes encrypted, and LAN and DAEX Relay as
+authenticated but not end-to-end encrypted (an informational notice; Send is the
+confirmation). No step binds to a route kind and nothing replays after a
+disconnect. The source and destination steps are also sync remote commands
+(`chat.prepareCrossMachineHandoff`, `validateCrossMachineSource`,
+`markCrossMachineHandoff`, `fastForwardCrossMachineHandoffLane`,
+`acceptCrossMachineHandoff`), carried over `rpc_data` or `daex rpc --stdio`, so
+the responder timeout does not bound acceptance. Clone auth resolves on the
+destination; no GitHub token goes in the capsule.
 
 ## Source state after success
 
-The source lane and chat are preserved. DAEX emits a durable system notice containing the handoff ID and destination machine/lane/chat identifiers. The notice states that work stopped on the source after the destination chat started. The source is not deleted or silently archived.
-
-## Required coverage
-
-Tests should cover:
-
-- existing destination project;
-- missing project, storage preflight, clone confirmation, and partial-clone cleanup;
-- dirty source state and unpublished/diverged branches;
-- active source turn and pending approval;
-- exact branch/commit mismatch;
-- existing clean destination lane and conflicting local branch;
-- destination provider/model auth failure;
-- a behind source branch rendering its reason and its pull action, and a diverged branch rendering a blocker with no one-click fix;
-- Droid cross-machine fork refused up front while local Droid fork still works;
-- destination lane clean-and-behind offering a fast-forward, and dirty/diverged/non-ancestor lanes refusing one;
-- a remote-pinned source chat refusing the cross-machine action from any tab, and a local chat viewed from a remote-bound tab still offering it;
-- every source-side call carrying the chat's pin, including after the lane index changes mid-send;
-- incompatible destination runtime;
-- timeout or disconnect after destination acceptance starts, including an
-  unsuccessful reconnect, with unknown-outcome copy and no automatic replay;
-  and
-- capsule tampering, embedded remote credentials, size limits, and secret redaction.
+The source lane and chat are kept, with a durable notice naming the handoff and
+the destination lane and chat.

@@ -636,7 +636,7 @@ A CLI that is gone gets `failed` with a sentence saying so.
 The server starts a continue launch on a new computer; the brain makes the lane
 and restores the chat or CLI with the same id (`cloudChatRestore.ts`), reusing the
 handoff destination
-([continue on a new cloud computer](../sync-and-multi-device/cross-machine-session-handoff.md)).
+([continue on a new cloud computer](../sync-and-multi-device/cross-machine-session-handoff.md#continue-on-a-new-daex-cloud-computer)).
 
 ### Other account work
 
