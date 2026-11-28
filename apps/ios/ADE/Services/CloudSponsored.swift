@@ -708,7 +708,7 @@ private func cloudSponsoredTurnRefusedForAds(_ events: [WorkChatEnvelope], doneI
     switch events[index].event {
     case .userMessage:
       return false
-    case .error(let message, let detail, let errorTurnId, _, _):
+    case .error(let message, let detail, _, let errorTurnId, _, _):
       let own = errorTurnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       if own.isEmpty || turnId.isEmpty || own == turnId {
         let text = [message, detail ?? ""].joined(separator: " ")

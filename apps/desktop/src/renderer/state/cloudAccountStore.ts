@@ -232,11 +232,13 @@ const none = () => null;
  * needs the account only in one state, such as a chat whose computer was deleted).
  */
 export function useCloudAccount(active = true): CloudAccountState | null {
-  const cloudOn = useAdeCloudEnabled();
+  // Inactive, it watches nothing: a picker that may never offer DAEX Free Models costs no subscription.
+  const cloudOn = useAdeCloudEnabled(active);
   const enabled = cloudOn && active;
   const value = useSyncExternalStore(enabled ? subscribe : noop, enabled ? snapshot : none, none);
   useEffect(() => {
-    if (!cloudOn) forget();
-  }, [cloudOn]);
+    // Only a watching reader may drop the account: an idle one reads a stale answer.
+    if (active && !cloudOn) forget();
+  }, [active, cloudOn]);
   return enabled ? value : null;
 }
