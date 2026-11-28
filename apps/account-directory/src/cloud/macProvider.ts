@@ -696,6 +696,22 @@ function bootEnvOf(row: Pick<ComputerRow, "mac_boot_env_json">): Record<string, 
  * the drive's brain up to the channel's release. A failed job gives the
  * claim back, so the tick tries again.
  */
+/**
+ * Unset `MAC_DIRECTORY_URL` (production): nothing, so the brain uses its built-in production account server and
+ * Clerk. A test Worker names itself and its own Clerk, with the override a release build needs to trust either
+ * (`shouldIgnoreDevelopmentAccountDirectoryUrl`); its sign-in links are on that Clerk (`trustedSignInLink`).
+ */
+function testWorkerAccountEnv(env: CloudEnv): Record<string, string> {
+  const directory = env.MAC_DIRECTORY_URL?.trim();
+  if (!directory) return {};
+  const clerk: Record<string, string> = {};
+  for (const key of ["CLERK_ISSUER", "CLERK_JWKS_URL", "CLERK_OAUTH_CLIENT_ID"] as const) {
+    const value = env[key]?.trim();
+    if (value) clerk[key] = value;
+  }
+  return { ADE_ACCOUNT_DIRECTORY_URL: directory, ADE_ALLOW_DEVELOPMENT_CLERK: "1", ...clerk };
+}
+
 export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string, now: number): Promise<"booted" | "taken" | "failed"> {
   const claimed = await env.DB.prepare("update cloud_computers set mac_booted_session = ? where instance_id = ? and mac_session_id = ? and coalesce(mac_booted_session, '') <> ?")
     .bind(sessionId, row.instance_id, sessionId, sessionId).run();
@@ -704,9 +720,7 @@ export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string
     ...bootEnvOf(row),
     ADE_HOST_INSTANCE_ID: `cloud:${row.instance_id}`,
     ADE_CLOUD_INSTANCE_ID: row.instance_id,
-    // Unset (production), the brain's own default: DAEX's account server. A test Worker names itself, and a
-    // release build trusts a test server only with the override (`shouldIgnoreDevelopmentAccountDirectoryUrl`).
-    ...(env.MAC_DIRECTORY_URL?.trim() ? { ADE_ACCOUNT_DIRECTORY_URL: env.MAC_DIRECTORY_URL.trim(), ADE_ALLOW_DEVELOPMENT_CLERK: "1" } : {}),
+    ...testWorkerAccountEnv(env),
   };
   const minVersion = (await readSetting(env, `mac_min_version_${row.channel === "beta" ? "beta" : "stable"}`))?.trim();
   if (minVersion && MAC_VERSION_SHAPE.test(minVersion)) bootEnv.ADE_MIN_VERSION = minVersion;

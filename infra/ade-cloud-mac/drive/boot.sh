@@ -52,8 +52,9 @@ done
 chmod 700 "$daex_root/home/.ssh"
 
 # The env the server gave this boot, for the supervisor alone (it reads the
-# file once and deletes it).
-export -p | grep -E '^declare -x ADE_[A-Z0-9_]*=' > "$state/boot.env"
+# file once and deletes it). CLERK_* comes only from a test Worker, with its
+# account server (`testWorkerAccountEnv` in macProvider.ts).
+export -p | grep -E '^declare -x (ADE|CLERK)_[A-Z0-9_]*=' > "$state/boot.env"
 
 # A boot that runs again in the same session (its first answer was lost)
 # leaves a running supervisor alone.

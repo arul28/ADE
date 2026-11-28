@@ -219,7 +219,9 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
   log("the Mac is ready");
-  await run("put the scripts", ["mkdir -p \"$HOME/drive/.daex\"", ...["env.sh", "boot.sh", "supervise.sh"].map(putFile)].join(" && "), 60);
+  // Each script is parsed on the Mac's own bash before it goes on the drive: one that doesn't parse starts no brain.
+  const scripts = ["env.sh", "boot.sh", "supervise.sh"];
+  await run("put the scripts", ["mkdir -p \"$HOME/drive/.daex\"", ...scripts.map(putFile), ...scripts.map((name) => `bash -n "$HOME/drive/.daex/${name}"`)].join(" && "), 60);
   await run("install DAEX", install, 1200);
   if (source) await run(`build DAEX from ${source}`, fromSource, 3000);
   if (tools.trim()) await run("bake the agents", bake, 1800);

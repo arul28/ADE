@@ -53,6 +53,10 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   MAC_COMPUTERS?: string;
   /** A test Worker's own URL, given to a Mac's brain as its account server (`bootMac`); unset in production. */
   MAC_DIRECTORY_URL?: string;
+  /** This Worker's Clerk (public identifiers, `callerToken.ts`): a test Worker's Mac signs in with them (`bootMac`). */
+  CLERK_ISSUER?: string;
+  CLERK_JWKS_URL?: string;
+  CLERK_OAUTH_CLIENT_ID?: string;
   /** This environment's start of every Mac label at NoMac (`macProvider.ts`); unset: production's `adem:`. */
   MAC_LABEL_PREFIX?: string;
   /** Secret. NoMac's embed secret (`nme_…`): signs each view link for its account alone. Unset: the link alone is the permission. */

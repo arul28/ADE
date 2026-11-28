@@ -154,7 +154,15 @@ NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
   per session by a NoMac job running `~/drive/.daex/boot.sh` with the join
   code worked out again from the launch. The tick also extends a session near
   its time limit, and stops NoMac sessions no row holds. Webhooks (`mac.*`,
-  `drive.*`) re-read the Mac rather than trust the delivery.
+  `drive.*`) re-read the Mac rather than trust the delivery. A channel with
+  no template drive uses stable's; with none at all, no Mac is made or
+  started (NoMac copies a template only into a new drive).
+- **Test Worker.** A test Worker (`MAC_DIRECTORY_URL`, label prefix
+  `ademdev:`) gives its Mac's boot its own address and Clerk together with
+  `ADE_ALLOW_DEVELOPMENT_CLERK=1` (`testWorkerAccountEnv`); without the
+  override a release build ignores the address and joins production.
+  Production sends none of them, so its Macs use the built-in production
+  server.
 - **Money.** 500 thousandths a minute (`multiplier_milli = 30000`), by the
   whole minute (`stretchChargeEnd`); only `running` meters. The drive is the
   Mac's (no plan disk). A kept drive unused for 25 days gets a short upkeep
