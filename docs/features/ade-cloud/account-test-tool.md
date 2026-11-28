@@ -14,7 +14,7 @@ next read (a few seconds in the apps). Nothing here touches Stripe.
 ## Who can use it
 
 Anyone holding `CLOUD_OWNER_TOKEN`: the owner, and agents through DAEX's
-secrets (`daex secrets exec`; the old `ade secrets exec` is the same command). Agents never print the token:
+secrets (`daex secrets exec`; the old `ade` command name works the same). Agents never print the token:
 
 ```bash
 daex secrets exec --env CLOUD_OWNER_TOKEN -- node scripts/cloud-owner.mjs show you@example.com

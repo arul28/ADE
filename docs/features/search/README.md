@@ -174,7 +174,7 @@ Desktop ⌘K command palette:
   the `search` help block, and `exitCodeFromResult` (exit `1` on no results,
   `2` on a usage error such as an unknown `--kind`).
 - `apps/desktop/resources/agent-skills/daex-search/SKILL.md` — the bundled
-  `daex-search` agent skill (the old `ade-search` name still resolves) (registered in
+  `daex-search` agent skill (its old name, ade-search, still resolves; registered in
   `apps/desktop/src/shared/adeCliGuidance.ts` and referenced in `AGENTS.md`).
 
 ## Gotchas / fragile areas
