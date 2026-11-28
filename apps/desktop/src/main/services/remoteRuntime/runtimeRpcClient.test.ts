@@ -598,12 +598,13 @@ describe("RuntimeRpcClient waiting while the other end still runs a call", () =>
 });
 
 describe("summarizeRemoteRuntimeStderr", () => {
-  it("keeps the remote error and drops the stack trace and Node warnings", () => {
+  // Older CLIs write their error line as `ade:`, newer ones as `daex:`.
+  it.each(["ade", "daex"])("keeps the remote `%s:` error and drops the stack trace and Node warnings", (cli) => {
     // The stderr a MacBook showed in the Machines dialog on 2026-09-22.
     const stderr = [
       "(node:67211) ExperimentalWarning: SQLite is an experimental feature and might change at any time",
       "(Use `ade --trace-warnings ...` to show where the warning was created)",
-      "ade: Error: ADE runtime default role agent cannot serve CLI role cto.",
+      `${cli}: Error: ADE runtime default role agent cannot serve CLI role cto.`,
       "    at connectMachineRuntimeDaemon (/Users/arul/ADE/apps/desktop/resources/runtime/.sea/darwin-arm64/cli-sea.cjs:318244:15)",
       "    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)",
       "    at async runNativeRpcStdio (/Users/arul/ADE/apps/desktop/resources/runtime/.sea/darwin-arm64/cli-sea.cjs:319051:15)",
@@ -617,6 +618,10 @@ describe("summarizeRemoteRuntimeStderr", () => {
   it("leaves a plain message alone", () => {
     expect(summarizeRemoteRuntimeStderr("ADE beta brain socket was not available\n")).toBe(
       "ADE beta brain socket was not available",
+    );
+    // The brain's capitalized notes are not the CLI's error line.
+    expect(summarizeRemoteRuntimeStderr("DAEX: sync disabled because the installed DAEX brain hosts phone sync.\n")).toBe(
+      "DAEX: sync disabled because the installed DAEX brain hosts phone sync.",
     );
   });
 });

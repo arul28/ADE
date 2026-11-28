@@ -126,6 +126,9 @@ app's own bearer and `x-ade-mcp-via`; the target checks the token and runs the
 call under its own policy. No new trust between brains.
 
 - One hop: a request with `x-ade-mcp-via` never forwards again.
+- The run tool goes out under its old name `ade`, with a leading `daex` word
+  sent as `ade` (`forwardedCall`), because released brains answer only `ade`.
+  Typed tools go out as they came. Keep this until the `ade` alias is dropped.
 - A computer that does not serve is refused with the sentence for its reason
   (`notServingSentence`); 401, 404 `ade_mcp_off`, 429 and 503 each have a
   sentence.

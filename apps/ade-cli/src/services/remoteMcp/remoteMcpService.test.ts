@@ -396,6 +396,39 @@ describe("ADE MCP across the account's computers", () => {
     expect(relayCalls).toHaveLength(tries);
   });
 
+  it("sends the run tool to another computer as `ade`, the only name a released brain answers", async () => {
+    const account = fakeAccountRelay();
+    const forwarded: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    // The relay is the network edge: what crosses it is what the other computer's brain receives.
+    const relayFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (!url.startsWith(RELAY)) return await fetch(input, init);
+      if (url.endsWith("/oauth/token")) return Response.json({ access_token: "ade_mcp_x", token_type: "Bearer" });
+      forwarded.push((JSON.parse(String(init?.body)) as { params: (typeof forwarded)[number] }).params);
+      return Response.json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "done" }] } });
+    }) as typeof fetch;
+    const studio = await makeService(account, undefined, undefined, relayFetch);
+    const mini = await makeService(account, SECOND);
+    await mini.settings.sync();
+    await studio.settings.sync();
+    const { token } = studio.createToken({ label: "Script", scope: "write" });
+
+    for (const [name, args] of [
+      ["daex", { args: ["daex", "lanes", "list"] }],
+      ["daex", { command: " daex lanes list --text" }],
+      ["daex", { args: ["status"] }],
+      ["lanes_list", {}],
+    ] as const) {
+      const answer = await mcp(studio, token, { method: "tools/call", params: { name, arguments: { ...args, machine: SECOND.name } } });
+      expect(answer.body?.result.isError, `${name} ${JSON.stringify(args)}`).not.toBe(true);
+    }
+
+    expect(forwarded.map((call) => call.name)).toEqual(["ade", "ade", "ade", "lanes_list"]);
+    expect(forwarded[0]?.arguments.args).toEqual(["ade", "lanes", "list"]);
+    expect(forwarded[1]?.arguments.command).toBe(" ade lanes list --text");
+    expect(forwarded[2]?.arguments.args).toEqual(["status"]);
+  });
+
   it("keeps a token from before accounts to the computer it was made on", async () => {
     const token = `ade_mcp_${randomBytes(32).toString("base64url")}`;
     const legacy = {
