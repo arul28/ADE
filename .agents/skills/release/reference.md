@@ -7,15 +7,15 @@ it points to when a step goes off the happy path.
 
 
 
-Use this skill when the user wants to release ADE, automate releases from a
+Use this skill when the user wants to release DAEX, automate releases from a
 cron/agent, decide whether a release is needed, publish a desktop release, ship
 a TestFlight build, or reconcile the hosted Cloudflare surfaces.
 
-ADE ships **three independent tiers**, and a release conductor owns all three:
+DAEX ships **three independent tiers**, and a release conductor owns all three:
 
 - **desktop** — GitHub Actions release workflow, macOS, Windows and Linux assets
 - **iOS** — local ASC archive/export/upload to TestFlight
-- **Cloudflare web tier** — the `ade-web-client` Pages project and four Workers,
+- **Cloudflare web tier** — the `ade-web-client` Pages project and five Workers,
   plus the account-side state they depend on (D1 databases and their applied
   migrations, R2 buckets and their lifecycle rules, Durable Object migration
   tags, cron triggers, vars, secrets). Phase 5.5 owns this. Neither the desktop
@@ -190,7 +190,8 @@ Track:
       "ade-account-directory-production": { "changed": false, "action": "skip|ci|manual", "status": "pending|deployed|verified|blocked", "migrationsApplied": null, "note": null },
       "ade-github-webhook-relay": { "changed": false, "action": "skip|ci|manual", "status": "pending|deployed|verified|blocked", "migrationsApplied": null, "note": null },
       "ade-tunnel-relay": { "changed": false, "action": "skip|ci|manual", "status": "pending|deployed|verified|blocked", "note": null },
-      "ade-push-relay": { "changed": false, "action": "skip|ci|manual", "status": "pending|deployed|verified|blocked", "migrationsApplied": null, "note": null }
+      "ade-push-relay": { "changed": false, "action": "skip|ci|manual", "status": "pending|deployed|verified|blocked", "migrationsApplied": null, "note": null },
+      "ade-password-key-service": { "changed": false, "action": "skip|ci|manual", "status": "pending|deployed|verified|blocked", "note": null }
     },
     "accountState": {
       "r2": {
@@ -299,7 +300,7 @@ relevant preflights pass.
 
    Confirm from the JSON/build settings:
 
-   - `ADE`, `ADEWidgets`, and `ADEClip` targets are present in the `ADE` scheme.
+   - `ADE`, `ADEWidgets`, and `ADEClip` targets are present in the `ADE` scheme (Xcode names stay ADE).
    - `ADEClip` Release `IPHONEOS_DEPLOYMENT_TARGET` matches the parent app
      baseline when Apple requires it. Current known-good value is `26.0`.
    - `ADEClip` has `ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon`.
@@ -530,7 +531,7 @@ none of it can fail or block a release:
 - **iOS** (`ios-testflight.sh`, `ios-testflight-ci.sh` and the TestFlight workflows, all through
   `scripts/release-tools/upload-ios-dsyms.sh`): dSYMs uploaded to `ade-ios`
   after the archive. Run by hand, the token comes from `SENTRY_AUTH_TOKEN` or
-  the ADE project secret of that name.
+  the DAEX project secret of that name.
 
 All of it needs the `SENTRY_AUTH_TOKEN` repository secret (a Sentry
 organization token, set 2026-10-13). Without it each step logs one "skipping"
@@ -618,7 +619,7 @@ git rev-parse --verify "v<VERSION>" >/dev/null && {
   echo "Tag v<VERSION> already exists"
   exit 1
 }
-git tag -a "v<VERSION>" "$RELEASE_SHA" -m "ADE v<VERSION>"
+git tag -a "v<VERSION>" "$RELEASE_SHA" -m "DAEX v<VERSION>"
 git push origin "v<VERSION>"
 ```
 
@@ -1070,12 +1071,12 @@ the account half.
   names a resource which does not exist in the account is a deploy-time failure
   no code test catches.
 - **`/health` green is not verification.** Know what each endpoint actually
-  proves. `ade-account-directory` (`apps/account-directory/src/directory.ts:1047`)
-  and `ade-github-webhook-relay` (`apps/webhook-relay/src/relay.ts:2701`) return a
-  bare `{"ok":true}` from a handler that runs before any binding, migration, or
-  secret is touched — those prove reachability and nothing else.
+  proves. `ade-account-directory` (the `/health` branch in
+  `apps/account-directory/src/directory.ts`) and `ade-github-webhook-relay`
+  (`apps/webhook-relay/src/relay.ts`) return a bare `{"ok":true}` from a handler
+  that runs before any binding, migration, or secret is touched — those prove reachability and nothing else.
   `ade-tunnel-relay` reports its protocol version and deployed Worker version tag;
-  `ade-push-relay` (`apps/push-relay/src/relay.ts:1333`) reports whether APNs and
+  `ade-push-relay` (`apps/push-relay/src/relay.ts`) reports whether APNs and
   each Clerk issuer are configured — substantive, but still blind to D1 migration
   state. **No `/health` in this repo checks migrations.** Green `/health` with
   500s on every authenticated route is a state this repo has actually shipped.
@@ -1098,13 +1099,14 @@ a web change landed before the last desktop tag and its `deploy-web.yml` job
 failed or never ran, a `LAST_TAG..origin/main` diff reports that surface
 unchanged forever. Derive each surface's baseline from what actually deployed —
 the newest run whose **job for that surface** concluded `success`. Job names are
-`webclient`, `account-directory`, `webhook-relay`, `tunnel-relay`, `push-relay`;
+`webclient`, `account-directory`, `webhook-relay`, `tunnel-relay`,
+`password-key-service`, `push-relay`;
 a skipped job is not a success and does not appear in `jobs` at all.
 
 ```bash
 runs="$(gh run list --repo arul28/ADE --workflow deploy-web.yml --branch main \
   --json databaseId --limit 20 --jq '.[].databaseId')"
-for surface in webclient account-directory webhook-relay tunnel-relay push-relay; do
+for surface in webclient account-directory webhook-relay tunnel-relay password-key-service push-relay; do
   base=""
   for id in $runs; do
     sha="$(gh run view "$id" --repo arul28/ADE --json headSha,jobs \
@@ -1129,6 +1131,7 @@ git log <base>..origin/main --oneline -- apps/account-directory   # account-dire
 git log <base>..origin/main --oneline -- apps/webhook-relay       # webhook-relay
 git log <base>..origin/main --oneline -- apps/tunnel-relay        # tunnel-relay
 git log <base>..origin/main --oneline -- apps/push-relay          # push-relay
+git log <base>..origin/main --oneline -- apps/password-key-service  # password-key-service
 git log <base>..origin/main --oneline -- \
   apps/desktop/src/renderer apps/desktop/src/shared apps/desktop/vite.webclient.config.ts  # webclient
 ```
@@ -1170,10 +1173,11 @@ release changes one; do not trust this table over the file.
 | Surface | Config | Bindings and account resources | Deploy entry point |
 |---|---|---|---|
 | `ade-web-client` (Pages) | none in repo; built by `apps/desktop/vite.webclient.config.ts` | custom domain `app.ade-app.dev`, Pages URL `ade-web-client.pages.dev` | `npx wrangler@4.105.0 pages deploy apps/desktop/dist/web-client --project-name ade-web-client` |
-| `ade-account-directory` / `ade-account-directory-production` | `apps/account-directory/wrangler.jsonc` | D1 `DB` → `ade-account-directory` (`215bebd4-6601-4705-ab6e-e6f2d1397156`) / `ade-account-directory-production` (`38ebe0bb-ac4d-4b39-b73e-bab2f0092971`), `migrations_dir: migrations` (`0001`–`0012`); R2 `DIAGNOSTICS` → `ade-diagnostics` / `ade-diagnostics-production`; vars `ONLINE_WINDOW_MS`, `WEB_CLIENT_ORIGIN`, `PUSH_RELAY_URL`, `DIAGNOSTICS_DAILY_GLOBAL_LIMIT`, `USAGE_RESEARCH_DAILY_GLOBAL_LIMIT`, `USAGE_RESEARCH_RETENTION_DAYS`, `USAGE_RESEARCH_STORAGE_CEILING_MB`; secrets `DIRECTORY_AUTH_SECRET`, `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID`; cron `* * * * *`; observability on | `npm run deploy:production` |
-| `ade-github-webhook-relay` | `apps/webhook-relay/wrangler.jsonc` | D1 `DB` → `ade-github-relay` (`65e81b4d-2894-444f-9546-390815533b3b`), `migrations_dir: migrations` (`0001`–`0007`); Durable Object `REPO_EVENTS` → `RepoEventsDurableObject`, migration tag `v1` (`new_sqlite_classes`); secret `GITHUB_BETA_DISPATCH_TOKEN` (Beta timer); cron `17,47 * * * *` | `npm run deploy` |
+| `ade-account-directory` / `ade-account-directory-production` | `apps/account-directory/wrangler.jsonc` | D1 `DB` → `ade-account-directory` (`215bebd4-6601-4705-ab6e-e6f2d1397156`) / `ade-account-directory-production` (`38ebe0bb-ac4d-4b39-b73e-bab2f0092971`), `migrations_dir: migrations`; R2 `DIAGNOSTICS` → `ade-diagnostics` / `ade-diagnostics-production`; vars `ONLINE_WINDOW_MS`, `WEB_CLIENT_ORIGIN`, `PUSH_RELAY_URL`, `DIAGNOSTICS_DAILY_GLOBAL_LIMIT`, `USAGE_RESEARCH_DAILY_GLOBAL_LIMIT`, `USAGE_RESEARCH_RETENTION_DAYS`, `USAGE_RESEARCH_STORAGE_CEILING_MB`; secrets `DIRECTORY_AUTH_SECRET`, `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID`; cron `* * * * *`; observability on | `npm run deploy:production` |
+| `ade-github-webhook-relay` | `apps/webhook-relay/wrangler.jsonc` | D1 `DB` → `ade-github-relay` (`65e81b4d-2894-444f-9546-390815533b3b`), `migrations_dir: migrations`; Durable Object `REPO_EVENTS` → `RepoEventsDurableObject`, migration tag `v1` (`new_sqlite_classes`); secret `GITHUB_BETA_DISPATCH_TOKEN` (Beta timer); cron `17,47 * * * *` | `npm run deploy` |
 | `ade-tunnel-relay` | `apps/tunnel-relay/wrangler.jsonc` | Durable Object `TUNNEL` → `TunnelDurableObject`, migration tag `v1` (`new_sqlite_classes`); `version_metadata` binding `CF_VERSION_METADATA`; no D1, no R2, no vars, no secrets; observability on | `npm run deploy` |
-| `ade-push-relay` | `apps/push-relay/wrangler.jsonc` | D1 `DB` → `ade-push-relay` (`1fab2e8a-b269-4618-9402-7a49f9651f26`), `migrations_dir: migrations` (`0001`–`0007`) plus `schema/attention_triggers.sql` applied by `d1:triggers:remote`; vars `DAILY_REQUEST_BUDGET`, `IP_RATE_LIMIT_PER_MIN`, `CLAIM_RATE_LIMIT_PER_MIN`, `WEB_CLIENT_ORIGIN`; secrets `DIRECTORY_AUTH_SECRET`, `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID`, `CLERK_SECONDARY_JWKS_URL`, `CLERK_SECONDARY_ISSUER`, `CLERK_SECONDARY_OAUTH_CLIENT_ID` (`apps/push-relay/scripts/verify-deployment-auth.mjs`); cron `17 * * * *`; observability on | `npm run deploy` locally, `npm run deploy:ci` in CI (mints Clerk smoke tokens) |
+| `ade-password-key-service` | `apps/password-key-service/wrangler.jsonc` | no D1, no R2, no Durable Objects, no vars; secrets `PASSWORD_KEK_MASTER`, `KEY_SERVICE_AUTH_SECRET` (answers 503 `unconfigured` without them); `workers_dev: false` (no public URL; only the push relay calls it); observability on | `npm run deploy` |
+| `ade-push-relay` | `apps/push-relay/wrangler.jsonc` | D1 `DB` → `ade-push-relay` (`1fab2e8a-b269-4618-9402-7a49f9651f26`), `migrations_dir: migrations` plus `schema/attention_triggers.sql` applied by `d1:triggers:remote`; vars `DAILY_REQUEST_BUDGET`, `IP_RATE_LIMIT_PER_MIN`, `CLAIM_RATE_LIMIT_PER_MIN`, `WEB_CLIENT_ORIGIN`; secrets `DIRECTORY_AUTH_SECRET`, `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_OAUTH_CLIENT_ID`, `CLERK_SECONDARY_JWKS_URL`, `CLERK_SECONDARY_ISSUER`, `CLERK_SECONDARY_OAUTH_CLIENT_ID`, `VAULT_ENCRYPTION_KEY` (all checked by `apps/push-relay/scripts/verify-deployment-auth.mjs`) plus `KEY_SERVICE_AUTH_SECRET` (same value as the key service's; unset, Passwords answers 503); service binding `PASSWORD_KEY_SERVICE` → `ade-password-key-service`; cron `17 * * * *`; observability on | `npm run deploy` locally, `npm run deploy:ci` in CI (mints Clerk smoke tokens) |
 
 Two environment facts that are easy to get wrong:
 
@@ -1373,13 +1377,14 @@ SENTRY_RELEASE="ade@$version"
 (cd apps/webhook-relay && npm run deploy:prepare && npm run deploy:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE")
 (cd apps/tunnel-relay && npm run deploy -- --tag "$(git rev-parse origin/main)" --message "release $(git rev-parse --short origin/main)" --var "SENTRY_RELEASE:$SENTRY_RELEASE")
 (cd apps/push-relay && SENTRY_RELEASE="$SENTRY_RELEASE" npm run deploy)
+(cd apps/password-key-service && npm run deploy)
 ```
 
 A hand deploy uploads no source maps, so Sentry stacks from it stay minified
 until the next CI deploy.
 
 `deploy-web.yml` still runs the Pages step as floating `npx wrangler@4`
-(`.github/workflows/deploy-web.yml:77`), so CI and a hand deploy can be on
+(its `pages deploy` step), so CI and a hand deploy can be on
 different 4.x minors. Known and accepted for Pages, which uploads static assets;
 if a Pages deploy ever behaves differently by hand than in CI, check that first.
 
@@ -1399,10 +1404,12 @@ What each entry point actually guards, so you know what you lose by bypassing it
   and list anything you could not confirm in `accountState.config[...].unverified`
   rather than reporting the surface verified.
 - `apps/push-relay` `deploy` = `validate:migrations` → `verify:auth-preflight`
-  (all seven required secrets) → `d1:migrate:remote` (migrations **and**
+  (the eight required secrets) → `d1:migrate:remote` (migrations **and**
   `attention_triggers.sql`) → `wrangler deploy` → `verify:auth-health` →
   `verify:auth-account` (a real authenticated snapshot fetch per Clerk issuer).
 - `apps/webhook-relay` `deploy` = `d1:migrate:remote` → `wrangler deploy`.
+- `apps/password-key-service` `deploy` is a bare `wrangler deploy` with no D1
+  and no public URL; verify it through the push relay's Passwords calls.
 - `apps/tunnel-relay` `deploy` is a bare `wrangler deploy` — it has no D1, no
   secrets, and nothing to preflight. Still invoke it through `npm run deploy` so
   the `--tag` version metadata that `/health` reports is carried through.
@@ -1580,7 +1587,7 @@ the recovery command. Do not publish a release report that omits it, and do not
 downgrade a blocked surface to "skipped". A guarded-deploy failure is a release
 blocker, never a reason to fall back to raw Wrangler.
 
-Credentials: `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` from ADE secrets.
+Credentials: `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` from DAEX secrets.
 Never echo their values; `wrangler whoami` and `wrangler secret list` are the
 safe ways to prove they are right.
 
@@ -1635,7 +1642,7 @@ Report:
 - group membership verification
 - Cloudflare, one line per surface (`ade-web-client`,
   `ade-account-directory-production`, `ade-github-webhook-relay`,
-  `ade-tunnel-relay`, `ade-push-relay`), each stating:
+  `ade-tunnel-relay`, `ade-push-relay`, `ade-password-key-service`), each stating:
   - the decision — changed or not, and deployed by CI, deployed manually, or
     skipped — plus the deployment baseline SHA it was decided against, or
     `UNKNOWN` if none was resolvable
