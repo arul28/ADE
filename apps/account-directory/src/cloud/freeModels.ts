@@ -98,6 +98,8 @@ const MESSAGES: Record<CloudFreeModelsErrorCode, string> = {
   free_models_unknown_model: "That isn't one of the ADE Free Models.",
   free_models_too_large: "This request is too large for ADE Free Models (8 MB at most).",
   free_models_unavailable: "ADE Free Models couldn't answer just now. Try again soon.",
+  free_models_locked: "Add a card (no charge) in ADE to unlock ADE Free Models.",
+  free_models_no_cards: "ADE Free Models are paid for by the sponsored cards in your chats. Open this chat in ADE and let a card show to keep going.",
 };
 const STATUS: Record<CloudFreeModelsErrorCode, number> = {
   free_models_off: 403,
@@ -109,6 +111,8 @@ const STATUS: Record<CloudFreeModelsErrorCode, number> = {
   free_models_too_large: 413,
   // 424, never a 5xx: OpenCode would send the same call again.
   free_models_unavailable: 424,
+  free_models_locked: 403,
+  free_models_no_cards: 403,
 };
 
 /** `/cloud/free-models/*`, or null for any other path. */

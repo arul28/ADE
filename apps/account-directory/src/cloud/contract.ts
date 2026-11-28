@@ -276,6 +276,13 @@ export const CLOUD_PATHS = {
   sponsoredIndex: "/cloud/sponsored/index",
   sponsoredHide: "/cloud/sponsored/hide",
   /**
+   * `POST` `CloudSponsoredViewedRequest`: a card the server answered for that
+   * reply was on screen (half of it, for a second, while the window or app
+   * was in front). The one proof of a card seen: it keeps Free's Small free
+   * and keeps ADE Free Models running (`sponsoredSmall.ts`, `freeModels.ts`).
+   */
+  sponsoredViewed: "/cloud/sponsored/viewed",
+  /**
    * ADE Free Models (`freeModels.ts`): Gravity's hosted models, paid for by
    * the sponsored cards in the chats that use them, on any plan and machine.
    * `PUT /consent` `CloudFreeModelsConsentRequest` answers `CloudFreeModelsState`;
@@ -3668,7 +3675,32 @@ export type CloudFreeModelsState = {
   consent: CloudSponsoredConsent | null;
   format: CloudSponsoredFormat;
   test: boolean;
+  /** Absent: unlocked. */
+  locked?: CloudFreeModelsLock;
+  /** Absent: running normally. */
+  throttle?: CloudFreeModelsThrottle;
 };
+/**
+ * Why ADE Free Models are locked for this account, as `CloudFreeModelsState.locked`:
+ * the Free plan's GitHub rule (`freePlanGithub.ts`). A card saved with no
+ * charge (or a paid plan) unlocks them. The rows stay listed, shown locked.
+ */
+export type CloudFreeModelsLock = {
+  reason: "no_github" | "too_new" | "used" | "checking";
+  /** `too_new`: when the GitHub account turns old enough (ms), unlocking them with no card. */
+  oldEnoughAt?: number | null;
+  githubLogin?: string | null;
+  /** A card saved with no charge unlocks them now (false only while `checking`). */
+  canUnlockWithCard: boolean;
+  /** What to tell the person, one sentence. */
+  sentence: string;
+};
+/**
+ * ADE Free Models are paid for by the cards in their chats. An account that
+ * keeps using them with no card on screen is `slowed` (a few requests a
+ * minute), then `paused` (refused) until a card is seen.
+ */
+export type CloudFreeModelsThrottle = "slowed" | "paused";
 /** `PUT /cloud/free-models/consent`. */
 export type CloudFreeModelsConsentRequest = { consent: CloudSponsoredConsent };
 /** `POST /cloud/free-models/seen`: a person has this ADE Free Models chat open now, on this device. */
@@ -3684,6 +3716,8 @@ export type CloudFreeModelsSeenRequest = { chatId: string; device: CloudSponsore
  * - `free_models_unknown_model`: not an ADE Free Model.
  * - `free_models_too_large`: past Gravity's request size.
  * - `free_models_unavailable`: Gravity refused or failed.
+ * - `free_models_locked`: the GitHub rule holds them (`CloudFreeModelsLock`); a card unlocks them.
+ * - `free_models_no_cards`: used too long with no card on screen (`CloudFreeModelsThrottle` `paused`).
  */
 export type CloudFreeModelsErrorCode =
   | "free_models_off"
@@ -3693,7 +3727,12 @@ export type CloudFreeModelsErrorCode =
   | "free_models_limit"
   | "free_models_unknown_model"
   | "free_models_too_large"
-  | "free_models_unavailable";
+  | "free_models_unavailable"
+  | "free_models_locked"
+  | "free_models_no_cards";
+
+/** `POST /cloud/sponsored/viewed`: the card of this chat's reply was on screen. */
+export type CloudSponsoredViewedRequest = { chatId: string; turnId: string };
 
 /** One message of the chat as an ad request sends it: the latest request and reply only. */
 export type CloudSponsoredMessage = { role: "user" | "assistant"; content: string };
