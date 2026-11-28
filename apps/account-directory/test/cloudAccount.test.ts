@@ -7105,12 +7105,14 @@ describe("Pricing v3's ad price", () => {
 
   // A new lane's first message, from a person, is its new computer's proof: before the hours check, and for the price from the first minute.
   const LAUNCH_ID = "0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10";
-  type FirstCase = { path: "launch" | "create" | "create-old"; plan?: "pro"; size?: "medium"; zero?: boolean; madeBy?: Row; adsOff?: boolean; v3Off?: boolean };
+  type FirstCase = { path: "launch" | "create" | "create-old" | "resting"; plan?: "pro"; size?: "medium"; zero?: boolean; madeBy?: Row; adsOff?: boolean; v3Off?: boolean };
   it.each<[string, FirstCase, number, { rate: number; adFull: number | null } | null, boolean]>([
     ["a launch, Free with ads on, credits left", { path: "launch" }, 201, { rate: 0, adFull: 500 }, true],
     ["a launch, Free with ads on, 0 credits", { path: "launch", zero: true }, 201, { rate: 0, adFull: 500 }, true],
     ["the app's create with adProof, Free with ads on, credits left", { path: "create" }, 201, { rate: 0, adFull: 500 }, true],
     ["the app's create with adProof, Free with ads on, 0 credits", { path: "create", zero: true }, 201, { rate: 0, adFull: 500 }, true],
+    ["a person's message to a resting chat (its computer deleted), Free with ads on, 0 credits", { path: "resting", zero: true }, 201, { rate: 0, adFull: 500 }, true],
+    ["an outside agent's message to a resting chat, Free with ads on", { path: "resting", madeBy: { origin: "mcp" } }, 403, null, false],
     ["an older app's create (no adProof), Free with ads on, 0 credits", { path: "create-old", zero: true }, 402, null, false],
     ["a launch, Pro with ads on, a Medium", { path: "launch", plan: "pro", size: "medium" }, 201, { rate: 800, adFull: 1000 }, true],
     ["an automation's launch, Free with ads on", { path: "launch", madeBy: { kind: "automation" } }, 201, { rate: 500, adFull: null }, false],
@@ -7128,7 +7130,19 @@ describe("Pricing v3's ad price", () => {
     if (c.zero) harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
     if (c.adsOff) harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER);
     const resources = c.size === "medium" ? { cpu: 4, memory: 8 } : { cpu: 2, memory: 4 };
-    const answer = c.path === "launch"
+    if (c.path === "resting") {
+      // A chat whose computer idle cleanup deleted: its saved copy names the lane, the agent and the repository.
+      harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+      harness.env.CLOUD_CHATS = memoryBucket();
+      seedComputer(harness, { machine_key: "key-gone", lane_id: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", lane_name: "Fix", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix" });
+      expect((await fromHome("PUT", "/cloud/chats/key-gone/c1/parts/1", {
+        instanceId: INSTANCE, text: "{}\n", row: { lastSeq: 1, laneId: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", projectKey: "github.com/acme/widgets", provider: "claude", model: "claude-sonnet" },
+      })).status).toBe(200);
+      harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    }
+    const answer = c.path === "resting"
+      ? await fromHome("POST", "/cloud/chats/key-gone/c1/messages", { messageId: "first-1", text: "Go on.", ...(c.madeBy ?? {}) })
+      : c.path === "launch"
       ? await fromHome("POST", "/cloud/launches", {
         launchId: LAUNCH_ID, kind: "chat", sizeId: c.size ?? "small", project: { origin: "https://github.com/Acme/Widgets.git" },
         lane: { id: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", name: "Fix" },
@@ -7137,10 +7151,10 @@ describe("Pricing v3's ad price", () => {
       })
       : await fromHome("POST", "/cloud/instances", { type: "default", resources, metadata: {}, ...(c.path === "create" ? { adProof: { chatId: "chat-new", messageId: "first-1" } } : {}) });
     expect(answer.status).toBe(status);
-    const made = harness.rows("select instance_id, multiplier_milli, ad_full_milli from cloud_computers");
+    const made = harness.rows("select instance_id, multiplier_milli, ad_full_milli from cloud_computers where deleted_at is null");
     expect(made.map((row) => ({ rate: row.multiplier_milli, adFull: row.ad_full_milli }))[0] ?? null).toEqual(price);
     expect(harness.rows("select chat_id, turn_id, instance_id from cloud_ad_proofs"))
-      .toEqual(proved ? [{ chat_id: c.path === "launch" ? LAUNCH_ID : "chat-new", turn_id: "msg:first-1", instance_id: made[0]!.instance_id }] : []);
+      .toEqual(proved ? [{ chat_id: c.path === "launch" ? LAUNCH_ID : c.path === "resting" ? "c1" : "chat-new", turn_id: "msg:first-1", instance_id: made[0]!.instance_id }] : []);
     // The app's later `/sent` of the same message, under its own chat's id, is a repeat.
     if (proved) {
       saveChat("chat-app", String(made[0]!.instance_id));

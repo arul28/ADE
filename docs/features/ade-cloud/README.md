@@ -423,9 +423,14 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   new lane's first message is its new computer's proof the same way, counted
   at the create, before its hours check and for the price from the first
   minute, with the whole window: a person's server launch (its first message,
-  under the launch id), or the app's `POST /cloud/instances` with `adProof`.
+  under the launch id), a person's message to a resting chat whose computer is
+  gone (the queue's launch, under the chat's id; not a resting CLI's, which is
+  full-price work), or the app's `POST /cloud/instances` with `adProof`.
   One message id counts once on any chat id, so the app's later `/sent` of it
-  is a repeat. An automation's or agent's launch has no such proof. A
+  is a repeat. An automation's or agent's launch has no such proof. Known
+  limit: a new lane in a DAEX Free Models chat with ads off gets none (its
+  proof is the first reply's ad request), so at 0 credits such a new lane is
+  refused. A
   wake for an outside agent stays refused at 0 credits; a CLI session or an
   automation started later puts it at the full price, and the zero stop
   stops it. The credits emails (`hoursWarnings.ts`) say so on Free with ads

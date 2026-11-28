@@ -2083,7 +2083,8 @@ function chatWakeFor(request: Request, env: CloudEnv, userId: string, provider: 
       // The exec wakes it too; a failure is harmless: its ADE drains the queue when it starts.
       await provider.exec(computer.instance_id, CLOUD_COMPUTER_COMMANDS.drainMessages, DRAIN_EXEC_TIMEOUT_MS);
     },
-    startLaunch: (parsed) => startServerLaunch(env, userId, parsed, launchDeps),
+    // A person's message to a resting chat: its proof for the new computer (`startServerLaunch`).
+    startLaunch: (parsed) => startServerLaunch(env, userId, parsed, launchDeps, { request }),
   };
 }
 

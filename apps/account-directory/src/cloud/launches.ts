@@ -923,10 +923,13 @@ export async function startServerLaunch(
   };
   const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS;
   const joinHash = await sha256Hex(joinCode);
-  // Pricing v3: a person's first message (never an automation's or an agent's) is the new computer's proof,
-  // counted under the launch id (`adProof.ts`); the app's later `/sent` of the same message is a repeat.
-  const person = !parsed.madeBy || parsed.madeBy.kind === "person";
-  const adProof = parsed.chat && person && options.request ? { request: options.request, chatId: launchId, messageId: parsed.chat.messageId } : undefined;
+  // Pricing v3: a person's first message (never an automation's or an agent's) is the new computer's proof
+  // (`adProof.ts`), under the launch id, or the chat's own for a resting chat the queue continues; never a
+  // resting CLI's (full-price work). The app's later `/sent` of the same message is a repeat.
+  const person = (!parsed.madeBy || parsed.madeBy.kind === "person") && parsed.continueChat?.kind !== "cli";
+  const adProof = parsed.chat && person && options.request
+    ? { request: options.request, chatId: parsed.continueChat?.chatId ?? launchId, messageId: parsed.chat.messageId }
+    : undefined;
   const outcome = await deps.createComputer(userId, deps.provider, {
     ...(adProof ? { adProof } : {}),
     // The disk this repository's setup needed before: no fill, restart and setup again.
