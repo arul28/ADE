@@ -143,6 +143,8 @@ const NULL_TARGETS: Readonly<Record<ReadOnlyShellDialect, ReadonlySet<string>>> 
   // `NUL` is a file name on a POSIX host; only Windows makes it the null device.
   powershell: new Set(["$null", "nul", "NUL"]),
 };
+/** An argument naming ADE's `.ade` folder or a path through it (`./.ade`, `--path=.ade/x`). */
+const ADE_DIR_ARGUMENT = /(^|[\\/=])\.ade([\\/]|$)/i;
 /** Options that make a reader run another program: GNU `sort --compress-program=./x`. */
 const PROGRAM_RUNNING_OPTIONS = /^--compress-program/;
 /** Trusted directories a shell wrapper's absolute path may name (`/bin/zsh -lc ...`). */
@@ -368,6 +370,9 @@ function segmentIsReadOnly(words: Segment, dialect: ReadOnlyShellDialect, option
   if (words.slice(1).some((word) => word.unsafe)) return false;
   const args = words.slice(1).map((word) => word.text);
   if (args.some((word) => PROGRAM_RUNNING_OPTIONS.test(word))) return false;
+  // ADE's own folder holds the project's secrets; a read that names it, or a
+  // path through it (`grep -r . ./.ade`), is refused rather than judged.
+  if (args.some((word) => ADE_DIR_ARGUMENT.test(word))) return false;
   if (program === "ade") return !args.some((word) => WRITING_OPTIONS.test(word)) && adeCommandIsReadOnly(args);
   if (args.some((word) => WRITING_OPTIONS.test(word))) return false;
   if (program === "git") return gitCommandIsReadOnly(args);
