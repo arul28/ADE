@@ -66,7 +66,7 @@ export type {
 
 export { DaexError, type DaexErrorCode } from "../errors.js";
 
-// Pre-Daex names: deprecated aliases of the Daex* exports above, kept so code
+// Pre-DAEX names: deprecated aliases of the DAEX* exports above, kept so code
 // written against the `@ade-dev` packages keeps compiling.
 export { ADE_DEFAULT_BRIDGE_KEY, ADE_DEFAULT_CHANNEL_PREFIX, ADE_IPC_METHODS, ADE_IPC_THREAD_KEY_METHODS } from "./protocol.js";
 export type { AdeBridge, AdeIpcClientEvent, AdeIpcErrorPayload, AdeIpcEventPayload, AdeIpcInvokeRequest, AdeIpcInvokeResponse, AdeIpcMethod, AdeIpcProvidersEvent, AdeIpcSubscription, AdeIpcThreadEvent, AdeIpcThreadSnapshot } from "./protocol.js";

@@ -4,7 +4,7 @@ import { DaexError, toError } from "./errors.js";
 /**
  * Newline-delimited JSON-RPC 2.0 over a unix socket or Windows named pipe.
  *
- * Daex's server mirrors the transport mode of the first frame it receives
+ * DAEX's server mirrors the transport mode of the first frame it receives
  * (`apps/ade-cli/src/jsonrpc.ts` → `writeMessage`), so a client that only ever
  * writes NDJSON only ever gets NDJSON back. That is why this reimplementation
  * does not carry the reference client's `Content-Length` reader: unreachable
@@ -53,7 +53,7 @@ export class JsonRpcConnection {
     socket.on("data", (chunk: Buffer | string) => this.handleData(chunk));
     socket.on("error", (error: Error) => this.fail(error));
     socket.on("close", () =>
-      this.fail(new DaexError("transport_closed", "The Daex runtime socket closed.")),
+      this.fail(new DaexError("transport_closed", "The DAEX runtime socket closed.")),
     );
   }
 
@@ -93,7 +93,7 @@ export class JsonRpcConnection {
   ): Promise<T> {
     if (this.closed) {
       return Promise.reject(
-        new DaexError("transport_closed", `The Daex runtime socket is closed (${method}).`),
+        new DaexError("transport_closed", `The DAEX runtime socket is closed (${method}).`),
       );
     }
     let timeoutMs: number;
@@ -119,7 +119,7 @@ export class JsonRpcConnection {
         this.fail(
           new DaexError(
             "rpc_timeout",
-            `The Daex runtime did not answer ${method} within ${timeoutMs}ms.`,
+            `The DAEX runtime did not answer ${method} within ${timeoutMs}ms.`,
           ),
         );
       }, timeoutMs);
@@ -176,7 +176,7 @@ export class JsonRpcConnection {
     // as intentional and does not fire the unexpected-drop handlers.
     if (this.closed) return;
     this.closed = true;
-    this.rejectAll(new DaexError("transport_closed", "The Daex runtime socket closed."));
+    this.rejectAll(new DaexError("transport_closed", "The DAEX runtime socket closed."));
     try {
       this.socket.end();
       this.socket.destroy();
@@ -231,7 +231,7 @@ export class JsonRpcConnection {
         parsed = JSON.parse(trimmed) as JsonRpcMessage | JsonRpcMessage[];
       } catch (error) {
         this.fail(
-          new DaexError("protocol_error", "The Daex runtime sent a non-JSON frame.", {
+          new DaexError("protocol_error", "The DAEX runtime sent a non-JSON frame.", {
             cause: error,
           }),
         );
@@ -305,7 +305,7 @@ class ByteQueue {
       if (this.bytes > maxBytes) {
         throw new DaexError(
           "protocol_error",
-          `The Daex runtime sent an oversized frame (> ${maxBytes} bytes).`,
+          `The DAEX runtime sent an oversized frame (> ${maxBytes} bytes).`,
         );
       }
       return null;
@@ -313,7 +313,7 @@ class ByteQueue {
     if (index > maxBytes) {
       throw new DaexError(
         "protocol_error",
-        `The Daex runtime sent an oversized frame (> ${maxBytes} bytes).`,
+        `The DAEX runtime sent an oversized frame (> ${maxBytes} bytes).`,
       );
     }
     const payload = this.consume(index).toString("utf8");

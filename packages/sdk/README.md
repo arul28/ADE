@@ -1,13 +1,13 @@
 # @daex-dev/sdk
 
-Typed Node / Electron-main client that spawns a slim Daex runtime as a sidecar
+Typed Node / Electron-main client that spawns a slim DAEX runtime as a sidecar
 and exposes chat as durable named threads.
 
 Formerly `@ade-dev/sdk`. To move, change your imports to `@daex-dev/sdk`; the
 `Ade*` names (`createAdeChat`, `AdeError`, ...) still work as deprecated aliases
-of the `Daex*` names.
+of the `DAEX*` names.
 
-**Docs:** [Daex SDK](https://ade-app.dev/docs/sdk/overview) — install, threads, MCP honesty table, chat UI, runtime, and API reference.
+**Docs:** [DAEX SDK](https://ade-app.dev/docs/sdk/overview) — install, threads, MCP honesty table, chat UI, runtime, and API reference.
 
 | Page | What it covers |
 |---|---|
@@ -71,7 +71,7 @@ Reopening `"support"` after a restart resumes the same conversation. Call
 ## Provider auth
 
 The sidecar reuses the provider CLIs and logins already on the machine
-(`claude`, `codex`, `cursor`, …). Daex state under `home` is isolated; Claude /
+(`claude`, `codex`, `cursor`, …). DAEX state under `home` is isolated; Claude /
 Codex / Cursor credentials still live in those tools' own config homes
 (`~/.claude`, `~/.codex`, `~/.cursor`). If the host user can already run that
 provider in a terminal, the sidecar can too. SDK 0.7 defaults to isolated
@@ -94,7 +94,7 @@ const report = await daex.doctor();
 if (!report.ok) console.error(report);
 ```
 
-Pin a specific Daex build with `binaryPath`, or let the client download a
+Pin a specific DAEX build with `binaryPath`, or let the client download a
 release. Downloads are fail-closed against that release's `SHA256SUMS`.
 
 ## Threads
@@ -200,7 +200,7 @@ if (thread.mcpCapability?.strictRequested && thread.mcpCapability.level !== "enf
 
 Supplying `mcpServers` turns on strict mode unless you set
 `loadUserMcpServers: true`. **False is not a uniform guarantee.** Only Claude
-can enforce it. Everywhere else Daex applies the strongest mechanism that
+can enforce it. Everywhere else DAEX applies the strongest mechanism that
 provider exposes, and Pi has no MCP surface at all (injected servers are
 refused rather than opening a tool-less thread):
 
@@ -208,7 +208,7 @@ refused rather than opening a tool-less thread):
 |---|---|---|
 | claude | enforced | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
 | codex | best-effort | servers contributed by a Codex *plugin* |
-| cursor | best-effort | user-layer servers (`~/.cursor`; Daex's own preToolUse hook lives there) |
+| cursor | best-effort | user-layer servers (`~/.cursor`; DAEX's own preToolUse hook lives there) |
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |
@@ -216,7 +216,7 @@ refused rather than opening a tool-less thread):
 The server shape is checked against the selected provider before launch. Codex
 does not support `sse`, so a Codex request containing an SSE entry is rejected.
 Server names `computer_use` and `daex-cto` are reserved (so is `ade-cto`, its
-name before the Daex rename), and a request may contain at most 32 servers.
+name before the DAEX rename), and a request may contain at most 32 servers.
 
 Read `thread.mcpCapability` after open. `strictRequested` first, then `level`.
 `"enforced"` is the only value that means "nothing but the servers I supplied".
@@ -305,7 +305,7 @@ On Codex, every MCP tool call raises an approval, and the policy judges it as
 for the session only. On Codex, `sandboxRoot` still decides command and file
 escapes, and the tool fields do not.
 
-The CTO's own tool server is `daex-cto`. `ade-cto`, its name before the Daex
+The CTO's own tool server is `daex-cto`. `ade-cto`, its name before the DAEX
 rename, is a deprecated alias: `mcp:ade-cto:*` (or `ade-cto` in
 `autoApproveMcpServers`) still matches the server, in allow and deny rules
 alike. Write `daex-cto` in new policies.
@@ -383,7 +383,7 @@ the same. A turn in flight is not resumed. See
 ## The live seam test
 
 `npm test` runs against an in-process fake runtime, so it can only prove the SDK
-agrees with itself. `test/live.integration.test.ts` boots a real Daex runtime and
+agrees with itself. `test/live.integration.test.ts` boots a real DAEX runtime and
 checks that both sides agree on the wire. It is opt-in and skips itself when the
 binary is not named.
 
@@ -414,4 +414,4 @@ fact instead of proving the round trip.
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). Daex (formerly ADE) itself remains AGPL-3.0-only; see the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.
+MIT. See [LICENSE](./LICENSE). DAEX (formerly ADE) itself remains AGPL-3.0-only; see the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.

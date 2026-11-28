@@ -22,7 +22,7 @@ import { isDirectory, runtimeBinaryIn } from "./fsProbe.js";
  *   @ade-dev/runtime-<target>/
  *     package.json          { os: [...], cpu: [...], version: <ade release> }
  *     bin/daex[.exe]        the runtime binary, mode 0755 (bin/ade[.exe] before
- *                           the Daex rename; still accepted)
+ *                           the DAEX rename; still accepted)
  *     native/               the extracted contents of <binary>.native.tar.gz
  *       node_modules/       the modules the binary dlopens
  *       vendor/crsqlite/... the cr-sqlite extension
@@ -45,7 +45,7 @@ export type BundledRuntime = {
   nodeModulesPath: string;
   /** e.g. `@ade-dev/runtime-darwin-arm64`. */
   packageName: string;
-  /** The Daex release version the package was cut from. */
+  /** The DAEX release version the package was cut from. */
   version: string;
 };
 
@@ -148,7 +148,7 @@ export function resolveBundledRuntime(
 
   const packageRoot = path.dirname(manifestPath);
   // `bin/daex` when the package carries it, else `bin/ade` (every package
-  // published before the Daex rename).
+  // published before the DAEX rename).
   const { binaryPath, found } = runtimeBinaryIn(path.join(packageRoot, "bin"), platform);
   const runtimeRoot = path.join(packageRoot, "native");
   const nodeModulesPath = path.join(runtimeRoot, "node_modules");

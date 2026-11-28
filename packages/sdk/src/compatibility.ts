@@ -25,7 +25,7 @@ type Version = [number, number, number];
  * `major.minor.patch` from a version string, ignoring any pre-release or
  * build suffix, or null when the string does not start with three numbers.
  *
- * Ignoring the suffix is deliberate: Daex tags its alpha builds
+ * Ignoring the suffix is deliberate: DAEX tags its alpha builds
  * `1.2.81-alpha.N`, and those carry the same wire as the release they lead to.
  * Strict semver would rank them below `1.2.81` and refuse exactly the builds a
  * host tests against first.

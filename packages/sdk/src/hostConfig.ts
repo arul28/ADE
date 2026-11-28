@@ -28,7 +28,7 @@ const SETTING_SOURCES: readonly AgentChatSettingSources[] = ["none", "project", 
 /**
  * The wire form of `instructions`.
  *
- * A bare string is shorthand for append, because appending keeps Daex's own
+ * A bare string is shorthand for append, because appending keeps DAEX's own
  * personal-chat framing and is the safe default; replacing it is the choice a
  * host makes deliberately when the chat is branded as its own assistant.
  */
@@ -76,7 +76,7 @@ export function normalizeSettingSources(
 /**
  * Case folding on `win32` AND `darwin`, Linux left case-sensitive.
  *
- * A deliberate mirror of Daex's own rule — `main/services/shared/pathCompare.ts`
+ * A deliberate mirror of DAEX's own rule — `main/services/shared/pathCompare.ts`
  * and `renderer/lib/pathUtils.ts`, both of which fold on the same two
  * platforms. This package ships standalone to npm and cannot import from the
  * app, which is the same constraint `windowsSystemTools.ts` documents; update
@@ -94,7 +94,7 @@ const FOLD_PATH_CASE = process.platform === "win32" || process.platform === "dar
  * `stripExtendedLengthPrefix` in `apps/desktop/src/shared/pathContainment.ts`;
  * this package ships standalone and cannot import the app.
  *
- * Node treats `\\?\C:\` as a UNC root, so a lexical home or Daex-home check
+ * Node treats `\\?\C:\` as a UNC root, so a lexical home or DAEX-home check
  * against `C:\Users\...` misses and the refusal never fires. Non-win32 callers
  * must not use this: `\\?\` is a legal POSIX filename.
  */
@@ -435,7 +435,7 @@ export type SettingSourcesCapability = HostConfigCapability & {
  * What the provider could actually enforce of a permission policy.
  *
  * `"enforced"` means the provider itself gates every tool call against the
- * policy. `"best-effort"` means Daex approximated it with the containment and
+ * policy. `"best-effort"` means DAEX approximated it with the containment and
  * approval knobs the provider does expose, and `residual` names what the policy
  * therefore does not cover. `"unsupported"` means the provider has no gate at
  * all and only the coarse preset applies.

@@ -106,7 +106,7 @@ function rendererFileRef(item: unknown): AgentChatFileRef[] {
   return [ref];
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DAEX_IPC_RENDERER_OPEN_FIELDS}. */
 export const ADE_IPC_RENDERER_OPEN_FIELDS = DAEX_IPC_RENDERER_OPEN_FIELDS;

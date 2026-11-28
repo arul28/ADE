@@ -116,7 +116,7 @@ export function flattenCatalog(catalog: AgentChatModelCatalog | null): ModelCata
  *
  * DERIVED — see `ProviderStatus` in types.ts. The machine scope publishes no
  * provider-auth RPC, so "authenticated" means "the catalog resolved at least
- * one connected model for this provider". That is the same signal Daex's own
+ * one connected model for this provider". That is the same signal DAEX's own
  * model picker uses to decide whether a provider is usable, but it is weaker
  * than a real auth probe: a provider whose catalog is served from cache can
  * report connected while its credential has since expired. `stale` carries that
@@ -136,7 +136,7 @@ export function deriveProviderStatus(
     result[group.key] = {
       provider: group.key,
       displayName: group.displayName,
-      // The honest derivation of "installed" from a catalog: Daex lists models
+      // The honest derivation of "installed" from a catalog: DAEX lists models
       // for a provider it can reach. It is a different question from "a binary
       // exists on disk", which is why `source: "derived"` travels with it and
       // why a UI should say "not detected" rather than "not installed".

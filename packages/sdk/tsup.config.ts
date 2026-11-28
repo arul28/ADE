@@ -83,7 +83,7 @@ export default defineConfig([
     // bundler. A renderer loaded from `file://` cannot load an ES module at all
     // (Chromium blocks it as a cross-origin request), so an app without a build
     // step needs `<script src="…renderer.global.js">` and `window.DaexElectron`.
-    // `window.AdeElectron` is the same object under its pre-Daex name, so a
+    // `window.AdeElectron` is the same object under its pre-DAEX name, so a
     // page written against @ade-dev/sdk keeps working.
     entry: ["src/electron/renderer.ts"],
     outDir: "dist/electron",

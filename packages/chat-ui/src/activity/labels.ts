@@ -90,8 +90,8 @@ const TIER = 1_000_000;
 const QUALIFIED_WILDCARD_BONUS = 10_000;
 
 /**
- * Old MCP server names and the name they became. Daex's CTO server was
- * `ade-cto` before the Daex rename (deprecated; write `daex-cto`): a key
+ * Old MCP server names and the name they became. DAEX's CTO server was
+ * `ade-cto` before the DAEX rename (deprecated; write `daex-cto`): a key
  * naming either matches the server's tools under both, so old transcripts
  * and old label maps keep working.
  */

@@ -137,7 +137,7 @@ export function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DaexError}. */
 export const AdeError = DaexError;

@@ -121,7 +121,7 @@ function bind(
 function remoteError(payload: unknown): Error {
   const value = payload && typeof payload === "object" ? (payload as Partial<DaexIpcErrorPayload>) : {};
   const code = readAdeErrorCode(value.code) ?? "rpc_error";
-  return new DaexError(code, typeof value.message === "string" ? value.message : "The Daex server returned an error.");
+  return new DaexError(code, typeof value.message === "string" ? value.message : "The DAEX server returned an error.");
 }
 
 /** Build a browser-safe client proxy for a createDaexServer WebSocket connection. */
@@ -152,7 +152,7 @@ export function createDaexRemoteClient(transportOrUrl: DaexRemoteTransport | str
 
   const isOpen = () => transport.readyState === undefined || transport.readyState === (transport.OPEN ?? 1);
   const sendRaw = (payload: string) => {
-    if (closed || disposed) throw new DaexError("transport_closed", "The Daex server connection is closed.");
+    if (closed || disposed) throw new DaexError("transport_closed", "The DAEX server connection is closed.");
     if (!isOpen()) {
       queued.push(payload);
       return;
@@ -172,12 +172,12 @@ export function createDaexRemoteClient(transportOrUrl: DaexRemoteTransport | str
   };
 
   const call = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
-    if (closed || disposed) return Promise.reject(new DaexError("transport_closed", "The Daex server connection is closed."));
+    if (closed || disposed) return Promise.reject(new DaexError("transport_closed", "The DAEX server connection is closed."));
     const id = nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new DaexError("rpc_timeout", "The Daex server did not answer " + method + " before the request timed out."));
+        reject(new DaexError("rpc_timeout", "The DAEX server did not answer " + method + " before the request timed out."));
       }, 30_000);
       pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
       try {
@@ -247,7 +247,7 @@ export function createDaexRemoteClient(transportOrUrl: DaexRemoteTransport | str
     bind(transport, "message", (...args) => handleIncoming(args[0])),
     bind(transport, "close", () => {
       closed = true;
-      rejectPending(new DaexError("transport_closed", "The Daex server closed the WebSocket connection."));
+      rejectPending(new DaexError("transport_closed", "The DAEX server closed the WebSocket connection."));
     }),
   ];
   if (transport.addEventListener || transport.on) {
@@ -414,7 +414,7 @@ export function createDaexRemoteClient(transportOrUrl: DaexRemoteTransport | str
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      rejectPending(new DaexError("disposed", "The remote Daex client was disposed."));
+      rejectPending(new DaexError("disposed", "The remote DAEX client was disposed."));
       for (const remove of detach) remove();
       providerListeners.clear();
       clientListeners.clear();
@@ -424,7 +424,7 @@ export function createDaexRemoteClient(transportOrUrl: DaexRemoteTransport | str
   };
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link createDaexRemoteClient}. */
 export const createAdeRemoteClient = createDaexRemoteClient;

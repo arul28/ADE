@@ -430,7 +430,7 @@ export function mergeHistoryWithBuffer(
   return merged.sort(compareEnvelopes);
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DAEX_DEFAULT_BRIDGE_KEY}. */
 export const ADE_DEFAULT_BRIDGE_KEY = DAEX_DEFAULT_BRIDGE_KEY;

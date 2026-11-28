@@ -224,7 +224,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
 
   const childEnv: NodeJS.ProcessEnv = {
     // Scrubbed: the host's own ADE_* variables are NOT this sidecar's config.
-    // A developer running the SDK from inside a configured Daex shell would
+    // A developer running the SDK from inside a configured DAEX shell would
     // otherwise leak ADE_PROJECT_ROOT, ADE_DEFAULT_ROLE, ADE_SOCKET and friends
     // into an isolated runtime, silently pointing it at their real state.
     ...scrubAdeEnv(
@@ -334,7 +334,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
     if (exit.value) {
       throw new DaexError(
         "spawn_failed",
-        `The Daex runtime exited during startup (code ${exit.value.code ?? "null"}, signal ${
+        `The DAEX runtime exited during startup (code ${exit.value.code ?? "null"}, signal ${
           exit.value.signal ?? "null"
         }).${stderrTail.length ? `\n${stderrTail.join("\n")}` : ""}`,
       );
@@ -384,7 +384,7 @@ export async function startSidecar(options: SidecarOptions): Promise<Sidecar> {
   releaseSidecar(handle);
   throw new DaexError(
     "connect_failed",
-    `The Daex runtime never accepted a connection on ${socketPath}: ${errorMessage(lastError)}${
+    `The DAEX runtime never accepted a connection on ${socketPath}: ${errorMessage(lastError)}${
       stderrTail.length ? `\n${stderrTail.join("\n")}` : ""
     }`,
     { cause: lastError },

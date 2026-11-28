@@ -265,9 +265,9 @@ export class RuntimeSupervisor {
       // inside. Fatal, with everything needed to resolve it by hand.
       throw new DaexError(
         "spawn_failed",
-        `Another process (pid ${reclaim.pid}) is recorded as owning this Daex home and could not be ` +
+        `Another process (pid ${reclaim.pid}) is recorded as owning this DAEX home and could not be ` +
           `confirmed stale: ${reclaim.reason}. Starting a second runtime on the same state root risks ` +
-          `database corruption. Stop pid ${reclaim.pid} if it is an old Daex runtime, or delete ` +
+          `database corruption. Stop pid ${reclaim.pid} if it is an old DAEX runtime, or delete ` +
           `${runtimePidfilePath(home)} if it is not.`,
       );
     }
@@ -326,7 +326,7 @@ export class RuntimeSupervisor {
     } catch (error) {
       bound.connection.close();
       await bound.sidecar?.stop();
-      throw new DaexError("handshake_failed", `The Daex runtime handshake failed: ${errorMessage(error)}`, {
+      throw new DaexError("handshake_failed", `The DAEX runtime handshake failed: ${errorMessage(error)}`, {
         cause: error,
       });
     }
@@ -385,7 +385,7 @@ export class RuntimeSupervisor {
       if (isDisposed() || gen !== this.generation) return;
       recordError("transport", error);
       emitClient("transport", { state: "closed", error: errorMessage(error) });
-      this.lost(gen, `The connection to the Daex runtime closed: ${errorMessage(error)}`);
+      this.lost(gen, `The connection to the DAEX runtime closed: ${errorMessage(error)}`);
     });
     const child = this.bound.sidecar?.child;
     if (!child) return;
@@ -404,7 +404,7 @@ export class RuntimeSupervisor {
       emitClient("exit", { code, signal: signal ?? null, error: tail });
       this.lost(
         gen,
-        `The Daex runtime exited (code ${code ?? "null"}, signal ${signal ?? "null"}); the turn in flight, if any, ended.`,
+        `The DAEX runtime exited (code ${code ?? "null"}, signal ${signal ?? "null"}); the turn in flight, if any, ended.`,
       );
     });
   }

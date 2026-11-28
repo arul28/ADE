@@ -119,7 +119,7 @@ export function resolvePackagedRuntime(
   if (typeof resourcesPath !== "string" || !resourcesPath.trim()) return null;
   const root = path.resolve(resourcesPath, dir);
   // `bin/daex` when the bundle carries it, else `bin/ade` (bundles made before
-  // the Daex rename).
+  // the DAEX rename).
   const { binaryPath, found } = runtimeBinaryIn(path.join(root, "bin"), platform);
   if (!found) return null;
 
@@ -134,7 +134,7 @@ export function resolvePackagedRuntime(
   if (!isDirectory(runtimeNodeModules)) {
     throw new DaexError(
       "binary_not_found",
-      `The packaged Daex runtime at ${binaryPath} has no native modules at ${runtimeNodeModules}. ` +
+      `The packaged DAEX runtime at ${binaryPath} has no native modules at ${runtimeNodeModules}. ` +
         `Copy the whole runtime package (bin/ and native/) into the app's resources.`,
     );
   }

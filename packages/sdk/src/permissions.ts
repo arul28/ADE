@@ -262,7 +262,7 @@ export function individualMcpToolEntries(policy: ThreadPermissionPolicy): string
 /**
  * Provider-specific create-args for a permission preset.
  *
- * "always-allow" is a single knob at the SDK boundary, but Daex has no single
+ * "always-allow" is a single knob at the SDK boundary, but DAEX has no single
  * always-allow switch: each adapter names its own full-auto state, and setting
  * only the generic `permissionMode` leaves Claude prompting and Codex sandboxed.
  * The mapping is spelled out per provider rather than inferred, so a new

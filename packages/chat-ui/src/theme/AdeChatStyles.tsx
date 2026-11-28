@@ -23,7 +23,7 @@ export function DaexChatStyles({ nonce }: DaexChatStylesProps = {}) {
   return null;
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DaexChatStyles}. */
 export const AdeChatStyles = DaexChatStyles;

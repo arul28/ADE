@@ -32,7 +32,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => void shutdo
 
 const mcp = await startMcpServer({ logPath: path.join(demoRoot, "artifacts", "mcp-calls.jsonl") });
 children.push(mcp.child);
-process.stdout.write(`[start] demodata MCP: ${mcp.url}\n[start] Daex home: ${home}\n`);
+process.stdout.write(`[start] demodata MCP: ${mcp.url}\n[start] DAEX home: ${home}\n`);
 
 function run(label, command, args, env) {
   const child = own(

@@ -4,11 +4,11 @@ Embeddable React chat components over `@daex-dev/sdk`.
 
 Formerly `@ade-dev/chat-ui`. To move, change your imports to `@daex-dev/chat-ui`;
 the `Ade*` names (`AdeChat`, `useAdeThread`, ...) still work as deprecated
-aliases of the `Daex*` names.
+aliases of the `DAEX*` names.
 
-**Docs:** [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) · [Daex SDK](https://ade-app.dev/docs/sdk/overview)
+**Docs:** [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) · [DAEX SDK](https://ade-app.dev/docs/sdk/overview)
 
-This package renders an agent conversation for **your** users, not for Daex
+This package renders an agent conversation for **your** users, not for DAEX
 developers. There are no lanes, projects, repos, or worktrees in any prop or
 any string it can display. Tool activity is renamed through a label map, so a
 customer sees "Searching your invoices…" where the agent ran `server.tool`.
@@ -67,7 +67,7 @@ packages/chat-ui/
   test/                          225 tests
 ```
 
-Ported files carry a provenance header naming their Daex desktop source and what
+Ported files carry a provenance header naming their DAEX desktop source and what
 was trimmed. `transcriptRows.ts` and `modelSearch.ts` are ports;
 `Composer.tsx` and the model picker components are fresh implementations that
 follow the desktop interaction/visual structure without inheriting its props.
@@ -435,4 +435,4 @@ From the repo root: `npm run test:chat-ui`, `npm run build:chat-ui`.
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). Daex (formerly ADE) itself remains AGPL-3.0-only; see the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.
+MIT. See [LICENSE](./LICENSE). DAEX (formerly ADE) itself remains AGPL-3.0-only; see the [ADE Runtime Embedding Exception](https://github.com/arul28/ADE/blob/main/RUNTIME-EMBEDDING-EXCEPTION.md) for shipping the runtime binary in your app.

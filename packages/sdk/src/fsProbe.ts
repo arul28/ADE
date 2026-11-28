@@ -29,7 +29,7 @@ export function isDirectory(candidate: string): boolean {
 
 /**
  * The runtime's command names, preferred first. The CLI is `daex` since the
- * Daex rename and installs `ade` beside it as a permanent alias; a runtime
+ * DAEX rename and installs `ade` beside it as a permanent alias; a runtime
  * built before the rename has only `ade`. Every lookup tries `daex` first and
  * falls back to `ade`, so either install works.
  */

@@ -1,7 +1,7 @@
 {
   "name": "@daex-dev/chat-ui",
   "version": "0.7.1",
-  "description": "Embeddable React chat components for the Daex SDK.",
+  "description": "Embeddable React chat components for the DAEX SDK.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,

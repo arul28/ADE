@@ -718,7 +718,7 @@ export function injectDaexChatStyles(target?: Document, options: InjectDaexChatS
   doc.head.appendChild(style);
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link InjectDaexChatStylesOptions}. */
 export type InjectAdeChatStylesOptions = InjectDaexChatStylesOptions;

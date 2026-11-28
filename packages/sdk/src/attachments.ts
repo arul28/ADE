@@ -16,7 +16,7 @@ import type { AgentChatFileRef } from "./types.js";
  * `packages/chat-ui/src/adapters/sdkClient.ts`. The SDK cannot import either
  * (it ships with zero dependencies), so a change to the rule is made in all
  * three places or none: a file the SDK typed differently from the runtime would
- * be sent one way from a host and another way from Daex itself.
+ * be sent one way from a host and another way from DAEX itself.
  */
 
 /** The runtime's `IMAGE_ATTACHMENT_MEDIA_TYPES` keys: the extensions it reads as images. */

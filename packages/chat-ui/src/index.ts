@@ -201,7 +201,7 @@ export type {
   Unsubscribe,
 } from "./sdkTypes";
 
-// Pre-Daex names: deprecated aliases of the Daex* exports above, kept so code
+// Pre-DAEX names: deprecated aliases of the DAEX* exports above, kept so code
 // written against the `@ade-dev` packages keeps compiling.
 export { ADE_CHAT_TOKENS } from "./theme/createTheme";
 export type { AdeChatTheme, AdeChatToken } from "./theme/createTheme";

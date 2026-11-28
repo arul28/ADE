@@ -1,7 +1,7 @@
 /**
- * Wire types for the Daex machine-scoped chat surface.
+ * Wire types for the DAEX machine-scoped chat surface.
  *
- * PROVENANCE — every type in this file is a hand-copied subset of Daex's own
+ * PROVENANCE — every type in this file is a hand-copied subset of DAEX's own
  * shared contracts. The package deliberately does NOT import across the repo
  * boundary (`apps/desktop/src/shared/**`) so it builds and publishes on its
  * own. When the engine contract moves, this file moves with it:
@@ -117,7 +117,7 @@ export type AgentChatInstructions = {
  *
  *   - `"applied"` — the provider received the value through a first-class
  *     channel of its own.
- *   - `"best-effort"` — Daex reached the same outcome through a mechanism it
+ *   - `"best-effort"` — DAEX reached the same outcome through a mechanism it
  *     already owns (a prompt prefix, a containment root), and `detail` names
  *     what that costs.
  *   - `"ignored"` — the provider has no switch for it and the value did not
@@ -167,7 +167,7 @@ export type McpServerConfig =
 /**
  * What the provider could actually do with a caller's MCP request.
  *
- * Mirrors `AgentChatMcpCapability` in chat.ts. Only Daex's Claude adapter can
+ * Mirrors `AgentChatMcpCapability` in chat.ts. Only DAEX's Claude adapter can
  * enforce strict mode outright; the rest are best-effort with a named residual,
  * and Pi has no MCP surface at all (a thread that asks for `mcpServers` on Pi
  * is refused by the runtime rather than silently opened without them).
@@ -209,7 +209,7 @@ export type McpCapabilityReport = {
    */
   residual: string | null;
   /**
-   * Whether this thread asked Daex to withhold the user's and project's own MCP
+   * Whether this thread asked DAEX to withhold the user's and project's own MCP
    * config — i.e. `loadUserMcpServers: false`, explicitly or by supplying
    * `mcpServers` without opting back in.
    *
@@ -301,7 +301,7 @@ export type AgentChatEvent = {
  * Which provider raised a pending input request.
  *
  * `"acp"` covers all four ACP dialects, because the permission round trip is
- * one method there. `"ade"` is a request Daex staged itself.
+ * one method there. `"ade"` is a request DAEX staged itself.
  */
 /**
  * Who raised a pending input. The ACP harnesses (Qwen, Kimi, Grok, Copilot,
@@ -715,18 +715,18 @@ export type AgentChatEventEnvelope = {
   event: AgentChatEvent;
   sequence?: number;
   /**
-   * Mirrors `AgentChatEventEnvelope["provenance"]` in Daex's `shared/types/chat.ts`,
+   * Mirrors `AgentChatEventEnvelope["provenance"]` in DAEX's `shared/types/chat.ts`,
    * NARROWED on purpose: only the keys an SDK consumer can act on are named.
    *
-   * Daex stamps more than this — orchestration routing (`targetKind`,
+   * DAEX stamps more than this — orchestration routing (`targetKind`,
    * `sourceSessionId`, `attemptId`, `stepKey`, `laneId`, `runId`), fork shape
-   * (`replayFork`), and other Daex-only metadata. These describe surfaces this
+   * (`replayFork`), and other DAEX-only metadata. These describe surfaces this
    * package does not have: a sidecar drives its own thread with the `agent`
-   * role, so it is never the orchestrator reading routing keys or Daex metadata.
+   * role, so it is never the orchestrator reading routing keys or DAEX metadata.
    * Naming them here would advertise surfaces that do not exist.
    *
    * The index signature is what makes that narrowing safe rather than lossy:
-   * the runtime is downloaded and can be newer than the SDK, so every key Daex
+   * the runtime is downloaded and can be newer than the SDK, so every key DAEX
    * stamps still arrives and still reads, typed `unknown`. Add a key to the
    * named set only when this package grows a use for it.
    */
@@ -861,7 +861,7 @@ export type AgentChatModelCatalog = {
 
 /** Flattened, SDK-facing model row. */
 export type ModelCatalogEntry = {
-  /** Canonical Daex registry id — this is what `ThreadOpenOptions.model` takes. */
+  /** Canonical DAEX registry id — this is what `ThreadOpenOptions.model` takes. */
   id: string;
   displayName: string;
   /**
@@ -878,7 +878,7 @@ export type ModelCatalogEntry = {
    *   daex.threads.open(key, { provider: entry.provider, model: entry.id });
    */
   provider: DaexProvider | (string & {});
-  /** Provider-native model ref Daex sends under the hood. */
+  /** Provider-native model ref DAEX sends under the hood. */
   runtimeModelId: string;
   isDefault: boolean;
   isAvailable: boolean;
@@ -911,7 +911,7 @@ export type ProviderStatus = {
    * A usable binary or package was found.
    *
    * On a derived record this is `modelCount > 0`, which answers a different
-   * question — "does Daex know models for this provider" — so do not present it
+   * question — "does DAEX know models for this provider" — so do not present it
    * as a filesystem fact unless `source` is `"probed"`.
    */
   installed: boolean;
@@ -929,7 +929,7 @@ export type ProviderStatus = {
   authenticated: boolean;
   /** How, when the probe could tell: subscription, api-key, oauth, unknown. */
   authMethod?: string | null;
-  /** Remediation Daex supplies. Null on a derived record. */
+  /** Remediation DAEX supplies. Null on a derived record. */
   installCommand: string | null;
   loginCommand: string | null;
   docsUrl: string | null;
@@ -1132,7 +1132,7 @@ export type RuntimeCompatibility = {
 
 export type Unsubscribe = () => void;
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DaexProvider}. */
 export type AdeProvider = DaexProvider;

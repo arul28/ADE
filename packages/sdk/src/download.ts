@@ -76,14 +76,14 @@ export function resolveRuntimeTarget(
           ? "win32"
           : null;
   if (!os) {
-    throw new DaexError("binary_not_found", `Daex has no runtime build for ${platform}.`);
+    throw new DaexError("binary_not_found", `DAEX has no runtime build for ${platform}.`);
   }
   const cpu = arch === "arm64" ? "arm64" : arch === "x64" ? "x64" : null;
   if (!cpu) {
-    throw new DaexError("binary_not_found", `Daex has no runtime build for ${arch}.`);
+    throw new DaexError("binary_not_found", `DAEX has no runtime build for ${arch}.`);
   }
   if (os === "win32" && cpu !== "x64") {
-    throw new DaexError("binary_not_found", "Daex only publishes a Windows x64 runtime.");
+    throw new DaexError("binary_not_found", "DAEX only publishes a Windows x64 runtime.");
   }
   const target = `${os}-${cpu}`;
   const binaryAsset = os === "win32" ? `ade-${target}.exe` : `ade-${target}`;
@@ -119,12 +119,12 @@ export function parseChecksums(body: string): Map<string, string> {
 }
 
 /**
- * Environment a spawned Daex runtime binary needs so it can load the native
+ * Environment a spawned DAEX runtime binary needs so it can load the native
  * modules that ship in the archive rather than whatever happens to be on the
  * host's NODE_PATH. Mirrors `set_runtime_env` in install-runtime.sh.
  *
  * `nodeModulesPath` defaults to `<runtimeRoot>/node_modules`, which is the
- * layout every Daex installer produces. An embedder who relocated the two halves
+ * layout every DAEX installer produces. An embedder who relocated the two halves
  * inside their bundle passes it explicitly, and it is then used verbatim: the
  * binary resolves `ADE_RUNTIME_NODE_MODULES` on its own, so silently deriving
  * the path would point a signed app at a directory that is not there.
@@ -146,7 +146,7 @@ export function runtimeSpawnEnv(
   };
 }
 
-/** Layout of a cached download inside the caller's Daex home. */
+/** Layout of a cached download inside the caller's DAEX home. */
 export function runtimePaths(
   home: string,
   target: RuntimeTarget,
@@ -204,7 +204,7 @@ export const downloadRuntime: RuntimeDownloader = async (request) => {
     } else if (requireChecksum) {
       throw new DaexError(
         "checksum_mismatch",
-        `The ${channel} channel published no SHA256SUMS, so the Daex runtime download could not be verified. ` +
+        `The ${channel} channel published no SHA256SUMS, so the DAEX runtime download could not be verified. ` +
           `Pass requireChecksum: false to install it unverified.`,
       );
     } else {
@@ -229,7 +229,7 @@ export const downloadRuntime: RuntimeDownloader = async (request) => {
     if (!fs.existsSync(path.join(stagedRuntime, "node_modules"))) {
       throw new DaexError(
         "download_failed",
-        "The Daex native dependency archive is missing node_modules.",
+        "The DAEX native dependency archive is missing node_modules.",
       );
     }
 
@@ -314,7 +314,7 @@ function assertPlausibleSize(asset: string, bytes: Buffer): void {
   if (bytes.byteLength >= MIN_PLAUSIBLE_ASSET_BYTES) return;
   throw new DaexError(
     "download_failed",
-    `${asset} downloaded only ${bytes.byteLength} bytes, which cannot be the Daex runtime.`,
+    `${asset} downloaded only ${bytes.byteLength} bytes, which cannot be the DAEX runtime.`,
   );
 }
 
@@ -334,7 +334,7 @@ async function extractTarGz(archivePath: string, destination: string): Promise<v
   } catch (error) {
     throw new DaexError(
       "download_failed",
-      `Could not extract the Daex native dependency archive: ${errorMessage(error)}`,
+      `Could not extract the DAEX native dependency archive: ${errorMessage(error)}`,
       { cause: error },
     );
   }

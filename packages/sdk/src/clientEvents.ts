@@ -41,7 +41,7 @@ export type DaexClientEventMap = {
    * or `threads.unarchive` (`"unarchived"`). Emitted after the action
    * succeeds, whoever called it: host code in the main process, or a renderer
    * over the Electron bridge. A change made by another client of the same
-   * runtime (Daex desktop) is not reported. SDK >= 0.4.
+   * runtime (DAEX desktop) is not reported. SDK >= 0.4.
    */
   threadLifecycle: { key: string; change: "deleted" | "archived" | "unarchived" };
   /** A provider turn stopped because its current account reached a usage limit. */
@@ -61,7 +61,7 @@ export function isAdeClientEvent(value: unknown): value is DaexClientEvent {
   return typeof value === "string" && (DAEX_CLIENT_EVENTS as readonly string[]).includes(value);
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DAEX_CLIENT_EVENTS}. */
 export const ADE_CLIENT_EVENTS = DAEX_CLIENT_EVENTS;

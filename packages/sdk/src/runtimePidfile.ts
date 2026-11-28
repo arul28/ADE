@@ -9,7 +9,7 @@ import { resolveTrustedWindowsTool } from "./windowsSystemTools.js";
 const execFileAsync = promisify(execFile);
 
 /**
- * Records which runtime process owns a given Daex home, at `<home>/runtime.pid`.
+ * Records which runtime process owns a given DAEX home, at `<home>/runtime.pid`.
  *
  * Two problems, one file:
  *

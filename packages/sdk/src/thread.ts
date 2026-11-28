@@ -93,7 +93,7 @@ export type { ThreadQueueItem } from "./threadQueue.js";
 export type ThreadInterruptOptions = {
   /** Keep queued messages, or remove them along with the active turn. */
   queue?: "keep" | "drop";
-  /** Full Daex stop semantics. When set, this takes precedence over `queue`. */
+  /** Full DAEX stop semantics. When set, this takes precedence over `queue`. */
   mode?: AgentChatStopMode;
 };
 
@@ -244,7 +244,7 @@ export interface DaexThread {
    *
    * `level` is `"applied"` on Claude, Codex, OpenCode and Pi, which all take
    * instructions through a channel of their own; `"best-effort"` on Cursor and
-   * Droid, where Daex merges the text into a prompt it already prefixes.
+   * Droid, where DAEX merges the text into a prompt it already prefixes.
    */
   readonly instructionsCapability: InstructionsCapability | null;
   /**
@@ -1080,7 +1080,7 @@ export class Thread implements DaexThread {
     if (!this.hostConfig.rerunLastTurnSupported?.()) {
       throw new DaexError(
         "unsupported",
-        `${action} needs a Daex runtime with the rerunLastTurn action (1.2.82 or later).`,
+        `${action} needs a DAEX runtime with the rerunLastTurn action (1.2.82 or later).`,
       );
     }
     // A running turn is refused by the runtime itself (code `turn_in_flight`),
@@ -1109,7 +1109,7 @@ export class Thread implements DaexThread {
     if (!this.hostConfig.updateMcpServersSupported?.()) {
       throw new DaexError(
         "invalid_option",
-        "This Daex runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set). " +
+        "This DAEX runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set). " +
           "Upgrade the runtime, or open a new thread key with the new servers.",
       );
     }
@@ -1130,7 +1130,7 @@ export class Thread implements DaexThread {
     if (!this.hostConfig.updateMcpServersSupported?.()) {
       throw new DaexError(
         "invalid_option",
-        "This Daex runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set).",
+        "This DAEX runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set).",
       );
     }
     return await this.refreshResolvedMcpHeaders();
@@ -1151,7 +1151,7 @@ export class Thread implements DaexThread {
     if (hasMcpToolFilters(servers) && !this.hostConfig.mcpToolFiltersSupported?.()) {
       throw new DaexError(
         "invalid_option",
-        "This Daex runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set), " +
+        "This DAEX runtime does not support MCP tool filters (capabilities.personalChats.mcpToolFilters is not set), " +
           "and would drop allowedTools / disallowedTools without a word. Upgrade the runtime or drop the filters.",
       );
     }
@@ -1401,7 +1401,7 @@ export class Thread implements DaexThread {
   private assertAction(action: string): void {
     this.assertUsable();
     if (this.hostConfig.actionListed?.(action) !== true) {
-      throw new DaexError("unsupported", `This Daex runtime does not advertise the ${action} action.`);
+      throw new DaexError("unsupported", `This DAEX runtime does not advertise the ${action} action.`);
     }
   }
 
@@ -1522,7 +1522,7 @@ export class Thread implements DaexThread {
   }
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DaexThread}. */
 export type AdeThread = DaexThread;

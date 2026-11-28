@@ -35,7 +35,7 @@ export type ExposeDaexBridgeOptions = {
 };
 
 /**
- * Expose the Daex bridge on `window[key]`.
+ * Expose the DAEX bridge on `window[key]`.
  *
  * Call it once, at the top level of your preload:
  *
@@ -81,14 +81,14 @@ export function exposeDaexBridge(
 export { DAEX_DEFAULT_BRIDGE_KEY, DAEX_DEFAULT_CHANNEL_PREFIX } from "./protocol.js";
 export type { DaexBridge, ContextBridgeLike, IpcRendererLike } from "./protocol.js";
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link ExposeDaexBridgeOptions}. */
 export type ExposeAdeBridgeOptions = ExposeDaexBridgeOptions;
 /** @deprecated Use {@link exposeDaexBridge}. */
 export const exposeAdeBridge = exposeDaexBridge;
 
-// Pre-Daex names: deprecated aliases of the Daex* exports above, kept so code
+// Pre-DAEX names: deprecated aliases of the DAEX* exports above, kept so code
 // written against the `@ade-dev` packages keeps compiling.
 export { ADE_DEFAULT_BRIDGE_KEY, ADE_DEFAULT_CHANNEL_PREFIX } from "./protocol.js";
 export type { AdeBridge } from "./protocol.js";

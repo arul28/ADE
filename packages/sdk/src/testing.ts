@@ -81,7 +81,7 @@ export function createMockDaexChat(): MockDaexChat {
   let disposed = false;
 
   const assertUsable = () => {
-    if (disposed) throw new DaexError("disposed", "This mock Daex chat client was disposed.");
+    if (disposed) throw new DaexError("disposed", "This mock DAEX chat client was disposed.");
   };
   const emitClient = (event: string, payload: unknown) => {
     for (const listener of [...(clientListeners.get(event) ?? [])]) listener(payload);
@@ -437,7 +437,7 @@ export function createMockDaexChat(): MockDaexChat {
   return client;
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link MockDaexChat}. */
 export type MockAdeChat = MockDaexChat;

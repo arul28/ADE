@@ -159,7 +159,7 @@ export function observedApprovalFromEvent(event: {
   if (event.type !== "approval_request") return null;
   const itemId = readString(event.itemId);
   if (!itemId) return null;
-  // Older hosts sent the kind only as `detail.request.kind` (Daex's
+  // Older hosts sent the kind only as `detail.request.kind` (DAEX's
   // `approvalRequestKind` reads both); without it a question is tracked as an
   // approval the SDK would try to answer with Allow/Reject.
   const embedded = event.detail && typeof event.detail === "object"
@@ -182,7 +182,7 @@ export function observedApprovalFromEvent(event: {
  *
  * `threadProvider` fills in for a request whose `source` is not one of the six
  * chat providers — `"acp"` covers four dialects at once and `"ade"` is a
- * request Daex staged itself, and neither is a value `DaexProvider` can carry.
+ * request DAEX staged itself, and neither is a value `DaexProvider` can carry.
  * The thread's own provider is the honest answer there, because it is the
  * provider that is actually blocked.
  */

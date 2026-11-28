@@ -27,7 +27,7 @@ const require = createRequire(import.meta.url);
  * `@daex-dev/sdk/electron/preload`, which exports `exposeDaexBridge` without
  * calling it, so `window.ade` would stay undefined.) Set `ADE_EXAMPLE_PRELOAD=local` to load
  * `preload.cjs` next to this file instead: that is the shape a host writes when
- * it wants its own channels alongside Daex's.
+ * it wants its own channels alongside DAEX's.
  */
 function resolvePreload() {
   if (process.env.ADE_EXAMPLE_PRELOAD === "local") return path.join(here, "preload.cjs");
@@ -58,7 +58,7 @@ async function start() {
   const window = new BrowserWindow({
     width: 900,
     height: 700,
-    title: "Daex SDK Electron example",
+    title: "DAEX SDK Electron example",
     webPreferences: {
       preload: resolvePreload(),
       contextIsolation: true,

@@ -18,7 +18,7 @@ import type { DaexThread } from "./thread.js";
 import type { ThreadBudget } from "./usage.js";
 
 export type CreateDaexChatOptions = {
-  /** Isolated per-app Daex state root. Created if missing. */
+  /** Isolated per-app DAEX state root. Created if missing. */
   home: string;
   /** Pin a specific `ade` build. Skips PATH discovery and the downloader. */
   binaryPath?: string;
@@ -254,7 +254,7 @@ export type ThreadOpenOptions = {
    *
    * IMPORTANT — false is NOT a uniform guarantee. Only Claude can enforce it.
    * Every other provider is best-effort because the gap is in the provider's
-   * own SDK, not in Daex:
+   * own SDK, not in DAEX:
    *
    * | provider | strict mode | what still loads anyway                        |
    * |----------|-------------|------------------------------------------------|
@@ -265,7 +265,7 @@ export type ThreadOpenOptions = {
    * | opencode | best-effort | the global OpenCode config dir (for auth)      |
    * | pi       | unsupported | n/a — no MCP surface at all                    |
    *
-   * That table is a summary of Daex's own `CALLER_MCP_SUPPORT` table in
+   * That table is a summary of DAEX's own `CALLER_MCP_SUPPORT` table in
    * `apps/desktop/src/shared/callerMcpServers.ts`, which is where each level,
    * mechanism and residual is decided; this doc comment restates it and must be
    * updated when a row there changes.
@@ -295,7 +295,7 @@ export type ThreadOpenOptions = {
    * How tool use is gated on this thread. Three accepted forms.
    *
    * `"default"` leaves each provider's own behavior in place, and what that
-   * means differs enough per provider to be worth stating: on Claude, Daex
+   * means differs enough per provider to be worth stating: on Claude, DAEX
    * installs no gate at all and the Agent SDK decides non-interactively; on
    * Codex, an approval request PARKS THE TURN until something answers it.
    *
@@ -321,9 +321,9 @@ export type ThreadOpenOptions = {
    * Host instructions for this thread.
    *
    * A bare string is shorthand for `{ mode: "append", text }`, which keeps
-   * Daex's own personal-chat framing and adds yours after it. `"replace"` uses
+   * DAEX's own personal-chat framing and adds yours after it. `"replace"` uses
    * your text alone — for a chat branded as your assistant, which must not
-   * mention Daex.
+   * mention DAEX.
    *
    * This does NOT put the text in the transcript: `exportThread` returns no
    * user message carrying it, which is the whole difference from the
@@ -439,7 +439,7 @@ export type ThreadOpenOptions = {
  */
 export type ThreadResumeOptions = Partial<ThreadOpenOptions>;
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link CreateDaexChatOptions}. */
 export type CreateAdeChatOptions = CreateDaexChatOptions;

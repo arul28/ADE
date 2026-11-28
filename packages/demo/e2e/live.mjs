@@ -48,7 +48,7 @@ let resumed = null;
 try {
   mcp = await startMcpServer({ logPath: mcpLogPath });
   log(`toy MCP server: ${mcp.url}`);
-  log(`isolated Daex home: ${home}\n`);
+  log(`isolated DAEX home: ${home}\n`);
 
   /* ---- boot ------------------------------------------------------------- */
 

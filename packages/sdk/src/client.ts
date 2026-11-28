@@ -186,7 +186,7 @@ export interface DaexChatClient {
 }
 
 /**
- * Boots an isolated Daex runtime and returns a chat client that owns it.
+ * Boots an isolated DAEX runtime and returns a chat client that owns it.
  *
  * The returned client owns the child process: `dispose()` stops it, and the
  * process exit hooks stop it if the host dies first. Two clients on one `home`
@@ -223,7 +223,7 @@ export async function createDaexChat(
 
   let disposed = false;
   const assertUsable = (): void => {
-    if (disposed) throw new DaexError("disposed", "This Daex chat client was disposed.");
+    if (disposed) throw new DaexError("disposed", "This DAEX chat client was disposed.");
   };
 
   // ---- client events -------------------------------------------------------
@@ -332,7 +332,7 @@ export async function createDaexChat(
     assertUsable();
     const capabilities = runtime.initialize.capabilities?.[domain] as { actions?: unknown } | undefined;
     if (!Array.isArray(capabilities?.actions) || !capabilities.actions.includes(action)) {
-      throw new DaexError("unsupported", `This Daex runtime does not advertise ${domain}.${action}.`);
+      throw new DaexError("unsupported", `This DAEX runtime does not advertise ${domain}.${action}.`);
     }
     if (!runtime.managesAccounts) {
       throw new DaexError(
@@ -355,12 +355,12 @@ export async function createDaexChat(
   const providerCapabilities = async (provider: string): Promise<ProviderCapabilities> => {
     assertUsable();
     if (runtime.initialize.capabilities?.providers?.capabilities !== true) {
-      throw new DaexError("unsupported", "This Daex runtime does not advertise provider capabilities.");
+      throw new DaexError("unsupported", "This DAEX runtime does not advertise provider capabilities.");
     }
     const statuses = await publishProviderStatus();
     const capabilities = statuses[provider]?.capabilities;
     if (!capabilities) {
-      throw new DaexError("unsupported", `The Daex runtime has no capability record for provider "${provider}".`);
+      throw new DaexError("unsupported", `The DAEX runtime has no capability record for provider "${provider}".`);
     }
     return capabilities;
   };
@@ -674,7 +674,7 @@ export async function createDaexChat(
     if (!runtime.actionAvailable(action)) {
       throw new DaexError(
         "invalid_option",
-        `This Daex runtime cannot ${what} a chat (no "${action}" action). Upgrade the runtime.`,
+        `This DAEX runtime cannot ${what} a chat (no "${action}" action). Upgrade the runtime.`,
       );
     }
   };
@@ -802,7 +802,7 @@ export async function createDaexChat(
       assertUsable();
       const { sessionId } = await sessionForKey(key);
       const snapshot = await chats.getEventHistory({ sessionId });
-      // JSONL: one envelope per line, in transcript order. The same shape Daex
+      // JSONL: one envelope per line, in transcript order. The same shape DAEX
       // writes to its own durable transcripts, so the output drops straight
       // into any tool that already reads those.
       return (snapshot?.events ?? []).map((envelope) => JSON.stringify(envelope)).join("\n");
@@ -830,7 +830,7 @@ export async function createDaexChat(
   return client;
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DaexChatClient}. */
 export type AdeChatClient = DaexChatClient;

@@ -1,17 +1,17 @@
 # @daex-dev/demo — DataDesk
 
 A reference third-party app built on `@daex-dev/sdk` + `@daex-dev/chat-ui`, and the live
-end-to-end proof that both work against a real Daex runtime.
+end-to-end proof that both work against a real DAEX runtime.
 
 Nothing here touches the developer's `~/.ade`. Every script boots a throwaway
-Daex home under the OS temp dir and kills every process it started on exit.
+DAEX home under the OS temp dir and kills every process it started on exit.
 
 ```
 mcp-server.mjs      the toy "demodata" MCP server (streamable HTTP, fake data)
 lib/                shared by the app and the tests — the app never imports e2e/
   paths.mjs         demo/repo roots and the runtime binary
   processes.mjs     spawn ownership and kill-by-captured-pid teardown
-  isolatedHome.mjs  throwaway Daex home under the OS temp dir
+  isolatedHome.mjs  throwaway DAEX home under the OS temp dir
   mcpServer.mjs     starts the toy MCP server; reads its call log
   pickModel.mjs     cheapest-usable-model heuristic
 e2e/
@@ -61,7 +61,7 @@ down together.
 
 ## The three seams this app exercises
 
-1. **The SDK is Node-only.** It spawns and owns a Daex runtime, so it lives in
+1. **The SDK is Node-only.** It spawns and owns a DAEX runtime, so it lives in
    `app/host.mjs`, not the renderer. `@daex-dev/sdk/server` supplies the shared
    WebSocket RPC protocol; the host owns the listener, access rules and app config.
 2. **The renderer's proxy satisfies the same interface.** `bridgeClient.ts`

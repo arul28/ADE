@@ -283,7 +283,7 @@ export function createDaexIpcClient(bridgeInput: DaexBridge | null | undefined):
   async function call<T>(method: string, args: unknown[]): Promise<T> {
     const response = (await bridge.invoke(method, args)) as DaexIpcInvokeResponse<T>;
     if (!response || typeof response !== "object" || !("ok" in response)) {
-      throw new DaexError("protocol_error", `The Daex bridge returned no result for ${method}.`);
+      throw new DaexError("protocol_error", `The DAEX bridge returned no result for ${method}.`);
     }
     if (!response.ok) rehydrate(response.error);
     return response.value;
@@ -726,7 +726,7 @@ export {
  */
 export { DaexError, type DaexErrorCode } from "../errors.js";
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link createDaexIpcClient}. */
 export const createAdeIpcClient = createDaexIpcClient;
@@ -735,7 +735,7 @@ export type AdeIpcClient = DaexIpcClient;
 /** @deprecated Use {@link DaexIpcThread}. */
 export type AdeIpcThread = DaexIpcThread;
 
-// Pre-Daex names: deprecated aliases of the Daex* exports above, kept so code
+// Pre-DAEX names: deprecated aliases of the DAEX* exports above, kept so code
 // written against the `@ade-dev` packages keeps compiling.
 export type { AdeBridge } from "./protocol.js";
 export { AdeError } from "../errors.js";

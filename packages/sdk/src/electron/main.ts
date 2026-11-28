@@ -340,7 +340,7 @@ export function navigationEndsRendererWorld(args: unknown[]): boolean {
 }
 
 /**
- * Attach the Daex chat surface to an `ipcMain`.
+ * Attach the DAEX chat surface to an `ipcMain`.
  *
  * Returns a disposer that removes the handler and tears down every renderer's
  * subscriptions. Call it before `client.dispose()` so no push races a closing
@@ -389,7 +389,7 @@ export function registerDaexIpc(
   const currentClient = (): DaexChatClient => {
     const client = typeof clientSource === "function" ? clientSource() : clientSource;
     if (!client || typeof client !== "object" || !client.threads) {
-      throw new DaexError("disposed", "The host has no Daex chat client to serve this call.");
+      throw new DaexError("disposed", "The host has no DAEX chat client to serve this call.");
     }
     return client;
   };
@@ -1004,12 +1004,12 @@ export function registerDaexIpc(
     const method = typeof request?.method === "string" ? request.method : "";
     const args = Array.isArray(request?.args) ? request.args : [];
     try {
-      if (disposed) throw new DaexError("disposed", "The Daex IPC bridge has been disposed.");
+      if (disposed) throw new DaexError("disposed", "The DAEX IPC bridge has been disposed.");
       // `Object.hasOwn` rather than a bare lookup: a renderer that sends
       // `{ method: "constructor" }` must get "unknown method", not a prototype
       // member invoked with its arguments.
       if (!Object.hasOwn(handlers, method)) {
-        throw new DaexError("invalid_option", `Unknown Daex bridge method "${method}".`);
+        throw new DaexError("invalid_option", `Unknown DAEX bridge method "${method}".`);
       }
       // Own-property membership in the typed table is the proof that this
       // string is one of the declared methods.
@@ -1029,7 +1029,7 @@ export function registerDaexIpc(
       // The gates above may have awaited. A bridge disposed, or a renderer
       // destroyed, meanwhile must not get a fresh registry entry: its
       // `destroyed` listener would never fire, and its subscriptions would leak.
-      if (disposed) throw new DaexError("disposed", "The Daex IPC bridge has been disposed.");
+      if (disposed) throw new DaexError("disposed", "The DAEX IPC bridge has been disposed.");
       if (event.sender.isDestroyed()) throw new DaexError("disposed", "The renderer that made this call is gone.");
       const handler = handlers[known];
       const entry = rendererFor(event);
@@ -1065,7 +1065,7 @@ export function registerDaexIpc(
   });
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DaexChatClientSource}. */
 export type AdeChatClientSource = DaexChatClientSource;

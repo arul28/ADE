@@ -799,7 +799,7 @@ async function readPendingApprovals(thread: DaexThread): Promise<readonly Approv
   return pending.filter((request) => Boolean(request.itemId));
 }
 
-// Pre-Daex names, kept as deprecated aliases so code written against the
+// Pre-DAEX names, kept as deprecated aliases so code written against the
 // `@ade-dev` packages keeps compiling. Remove them in a future major version.
 /** @deprecated Use {@link DaexChatContextValue}. */
 export type AdeChatContextValue = DaexChatContextValue;

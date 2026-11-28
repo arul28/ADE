@@ -10,7 +10,7 @@ The SDK packages are published under the `@daex-dev` npm scope from 0.7.1 on:
 
 The code is the same apart from the rename. Every `Ade*` export (`createAdeChat`,
 `AdeError`, `AdeChat`, `useAdeThread`, ...) is still exported as a deprecated
-alias of its `Daex*` name, so code written against `@ade-dev` only has to change
+alias of its `DAEX*` name, so code written against `@ade-dev` only has to change
 its import specifiers.
 
 The runtime platform packages (`@ade-dev/runtime`, `@ade-dev/runtime-*`) keep
@@ -143,7 +143,7 @@ for pkg in sdk chat-ui; do
       `# ${name}\n\nThis package is now [\`${to}\`](https://www.npmjs.com/package/${to}).\n\n` +
       "```bash\nnpm uninstall " + name + "\nnpm install " + to + "\n```\n\n" +
       "Change your imports from `" + name + "` to `" + to + "`. The `Ade*` names still work " +
-      "as deprecated aliases of the `Daex*` names.\n\n" +
+      "as deprecated aliases of the `DAEX*` names.\n\n" +
       `This last version only re-exports ${to}.\n\n## License\n\nMIT. See [LICENSE](./LICENSE).\n`);
   ' "$pkg" "$SHIM" "$NEW"
 done
