@@ -122,7 +122,12 @@ const ADE_GLOBAL_VALUE_OPTIONS: ReadonlySet<string> = new Set(["--project-root",
  * `sort -o`, `tree -o`, `rg --pre`. `-o` is refused for every program (grep's
  * harmless `-o` included); a narrow list errs toward refusing.
  */
-const WRITING_OPTIONS = /^(--output|--out\b|--pre|-o)/;
+const WRITING_OPTIONS = /^(--ou|--pre|-o)/;
+/**
+ * `sort` clusters short options (`-uo out`) and takes any unambiguous prefix
+ * of a long one (`--outp=out`, `--com=./x`).
+ */
+const SORT_WRITING_OPTIONS = /^(-[A-Za-z]*o|--o|--co)/;
 /** `find` options that write, delete or run something. */
 const FIND_WRITING_OPTIONS = /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
 /** Null-device targets a redirection may name. */
@@ -138,8 +143,11 @@ const TRUSTED_SHELL_DIRS = /^(\/(usr\/)?(local\/)?bin\/|\/opt\/homebrew\/bin\/|[
 
 /**
  * One word of a command. `unsafe` marks a word the shell would rewrite before
- * the program sees it: a `$` expansion outside single quotes, or (bash) an
- * unquoted glob at its start, which could expand to a file named `-delete`.
+ * the program sees it, so its text cannot be judged: a `$` expansion outside
+ * single quotes, or a glob (`*`, `?`, `[`). A glob could expand to a file named
+ * `-delete`, or to `.ade/secrets/...` past a guard that reads the literal
+ * path. Bash expands only unquoted globs; PowerShell readers expand wildcards
+ * in quoted paths too, so there every glob character counts.
  */
 type Word = { text: string; unsafe: boolean };
 type Segment = Word[];
@@ -194,6 +202,7 @@ function splitCommand(command: string, dialect: ReadOnlyShellDialect): Segment[]
       else if (char === "\\" && quote === '"' && dialect === "bash" && /[$`"\\\n]/.test(command[i + 1] ?? "")) word += command[++i];
       else {
         if (char === "$" && quote === '"') wordUnsafe = true;
+        if (dialect === "powershell" && (char === "*" || char === "?" || char === "[")) wordUnsafe = true;
         word += char;
       }
       continue;
@@ -253,8 +262,11 @@ function splitCommand(command: string, dialect: ReadOnlyShellDialect): Segment[]
       continue;
     }
     if (char === "<" || char === "(" || char === ")" || char === "{" || char === "}") return null;
+    // `#` starting a word opens a comment, and a quote inside it would hide
+    // the lines after it from this parser while the shell runs them.
+    if (char === "#" && !wordStarted) return null;
     if (char === "$") wordUnsafe = true;
-    if (dialect === "bash" && word === "" && (char === "*" || char === "?" || char === "[")) wordUnsafe = true;
+    if (char === "*" || char === "?" || char === "[") wordUnsafe = true;
     word += char;
     wordStarted = true;
   }
@@ -356,6 +368,7 @@ function segmentIsReadOnly(words: Segment, dialect: ReadOnlyShellDialect): boole
   if (program === "date") return !args.some((word) => /^(-s|--set)/.test(word));
   // `uniq in out` writes `out`.
   if (program === "uniq") return args.filter((word) => !word.startsWith("-")).length <= 1;
+  if (program === "sort") return !args.some((word) => SORT_WRITING_OPTIONS.test(word));
   if (READ_ONLY_PROGRAMS.has(program)) return true;
   return dialect === "powershell" && POWERSHELL_READ_ONLY_PROGRAMS.has(program);
 }

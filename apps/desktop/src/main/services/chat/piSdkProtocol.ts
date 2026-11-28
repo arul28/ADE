@@ -96,7 +96,9 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
    * read-only built-ins (`read`, `grep`, `find`, `ls`, see
    * `PI_READ_ONLY_TOOLS`) plus `ask_user` when asked for, and the shells
    * (`PI_SHELL_TOOLS`) when `tools` names them, which then run only commands
-   * that read (`shellCommandIsReadOnly`) and refuse the rest. `tools` may
+   * that read (`shellCommandIsReadOnly`, under PowerShell's rules too when the
+   * configured shell is not a POSIX one) and refuse the rest; they run without
+   * the user's `shellCommandPrefix`. `tools` may
    * narrow that set but not widen it, `approvalTools` must be empty, and
    * extensions stay off because their tools can write. Pi's `tools` allowlist
    * is the gate: an unlisted tool is never registered, so a forked transcript

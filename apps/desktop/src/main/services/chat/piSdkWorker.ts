@@ -372,13 +372,18 @@ const readOnlyShellGate: PiApprovalGate = { check: async () => false };
  * A shell for a read-only (plan or side chat) session: a command that only
  * reads runs (`shellCommandIsReadOnly`), any other is refused without a card.
  */
-function withPiReadOnlyShell(definition: PiToolDefinitionLike): PiToolDefinitionLike {
-  const dialect = definition.name === "powershell" ? "powershell" : "bash";
+function withPiReadOnlyShell(definition: PiToolDefinitionLike, shellPath: string | null): PiToolDefinitionLike {
+  // `bash` runs through the user's configured shell, which may be PowerShell;
+  // a command must then read under both dialects (`a\;b` splits differently).
+  const shellName = (shellPath?.split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, "").toLowerCase();
+  const dialects: Array<"bash" | "powershell"> = definition.name === "powershell"
+    ? ["powershell"]
+    : shellPath && !["bash", "sh", "zsh", "dash"].includes(shellName) ? ["bash", "powershell"] : ["bash"];
   return {
     ...definition,
     execute: async (toolCallId, params, signal, onUpdate, ctx) => {
       const command = (params && typeof params === "object" ? (params as Record<string, unknown>).command : undefined);
-      if (!shellCommandIsReadOnly(command, dialect)) {
+      if (!dialects.every((dialect) => shellCommandIsReadOnly(command, dialect))) {
         // Pi marks a tool call failed only when execute throws.
         throw new Error("This chat is read-only (plan mode): only commands that read can run. Present the plan before making changes.");
       }
@@ -438,14 +443,16 @@ function buildCustomTools(
       ungateable.push(toolName);
       continue;
     }
+    // A read-only shell runs without the user's `shellCommandPrefix`: the
+    // prefix runs ahead of every command, and the read-only check never sees it.
     const options = toolName === "bash"
       ? {
           ...(shellPath ? { shellPath } : {}),
-          ...(commandPrefix ? { commandPrefix } : {}),
+          ...(commandPrefix && init.readOnly !== true ? { commandPrefix } : {}),
         }
       : undefined;
     const definition = (factory as Callable).call(null, init.cwd, options) as PiToolDefinitionLike;
-    tools.push(finish(init.readOnly === true ? withPiReadOnlyShell(definition) : withPiApproval(definition, gate)));
+    tools.push(finish(init.readOnly === true ? withPiReadOnlyShell(definition, toolName === "bash" ? shellPath : null) : withPiApproval(definition, gate)));
   }
   return { tools, ungateable };
 }

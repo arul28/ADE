@@ -87,6 +87,17 @@ describe("shellCommandIsReadOnly (bash)", () => {
     ["git stash -p", false],
     ["git worktree", false],
     ["git worktree add ../x", false],
+    ["sort -uo out.txt in.txt", false],
+    ["sort --outp=out.txt in.txt", false],
+    ["sort --com=./payload in.txt", false],
+    ["git diff --outp=patch.diff", false],
+    ["sort -u a", true],
+    ["cat .ade/*/*", false],
+    ["ls src/*.ts", false],
+    ["ls # \"\nrm x\n# \"", false],
+    ["ls # '\nrm x\n# '", false],
+    ["echo a#b", true],
+    ["echo '#'", true],
     ["ade", false],
     ["gh pr merge 12", false],
     ["gh api -X POST repos/o/r/issues", false],
@@ -110,6 +121,9 @@ describe("shellCommandIsReadOnly (powershell)", () => {
     ["git log -3 > NUL", true],
     ["Get-Content $path", false],
     ["git log -3 > /dev/null", false],
+    ["Get-Content '.ade/*/*'", false],
+    ["ls # \"\nRemove-Item x\n# \"", false],
+    ["echo a#b", true],
   ])("%j is read-only: %s", (command, readOnly) => {
     expect(shellCommandIsReadOnly(command, "powershell")).toBe(readOnly);
   });
