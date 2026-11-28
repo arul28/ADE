@@ -9,9 +9,10 @@ import { savedChatLocationForSession } from "../../state/cloudSavedChats";
  * account read, so no pin and no wake. One download per sleep: a later read
  * sends the saved time it holds and the server answers "unchanged" while it
  * still is. Checked at most every `RECHECK_MS` while someone types. A copy
- * the window holds answers at once while it is checked; the first read waits
- * at most `FIRST_READ_WAIT_MS`, then the window's own rows answer and the copy
- * joins a later query.
+ * the window holds answers at once while it is checked. The rows' first read
+ * waits at most `FIRST_READ_WAIT_MS`, then the window's own rows answer and
+ * the copy joins a later query; files have no such fallback, so their search
+ * waits for the download (`waitMs: null`).
  */
 
 const RECHECK_MS = 30_000;
@@ -39,7 +40,10 @@ async function withinMs<T>(work: Promise<T>, ms: number): Promise<T | null> {
 }
 
 /** The saved menu for a resting chat, or null (none saved, not read yet, an older server, signed out). */
-export async function restingMentionSnapshot(sessionId: string): Promise<{ snapshot: CloudMentionSnapshot; laneId: string | null } | null> {
+export async function restingMentionSnapshot(
+  sessionId: string,
+  options: { waitMs?: number | null } = {},
+): Promise<{ snapshot: CloudMentionSnapshot; laneId: string | null } | null> {
   const address = restingMentionAddress(sessionId);
   if (!address) return null;
   // Another account in this window starts empty: it never sees the last one's file names.
@@ -66,6 +70,8 @@ export async function restingMentionSnapshot(sessionId: string): Promise<{ snaps
       entry.inFlight = null;
     });
   }
-  const snapshot = entry.snapshot ?? (entry.inFlight ? await withinMs(entry.inFlight, FIRST_READ_WAIT_MS) : null);
+  const waitMs = options.waitMs === undefined ? FIRST_READ_WAIT_MS : options.waitMs;
+  const pending = entry.inFlight;
+  const snapshot = entry.snapshot ?? (pending ? await (waitMs == null ? pending : withinMs(pending, waitMs)) : null);
   return snapshot ? { snapshot, laneId: address.laneId } : null;
 }

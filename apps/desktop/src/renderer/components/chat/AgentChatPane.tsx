@@ -12309,7 +12309,8 @@ export function AgentChatPane({
       // A deleted computer's chat continues on a new one, through the account
       // queue, which takes text only: an attached file would hold that send.
       if (chatComputerGoneRef.current || freedChatLaneRef.current) return [];
-      const saved = await restingMentionSnapshot(selectedSessionId).catch(() => null);
+      // No other source of file names while it rests: the search waits for the copy (once per sleep).
+      const saved = await restingMentionSnapshot(selectedSessionId, { waitMs: null }).catch(() => null);
       if (!saved) return [];
       return cloudMentionSnapshotFiles(saved.snapshot, { laneId: saved.laneId ?? laneId, query: trimmed, limit: 60, includeDirectories: true })
         .map((hit) => ({

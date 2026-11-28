@@ -3393,8 +3393,17 @@ describe("ADE Cloud without a computer", () => {
     expect((await harness.send(OWNER, "DELETE", "/cloud/chats/key-a/c1")).status).toBe(200);
     const afterDelete = await read(`&lane=${LANE}&since=${NOW + 10}`);
     expect(afterDelete.body).toMatchObject({ snapshot: { savedAt: NOW + 11, rows: [{ kind: "lane", id: LANE, title: "upload-fix" }] } });
+    // Two chats deleted at once both leave it: a write that lost the race reads the copy again.
+    const twoChats = { ...menu(NOW + 20, "upload-fix"), rows: [{ kind: "chat", id: "c2", title: "Two" }, { kind: "chat", id: "c3", title: "Three" }, { kind: "lane", id: LANE, title: "upload-fix" }] };
+    expect(await (await harness.send(OWNER, "PUT", "/cloud/mentions/key-a", { instanceId: INSTANCE, projectKey: project, snapshot: twoChats })).json()).toEqual({ ok: true, kept: false });
+    for (const chatId of ["c2", "c3"]) {
+      expect((await harness.send(OWNER, "PUT", `/cloud/chats/key-a/${chatId}/parts/1`, { instanceId: INSTANCE, text: "{}\n", row: { lastSeq: 1, laneId: LANE, projectKey: project } })).status).toBe(200);
+    }
+    expect((await Promise.all(["c2", "c3"].map((chatId) => harness.send(OWNER, "DELETE", `/cloud/chats/key-a/${chatId}`)))).map((response) => response.status)).toEqual([200, 200]);
+    expect(((await read(`&lane=${LANE}`)).body as { snapshot: { rows: unknown[] } }).snapshot.rows).toEqual([{ kind: "lane", id: LANE, title: "upload-fix" }]);
+
     // The computer's own next save is still newer than that change; a path in another case files it under its own key.
-    expect(await (await save(INSTANCE, "KEY-A", NOW + 12, "upload-fix")).json()).toEqual({ ok: true, kept: false });
+    expect(await (await save(INSTANCE, "KEY-A", NOW + 30, "upload-fix")).json()).toEqual({ ok: true, kept: false });
     expect(harness.rows("select machine_key from cloud_mention_snapshots")).toEqual([{ machine_key: "key-a" }]);
 
     // Deleting the lane's saved chats deletes the menu its computer saved.

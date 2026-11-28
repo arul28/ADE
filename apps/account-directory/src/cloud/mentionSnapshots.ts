@@ -135,21 +135,27 @@ async function handleGet(url: URL, env: CloudEnv, userId: string, machineKey: st
  */
 export async function dropChatFromMentionSnapshots(env: CloudEnv, userId: string, machineKey: string, chatId: string, now: number): Promise<void> {
   try {
-    const rows = (await env.DB.prepare("select project_key, sealed, saved_at from cloud_mention_snapshots where user_id = ? and machine_key = ?")
-      .bind(userId, machineKey).all<SnapshotRow & { project_key: string }>()).results ?? [];
-    if (!rows.length) return;
+    const projects = (await env.DB.prepare("select project_key from cloud_mention_snapshots where user_id = ? and machine_key = ?")
+      .bind(userId, machineKey).all<{ project_key: string }>()).results ?? [];
+    if (!projects.length) return;
     const keys = await userKeys(env, userId, now);
     if (!keys) return;
-    for (const row of rows) {
-      const snapshot = await openSnapshot(keys.aes, userId, machineKey, row.project_key, row.sealed);
-      const kept = snapshot?.rows.filter((entry) => !(entry.kind === "chat" && entry.id === chatId));
-      if (!snapshot || !kept || kept.length === snapshot.rows.length) continue;
-      const next: CloudMentionSnapshot = { ...snapshot, savedAt: row.saved_at + 1, rows: kept };
-      // Only the copy read: a save the computer made meanwhile is its own newer answer.
-      await env.DB.prepare(`
-        update cloud_mention_snapshots set sealed = ?, saved_at = ?, updated_at = ?
-        where user_id = ? and machine_key = ? and project_key = ? and saved_at = ?
-      `).bind(await sealSnapshot(keys.aes, userId, machineKey, row.project_key, next), next.savedAt, now, userId, machineKey, row.project_key, row.saved_at).run();
+    for (const { project_key: projectKey } of projects) {
+      // Another delete or a save can change the copy between the read and the write:
+      // then it is read again, so each deleted chat leaves it.
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const row = await env.DB.prepare("select sealed, saved_at from cloud_mention_snapshots where user_id = ? and machine_key = ? and project_key = ?")
+          .bind(userId, machineKey, projectKey).first<SnapshotRow>();
+        const snapshot = row ? await openSnapshot(keys.aes, userId, machineKey, projectKey, row.sealed) : null;
+        const kept = snapshot?.rows.filter((entry) => !(entry.kind === "chat" && entry.id === chatId));
+        if (!row || !snapshot || !kept || kept.length === snapshot.rows.length) break;
+        const next: CloudMentionSnapshot = { ...snapshot, savedAt: row.saved_at + 1, rows: kept };
+        const written = await env.DB.prepare(`
+          update cloud_mention_snapshots set sealed = ?, saved_at = ?, updated_at = ?
+          where user_id = ? and machine_key = ? and project_key = ? and saved_at = ?
+        `).bind(await sealSnapshot(keys.aes, userId, machineKey, projectKey, next), next.savedAt, now, userId, machineKey, projectKey, row.saved_at).run();
+        if ((written.meta?.changes ?? 0) > 0) break;
+      }
     }
   } catch (error) {
     reportCloudFailure("cloud.mention_snapshot_chat_drop_failed", { userId, machineKey, message: error instanceof Error ? error.message : "unknown" });
