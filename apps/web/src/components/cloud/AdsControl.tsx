@@ -1,8 +1,7 @@
 import { cn } from "../../lib/cn";
 import { setAdsOn } from "../../lib/siteOffer";
-import type { PricingView, ShownPrice } from "../../lib/pricingView";
+import type { PricingView } from "../../lib/pricingView";
 import { adsSentence } from "../../lib/pricingView";
-import { formatCount } from "../../lib/cloudPricing";
 
 /**
  * "With ads / No ads", built like a monthly and yearly switch: two segments
@@ -62,37 +61,5 @@ export function AdsControl({ view, align = "center", className }: { view: Pricin
       </div>
       <p className="max-w-[34rem] text-[14px] leading-[1.55] text-white/55">{adsSentence(ads)} Turn ads off at any time.</p>
     </div>
-  );
-}
-
-/**
- * A price in credits: the price now, and while ads are on the full price
- * struck beside it. `free` shows a zero as "Free".
- */
-export function PriceFigure({
-  price,
-  className,
-  struckClassName,
-  free = false,
-}: {
-  price: ShownPrice;
-  className?: string;
-  struckClassName?: string;
-  free?: boolean;
-}) {
-  const now = free && price.now === 0 ? "Free" : formatCount(price.now);
-  return (
-    <span className="inline-flex items-baseline gap-2">
-      {price.struck != null ? (
-        <s className={cn("text-white/35 decoration-white/45 decoration-[1.5px]", struckClassName)}>
-          <span className="sr-only">Full price </span>
-          {formatCount(price.struck)}
-        </s>
-      ) : null}
-      <span className={className}>
-        {price.struck != null ? <span className="sr-only">With ads </span> : null}
-        {now}
-      </span>
-    </span>
   );
 }

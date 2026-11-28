@@ -15,6 +15,7 @@
 import { useSyncExternalStore } from "react";
 import { CLOUD_PUBLIC_PRICING_PATH, type CloudPublicPricing } from "../../../account-directory/src/cloud/contract";
 import { AD_WINDOW_MINUTES_DEFAULT } from "../../../account-directory/src/cloud/plans";
+import { accountDirectoryBase } from "./accountDirectory";
 
 export type SiteAds = {
   /** Ads start on for a new account here (the US outside California, without Global Privacy Control). */
@@ -37,9 +38,7 @@ export type SiteOffer =
 
 const OFF: SiteOffer = { v3: false };
 
-const DEFAULT_ACCOUNT_DIRECTORY = "https://ade-account-directory-production.arulsharma1028.workers.dev";
-const ACCOUNT_DIRECTORY =
-  ((import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL as string | undefined)?.trim() || DEFAULT_ACCOUNT_DIRECTORY).replace(/\/+$/, "");
+const ACCOUNT_DIRECTORY = accountDirectoryBase(import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL as string | undefined);
 
 /**
  * Reads the server's answer (`CloudPublicPricing`); anything it does not

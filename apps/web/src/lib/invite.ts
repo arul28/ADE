@@ -11,14 +11,13 @@
  */
 import { CLOUD_SMALL_UNLIMITED_SHORT, INVITE_RULES, UNIT } from "./cloudPricing";
 import type { PricingView } from "./pricingView";
+import { accountDirectoryBase } from "./accountDirectory";
 import { BRAND } from "../../../desktop/src/shared/brand";
 
 /** `CLOUD_INVITE_CODE_LENGTH` (8) characters of `CLOUD_INVITE_ALPHABET` (no 0/O/1/I/L); `parseCloudInviteCode` reads a code the same way. */
 const INVITE_CODE = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/;
 
-const DEFAULT_ACCOUNT_DIRECTORY = "https://ade-account-directory-production.arulsharma1028.workers.dev";
-const ACCOUNT_DIRECTORY =
-  ((import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL as string | undefined)?.trim() || DEFAULT_ACCOUNT_DIRECTORY).replace(/\/+$/, "");
+const ACCOUNT_DIRECTORY = accountDirectoryBase(import.meta.env.VITE_ADE_ACCOUNT_DIRECTORY_URL as string | undefined);
 
 /** The code in the page's address, or null when it can't be one. */
 export function inviteCodeFrom(raw: string | undefined): string | null {

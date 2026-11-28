@@ -3,6 +3,7 @@ import { defineConfig, loadEnv, searchForWorkspaceRoot, type Plugin } from "vite
 import react from "@vitejs/plugin-react";
 import { assertPublicPostHogToken } from "../../scripts/posthog/publicPostHogToken";
 import { CLOUD_PUBLIC_PRICING_PATH } from "../account-directory/src/cloud/contract";
+import { accountDirectoryBase } from "./src/lib/accountDirectory";
 
 /**
  * Inlines small imported SVGs (the provider logos) as data URLs. Vite 4 emits
@@ -30,7 +31,7 @@ function inlineSmallSvgs(limit = 12 * 1024): Plugin {
  * and the request sends no cookie.
  */
 function siteOfferEarlyScript(accountDirectory: string): Plugin {
-  const url = `${accountDirectory.replace(/\/+$/, "")}${CLOUD_PUBLIC_PRICING_PATH}`;
+  const url = `${accountDirectory}${CLOUD_PUBLIC_PRICING_PATH}`;
   return {
     name: "ade-site-offer-early",
     transformIndexHtml(html) {
@@ -45,7 +46,7 @@ export default defineConfig(({ mode }) => {
   const posthogProjectToken = env.VITE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
   assertPublicPostHogToken(posthogProjectToken, "VITE_POSTHOG_PROJECT_TOKEN");
   return {
-    plugins: [react(), inlineSmallSvgs(), siteOfferEarlyScript(env.VITE_ADE_ACCOUNT_DIRECTORY_URL?.trim() || "https://ade-account-directory-production.arulsharma1028.workers.dev")],
+    plugins: [react(), inlineSmallSvgs(), siteOfferEarlyScript(accountDirectoryBase(env.VITE_ADE_ACCOUNT_DIRECTORY_URL))],
     server: {
       port: 4180,
       allowedHosts: [".trycloudflare.com"],

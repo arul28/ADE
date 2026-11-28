@@ -187,7 +187,7 @@ function windowWords(minutes: number): string | null {
 /** When the ad price counts, in one line for the small print. */
 export function adPriceRuleSentence(ads: SiteAds): string {
   const window = windowWords(ads.windowMinutes);
-  return `The ad price counts while you use a ${BRAND.CLOUD_NAME} chat on that computer, and for ${window ?? "a while"} after. CLI sessions and automations always use the full price.`;
+  return `The ad price counts while you use a ${BRAND.CLOUD_NAME} chat on that computer, and for ${window ?? "a while"} after. CLI sessions, automations and work an outside agent starts always use the full price.`;
 }
 
 /**
