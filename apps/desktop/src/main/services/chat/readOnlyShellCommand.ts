@@ -145,6 +145,19 @@ const NULL_TARGETS: Readonly<Record<ReadOnlyShellDialect, ReadonlySet<string>>> 
 };
 /** An argument naming ADE's `.ade` folder or a path through it (`./.ade`, `--path=.ade/x`). */
 const ADE_DIR_ARGUMENT = /(^|[\\/=])\.ade([\\/]|$)/i;
+/** A lane's own checkout under `.ade/worktrees/<lane>/`, which holds no ADE data. */
+const ADE_LANE_WORKTREE = /(^|[\\/=])\.ade[\\/]worktrees[\\/][^\\/]+([\\/]|$)/gi;
+
+/**
+ * Whether an argument reaches ADE's own data in `.ade` (secrets, the
+ * database). A path inside a lane's checkout (`/repo/.ade/worktrees/x/src`)
+ * does not; one that climbs back out of it with `..` is refused.
+ */
+function namesAdeData(word: string): boolean {
+  if (!ADE_DIR_ARGUMENT.test(word)) return false;
+  if (/(^|[\\/=])\.\.([\\/]|$)/.test(word)) return true;
+  return ADE_DIR_ARGUMENT.test(word.replace(ADE_LANE_WORKTREE, "$1lane$2"));
+}
 /** Options that make a reader run another program: GNU `sort --compress-program=./x`. */
 const PROGRAM_RUNNING_OPTIONS = /^--compress-program/;
 /** Trusted directories a shell wrapper's absolute path may name (`/bin/zsh -lc ...`). */
@@ -372,7 +385,7 @@ function segmentIsReadOnly(words: Segment, dialect: ReadOnlyShellDialect, option
   if (args.some((word) => PROGRAM_RUNNING_OPTIONS.test(word))) return false;
   // ADE's own folder holds the project's secrets; a read that names it, or a
   // path through it (`grep -r . ./.ade`), is refused rather than judged.
-  if (args.some((word) => ADE_DIR_ARGUMENT.test(word))) return false;
+  if (args.some(namesAdeData)) return false;
   if (program === "ade") return !args.some((word) => WRITING_OPTIONS.test(word)) && adeCommandIsReadOnly(args);
   if (args.some((word) => WRITING_OPTIONS.test(word))) return false;
   if (program === "git") return gitCommandIsReadOnly(args);
