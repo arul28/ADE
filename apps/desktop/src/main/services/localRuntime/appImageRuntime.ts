@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
+import { stripCliNamePrefix } from "../../../shared/cliCommandNames";
 
 const exec = promisify(execFile);
 
@@ -36,7 +37,7 @@ export async function materializeAppImageRuntime(version: string): Promise<{ bin
   // A runtime that cannot report its version cannot serve a brain either, so
   // it is repaired from this image. One that can report a newer version stays.
   const installed = await exec(binary, ["--version"], { env, timeout: 30_000 }).then(
-    (result) => result.stdout.trim().replace(/^(?:daex|ade)\s+/i, ""),
+    (result) => stripCliNamePrefix(result.stdout.trim()),
     () => null,
   );
   const downgradeMarker = appImageDowngradePath();
@@ -63,7 +64,7 @@ export async function materializeAppImageRuntime(version: string): Promise<{ bin
     await exec("tar", ["-xzf", archive, "-C", stagedRoot], { timeout: 120_000 });
     const stagedEnv = { ...env, ADE_RUNTIME_ROOT: stagedRoot, ADE_RUNTIME_NODE_MODULES: path.join(stagedRoot, "node_modules"), NODE_PATH: path.join(stagedRoot, "node_modules") };
     const checked = await exec(stagedBinary, ["--version"], { env: stagedEnv, timeout: 30_000 });
-    const stagedVersion = checked.stdout.trim().replace(/^(?:daex|ade)\s+/i, "");
+    const stagedVersion = stripCliNamePrefix(checked.stdout.trim());
     if (stagedVersion !== version) throw new Error(`Bundled runtime version ${stagedVersion} does not match app ${version}.`);
     const manifest = path.join(staging, "manifest.json");
     await fs.writeFile(manifest, JSON.stringify({ version, repo: "arul28/ADE", target, adeHome: layout.adeDir,

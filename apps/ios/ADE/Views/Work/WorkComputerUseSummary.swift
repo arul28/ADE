@@ -336,7 +336,8 @@ private func cuIsAdeExecutable(_ token: String, aliasVars: Set<String>) -> Bool 
   if cuTests(#"^(?:\$\{?(?:env:)?ADE_CLI_PATH\}?|%ADE_CLI_PATH%)$"#, token, [.caseInsensitive]) { return true }
   let name = cuBasename(token)
   // `daex` is the CLI's name, `ade` its permanent alias (desktop `isAdeCliCommandWord`).
-  if ["daex", "daex.exe", "daex.cmd", "daex.ps1", "ade", "ade.exe", "ade.cmd", "ade.ps1"].contains(name) { return true }
+  let command = name.replacingOccurrences(of: #"\.(?:exe|cmd|ps1)$"#, with: "", options: .regularExpression)
+  if Brand.cliCommandNames.contains(command) { return true }
   if let variable = cuMatch(#"^\$\{?(\w+)\}?$"#, token)?[1] ?? nil { return aliasVars.contains(variable) }
   return false
 }

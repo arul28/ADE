@@ -52,6 +52,7 @@ import {
   type RemoteSidecarDeps,
 } from "./remoteSidecarCache";
 import { BRAND } from "../../../shared/brand";
+import { stripCliNamePrefix } from "../../../shared/cliCommandNames";
 
 export function normalizeRemoteArch(raw: string): {
   platform: "darwin" | "linux";
@@ -81,7 +82,7 @@ export function normalizeRemoteArch(raw: string): {
 }
 
 export function normalizeRuntimeVersion(raw: string): string | null {
-  const version = raw.trim().replace(/^(?:daex|ade)\s+/i, "").trim();
+  const version = stripCliNamePrefix(raw.trim()).trim();
   return version || null;
 }
 

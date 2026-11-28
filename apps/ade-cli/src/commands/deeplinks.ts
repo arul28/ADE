@@ -28,6 +28,7 @@ import {
 import { WEB_CLIENT_BASE_URL, buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
 import { BRAND } from "../../../desktop/src/shared/brand";
+import { isAdeCliCommandWord } from "../../../desktop/src/shared/cliCommandNames";
 
 export class CliDeeplinkUsageError extends Error {}
 
@@ -569,7 +570,8 @@ function resolveAdeBinaryPath(): string {
   // run via node, argv[0] is node — fall back to a bare name and hope it's on
   // PATH (the Linear coding-tool spawner inherits the user's PATH).
   const argv0 = process.argv[0] ?? "";
-  if (/\b(?:daex|ade)\b/.test(argv0)) return argv0;
+  // The binary itself: `daex`, `ade` or a channel's `ade-beta`, with an optional Windows suffix.
+  if (isAdeCliCommandWord(path.basename(argv0).replace(/-(?:beta|alpha)(?=\.[a-z0-9]+$|$)/i, ""))) return argv0;
   // On Windows `ade` is a .cmd shim, and Linear's spawner passes the value
   // straight to CreateProcess — a bare `ade` would not resolve.
   return process.platform === "win32" ? "ade.cmd" : "ade";

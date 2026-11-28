@@ -13,6 +13,7 @@ import {
   type MachineResetProject,
 } from "../../../../desktop/src/shared/types/machineReset";
 import { BRAND } from "../../../../desktop/src/shared/brand";
+import { ADE_CLI_COMMAND_NAMES } from "../../../../desktop/src/shared/cliCommandNames";
 
 /**
  * What the hard reset finds on a machine, and the plan it shows: every ADE
@@ -549,7 +550,7 @@ export function inventoryMachinePaths(
   // The CLI links ADE installed on PATH. Only links into an ADE install: a
   // file named `ade` the person put there themselves stays.
   // Both names: `daex` is the command and `ade` its alias, installed side by side.
-  for (const link of CHANNEL_SUFFIXES.flatMap((suffix) => ["ade", "daex"].map((name) => path.join(home, ".local", "bin", `${name}${suffix}`)))) {
+  for (const link of CHANNEL_SUFFIXES.flatMap((suffix) => ADE_CLI_COMMAND_NAMES.map((name) => path.join(home, ".local", "bin", `${name}${suffix}`)))) {
     try {
       if (fs.lstatSync(link).isSymbolicLink() && /ade-cli|ADE( Beta| Alpha)?\.app/.test(fs.readlinkSync(link))) {
         paths.push(link);

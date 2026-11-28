@@ -7,6 +7,7 @@
 import { sanitizeAgentFailureText } from "../../../shared/chatErrorPresentation";
 import type { CloudProvider } from "./cloudProvider";
 import { PRODUCT_NAME_PATTERN } from "../../../shared/brandNames";
+import { cliErrorLineText } from "../../../shared/cliCommandNames";
 
 /**
  * Starts a device sign-in on the box in the background (it keeps polling for
@@ -90,7 +91,7 @@ function cloudSignInFailureReason(output: string): string | null {
     // The sign-in instructions themselves: a code was shown, they are no reason.
     if (/^(?:To finish signing in|Or,? (?:open|to sign in))\b/i.test(line)) continue;
     // The computer's CLI may be older ("ade:") or newer ("daex:") than this app.
-    const cleaned = scrubSignInLine(line.replace(/^(?:ade|daex):\s*/i, "")).replace(/\s+/g, " ").trim();
+    const cleaned = scrubSignInLine(cliErrorLineText(line) ?? line).replace(/\s+/g, " ").trim();
     if (!/[A-Za-z]{3}/.test(cleaned)) continue;
     return cleaned.length > 220 ? `${cleaned.slice(0, 219)}…` : cleaned;
   }

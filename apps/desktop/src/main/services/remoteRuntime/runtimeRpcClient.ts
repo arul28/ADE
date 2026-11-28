@@ -19,6 +19,7 @@ import {
 } from "../../../shared/runningRequests";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 import { BRAND } from "../../../shared/brand";
+import { cliErrorLineText } from "../../../shared/cliCommandNames";
 
 export type RuntimeRpcTransportCloseInfo = {
   exitCode?: number | null;
@@ -639,6 +640,9 @@ export function summarizeRemoteRuntimeStderr(stderr: string): string {
       && !/--trace-(?:warnings|deprecation)\b/.test(line)
     )
     // Older CLIs prefix "ade:", newer ones "daex:".
-    .map((line) => line.replace(/^(?:ade|daex):\s+(?:Error:\s+)?/, ""));
+    .map((line) => {
+      const message = cliErrorLineText(line);
+      return message === null ? line : message.replace(/^Error:\s+/, "");
+    });
   return kept.length > 0 ? kept.join(" ") : stderr.trim();
 }

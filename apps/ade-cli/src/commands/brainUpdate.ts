@@ -32,6 +32,7 @@ import { resolveMachineAdeLayout, resolveReachableMachineDesktopBridgeSocketPath
 import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
 import { clearBrainStopIntent, noteBrainStopIntent } from "../../../desktop/src/main/services/runtime/liveTurnProjects";
 import { BRAND } from "../../../desktop/src/shared/brand";
+import { stripCliNamePrefix } from "../../../desktop/src/shared/cliCommandNames";
 
 type BrainUpdateExecFile = (
   file: string,
@@ -1116,7 +1117,7 @@ export async function runBrainUpdateCommand(
       },
       timeout: 30_000,
     });
-    const stagedVersion = String(versionResult.stdout ?? "").trim().replace(/^(?:daex|ade)\s+/, "") || options.version;
+    const stagedVersion = stripCliNamePrefix(String(versionResult.stdout ?? "").trim()) || options.version;
     const manifest: BrainUpdateManifest = {
       version: stagedVersion,
       repo: options.repo,

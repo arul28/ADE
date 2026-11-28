@@ -19,7 +19,14 @@ public enum Brand {
     public static let introName = "\(name) (formerly \(formerName))"
     /// Primary CLI command, for copy that tells the user what to type.
     public static let cliName = "daex"
+    /// The old command; stays installed as a permanent alias.
+    public static let legacyCLI = "ade"
+    /// The names the CLI answers to at command position, the command first.
+    /// Mirrors `ADE_CLI_COMMAND_NAMES` in apps/desktop/src/shared/cliCommandNames.ts.
+    public static let cliCommandNames = [cliName, legacyCLI]
     public static let siteURL = URL(string: "https://daex.dev")!
+    /// The old domain. Sign-in and API hosts stay there while released clients call them.
+    public static let legacyDomain = "ade-app.dev"
     public static let cloudName = "\(name) Cloud"
     public static let betaName = "\(name) Beta"
 

@@ -17,6 +17,29 @@ export type AdeCliCommandName = (typeof ADE_CLI_COMMAND_NAMES)[number];
  */
 export const ADE_CLI_NAME_SOURCE = `(?:${ADE_CLI_COMMAND_NAMES.join("|")})`;
 
+const CLI_NAME_PREFIX = new RegExp(`^${ADE_CLI_NAME_SOURCE}\\s+`, "i");
+// Whitespace or the end must follow the colon: `daex://…` is a link, not an error line.
+const CLI_ERROR_PREFIX = new RegExp(`^${ADE_CLI_NAME_SOURCE}:(?:\\s+|$)`, "i");
+
+/**
+ * `text` without a leading CLI name: `daex 1.2.3` (or an older CLI's
+ * `ade 1.2.3`) from `--version` reads `1.2.3`. Case-insensitive; any other
+ * text is returned as is.
+ */
+export function stripCliNamePrefix(text: string): string {
+  return text.replace(CLI_NAME_PREFIX, "");
+}
+
+/**
+ * The message on one of the CLI's error lines, `daex: <message>` (older CLIs
+ * write `ade: <message>`), or null when the line has no such prefix.
+ * Case-insensitive.
+ */
+export function cliErrorLineText(line: string): string | null {
+  const match = CLI_ERROR_PREFIX.exec(line);
+  return match ? line.slice(match[0].length) : null;
+}
+
 const WINDOWS_LAUNCHER_SUFFIX = /\.(?:exe|cmd|ps1)$/;
 
 /**
