@@ -1,26 +1,26 @@
 ---
 name: ade-autoresearch
-description: Iteratively optimize an ADE tab's CPU/memory/IPC/render performance.
+description: Iteratively optimize a DAEX tab's CPU/memory/IPC/render performance.
   Drives the real UI, builds tab-specific probes from the visible product and
   perf-pass repo, identifies bottlenecks from JSONL metrics, makes ONE targeted
   code change per iteration, gates on tests + smoke, keeps wins on a branch, and
   distills patterns into per-tab perf skills. Invoke when the user says
-  "optimize <tab>", "autoresearch <tab>", or "perf pass on <tab>". Drives ADE
+  "optimize <tab>", "autoresearch <tab>", or "perf pass on <tab>". Drives DAEX
   pointed at the perf-pass throwaway repo; full liberty inside that repo. Uses
-  Codex/GPT models for in-ADE AI activity unless the run explicitly opts into
+  Codex/GPT models for in-DAEX AI activity unless the run explicitly opts into
   another configured provider for comparison.
 metadata:
-  author: ADE
+  author: DAEX
   version: 0.3.0
 ---
 
 # ade-autoresearch
 
-A Karpathy-style autoresearch loop for ADE perf. You (the agent) ARE the loop runner — there is no hidden script. Follow this algorithm exactly.
+A Karpathy-style autoresearch loop for DAEX perf. You (the agent) ARE the loop runner — there is no hidden script. Follow this algorithm exactly.
 
 ## Inputs
 
-- `<tab>`: the tab to optimize. Must be one of: `boot`, `lanes`, `prs`, `work`, `files`, `run`, `graph`, `review`, `history`, `automations`, `cto`, `settings`. (`boot` = cold launch + welcome + project open + remote runtime + iOS pairing — the "main ADE screen" surface above any specific tab.)
+- `<tab>`: the tab to optimize. Must be one of: `boot`, `lanes`, `prs`, `work`, `files`, `history`, `automations`, `cto`, `settings`. (`boot` = cold launch + welcome + project open + remote runtime + iOS pairing — the "main DAEX screen" surface above any specific tab.)
 - `<perf-pass-dir>`: throwaway git repo path. Defaults to `/Users/admin/Projects/perf pass` (note the space — quote it). Must exist, must be a git repo, must have a `perf-pass-seed` tag (or you create one on first run). Override via `ADE_PERF_PASS_DIR` env var.
 
 ## Real UI audit is the primary loop
@@ -36,14 +36,14 @@ Use this order:
 
 1. **Warm launch the real Electron UI on the target tab** and keep it open while auditing:
    ```bash
-   NO_DEVTOOLS=1 ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1 ADE_LOCAL_RUNTIME_FALLBACK=1 ADE_MODEL_OVERRIDE=gpt-5-codex \
+   NO_DEVTOOLS=1 ADE_MODEL_OVERRIDE=gpt-5-codex \
      node scripts/perf-launch.mjs --tab <tab> --run-id <tab>-ui-audit-$(date +%Y%m%d-%H%M)
    ```
    Confirm the Electron surface is on the requested tab. The visible active tab must match `<tab>`; do not audit a related embedded surface from another tab.
 
 2. **Build an action inventory from the visible UI and source.** Start with the tab's actual first screen, then cover every safe user action, subpane, menu, picker, dialog, mode switch, list interaction, empty state, error/preflight state, expand/minimize/fullscreen state, keyboard/search/filter path, and tab-specific destructive/external preflight. For destructive or externally visible actions, open and measure the prompt/preflight unless the user has explicitly allowed final execution.
 
-   The inventory must be tab-derived. For example, a Work pass should cover Work sidebar/session list, chat/CLI/shell start surfaces, session tabs/grid/layout controls, running/ended session actions, model/attachment/command/parallel pickers, terminal/chat panes, context menus, filters/search, and ADE tools drawers because those are Work-tab surfaces. A Lanes pass should cover lane list, stack graph, lane dialogs, Git Actions, and lane Work panes because those are Lanes-tab surfaces.
+   The inventory must be tab-derived. For example, a Work pass should cover Work sidebar/session list, chat/CLI/shell start surfaces, session tabs/grid/layout controls, running/ended session actions, model/attachment/command/parallel pickers, terminal/chat panes, context menus, filters/search, and DAEX tools drawers because those are Work-tab surfaces. A Lanes pass should cover lane list, stack graph, lane dialogs, Git Actions, and lane Work panes because those are Lanes-tab surfaces.
 
    Do not claim complete coverage until the inventory itself says every row is
    measured, prompt-only, external-skip, or explicitly deferred with a reason.
@@ -91,7 +91,7 @@ Use this order:
    ```bash
    git checkout -b autoresearch/<tab>-$(date +%Y%m%d-%H%M)
    ```
-5. **Set the model override** for all in-ADE AI activity: export `ADE_MODEL_OVERRIDE=gpt-5-codex` (or another GPT/Codex model id available in ADE). Don't touch this during the run.
+5. **Set the model override** for all in-DAEX AI activity: export `ADE_MODEL_OVERRIDE=gpt-5-codex` (or another GPT/Codex model id available in DAEX). Don't touch this during the run.
 
 ## Baseline (iteration 0)
 
@@ -187,7 +187,7 @@ Allowed measurement moves:
 One commit, focused. Conventional message: `perf(<tab>): <one-line description>`.
 
 ### 4. Test gate
-Run **only the affected test files**. Never the full suite. Use the per-tab Vitest projects.
+Run **only the affected test files**. Never the full suite.
 ```bash
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- --run path/to/affected.test.ts
@@ -270,10 +270,10 @@ Read all kept commits (`git log --oneline perf-baseline-<tab>-... HEAD`). For ea
   contract.
 - **The perf-pass repo is your sandbox.** Inside it, you may create lanes, open
   chats, push/pull throwaway branches, run automations, stash changes, and delete
-  fixtures when needed to exercise ADE. Purpose-built probes are encouraged when
+  fixtures when needed to exercise DAEX. Purpose-built probes are encouraged when
   fixed scenarios do not cover the tab. Real UI audit coverage is required before
   you call the tab optimized.
-- **Codex model preference.** If a probe or in-ADE action invokes chat/agent work,
+- **Codex model preference.** If a probe or in-DAEX action invokes chat/agent work,
   use the `ADE_MODEL_OVERRIDE` model (gpt-5-codex by default) for the majority of
   chat work and for deep performance-fix work. Other configured providers may be
   sampled for comparison when the user asks for broad coverage.
