@@ -79,21 +79,23 @@ Paths are under `apps/desktop/src/`.
 
 ## Supported providers
 
-`AgentChatProvider` is `"codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | (string & {})`.
+`AgentChatProvider` (`shared/types/chat.ts`) is `"codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | "muse" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity" | (string & {})`.
 The open branch lets local discovery add provider keys for vendored runtimes.
-The ACP providers (Muse, Qwen, Kimi, Grok, Antigravity) are described in
-[acp-providers-spec.md](acp-providers-spec.md) and
-[antigravity-provider.md](antigravity-provider.md).
+Qwen, Kimi, Grok and Devin run on the shared ACP host
+([acp-providers-spec.md](acp-providers-spec.md)); Antigravity too
+([antigravity-provider.md](antigravity-provider.md)).
 
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with a DAEX input pump, `startup()` warmup, DAEX's pinned Claude Code binary (with the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward) override when Anthropic refuses the pin), SDK sessions, hooks, output styles, plugins, context usage, rewind and slash commands. | `agentChatService.ts` (inline). |
-| `codex` | Pinned `@openai/codex` 0.167.0 `codex app-server`, JSON-RPC, shared by every chat whose process would launch the same way (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures are error events. | `agentChatService.ts`; `codexAppServerPool.ts`; `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` (0.169.0) `codex app-server`, JSON-RPC, shared by every chat whose process would launch the same way (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures are error events. | `agentChatService.ts`; `codexAppServerPool.ts`; `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime; catalog from OpenCode/Models.dev, with OAuth, API-key, custom and local-server paths. | `agentChatService.ts`; `openCodeInventory.ts`; `openCodeAuthService.ts`. |
 | `cursor` | `@cursor/sdk` in a Node worker pool. DAEX owns permissions, hooks and the system prompt; the SDK owns model and tools. Slash commands from `.cursor/commands/`, `.cursor/agents/`, built-in subagents and Agent Skill roots. A local turn silent for 90 s raises "Cursor hasn't answered" (Restart / Keep waiting), and a transport error before any event recycles and re-sends once — see [Cursor thread recycling](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `copilot` | DAEX's pinned Copilot runtime through `@github/copilot-sdk` over stdio, one forked worker per chat (keyed by CLI path, `COPILOT_HOME` and env). Models from `client.listModels()`. Five permission levels. Utility tasks never start a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`. See [copilot-sdk-provider.md](copilot-sdk-provider.md). |
 | `devin` | DAEX's pinned `devin` CLI as `devin acp` over the ACP host; Devin Cloud uses `devin acp --cloud` through the cloud agents service. The same id covers the tracked `devin` CLI. | `acpHost/acpDialects/devin.ts`, `devinCloud.ts`; `cloudAgentsService.ts`, `devinCloudDirectory.ts`. |
 | `droid` | Factory Droid models as `droid/<modelId>` descriptors through `@factory/droid-sdk` in a forked worker pool. Reports turn tokens, live context, compaction and Factory account; mission-worker usage comes from the worker's settings file. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`. |
+| `muse` | `muse serve` over the Muse Session Protocol, framed by `@muse-code/sdk`; DAEX spawns the host itself. | `museSdkHost.ts`, `museSdkEventMapper.ts`, `museSessionSupport.ts`. |
+| `qwen`, `kimi`, `grok`, `antigravity` | DAEX's pinned CLIs over the shared ACP host, one dialect each. | `acpHost/`, `acpHost/acpDialects/`. |
 | `pi` | DAEX's pinned Pi package, loaded as a library in a forked worker (never a static import). The worker owns the session, model runtime, tools and sign-in; DAEX owns the cards. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; `piSessionStore.ts`, `piSessionLease.ts`, `piSessionOwnership.ts`; `ai/piInstallation.ts`, `ai/piAuthService.ts`. |
 
 ## Model registry
