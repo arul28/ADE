@@ -13,9 +13,11 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { freePlanGithubOf, settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { routeSponsored, type GravityEnv } from "./gravity";
-import { routeFreeModels } from "./freeModels";
+import { freeModelsAccountState, routeFreeModels } from "./freeModels";
+import { endSignInFreeAt, reportNamesWork } from "./signInWait";
+import { ADE_FREE_MODELS } from "../../../desktop/src/shared/adeFreeModels";
 import { noteComputerNetwork, rateMilliFor, smallUsesNoHours } from "./sponsoredSmall";
-import { requestNetwork } from "./sponsoredConsent";
+import { requestNetwork, sponsoredRequester } from "./sponsoredConsent";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
@@ -1696,7 +1698,11 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     // Pricing v3: CLI sessions, automations and an outside agent's turn give it the full price
     // (`adPrice.ts`). Only from the newest report: one sent late never undoes a newer one.
-    if (await recordActivity(env, computer.instance_id, report, waitUntil)) await noteActivityReport(env as GravityEnv, computer, report, now);
+    if (await recordActivity(env, computer.instance_id, report, waitUntil)) {
+      await noteActivityReport(env as GravityEnv, computer, report, now);
+      // Work during a launch's free sign-in wait: the meter runs from here (`signInWait.ts`).
+      if (computer.free_wake_started_at != null && reportNamesWork(report)) await endSignInFreeAt(env, computer, now);
+    }
     // The network its brain calls from, for Free Small's tripwire (`sponsoredSmall.ts`). Never fails the report.
     await noteComputerNetwork(env, computer, requestNetwork(request)).catch((error: unknown) => {
       reportCloudFailure("cloud.computer_network_failed", { message: error instanceof Error ? error.message : "unknown" });
@@ -1997,6 +2003,29 @@ function launchDepsFor(request: Request, env: CloudEnv, userId: string, provider
     // A new launch makes a computer: the owner's kill switch and the hourly limit (never a replay of one).
     refuseNewLaunch: () => newWorkRefusal(env, userId, "launch", ctx.now, ctx.waitUntil),
     onProgress: (record) => noteAutomationLaunchProgress(env, record, { now: ctx.now }),
+    waitUntil: ctx.waitUntil,
+    signInExtras: async () => {
+      const account = await loadAccount(env, userId, ctx.now);
+      const free = await freeModelsAccountState(env as GravityEnv, account, sponsoredRequester(request), ctx.now);
+      const model = ADE_FREE_MODELS[0];
+      const reaches = Boolean(free && free.available && !free.locked && free.throttle !== "paused" && model);
+      // A computer of the person's own: a machine of the account that is not one of its cloud computers.
+      const own = await env.DB.prepare(`
+        select 1 as one from machines m where m.user_id = ?
+          and not exists (select 1 from cloud_computers c where c.user_id = m.user_id and c.machine_key = m.machine_key)
+        limit 1
+      `).bind(userId).first<{ one: number }>();
+      return { freeModel: reaches && model ? { modelId: model.id, label: model.displayName } : null, ownComputer: own != null };
+    },
+    freeModelGate: async () => {
+      const account = await loadAccount(env, userId, ctx.now);
+      const free = await freeModelsAccountState(env as GravityEnv, account, sponsoredRequester(request), ctx.now);
+      if (!free || !free.available) return { kind: "unavailable", message: "DAEX Free Models aren't available for your account here." };
+      if (free.locked) return { kind: "unavailable", message: free.locked.sentence };
+      if (free.throttle === "paused") return { kind: "unavailable", message: "DAEX Free Models are paused for your account right now." };
+      if (free.consent !== "granted") return { kind: "consent" };
+      return { kind: "ok" };
+    },
   };
 }
 
@@ -2009,6 +2038,8 @@ function launchDepsFor(request: Request, env: CloudEnv, userId: string, provider
 async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response> {
   await env.DB.prepare("update cloud_computers set last_active_at = max(coalesce(last_active_at, 0), ?) where instance_id = ? and deleted_at is null")
     .bind(now, computer.instance_id).run();
+  // A person at its terminal during a launch's free sign-in wait: the meter runs from here.
+  if (computer.free_wake_started_at != null) await endSignInFreeAt(env, computer, now);
   const refused = await idleUseRefusal(env, computer, now);
   return refused ?? json({ ok: true });
 }
@@ -2330,6 +2361,9 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
           isAwake: isMeteredStatus(computer.status),
           isStopped: computer.status === "stopped",
           startStopped: async () => recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "sign_in"),
+          env,
+          waitUntil: ctx.waitUntil,
+          now,
           wakeBlocked: async () => (await blockedNow(env, caller.userId))
             ?? (await wakeBlocker(env, computer, now)).blocked?.response
             ?? (await awakeRoom(env, computer, now))?.response ?? null,

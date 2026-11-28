@@ -8,7 +8,11 @@ import { Banner } from "../../ui/notice";
  * ADE Cloud computer the launch made, never this window's machine: the
  * account server runs it on that computer, chosen by its instance id
  * (`POST /cloud/instances/:id/sign-ins/:job/code`), on desktop and web alike.
- * A refused code shows the provider's reason, and the field stays.
+ * The box stays after a send and reads "Checking the code…" while the
+ * computer reads its verdict (`verdict` on the answer, from a DAEX that
+ * reports one; an older computer answers `pending`). A refused code shows
+ * the reason, and the field stays. Callers key it on the job and its link,
+ * so a new link (a restart) starts it fresh.
  */
 export function CloudSignInCodeField({
   jobId,
@@ -26,7 +30,8 @@ export function CloudSignInCodeField({
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
+  /** After a send: what the computer answered (`accepted`: the sign-in took it; `pending`: no verdict yet). */
+  const [sent, setSent] = useState<"accepted" | "pending" | null>(null);
 
   const send = async () => {
     const code = value.trim();
@@ -37,12 +42,12 @@ export function CloudSignInCodeField({
       const sendCode = window.ade?.cloud?.sendLaunchSignInCode;
       if (!sendCode || !instanceId) throw new Error("The computer isn't ready for the code yet. Try again in a moment.");
       const answer = await sendCode({ instanceId, jobId, code });
-      if (answer.state === "failed") {
+      if (answer.state === "failed" || answer.verdict === "refused") {
         setError(answer.reason ?? "The code didn't work. Open the sign-in page again for a new one.");
         return;
       }
       setValue("");
-      setSent(true);
+      setSent(answer.state === "done" || answer.verdict === "accepted" ? "accepted" : "pending");
       onSent?.();
     } catch (cause) {
       setError(extractError(cause));
@@ -67,18 +72,23 @@ export function CloudSignInCodeField({
           disabled={busy}
           onChange={(event) => {
             setValue(event.target.value);
-            setSent(false);
+            setSent(null);
+            setError(null);
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter") void send();
           }}
         />
         <button type="button" className="kit-btn kit-btn-primary" data-size="sm" disabled={busy || !value.trim()} onClick={() => void send()}>
-          {busy ? "Sending…" : "Send code"}
+          {busy ? "Checking…" : "Send code"}
         </button>
       </div>
-      {sent && !error ? (
-        <p style={{ color: "var(--kit-text-2)", margin: "6px 0 0" }}>Code sent. The chat starts when the sign-in is done.</p>
+      {busy ? (
+        <p role="status" style={{ color: "var(--kit-text-2)", margin: "6px 0 0" }}>Checking the code…</p>
+      ) : sent && !error ? (
+        <p role="status" style={{ color: "var(--kit-text-2)", margin: "6px 0 0" }}>
+          {sent === "accepted" ? "Code accepted. Starting the chat…" : "Code sent. The chat starts when the sign-in is done."}
+        </p>
       ) : null}
       {error ? (
         <Banner

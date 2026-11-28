@@ -68,6 +68,7 @@
  *   DELETE /cloud/launches/:launch                      CloudLaunchRecord   (cancel; deletes the computer before the agent starts)
  *   POST   /cloud/launches/:launch/join                 CloudLaunchJoinResult   NO account token: the computer's join code (CloudLaunchJoinRequest)
  *   GET    /cloud/launches?active=1                     CloudLaunchList   (the caller's launches still in progress, and failures of the last day)
+ *   POST   /cloud/launches/:launch/free-model           CloudLaunchRecord   (the chat starts on DAEX Free Models instead of waiting for its sign-in; 409 `launch_not_waiting`, `free_models_unavailable`, `free_models_consent`)
  *   GET    /cloud/launches/:launch/messages             { messages: CloudLaunchMessage[] }
  *   POST   /cloud/launches/:launch/messages             CloudLaunchMessage   (CloudLaunchMessageRequest; 201 new, 200 the same id again; 409 `chat_ready` once the chat exists)
  *   POST   /cloud/launches/:launch/messages/:msg/claim  CloudLaunchMessage   (from the computer: { claimId }; 409 `message_taken`)
@@ -528,6 +529,12 @@ export type CloudComputerActivityReport = {
    * list changes. An older brain leaves it out: read as none.
    */
   fullPriceWork?: CloudFullPriceWork[];
+  /**
+   * The terminals open on the computer now (any kind: a shell too). A
+   * launch's sign-in wait is free only while nothing runs (`signInWait.ts`).
+   * An older brain leaves it out.
+   */
+  openTerminals?: number;
 };
 
 /** How hard a computer pushes one of its limits, as the provider reads it. */
@@ -2420,6 +2427,12 @@ export type CloudServerLaunchRequest = {
      * messages and is sent once, as the chat's first message.
      */
     messageId?: string;
+    /**
+     * Set by the server when the person moved this waiting chat to a DAEX
+     * Free Model (`POST /cloud/launches/:id/free-model`): what it asked for
+     * first. A Retry that sends that first choice again keeps the free model.
+     */
+    switchedFrom?: { provider: string; modelId: string };
   };
   /**
    * Who asked: a person on the web or the phone (the default), or an
@@ -2551,6 +2564,12 @@ export type CloudLaunchRecord = {
   error: string | null;
   /** While `waiting_for_sign_in`: the provider sign-in the launch waits on. Absent from an older server. */
   signIn?: CloudLaunchSignIn | null;
+  /**
+   * A launch that failed or was cancelled in its sign-in step: one plain
+   * sentence from the server about what the wait cost ("Nothing was charged
+   * for the wait."). Null otherwise; absent from an older server.
+   */
+  endNote?: string | null;
   /** A `machine` launch's computer; null for any other kind. Absent from an older server. */
   machine?: CloudMachineLaunchFacts | null;
   createdAt: number;
@@ -2820,16 +2839,71 @@ export type CloudLaunchSignIn = {
   needsPastedCode: boolean;
   /** For `api_key`: the account sign-in to save (`CloudAccountSignInId`). */
   signInId: string | null;
-  /** One plain sentence: what to do, or why it can't be done here. */
+  /**
+   * One plain sentence: why it can't be done here (`api_key`, `desktop`), a
+   * start that failed, or what changed (`CLOUD_SIGN_IN_CODE_REFUSED`,
+   * `CLOUD_SIGN_IN_LINK_CHANGED`, `CLOUD_SIGN_IN_CODE_EXPIRED`). For
+   * `device` and `url_paste` it never repeats the instruction.
+   */
   reason: string | null;
+  /** From the computer: when the wait ends (epoch ms); the launch fails after it. Absent from an older computer. */
+  expiresAt?: number | null;
+  /**
+   * From the server, on a read (whatever the computer sent is dropped): DAEX
+   * Free Models reach this account and the chat can start on one instead
+   * (`POST /cloud/launches/:launch/free-model`). Null otherwise.
+   */
+  freeModel?: { modelId: string; label: string } | null;
+  /** From the server, on a read: the account has DAEX on a computer of its own (sharing its sign-ins skips this step). */
+  ownComputer?: boolean;
+  /**
+   * From the server, on a read: the line about cost under the step. Null on
+   * a size that uses no credits. `free`: the wait costs nothing if it ends
+   * here (`SIGN_IN_FREE_SENTENCE`); otherwise it names the size.
+   */
+  charge?: { free: boolean; sentence: string } | null;
 };
+
+/** The sentences a waiting launch's `reason` carries when something changed (the apps show them as they are). */
+export const CLOUD_SIGN_IN_CODE_REFUSED = "That code didn't work. Open sign-in again and paste the new code.";
+export const CLOUD_SIGN_IN_LINK_CHANGED = "The sign-in page changed. Open it again.";
+export const CLOUD_SIGN_IN_CODE_EXPIRED = "The code expired. Open the page again and type the new code.";
+/**
+ * How long a cloud start waits for its provider sign-in. The server writes the
+ * launch's request, so it decides: a cloud Mac (`os: "mac"` in the request, a
+ * scarce machine at many times a Medium's rate) waits 10 minutes, every other
+ * computer 30. The computer's wait (`waitForSignIn`) and the server's free
+ * window (`signInWait.ts`) both read it; `expiresAt` carries it to the cards.
+ */
+export const CLOUD_SIGN_IN_WAIT_MS = 30 * 60_000;
+export const CLOUD_MAC_SIGN_IN_WAIT_MS = 10 * 60_000;
+export function cloudSignInWaitMsFor(request: unknown): number {
+  const os = request && typeof request === "object" ? (request as { os?: unknown }).os : undefined;
+  return os === "mac" ? CLOUD_MAC_SIGN_IN_WAIT_MS : CLOUD_SIGN_IN_WAIT_MS;
+}
+/** After a wait's end: the computer's failed report and the minute cron's delete (`failUnjoinedLaunches`). */
+export const CLOUD_SIGN_IN_END_GRACE_MS = 2 * 60_000;
+/** The most codes one sign-in job takes (`POST .../sign-ins/:job/code`). */
+export const CLOUD_SIGN_IN_MAX_CODES = 10;
+export const CLOUD_SIGN_IN_TOO_MANY_CODES = "That's too many codes for one sign-in. Cancel the start and try again.";
+
+/**
+ * `POST /cloud/launches/:launch/free-model`: the person's own chat launch,
+ * while it waits in its sign-in step, starts on DAEX Free Models instead
+ * (`CloudLaunchSignIn.freeModel`), with its first message unchanged, on the
+ * same computer. Once per launch: a second call answers the same record.
+ * 409 `launch_not_waiting`, `free_models_unavailable` (the message says
+ * why) or `free_models_consent` (the app asks for the Free Models yes, then
+ * calls again).
+ */
+export type CloudLaunchFreeModelErrorCode = "launch_not_waiting" | "free_models_unavailable" | "free_models_consent";
 
 /** `GET /cloud/launches?active=1`: newest first, at most 50. */
 export type CloudLaunchList = { launches: CloudLaunchSummary[] };
 export type CloudLaunchSummary = Pick<
   CloudLaunchRecord,
   "launchId" | "state" | "kind" | "projectOrigin" | "laneId" | "laneName" | "instanceId" | "approval" | "sessionId" | "error" | "createdAt" | "updatedAt"
-> & {
+> & Pick<CloudLaunchRecord, "endNote"> & {
   /** The stage running now, or the last one (`CloudLaunchStage.id`). */
   stage: CloudLaunchStage | null;
   signIn: CloudLaunchSignIn | null;
@@ -2937,7 +3011,36 @@ export type CloudRemoteSignInRow = {
  * error, whether the computer or the server gave up first, so the server's
  * cleanup knows it and deletes the unused computer.
  */
-export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
+export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The sign-in wasn't done in time, so the chat didn't start. Start it again to get a new sign-in page.";
+/**
+ * The same ending in its earlier words: a computer on a released DAEX still
+ * reports it, and launches that failed before keep it. The server reads both
+ * as the sign-in timeout and stores the current words from a report.
+ */
+/**
+ * A launch whose computer the server stopped before its chat started (the
+ * credits ran out, a block, another stop) fails with why and what to do.
+ * Out of credits: the first sentence, then the way out this account has.
+ */
+export const CLOUD_LAUNCH_OUT_OF_CREDITS = "Your DAEX Cloud credits ran out, so the computer stopped before the chat started.";
+export const CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT = {
+  /** Small uses no credits for this account. */
+  small_free: " Small computers don't use credits, so they keep working: start the chat again on Small.",
+  /** Free under Pricing v3: the words of the out-of-credits refusal (`SMALL_WAY_OUT` in routes.ts). */
+  ads_on: " Small computers keep working in chats with ads: send a message to start one.",
+  ads_off: " With ads on, Small computers keep working.",
+  /** `ads_on` for a computer bigger than Small: Retry makes the same size, which 0 credits refuses. */
+  ads_on_bigger: " Start the chat again on Small, which keeps working with ads, or pick a plan in Settings › DAEX Cloud › Plans.",
+  /** `ads_off` for a computer bigger than Small. */
+  ads_off_bigger: " Turn ads on and start the chat again on Small, or pick a plan in Settings › DAEX Cloud › Plans.",
+  /** Free with no free plan, or no other way out. */
+  plan: " Pick a plan in Settings › DAEX Cloud › Plans, then Retry.",
+  /** A paid plan. */
+  credits: " Add credits or pick a bigger plan in Settings › DAEX Cloud › Plans, then Retry.",
+} as const;
+/** Any other stop before the chat started. */
+export const CLOUD_LAUNCH_COMPUTER_STOPPED = "The computer stopped before the chat started. Retry starts the chat on a new computer.";
+export const LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
 
 /** What the phone and the web show for a provider whose sign-in can't move. */
 export const CLOUD_REMOTE_SIGN_IN_ELSEWHERE = "Sign in from DAEX desktop; it reaches DAEX Cloud.";
@@ -2992,6 +3095,15 @@ export type CloudRemoteSignInStatus = {
   userCode: string | null;
   needsPastedCode: boolean;
   reason: string | null;
+  /**
+   * The answer to a pasted code, read for a few seconds after it: `refused`
+   * (with `state: "failed"` and `CLOUD_SIGN_IN_CODE_REFUSED`), `accepted` (the
+   * provider took it; DAEX is finishing). Null or absent: no verdict yet (and
+   * from a computer whose DAEX predates it).
+   */
+  verdict?: "refused" | "accepted" | null;
+  /** In the computer only: a code was sent on the current link and has no verdict yet. */
+  codeSent?: boolean;
 };
 
 /* ---- The account's ADE Cloud sign-ins, from the web (`/cloud/sign-ins`) ---- */

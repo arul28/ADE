@@ -3,8 +3,10 @@ import { expectCloudComputerSignIn } from "../newDeviceEmail";
 import { unsettledPhoneMilli } from "./credits";
 import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
 import { sha256Hex } from "../sinkUtils";
-import { isAdeFreeModelId } from "../../../desktop/src/shared/adeFreeModels";
+import { ADE_FREE_MODELS, isAdeFreeModelId } from "../../../desktop/src/shared/adeFreeModels";
 import { noteFreeModelLaunch } from "./freeModels";
+import { captureCloudSignInStep, type CloudSignInStep, type CloudWaitUntil } from "./analytics";
+import { chargeSignInWait, openSignInFreeWait, signInChargeOf, signInClientOf, signInEndNoteOf } from "./signInWait";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
   CLOUD_AUTO_SIZE,
@@ -20,7 +22,12 @@ import {
   CLOUD_LAUNCH_MAX_STAGES,
   CLOUD_LAUNCH_METADATA,
   CLOUD_LAUNCH_RECORD_TTL_MS,
+  CLOUD_LAUNCH_COMPUTER_STOPPED,
+  CLOUD_LAUNCH_OUT_OF_CREDITS,
+  CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT,
   CLOUD_LAUNCH_SIGN_IN_TIMED_OUT,
+  LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT,
+  CLOUD_SIGN_IN_END_GRACE_MS,
   CLOUD_PATHS,
   type CloudAutoSizeRefusal,
   type CloudLaunchAttachment,
@@ -42,16 +49,20 @@ import {
   cloudRemoteSignInOf,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
-import { WAKE_PORT, cloudSizeForTier, type CloudSize } from "./plans";
+import { WAKE_PORT, cloudSizeFor, cloudSizeForTier, type CloudSize } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { requestNetwork } from "./sponsoredConsent";
-import { noteComputerJoin } from "./sponsoredSmall";
+import { noteComputerJoin, smallUsesNoHours } from "./sponsoredSmall";
+import { freeSmallWayOut } from "./adPrice";
+import { ACCOUNT_BLOCKED_MESSAGE } from "./blocks";
+import { freePlanGithubOf } from "./freePlanGithub";
 import { FILE_ID, handleGetFile, handlePutFile, r2KeyOf, r2PrefixOf } from "./launchFiles";
 import {
   LAUNCH_COMPUTER_DELETED,
   LEGACY_LAUNCH_COMPUTER_DELETED,
   PENDING_TIMEOUT_MS,
   deleteComputer,
+  hasNoFreePlan,
   isOutOfHoursFor,
   listComputers,
   liveUsedMilli,
@@ -145,6 +156,11 @@ export type LaunchRow = {
   session_id: string | null;
   /** While `waiting_for_sign_in`: CloudLaunchSignIn as JSON (migration 0038). */
   sign_in_json: string | null;
+  /** Migration 0076 (`signInWait.ts`): the sign-in wait's free window, when it opened, and when it was charged after all. */
+  sign_in_free_at?: number | null;
+  sign_in_free_opened_at?: number | null;
+  sign_in_charged_at?: number | null;
+  sign_in_used_at?: number | null;
   created_at: number;
   updated_at: number;
   expires_at: number;
@@ -168,6 +184,16 @@ export type LaunchRouteDeps = {
   refuseNewLaunch?: () => Promise<Response | null>;
   /** Told after the computer wrote progress or the launch was cancelled (an automation's run follows its launch). */
   onProgress?: (record: CloudLaunchRecord) => Promise<void>;
+  /**
+   * What a waiting launch's step shows that only the account knows (DAEX Free
+   * Models reach it; it has a computer of its own), read once per request when
+   * a launch waits. Left out: neither shows.
+   */
+  signInExtras?: () => Promise<SignInExtras>;
+  /** Whether DAEX Free Models can run this account's chat now, for `POST .../free-model`. Left out: refused. */
+  freeModelGate?: () => Promise<FreeModelGate>;
+  /** The request's own `waitUntil`, for the step's events. */
+  waitUntil?: CloudWaitUntil;
 };
 
 const UUID = UUID_PATTERN;
@@ -427,6 +453,7 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     sessionId: row.session_id,
     error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     signIn: row.state === "waiting_for_sign_in" ? signInOfRow(row) : null,
+    endNote: signInEndNoteOf({ ...row, state: neverJoined || retryStopped ? "failed" : row.state }),
     machine: row.kind === "machine" ? machineFactsOf(row) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -446,7 +473,68 @@ function machineFactsOf(row: LaunchRow): CloudMachineLaunchFacts | null {
 }
 
 function signInOfRow(row: LaunchRow): CloudLaunchSignIn | null {
-  return parseJsonColumn<CloudLaunchSignIn | null>(row.sign_in_json, null, { launchId: row.launch_id, column: "sign_in_json" });
+  const stored = parseJsonColumn<CloudLaunchSignIn | null>(row.sign_in_json, null, { launchId: row.launch_id, column: "sign_in_json" });
+  if (!stored) return null;
+  // The server's own facts are added on a read (`withSignInFacts`); never what a computer wrote.
+  const { freeModel: _freeModel, ownComputer: _ownComputer, charge: _charge, ...signIn } = stored;
+  return signIn;
+}
+
+/** What the step shows that only the account knows. */
+export type SignInExtras = { freeModel: { modelId: string; label: string } | null; ownComputer: boolean };
+export type FreeModelGate = { kind: "ok" } | { kind: "consent" } | { kind: "unavailable"; message: string };
+
+/** The first DAEX Free Model: what a chat switches to from its sign-in step. */
+const SWITCH_FREE_MODEL = ADE_FREE_MODELS[0]!;
+
+/**
+ * Whether this launch's chat can still move to a free model: a new chat, not
+ * on one already. A launch that continues a saved chat (`continueChat`, the
+ * queued message's card) keeps its chat's provider: it gets the step, not the move.
+ */
+function canSwitchToFreeModel(row: LaunchRow, request: CloudServerLaunchRequest | null): boolean {
+  return row.kind === "chat" && row.state === "waiting_for_sign_in" && request?.chat != null && request.continueChat == null
+    && !isAdeFreeModelId(request.chat.modelId);
+}
+
+/**
+ * Adds the server's facts to a waiting launch's sign-in: the cost line (from
+ * its computer), the free-model way out and the own-computer line (from the
+ * account, read once for all launches of a request). Never fails the read.
+ */
+async function withSignInFacts<T extends { signIn?: CloudLaunchSignIn | null }>(
+  env: CloudEnv,
+  rows: Array<{ row: LaunchRow; answer: T }>,
+  deps: Pick<LaunchRouteDeps, "signInExtras">,
+): Promise<void> {
+  const waiting = rows.filter((entry) => entry.answer.signIn);
+  if (!waiting.length) return;
+  let extras: SignInExtras = { freeModel: null, ownComputer: false };
+  try {
+    extras = (await deps.signInExtras?.()) ?? extras;
+  } catch (error) {
+    reportCloudFailure("cloud.sign_in_extras_failed", { message: error instanceof Error ? error.name : "unknown" });
+  }
+  for (const { row, answer } of waiting) {
+    const computer = row.instance_id ? await ownedComputer(env, row.user_id, row.instance_id).catch(() => null) : null;
+    const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+    answer.signIn = {
+      ...answer.signIn!,
+      freeModel: extras.freeModel && canSwitchToFreeModel(row, request) ? extras.freeModel : null,
+      ownComputer: extras.ownComputer,
+      charge: signInChargeOf(row, computer),
+    };
+  }
+}
+
+/** The step's event, with the launch's provider. Never fails the caller. */
+function noteSignInStep(env: CloudEnv, deps: Pick<LaunchRouteDeps, "waitUntil">, row: LaunchRow, step: CloudSignInStep, client: "desktop" | "web" | "ios" | "computer", now: number): void {
+  try {
+    const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+    captureCloudSignInStep(env, deps.waitUntil, row.user_id, { step, provider: request?.chat?.provider ?? null, client }, row.launch_id, now);
+  } catch {
+    // An event is never worth a failed request.
+  }
 }
 
 /** One row of `GET /cloud/launches?active=1`. */
@@ -468,6 +556,7 @@ function summaryOf(row: LaunchRow, now: number): CloudLaunchSummary {
     updatedAt: record.updatedAt,
     stage: running ?? record.stages[record.stages.length - 1] ?? null,
     signIn: record.signIn ?? null,
+    endNote: record.endNote ?? null,
     provider: record.request?.chat?.provider ?? null,
     modelId: record.request?.chat?.modelId ?? null,
   };
@@ -760,7 +849,8 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
   }
   // Released for the start below; a cancel that landed meanwhile keeps the launch cancelled.
   const released = await env.DB.prepare(`
-    update cloud_launches set state = 'making', instance_id = null, updated_at = ? where launch_id = ? and user_id = ? and state = 'retrying'
+    update cloud_launches set state = 'making', instance_id = null, sign_in_free_at = null, sign_in_used_at = null, updated_at = ?
+    where launch_id = ? and user_id = ? and state = 'retrying'
   `).bind(deps.now, launchId, userId).run();
   logCloud("cloud.launch_retried", { userId, launchId, instanceId: row.instance_id });
   return (released.meta?.changes ?? 0) === 1 ? "restarted" : null;
@@ -787,6 +877,17 @@ export async function startServerLaunch(
   const launchId = parsed.launchId;
 
   const existing = await readLaunch(env, launchId);
+  // A Retry of a chat the person moved to a free model: the request the record holds is what runs.
+  if (options.restarted && existing) {
+    const kept = keepFreeModelMove(existing, parsed);
+    // The person watches the free model the Retry starts (`freeModels.ts`): its first note may be too old to claim.
+    if (kept !== parsed && options.request && (!parsed.madeBy || parsed.madeBy.kind === "person")) {
+      await noteFreeModelLaunch(env, userId, options.request, launchId, now).catch((error: unknown) => {
+        reportCloudFailure("cloud.free_models.launch_note_failed", { message: error instanceof Error ? error.message : "unknown" });
+      });
+    }
+    parsed = kept;
+  }
   // The id finds a computer in the shared provider list, so it can only ever be one account's.
   if (existing && existing.user_id !== userId) return badRequest("That launch id can't be used.");
   // The same launch again answers what it is now. A start whose create didn't
@@ -1251,10 +1352,12 @@ export function parseSignIn(value: unknown): CloudLaunchSignIn | null | undefine
     needsPastedCode: record.needsPastedCode === true,
     signInId: kind === "api_key" ? row.accountSignIn : shortString(record.signInId, 40),
     reason: clippedText(record.reason, 300),
+    // A newer computer names when its wait ends; it also means its brain reports its terminals (`signInWait.ts`).
+    ...(typeof record.expiresAt === "number" && Number.isFinite(record.expiresAt) && record.expiresAt > 0 ? { expiresAt: Math.round(record.expiresAt) } : {}),
   };
 }
 
-async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now: number): Promise<Response> {
+async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now: number, deps: Pick<LaunchRouteDeps, "waitUntil"> = {}): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   if (row.state === "cancelled" || row.state === "draft" || row.state === "retrying" || !row.instance_id) return fail("launch_closed", "This launch isn't running.", 409);
@@ -1270,7 +1373,9 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   // A launch the server ended (no join, no sign-in) is having its computer deleted: a late report doesn't revive it.
   if (row.state === "failed" && serverEnded(row.error) && state !== "failed") return fail("launch_closed", "This launch isn't running.", 409);
   const sessionId = body.sessionId === undefined ? undefined : shortString(body.sessionId, 120);
-  const error = body.error === undefined ? undefined : clippedText(body.error, 400);
+  const reported = body.error === undefined ? undefined : clippedText(body.error, 400);
+  // A released computer reports the sign-in timeout in its earlier words: stored in the current ones.
+  const error = isSignInNeverFinished(reported) ? SIGN_IN_NEVER_FINISHED : reported;
   const written = await env.DB.prepare(`
     update cloud_launches set
       state = coalesce(?, state),
@@ -1281,7 +1386,8 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       sign_in_json = case when ? is not null then ? else sign_in_json end,
       updated_at = ?
     where launch_id = ? and instance_id = ? and state not in ('cancelled', 'retrying') and (state <> 'done' or ? = 'done')
-      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?, ?) or ? = 'failed')
+      and (state <> 'failed' or (coalesce(error, '') not in (?, ?, ?, ?, ?) and coalesce(error, '') not in (select value from json_each(?))
+        and instr(coalesce(error, ''), ?) <> 1) or ? = 'failed')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
@@ -1289,7 +1395,8 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
     state,
     state, signInJson,
     now, row.launch_id, row.instance_id, state,
-    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LAUNCH_COMPUTER_DELETED, LEGACY_LAUNCH_COMPUTER_DELETED, state,
+    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LAUNCH_COMPUTER_DELETED, LEGACY_LAUNCH_COMPUTER_DELETED,
+    JSON.stringify(STOPPED_ENDINGS), CLOUD_LAUNCH_OUT_OF_CREDITS, state,
   ).run();
   // Only the computer this report was checked against, and never into a Retry
   // that claimed the launch since this request read it.
@@ -1309,7 +1416,26 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   }
   // The computer gave up on the sign-in itself: its queued messages fail as with the server's
   // own timeout, and the minute cron deletes the computer (`failUnjoinedLaunches`).
-  if (state === "failed" && error === SIGN_IN_NEVER_FINISHED) await failQueuedMessagesStatement(env, row.launch_id, SIGN_IN_NEVER_FINISHED, now).run();
+  if (state === "failed" && error === SIGN_IN_NEVER_FINISHED) {
+    await failQueuedMessagesStatement(env, row.launch_id, SIGN_IN_NEVER_FINISHED, now).run();
+    noteSignInStep(env, deps, row, "timed_out", "computer", now);
+  }
+  // The sign-in step (`signInWait.ts`): its wait is free time on the computer from the first report;
+  // once it ends signed in (the chat starts, on its provider or a free model) the wait is charged.
+  if (state === "waiting_for_sign_in" && row.state !== "waiting_for_sign_in") {
+    noteSignInStep(env, deps, row, "shown", "computer", now);
+  }
+  if (state === "waiting_for_sign_in" && signIn?.expiresAt != null && row.sign_in_free_opened_at == null && row.instance_id) {
+    await openSignInFreeWait(env, row, await ownedComputer(env, row.user_id, row.instance_id), now, signIn.expiresAt);
+  }
+  // The sign-in finished: the wait is charged. Any later report of a chat on its way tries a charge
+  // that failed again (`sign_in_charged_at` still empty); a charged one is never charged twice.
+  if ((state === "joined" || state === "running" || state === "done") && row.sign_in_free_at != null && row.sign_in_charged_at == null) {
+    await chargeSignInWait(env, row, now);
+  }
+  if (row.state === "waiting_for_sign_in" && (state === "joined" || state === "running" || state === "done")) {
+    noteSignInStep(env, deps, row, "signed_in", "computer", now);
+  }
   return json(recordOf((await readLaunch(env, row.launch_id))!, now));
 }
 
@@ -1328,7 +1454,7 @@ async function deleteLaunchComputer(
   await deleteComputer(env, provider, computer, why, now);
 }
 
-async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps): Promise<Response> {
+async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps, request?: Request): Promise<Response> {
   const cannotDelete = () => fail("unavailable", "DAEX Cloud can't delete the computer right now. Delete it in Settings › DAEX Cloud.", 503);
   if (row.state === "cancelled") {
     // A delete that failed last time is tried again while the computer is still on the account.
@@ -1359,7 +1485,7 @@ async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps
   const latest = (await readLaunch(env, row.launch_id))!;
   if (!closed) {
     // Another cancel won (its delete is retried like any), or the launch finished meanwhile.
-    if (latest.state === "cancelled") return await handleCancel(env, latest, deps);
+    if (latest.state === "cancelled") return await handleCancel(env, latest, deps, request);
     return fail("launch_started", "The lane already started. Delete its computer to stop it.", 409);
   }
   if (closed.instance_id) {
@@ -1367,7 +1493,75 @@ async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps
     await deleteLaunchComputer(env, deps.provider, { ...latest, instance_id: closed.instance_id }, deps.now);
   }
   logCloud("cloud.launch_cancelled", { userId: row.user_id, launchId: row.launch_id, instanceId: closed.instance_id });
+  if (row.state === "waiting_for_sign_in" && request) noteSignInStep(env, deps, row, "cancelled", signInClientOf(request), deps.now);
   return json(recordOf(latest, deps.now));
+}
+
+/* ---- A waiting chat moves to DAEX Free Models ---- */
+
+/**
+ * A Retry of a launch whose chat the person moved to a free model in its
+ * sign-in step. A client that sends the first choice again (its own copy of
+ * the request) starts the free model, not the sign-in the person skipped. A
+ * different choice is the person's and goes as sent.
+ */
+function keepFreeModelMove(existing: LaunchRow, parsed: ParsedLaunchRequest): ParsedLaunchRequest {
+  const stored = parseJsonColumn<CloudServerLaunchRequest | null>(existing.request_json, null, { launchId: existing.launch_id, column: "request_json" });
+  const moved = stored?.chat?.switchedFrom;
+  if (!moved || !stored?.chat || !parsed.chat) return parsed;
+  if ((stored.chat.messageId ?? existing.launch_id) !== parsed.chat.messageId) return parsed;
+  if (parsed.chat.provider !== moved.provider || parsed.chat.modelId !== moved.modelId) return parsed;
+  return { ...parsed, chat: { ...parsed.chat, provider: stored.chat.provider, modelId: stored.chat.modelId, effort: null, fast: false, switchedFrom: moved } };
+}
+
+/**
+ * `POST /cloud/launches/:launch/free-model`: the person's chat launch, while
+ * it waits in its sign-in step, starts on the first DAEX Free Model instead,
+ * with its first message unchanged, on the same computer: the computer reads
+ * the new provider and model on its next read of the launch and starts the
+ * chat. Once per launch: a later call answers the record as it is.
+ */
+async function handleFreeModel(request: Request, env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps): Promise<Response> {
+  const body = (await readJson(request)) ?? {};
+  // An outside agent never takes this step for the person.
+  if (body.origin === "mcp") return fail("outside_agent", "Only you can choose this for your chat.", 403);
+  const stored = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" });
+  // Already on a free model (this call ran before): the same answer again.
+  if (row.kind === "chat" && stored?.chat && isAdeFreeModelId(stored.chat.modelId)) {
+    const record = recordOf(row, deps.now);
+    await withSignInFacts(env, [{ row, answer: record }], deps);
+    return json(record);
+  }
+  if (!canSwitchToFreeModel(row, stored)) return fail("launch_not_waiting", "This chat isn't waiting for a sign-in any more.", 409);
+  const gate: FreeModelGate = deps.freeModelGate ? await deps.freeModelGate() : { kind: "unavailable", message: "DAEX Free Models aren't available right now." };
+  if (gate.kind === "consent") return fail("free_models_consent", "Turn on DAEX Free Models first.", 409);
+  if (gate.kind === "unavailable") return fail("free_models_unavailable", gate.message, 409);
+  const chat = stored!.chat!;
+  const next: CloudServerLaunchRequest = {
+    ...stored!,
+    // The first message, its attachments and its id stay as they are.
+    // What it asked for first: a Retry that sends it again keeps the free model (`keepFreeModelMove`).
+    chat: { ...chat, provider: "opencode", modelId: SWITCH_FREE_MODEL.id, effort: null, fast: false, switchedFrom: { provider: chat.provider, modelId: chat.modelId } },
+  };
+  const written = await env.DB.prepare(`
+    update cloud_launches set request_json = ?, updated_at = ? where launch_id = ? and state = 'waiting_for_sign_in' and request_json = ?
+  `).bind(JSON.stringify(next), deps.now, row.launch_id, row.request_json).run();
+  const latest = (await readLaunch(env, row.launch_id))!;
+  if ((written.meta?.changes ?? 0) !== 1) {
+    // Another call switched it, or the step ended meanwhile.
+    const latestRequest = parseJsonColumn<CloudServerLaunchRequest | null>(latest.request_json, null, { launchId: latest.launch_id, column: "request_json" });
+    if (latestRequest?.chat && isAdeFreeModelId(latestRequest.chat.modelId)) return json(recordOf(latest, deps.now));
+    return fail("launch_not_waiting", "This chat isn't waiting for a sign-in any more.", 409);
+  }
+  noteSignInStep(env, deps, row, "free_model", signInClientOf(request), deps.now);
+  // The person watches this free-model chat from here (`freeModels.ts`), as with a chat started on one.
+  await noteFreeModelLaunch(env as Parameters<typeof noteFreeModelLaunch>[0], row.user_id, request, row.launch_id, deps.now).catch((error: unknown) => {
+    reportCloudFailure("cloud.free_models.launch_note_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
+  logCloud("cloud.launch_free_model", { userId: row.user_id, launchId: row.launch_id });
+  const record = recordOf(latest, deps.now);
+  await withSignInFacts(env, [{ row: latest, answer: record }], deps);
+  return json(record);
 }
 
 /* ---- The account-token routes ---- */
@@ -1375,7 +1569,7 @@ async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps
 export async function routeLaunches(request: Request, path: string, env: CloudEnv, userId: string, deps: LaunchRouteDeps): Promise<Response> {
   if (path === CLOUD_PATHS.launches) {
     if (request.method === "POST") return handleStart(request, env, userId, deps);
-    if (request.method === "GET" && new URL(request.url).searchParams.get("active") === "1") return handleActiveList(env, userId, deps.now);
+    if (request.method === "GET" && new URL(request.url).searchParams.get("active") === "1") return handleActiveList(env, userId, deps);
     return notFound();
   }
   const route = launchRouteOf(path);
@@ -1397,11 +1591,16 @@ export async function routeLaunches(request: Request, path: string, env: CloudEn
   const row = await ownLaunch(env, userId, launchId);
   if (!row) return notFound();
   if (action === undefined) {
-    if (request.method === "GET") return json(recordOf(row, deps.now));
-    if (request.method === "DELETE") return await followedBy(await handleCancel(env, row, deps), env, launchId, deps);
+    if (request.method === "GET") {
+      const record = recordOf(row, deps.now);
+      await withSignInFacts(env, [{ row, answer: record }], deps);
+      return json(record);
+    }
+    if (request.method === "DELETE") return await followedBy(await handleCancel(env, row, deps, request), env, launchId, deps);
     return notFound();
   }
-  if (action === "stages" && request.method === "PUT") return await followedBy(await handleStages(request, env, row, deps.now), env, launchId, deps);
+  if (action === "stages" && request.method === "PUT") return await followedBy(await handleStages(request, env, row, deps.now, deps), env, launchId, deps);
+  if (action === "free-model" && request.method === "POST") return await followedBy(await handleFreeModel(request, env, row, deps), env, launchId, deps);
   return notFound();
 }
 
@@ -1412,7 +1611,8 @@ const ACTIVE_LIST_LIMIT = 50;
 /** A failed launch stays on the active list this long, so a person who closed the tab still sees why. */
 const ACTIVE_FAILED_MS = 24 * 60 * 60_000;
 
-async function handleActiveList(env: CloudEnv, userId: string, now: number): Promise<Response> {
+async function handleActiveList(env: CloudEnv, userId: string, deps: Pick<LaunchRouteDeps, "now" | "signInExtras">): Promise<Response> {
+  const now = deps.now;
   const rows = (await env.DB.prepare(`
     select * from cloud_launches
     where user_id = ? and state not in ('draft', 'done', 'cancelled') and (state <> 'failed' or updated_at > ?)
@@ -1430,7 +1630,9 @@ async function handleActiveList(env: CloudEnv, userId: string, now: number): Pro
           and later.created_at > cloud_launches.created_at and later.state not in ('draft', 'cancelled')))
     order by created_at desc limit ?
   `).bind(userId, now - ACTIVE_FAILED_MS, ACTIVE_LIST_LIMIT).all<LaunchRow>()).results ?? [];
-  const answer: CloudLaunchList = { launches: rows.map((row) => summaryOf(row, now)) };
+  const entries = rows.map((row) => ({ row, answer: summaryOf(row, now) }));
+  await withSignInFacts(env, entries, deps);
+  const answer: CloudLaunchList = { launches: entries.map((entry) => entry.answer) };
   return json(answer);
 }
 
@@ -1620,16 +1822,116 @@ const UNJOINED_PER_TICK = 20;
  */
 const MADE_NOTHING_AFTER_MS = PENDING_TIMEOUT_MS + 5 * 60_000;
 /**
- * How long a launch may wait on a provider sign-in before the server ends it
- * and deletes its computer. The computer gives up a little sooner by itself
- * (`SIGN_IN_WAIT_MS` in cloudBootLaunch.ts).
+ * How long a launch may sit in its sign-in step with no word from its
+ * computer before the server ends it and deletes the computer (each report
+ * moves `updated_at`). The real end is the computer's: its wait
+ * (`cloudSignInWaitMsFor`, 30 minutes, a cloud Mac 10) reports the timeout,
+ * or, from a computer that names `expiresAt`, `CLOUD_SIGN_IN_END_GRACE_MS`
+ * after it (`signInEndedSql`). This one is for an older computer gone silent.
  */
 const SIGN_IN_WAIT_MS = 45 * 60_000;
 /** The computer's own timeout reports the same error, so both end the same way. */
 const SIGN_IN_NEVER_FINISHED = CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
+/** The sign-in timeout in its current or earlier words (a released computer's report, an older row). */
+const isSignInNeverFinished = (error: string | null | undefined): boolean =>
+  error === SIGN_IN_NEVER_FINISHED || error === LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
+/** A waiting launch past its end: silent for `SIGN_IN_WAIT_MS`, or past the `expiresAt` its computer named plus the grace. Binds: the two cut-offs. */
+const signInEndedSql = "(updated_at <= ? or coalesce(json_extract(sign_in_json, '$.expiresAt'), 9007199254740991) <= ?)";
 /** The server's own endings: the computer is deleted with or after them, so no report brings the launch back. */
-const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED
-  || error === LAUNCH_COMPUTER_DELETED || error === LEGACY_LAUNCH_COMPUTER_DELETED;
+const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || isSignInNeverFinished(error)
+  || error === LAUNCH_COMPUTER_DELETED || error === LEGACY_LAUNCH_COMPUTER_DELETED || stoppedEnded(error);
+/** The endings `failStoppedLaunches` writes: its computer stays stopped, so no late report brings the launch back. */
+const STOPPED_ENDINGS: readonly string[] = [CLOUD_LAUNCH_COMPUTER_STOPPED, ACCOUNT_BLOCKED_MESSAGE];
+const stoppedEnded = (error: string | null): boolean =>
+  error != null && (STOPPED_ENDINGS.includes(error) || error.startsWith(CLOUD_LAUNCH_OUT_OF_CREDITS));
+
+/**
+ * The launch states before its chat starts, where a stopped computer can't go
+ * on by itself (`running`: its setup, until the agent's stage starts).
+ */
+const BEFORE_CHAT_STATES = ["joining", "needs_approval", "joined", "waiting_for_sign_in", "running"] as const;
+/** The server's own stops, which nothing undoes by itself (a stopped computer doesn't wake on a request): the launch ends at once. */
+const SERVER_STOP_REASONS: ReadonlySet<string> = new Set(["out_of_hours", "blocked", "user"]);
+/**
+ * Any other stop (one the provider reported, a Mac's: `boot_failed`,
+ * `mac_switch_off`, …) ends the launch only after this long: the code that
+ * stopped it may end the launch itself with its own sentence first, and a
+ * launch whose state changed is left as it is.
+ */
+const OTHER_STOP_GRACE_MS = 10 * 60_000;
+
+/**
+ * Launches whose computer the server stopped before the chat started (the
+ * credits ran out, a block, a person's stop; `cloud_power_log` says which):
+ * they fail at the next tick with why and what to do (any other stop after
+ * `OTHER_STOP_GRACE_MS`), instead of a spinner until
+ * the join or sign-in window ends. The stop already ended the meter; Retry
+ * deletes the stopped computer and makes a new one. A free sign-in wait isn't
+ * stopped at 0 credits (`stopAll` skips a free window), so it isn't ended here.
+ */
+async function failStoppedLaunches(env: CloudEnv, now: number, onProgress?: (record: CloudLaunchRecord) => Promise<void>): Promise<number> {
+  const rows = (await env.DB.prepare(`
+    select l.*, c.status_changed_at as stopped_at, c.type as computer_type, c.cpu as computer_cpu, c.memory_gb as computer_memory_gb,
+      (select p.reason from cloud_power_log p where p.instance_id = l.instance_id and p.action = 'stop' order by p.created_at desc limit 1) as stop_reason
+    from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
+    where l.state in (select value from json_each(?)) and c.status = 'stopped' and c.deleted_at is null limit ?
+  `).bind(JSON.stringify(BEFORE_CHAT_STATES), UNJOINED_PER_TICK).all<LaunchRow & StoppedComputerFacts>()).results ?? [];
+  let ended = 0;
+  for (const row of rows) {
+    // The agent started: the lane is the person's, and its chat ended or rests like any other.
+    if (row.state === "running" && agentStartedIn(row)) continue;
+    if (!SERVER_STOP_REASONS.has(row.stop_reason ?? "") && now - (row.stopped_at ?? now) < OTHER_STOP_GRACE_MS) continue;
+    const small = cloudSizeFor(row.computer_type, row.computer_cpu, row.computer_memory_gb)?.tier === "small";
+    const error = await stoppedLaunchSentence(env, row.user_id, row.stop_reason, now, small).catch((cause: unknown) => {
+      reportCloudFailure("cloud.launch_stopped_sentence_failed", { launchId: row.launch_id, message: cause instanceof Error ? cause.name : "unknown" });
+      return CLOUD_LAUNCH_COMPUTER_STOPPED;
+    });
+    const failed = await env.DB.prepare(`
+      update cloud_launches set state = 'failed', error = ?, approval_url = null, sign_in_json = null, updated_at = ?
+      where launch_id = ? and instance_id = ? and state = ? and updated_at = ?
+        and exists (select 1 from cloud_computers where instance_id = ? and status = 'stopped' and deleted_at is null)
+    `).bind(error, now, row.launch_id, row.instance_id, row.state, row.updated_at, row.instance_id).run();
+    if ((failed.meta?.changes ?? 0) !== 1) continue;
+    ended += 1;
+    logCloud("cloud.launch_computer_stopped", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id, reason: row.stop_reason ?? "unknown" });
+    try {
+      await failQueuedMessagesStatement(env, row.launch_id, error, now).run();
+      const latest = await readLaunch(env, row.launch_id);
+      if (latest && onProgress) await onProgress(recordOf(latest, now));
+    } catch (cause) {
+      reportCloudFailure("cloud.launch_stopped_end_failed", { launchId: row.launch_id, message: cause instanceof Error ? cause.name : "unknown" });
+    }
+  }
+  return ended;
+}
+
+type StoppedComputerFacts = {
+  stop_reason: string | null;
+  stopped_at: number | null;
+  computer_type: string | null;
+  computer_cpu: number | null;
+  computer_memory_gb: number | null;
+};
+
+/** Why a launch's computer stopped, and what the person can do, by the stop's reason and the computer's size. */
+async function stoppedLaunchSentence(env: CloudEnv, userId: string, reason: string | null, now: number, small: boolean): Promise<string> {
+  if (reason === "blocked") return ACCOUNT_BLOCKED_MESSAGE;
+  if (reason !== "out_of_hours") return CLOUD_LAUNCH_COMPUTER_STOPPED;
+  // The way out the out-of-credits refusal names for this account (`outOfHours` in routes.ts).
+  const account = await loadAccount(env, userId, now);
+  if (account.free_github_hold != null) {
+    const held = await freePlanGithubOf(env, account).catch(() => null);
+    if (held && held.state !== "ok") return `${CLOUD_LAUNCH_OUT_OF_CREDITS} ${held.sentence}`;
+  }
+  if (account.plan !== "free") return CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.credits;
+  if (hasNoFreePlan(account)) return CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.plan;
+  const gravity = env as Parameters<typeof smallUsesNoHours>[0];
+  if (await smallUsesNoHours(gravity, account)) return CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.small_free;
+  const wayOut = await freeSmallWayOut(gravity, account);
+  // A bigger computer: Retry makes the same size, which 0 credits refuses, so the way out is a new start on Small.
+  if (wayOut && !small) return CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT[`${wayOut}_bigger`];
+  return CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT[wayOut ?? "plan"];
+}
 
 /**
  * Launches whose computer never signed in, past the join window and a grace:
@@ -1644,12 +1946,12 @@ export async function failUnjoinedLaunches(
   deps: { provider: CloudProvider | null; now?: number; onProgress?: (record: CloudLaunchRecord) => Promise<void> },
 ): Promise<number> {
   const now = deps.now ?? Date.now();
+  let ended = await failStoppedLaunches(env, now, deps.onProgress);
   const rows = (await env.DB.prepare(`
     select * from cloud_launches where state in ('joining', 'needs_approval') and join_expires_at <= ? limit ?
   `).bind(now - JOIN_GIVE_UP_GRACE_MS, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
   const provider = deps.provider;
-  if (!provider) return 0;
-  let ended = 0;
+  if (!provider) return ended;
   for (const row of rows) {
     // Claimed first: a join that lands after this read finds the launch closed
     // (`launch_closed`), and one that landed before it makes this claim miss,
@@ -1678,13 +1980,13 @@ export async function failUnjoinedLaunches(
   // ran, so it ends like a computer that never joined (the computer gives up
   // on its own first; this is for one that stopped answering).
   const stalled = (await env.DB.prepare(`
-    select * from cloud_launches where state = 'waiting_for_sign_in' and updated_at <= ? limit ?
-  `).bind(now - SIGN_IN_WAIT_MS, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+    select * from cloud_launches where state = 'waiting_for_sign_in' and ${signInEndedSql} limit ?
+  `).bind(now - SIGN_IN_WAIT_MS, now - CLOUD_SIGN_IN_END_GRACE_MS, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
   for (const row of stalled) {
     const failed = await env.DB.prepare(`
       update cloud_launches set state = 'failed', error = ?, sign_in_json = null, updated_at = ?
-      where launch_id = ? and state = 'waiting_for_sign_in' and updated_at <= ?
-    `).bind(SIGN_IN_NEVER_FINISHED, now, row.launch_id, now - SIGN_IN_WAIT_MS).run();
+      where launch_id = ? and state = 'waiting_for_sign_in' and ${signInEndedSql}
+    `).bind(SIGN_IN_NEVER_FINISHED, now, row.launch_id, now - SIGN_IN_WAIT_MS, now - CLOUD_SIGN_IN_END_GRACE_MS).run();
     if ((failed.meta?.changes ?? 0) !== 1) continue;
     ended += 1;
     logCloud("cloud.launch_sign_in_never_finished", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id });
@@ -1702,10 +2004,10 @@ export async function failUnjoinedLaunches(
   // computer that reported its own sign-in timeout): delete it.
   const left = (await env.DB.prepare(`
     select l.* from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
-    where l.state = 'failed' and l.error in (?, ?) and c.deleted_at is null limit ?
-  `).bind(JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+    where l.state = 'failed' and l.error in (?, ?, ?) and c.deleted_at is null limit ?
+  `).bind(JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
   for (const row of left) {
-    const why = row.error === SIGN_IN_NEVER_FINISHED
+    const why = isSignInNeverFinished(row.error)
       ? { who: "launch_sign_in", reason: "launch_sign_in_never_finished" }
       : { who: "launch_join", reason: "launch_never_joined" };
     await deleteLaunchComputer(env, provider, row, now, why).catch((error: unknown) => {

@@ -167,7 +167,7 @@ import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSi
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { CloudCarriedSignIns, CloudLaneBackup, CloudLaunchRecord as AccountCloudLaunchRecord, CloudModelCatalog } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
-import type { CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
+import type { CloudLaunchFreeModelResult, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -14661,6 +14661,8 @@ const adeBridge = {
     /** Through the account server, to that computer: no pin. */
     sendLaunchSignInCode: (args: { instanceId: string; jobId: string; code: string }): Promise<CloudRemoteSignInStatus> =>
       ipcRenderer.invoke(IPC.cloudLaunchSignInCode, args),
+    /** A launch waiting in its sign-in step starts on DAEX Free Models instead: account-level, by its id, no pin. */
+    launchFreeModel: (args: { launchId: string }): Promise<CloudLaunchFreeModelResult> => ipcRenderer.invoke(IPC.cloudLaunchFreeModel, args),
     /** The account's message queue for an existing ADE Cloud chat: account-level, by the chat's machine key, so no pin. */
     sendChatMessage: (args: CloudChatSendRequest): Promise<CloudChatSendAnswer> => ipcRenderer.invoke(IPC.cloudChatMessageSend, args),
     /** A launch the queue started, by its id: account-level, no pin. */
@@ -15420,8 +15422,9 @@ const adeBridge = {
       return runtime.handled ? runtime.result : null;
     },
     /** "Still watching" on a cloud computer, to the machine the tool is on. */
-    noteWatching: (pin?: OpenProjectBinding | null): Promise<void> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "work_tools", "noteWatching", {}, async () => undefined),
+    // `tool`: which Work tool is open; a launch's sign-in wait counts only a screen or a preview as use.
+    noteWatching: (pin?: OpenProjectBinding | null, tool?: string): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "work_tools", "noteWatching", tool ? { args: { tool } } : {}, async () => undefined),
     setActiveTool: async (
       laneId: string,
       tool: WorkToolId | null,

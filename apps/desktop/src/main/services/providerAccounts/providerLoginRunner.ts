@@ -177,7 +177,8 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     });
   }
 
-  function start(id: string, options: { deviceAuth?: boolean } = {}): ProviderLoginStatus {
+  /** `timeoutMs`: a cloud start's wait asks for one sign-in that lasts it (at most 30 minutes; 10 when left out). */
+  function start(id: string, options: { deviceAuth?: boolean; timeoutMs?: number } = {}): ProviderLoginStatus {
     const instance = deps.getInstance(id);
     if (!instance) throw new Error(`No provider account ${JSON.stringify(id)}.`);
     // The browser is on another screen. Codex then signs in with a device
@@ -222,9 +223,10 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
           finish(record, { state: "failed", message: error instanceof Error ? error.message : String(error) });
         });
     }
+    const limitMs = typeof options.timeoutMs === "number" && options.timeoutMs > LOGIN_TIMEOUT_MS ? Math.min(30 * 60_000, options.timeoutMs) : LOGIN_TIMEOUT_MS;
     record.timeout = setTimeout(() => {
-      if (isLive(record)) finish(record, { state: "failed", message: "The sign-in timed out after 10 minutes." });
-    }, LOGIN_TIMEOUT_MS);
+      if (isLive(record)) finish(record, { state: "failed", message: `The sign-in timed out after ${Math.round(limitMs / 60_000)} minutes.` });
+    }, limitMs);
     record.timeout.unref?.();
     logins.set(loginId, record);
     return snapshot(record);

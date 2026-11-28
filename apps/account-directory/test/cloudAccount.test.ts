@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, CLOUD_LAUNCH_COMPUTER_STOPPED, CLOUD_LAUNCH_OUT_OF_CREDITS, CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT, CLOUD_SIGN_IN_CODE_REFUSED, CLOUD_SIGN_IN_MAX_CODES, CLOUD_SIGN_IN_TOO_MANY_CODES, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
@@ -17,6 +17,9 @@ import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { CloudProviderError, createCloudProvider } from "../src/cloud/provider";
 import { startCloudUpdate } from "../src/cloud/updates";
 import { failUnjoinedLaunches, MACHINE_LAUNCH_MIN_VERSION_SETTING } from "../src/cloud/launches";
+import { enforceBlockOnComputer } from "../src/cloud/safety";
+import { ACCOUNT_BLOCKED_MESSAGE } from "../src/cloud/blocks";
+import { rateMoveStatements } from "../src/cloud/adPrice";
 import { runCloudMoves } from "../src/cloud/moves";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { prepareStopBackupReportId, runCloudMinuteCron } from "../src/cloud/cron";
@@ -3002,6 +3005,295 @@ describe("ADE Cloud server launcher", () => {
     const answered = await harness.send(OWNER, "GET", "/cloud/account", undefined, { origin: WEB });
     expect(answered.status).toBe(200);
     expect(answered.headers.get("access-control-allow-origin")).toBe(WEB);
+  });
+
+  /*
+   * A start's provider sign-in wait (`signInWait.ts`): free time on its
+   * computer from the computer's start, at most 3 an account a UTC day, until
+   * someone uses the computer or the sign-in finishes (then charged as before).
+   * A Medium here: 1000 milli an hour.
+   */
+  describe("a start's provider sign-in wait", () => {
+    const MADE = "madenew12345";
+    const MIN = 60_000;
+    const milliFor = (minutes: number) => Math.round((minutes * MIN * 1000) / HOUR);
+    const signIn = (at: number) => ({
+      provider: "codex", label: "Codex", kind: "device", jobId: "job-aaaaaaaa", url: "https://auth.example.test/device",
+      userCode: "ABCD-1234", needsPastedCode: false, signInId: null, reason: null, expiresAt: at + 30 * MIN,
+    });
+    const stages = (body: Row) => harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, body);
+    const at = (minutes: number) => { clock = NOW + minutes * MIN; };
+    /** The scheduled sweep deletes a launch's computer once the launch failed (`failUnjoinedLaunches`). */
+    const endFailed = async () => {
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      expect(computer(harness, MADE).deleted_at).toBe(clock);
+    };
+    const cancel = async () => expect((await harness.send(OWNER, "DELETE", `/cloud/launches/${LAUNCH}`)).status).toBe(200);
+    const read = async () => (await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { signIn: { charge: unknown; freeModel: unknown } | null; endNote: string | null };
+    /** The computer started at NOW; its join and clone took 3 minutes, then it waits. */
+    const startWaiting = async () => {
+      harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
+      at(3);
+      expect((await stages({ state: "waiting_for_sign_in", signIn: signIn(clock) })).status).toBe(200);
+    };
+    const freeModelsOn = () => {
+      Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
+      harness.insert("cloud_settings", { key: "gravity_inference", value: "testers", updated_at: NOW });
+      harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+      harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, country: "US", terms_version: 1 });
+    };
+    const opensToday = (count: number) => {
+      for (let index = 0; index < count; index += 1) {
+        harness.insert("cloud_launches", { launch_id: `earlier-${index}`, user_id: OWNER, state: "cancelled", kind: "chat", sign_in_free_at: NOW - HOUR, sign_in_free_opened_at: NOW - HOUR + index, created_at: NOW - HOUR, updated_at: NOW - HOUR, expires_at: NOW + DAY });
+      }
+    };
+
+    it.each<[string, () => void, () => Promise<void>, number]>([
+      ["the computer's own timeout, then its delete, is free", () => {}, async () => {
+        at(33);
+        expect((await stages({ state: "failed", error: CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
+        await endFailed();
+      }, 0],
+      ["a released computer's timeout in the earlier words, then its delete, is free", () => {}, async () => {
+        at(33);
+        expect((await stages({ state: "failed", error: LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
+        await endFailed();
+      }, 0],
+      ["a cancel is free", () => {}, async () => { at(10); await cancel(); }, 0],
+      ["a move to a free model, then a cancel, is free", freeModelsOn, async () => {
+        at(5);
+        expect((await harness.send(OWNER, "POST", `/cloud/launches/${LAUNCH}/free-model`, {})).status).toBe(200);
+        at(6);
+        await cancel();
+      }, 0],
+      ["a move to a free model, then a failed setup and the client's Retry of its first request: one new computer, on the free model, the wait free", freeModelsOn, async () => {
+        at(5);
+        expect((await harness.send(OWNER, "POST", `/cloud/launches/${LAUNCH}/free-model`, {})).status).toBe(200);
+        at(6);
+        expect((await stages({ state: "failed", error: "The clone failed." })).status).toBe(200);
+        // The client sends its own copy of the first request (the first provider) again.
+        const retried = await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium", retry: true });
+        expect(retried.status).toBe(201);
+        expect(((await retried.json()) as { request: { chat: Row } }).request.chat).toMatchObject({ provider: "opencode", modelId: "opencode/ade-free/deepseek-v4.1-flash", prompt: launchBody.chat.prompt });
+        expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
+        expect(madeCalls()).toHaveLength(2);
+      }, 0],
+      ["a finished sign-in charges the whole wait from the computer's start, as before", () => {}, async () => {
+        at(20);
+        expect((await stages({ state: "joined" })).status).toBe(200);
+      }, milliFor(20)],
+      ["a fourth wait the same day is charged", () => opensToday(3), async () => { at(10); await cancel(); }, milliFor(10)],
+      ["the first remote work during the wait (`/use`) charges from that moment", () => {}, async () => {
+        at(12);
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/use`, {})).status).toBe(200);
+        at(20);
+        await cancel();
+      }, milliFor(8)],
+      ["a terminal in the brain's activity report charges from that report", () => {}, async () => {
+        at(12);
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/activity`, { busy: true, idleSince: null, sleepsAt: null, runningAgents: 0, reportedAt: clock, openTerminals: 1 })).status).toBe(200);
+        at(20);
+        await cancel();
+      }, milliFor(8)],
+      ["work during the wait, then a finished sign-in, charges the whole wait once", () => {}, async () => {
+        at(12);
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/use`, {})).status).toBe(200);
+        at(20);
+        expect((await stages({ state: "joined" })).status).toBe(200);
+        // The stretch that runs on after the sign-in is charged from 20 minutes, not again from 12.
+        at(30);
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/stop`, {})).status).toBe(200);
+      }, milliFor(30)],
+    ])("%s", async (_label, before, end, expected) => {
+      before();
+      await startWaiting();
+      await end();
+      expect(usedMilli(harness)).toBe(expected);
+    });
+
+    const paidPlan = () => harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+    const creditsRunOut = async () => {
+      harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+      await harness.tick();
+    };
+    it.each<[string, () => void, () => Promise<void>, string]>([
+      ["the credits ran out during the join", paidPlan, creditsRunOut, CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.credits],
+      // Retry makes a Medium again, which 0 credits refuses: the way out is a new start on Small.
+      ["the credits ran out on Free with ads on, on a Medium", () => {
+        Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_ADS: "all", PRICING_V3: "all" });
+        harness.insert("cloud_settings", { key: "gravity_ads", value: "all", updated_at: NOW });
+        harness.insert("cloud_settings", { key: "pricing_v3", value: "all", updated_at: NOW });
+        harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW - DAY, notice_seen_at: NOW - DAY });
+      }, creditsRunOut, CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.ads_on_bigger],
+      ["a block", paidPlan, async () => {
+        harness.insert("cloud_blocks", { user_id: OWNER, reason: "spam", created_at: clock });
+        await enforceBlockOnComputer(harness.env, createCloudProvider("provider-key"), harness.row("select * from cloud_computers where instance_id = ?", MADE) as never, clock);
+      }, ACCOUNT_BLOCKED_MESSAGE],
+      ["another stop", paidPlan, async () => {
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/stop`, {})).status).toBe(200);
+      }, CLOUD_LAUNCH_COMPUTER_STOPPED],
+    ])("a computer stopped before its chat started ends the launch at the next tick with why (%s), and nothing is charged after the stop", async (_label, account, stop, sentence) => {
+      account();
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
+      at(1);
+      await stop();
+      expect(computer(harness, MADE).status).toBe("stopped");
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      const record = (await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { state: string; error: string | null };
+      expect([record.state, record.error]).toEqual(["failed", sentence]);
+      const used = usedMilli(harness);
+      at(40);
+      await harness.tick();
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      expect(usedMilli(harness)).toBe(used);
+    });
+
+    it.each<[string, boolean, string, string | null]>([
+      ["back within the grace: the launch goes on", true, "joining", null],
+      ["still stopped after the grace: the launch ends with Retry", false, "failed", CLOUD_LAUNCH_COMPUTER_STOPPED],
+    ])("a stop the server didn't make (the provider's, a Mac's) waits 10 minutes before it ends a launch: %s", async (_label, cameBack, state, error) => {
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", launchBody)).status).toBe(201);
+      at(1);
+      // What the tick writes when the provider says stopped on its own (`seen_by_tick`).
+      harness.exec("update cloud_computers set status = 'stopped', status_changed_at = ? where instance_id = ?", clock, MADE);
+      harness.insert("cloud_power_log", { instance_id: MADE, user_id: OWNER, action: "stop", reason: "seen_by_tick", created_at: clock });
+      const sweep = () => failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      at(9);
+      await sweep();
+      expect(harness.row("select state from cloud_launches where launch_id = ?", LAUNCH).state).toBe("joining");
+      if (cameBack) harness.exec("update cloud_computers set status = 'running', status_changed_at = ? where instance_id = ?", clock, MADE);
+      at(12);
+      await sweep();
+      expect(harness.row("select state, error from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state, error });
+    });
+
+    it("a free sign-in wait at 0 credits keeps its computer: the zero stop skips the free window, and the step goes on", async () => {
+      await startWaiting();
+      harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+      at(5);
+      await harness.tick();
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      expect(providerCalls(harness, /POST .*\/instances\/madenew12345\/stop$/)).toHaveLength(0);
+      expect(((await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { state: string }).state).toBe("waiting_for_sign_in");
+    });
+
+    it("an older computer (its step names no end) gets no free wait: a cancel is charged as before", async () => {
+      harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
+      at(3);
+      const { expiresAt: _end, ...older } = signIn(clock);
+      expect((await stages({ state: "waiting_for_sign_in", signIn: older })).status).toBe(200);
+      at(10);
+      await cancel();
+      expect(usedMilli(harness)).toBe(milliFor(10));
+    });
+
+    it("the move to a free model: only the person, once, the same message on the same computer", async () => {
+      freeModelsOn();
+      await startWaiting();
+      const move = (body: Row = {}) => harness.send(OWNER, "POST", `/cloud/launches/${LAUNCH}/free-model`, body);
+      // An outside agent never takes it for the person.
+      expect((await move({ origin: "mcp" })).status).toBe(403);
+      const moved = await move();
+      expect(moved.status).toBe(200);
+      const chat = ((await moved.json()) as { request: { chat: Row } }).request.chat;
+      expect(chat).toMatchObject({ provider: "opencode", modelId: "opencode/ade-free/deepseek-v4.1-flash", prompt: launchBody.chat.prompt });
+      // A second call answers the same record; nothing new is made.
+      const again = await move();
+      expect(again.status).toBe(200);
+      expect(((await again.json()) as { request: { chat: Row } }).request.chat).toEqual(chat);
+      expect(madeCalls()).toHaveLength(1);
+      // Once the step ended, a launch that never moved can't.
+      harness.exec("update cloud_launches set state = 'joined', request_json = replace(request_json, 'opencode/ade-free/deepseek-v4.1-flash', 'gpt-5') where launch_id = ?", LAUNCH);
+      expect((await move()).status).toBe(409);
+    });
+
+    it("a pasted code gets the computer's verdict (an older computer's stays pending), and one sign-in takes at most 10 codes", async () => {
+      await startWaiting();
+      let answer: Row = { state: "failed", verdict: "refused", reason: "Invalid code" };
+      harness.net.hooks.exec = (_id, command) => (command.includes("sign-in-code") ? { exit_code: 0, stdout: JSON.stringify(answer) } : null);
+      const send = async () => {
+        const response = await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/sign-ins/job-aaaaaaaa/code`, { code: "abc-123" });
+        return [response.status, await response.json()] as const;
+      };
+      // Refused: the sentence that says what to do next, whatever the provider printed.
+      expect(await send()).toEqual([200, expect.objectContaining({ state: "failed", verdict: "refused", reason: CLOUD_SIGN_IN_CODE_REFUSED })]);
+      answer = { state: "pending", verdict: "accepted" };
+      expect(await send()).toEqual([200, expect.objectContaining({ state: "pending", verdict: "accepted" })]);
+      answer = { state: "pending" };
+      const [, older] = await send();
+      expect(older).toMatchObject({ state: "pending" });
+      expect(older).not.toHaveProperty("verdict");
+      for (let sent = 3; sent < CLOUD_SIGN_IN_MAX_CODES; sent += 1) expect((await send())[0]).toBe(200);
+      expect(await send()).toEqual([429, { error: expect.objectContaining({ code: "sign_in_too_many_codes", message: CLOUD_SIGN_IN_TOO_MANY_CODES }) }]);
+      // The window is an hour: later, the same sign-in takes codes again.
+      clock += HOUR + MIN;
+      expect((await send())[0]).toBe(200);
+    });
+
+    it("the step says what the wait costs, and a launch that ended in it says nothing was charged", async () => {
+      await startWaiting();
+      expect((await read()).signIn?.charge).toEqual({ free: true, sentence: "Nothing is charged if you cancel here." });
+      at(10);
+      await cancel();
+      expect((await read()).endNote).toBe("Nothing was charged for the wait.");
+    });
+
+    it("once someone used the computer, the step says it uses credits, and the end claims no free wait", async () => {
+      await startWaiting();
+      at(12);
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/use`, {})).status).toBe(200);
+      expect((await read()).signIn?.charge).toEqual({ free: false, sentence: "This Medium computer uses credits while it waits." });
+      at(20);
+      await cancel();
+      expect((await read()).endNote).toBeNull();
+    });
+
+    it("the fourth wait of a day says it uses credits before anything is charged", async () => {
+      opensToday(3);
+      await startWaiting();
+      expect((await read()).signIn?.charge).toEqual({ free: false, sentence: "This Medium computer uses credits while it waits." });
+    });
+
+    it("the next day's reconcile charges no minute of a free wait back", async () => {
+      await startWaiting();
+      at(33);
+      expect((await stages({ state: "failed", error: CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
+      await endFailed();
+      expect(harness.row("select free_ms from cloud_computer_days where instance_id = ?", MADE)).toEqual({ free_ms: 33 * MIN });
+      harness.insert("cloud_settings", { key: "last_daily_day", value: "2026-11-08", updated_at: NOW });
+      const network = harness.net.fetchStub;
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        // The provider bills every awake minute of the day, the free wait too.
+        if (url.startsWith(`${PROVIDER}/usage?`)) return new Response(JSON.stringify({ instances: url.includes("from=2026-11-09") ? [{ id: MADE, awake_minutes: 33, total_micros: 100_000 }] : [] }), { status: 200 });
+        return network(input, init);
+      });
+      clock = NOW + DAY;
+      await harness.tick();
+      expect(harness.row("select value from cloud_settings where key = 'last_daily_day'").value).toBe("2026-11-10");
+      expect(usedMilli(harness)).toBe(0);
+    });
+
+    // A rate move during the wait (Pricing v3 off: an ad rate back to the full one; on: the full rate to the ad
+    // one) restarts the stretch at `max(awake_since, edge)`: the window's future start stays, nothing lost or doubled.
+    it.each<[string, { from: number; fromAd: number | null; to: number; toAd: number | null }]>([
+      ["Pricing v3 off", { from: 800, fromAd: 1000, to: 1000, toAd: null }],
+      ["Pricing v3 on", { from: 1000, fromAd: null, to: 800, toAd: 1000 }],
+    ])("a rate move during the wait keeps it free (%s), and a finished sign-in charges it once at the new rate", async (_label, rates) => {
+      await startWaiting();
+      harness.exec("update cloud_computers set multiplier_milli = ?, ad_full_milli = ? where instance_id = ?", rates.from, rates.fromAd, MADE);
+      at(5);
+      const row = computer(harness, MADE) as unknown as ComputerRow;
+      const windowEnd = row.awake_since;
+      await harness.env.DB.batch(rateMoveStatements(harness.env as never, row, rates.to, rates.toAd, clock));
+      expect(computer(harness, MADE)).toMatchObject({ multiplier_milli: rates.to, awake_since: windowEnd, free_wake_until: windowEnd });
+      expect(usedMilli(harness)).toBe(0);
+      at(20);
+      expect((await stages({ state: "joined" })).status).toBe(200);
+      expect(usedMilli(harness)).toBe(Math.round((20 * MIN * rates.to) / HOUR));
+    });
   });
 });
 

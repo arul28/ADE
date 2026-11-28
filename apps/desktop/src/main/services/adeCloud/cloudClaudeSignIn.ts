@@ -82,7 +82,12 @@ export type ClaudeSignInStartOptions = {
   labelEmail?: string | null;
   /** Ask Claude Code which account the pass is for before it is saved. */
   check?: boolean;
+  /** How long it waits for the code; `LOGIN_TIMEOUT_MS` (10 minutes) when left out. A cloud start's wait asks for its 30. */
+  timeoutMs?: number | null;
 };
+
+/** The longest a start may ask `setup-token` to wait: a cloud start's whole sign-in wait. */
+export const CLAUDE_SIGN_IN_MAX_TIMEOUT_MS = 30 * 60_000;
 
 type SignInRecord = {
   status: { state: ClaudeState["state"]; output: string; url: string | null; awaitingCode: boolean; checkingCode?: boolean };
@@ -365,9 +370,10 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
         upload: null,
       };
       record = target;
-      setTimer(target, LOGIN_TIMEOUT_MS, () => {
+      const timeoutMs = Math.min(CLAUDE_SIGN_IN_MAX_TIMEOUT_MS, Math.max(LOGIN_TIMEOUT_MS, options.timeoutMs ?? LOGIN_TIMEOUT_MS));
+      setTimer(target, timeoutMs, () => {
         if (record === target && (target.status.state === "running" || target.status.state === "verifying")) {
-          end(target, "failed", "The sign-in timed out after 10 minutes.");
+          end(target, "failed", `The sign-in timed out after ${Math.round(timeoutMs / 60_000)} minutes.`);
         }
       });
       if (cliState.kind === "ready") {

@@ -26,6 +26,8 @@ export type AgentCliLoginStartArgs = {
   provider: AgentCliLoginProvider;
   /** Kimi only; `global` when left out. */
   kimiRegion?: KimiLoginRegion;
+  /** How long the sign-in may wait (the runner's 10 minutes when left out or shorter; at most 30). A cloud start asks for its whole wait. */
+  timeoutMs?: number;
 };
 
 export type AgentCliLoginRefArgs = { loginId: string };

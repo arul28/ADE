@@ -60,7 +60,7 @@ function useStillWatching(tool: string, pin: OpenProjectBinding | null | undefin
         });
         const pin = pinRef.current;
         if (here && pin) {
-          await window.ade.workTools?.noteWatching?.(pin).catch((error: unknown) => {
+          await window.ade.workTools?.noteWatching?.(pin, tool).catch((error: unknown) => {
             console.warn("[cloud] still-watching signal failed", error);
           });
         }
@@ -71,7 +71,7 @@ function useStillWatching(tool: string, pin: OpenProjectBinding | null | undefin
     return () => window.clearInterval(timer);
     // Keyed on the stable pin key; the pin object is read through `pinRef`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pinKey, watching]);
+  }, [pinKey, watching, tool]);
 }
 
 function isLocalPreviewUrl(url: string | null): boolean {

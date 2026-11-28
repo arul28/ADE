@@ -4,6 +4,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { openExternalUrl } from "../../lib/openExternal";
 import { Banner } from "../ui/notice";
 import { CloudSignInCodeField } from "./launch/CloudSignInCodeField";
+import { cloudSignInStepWords } from "../../../shared/cloudSignInStep";
 import { BRAND } from "../../../shared/brand";
 
 /** A message this pane queued for an ADE Cloud chat whose computer was asleep, gone, or moving or changing size. */
@@ -115,6 +116,9 @@ export function CloudQueueSendCard({
   const started = record?.state === "running" || record?.state === "done";
   const signIn = record?.state === "waiting_for_sign_in" ? record.signIn ?? null : null;
   const approval = record?.state === "needs_approval" ? record.approval : null;
+  // The step's words, as on a launch card (no free-model move: this chat keeps its provider). Worked out on each render.
+  const words = signIn ? cloudSignInStepWords(signIn, Date.now()) : null;
+  const signInLine = words ? [signIn?.kind === "api_key" || signIn?.kind === "desktop" ? null : words.instruction, words.timeLeft, words.charge].filter(Boolean).join(" ") : "";
   const actions = [
     ...(failed ? [{ label: "Put back", onClick: () => { onRestore(send.text); onDone(); } }] : []),
     ...(signIn?.url ? [{ label: "Open sign-in", onClick: () => openExternalUrl(signIn.url!) }] : []),
@@ -133,13 +137,13 @@ export function CloudQueueSendCard({
           ? "Your message wasn't sent. Put it back in the box to send it again."
           : started
             ? null
-            : "Your message goes to the agent once the computer is up. You can leave this chat.",
+            : signInLine || "Your message goes to the agent once the computer is up. You can leave this chat.",
         report: failed ? false : undefined,
         actions,
         extra: signIn?.userCode
           ? <span className="ade-signin-code" aria-label="Sign-in code">{signIn.userCode}</span>
           : signIn?.jobId && (signIn.needsPastedCode || signIn.kind === "url_paste")
-            ? <CloudSignInCodeField jobId={signIn.jobId} instanceId={record?.instanceId ?? null} className="text-[12px]" onSent={read} />
+            ? <CloudSignInCodeField key={`${signIn.jobId}:${signIn.url ?? ""}`} jobId={signIn.jobId} instanceId={record?.instanceId ?? null} className="text-[12px]" onSent={read} />
             : undefined,
         dismiss: failed || started ? { onDismiss: onDone } : undefined,
       }}

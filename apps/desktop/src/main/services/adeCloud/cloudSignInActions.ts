@@ -29,9 +29,10 @@ import type { UsageSnapshot } from "../../../shared/types/usage";
 import { claudePassAccountUse } from "../claudePass/claudePassUse";
 import { pinnedLoginCliState } from "../pty/pinnedProviderCli";
 import { notifyProviderLoginsChanged } from "../providerLogins/providerLoginHooks";
-import { spawnLoginPty, stopLoginPty } from "../shared/cliLoginPty";
+import { LOGIN_TIMEOUT_MS, spawnLoginPty, stopLoginPty } from "../shared/cliLoginPty";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import {
+  CLAUDE_SIGN_IN_MAX_TIMEOUT_MS,
   createCloudClaudeSignIn,
   type ClaudePassSaveOutcome,
   type ClaudePassSaveResult,
@@ -95,6 +96,13 @@ function signInId(args: unknown): CloudSignInId {
   const spec = typeof raw === "string" ? cloudSignInSpec(raw) : null;
   if (!spec) throw new AdeExpectedError(`Unknown cloud sign-in ${JSON.stringify(raw)}.`, "user");
   return spec.id;
+}
+
+/** How long `setup-token` may wait for its code: between the default 10 minutes and 30; null for the default. */
+function optionalTimeout(args: unknown): number | null {
+  const raw = args && typeof args === "object" ? (args as Record<string, unknown>).timeoutMs : undefined;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  return Math.min(CLAUDE_SIGN_IN_MAX_TIMEOUT_MS, Math.max(LOGIN_TIMEOUT_MS, Math.round(raw)));
 }
 
 function optionalEmail(args: unknown, field: "forEmail" | "labelEmail"): string | null {
@@ -292,6 +300,8 @@ export function buildCloudSignInActions(deps: {
         labelEmail: optionalEmail(args, "labelEmail"),
         // Only a pass with an account label needs the check; the single item has none.
         check: Boolean(deps.passVault?.()),
+        // A cloud start's wait keeps one link for all of its 30 minutes (`remoteProviderSignIn.ts`).
+        timeoutMs: optionalTimeout(args),
       };
       // A token made for one account never goes into another's vault: the
       // person may switch accounts while the browser step is open.

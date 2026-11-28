@@ -226,7 +226,8 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
             },
             logMeta,
           }, sleep, modelId));
-          if (waited.kind === "ready") return { kind: "go" };
+          // `switched` needs a `switchedTo` hook, which a queued message has none of (only a launch moves to a free model).
+          if (waited.kind === "ready" || waited.kind === "switched") return { kind: "go" };
           if (waited.kind === "cancelled") return { kind: "stop" };
           return { kind: "failed", error: waited.error };
         },

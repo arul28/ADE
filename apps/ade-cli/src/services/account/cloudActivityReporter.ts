@@ -76,6 +76,8 @@ export function createCloudActivityReporter(deps: {
   const now = deps.now ?? Date.now;
   let runningAgents = 0;
   let fullPriceWork: CloudFullPriceWork[] = [];
+  // Every terminal open now, a shell too: a launch's sign-in wait is free only while none is (`signInWait.ts` on the server).
+  let openTerminals = 0;
   let sentKey: string | null = null;
   let inFlight = false;
   let queued: { report: CloudComputerActivityReport; key: string } | null = null;
@@ -90,7 +92,7 @@ export function createCloudActivityReporter(deps: {
   const keyOf = (report: CloudComputerActivityReport, awakeSince: number) => {
     const work = report.fullPriceWork ?? [];
     const refresh = work.length ? `|${Math.floor(report.reportedAt / WORK_REPORT_REFRESH_MS)}` : "";
-    return `${awakeSince}|${report.busy}|${report.runningAgents}|${report.idleSince ?? ""}|${work.join(",")}${refresh}`;
+    return `${awakeSince}|${report.busy}|${report.runningAgents}|${report.idleSince ?? ""}|${work.join(",")}${refresh}|${(report.openTerminals ?? 0) > 0 ? "t" : ""}`;
   };
 
   const flush = (report: CloudComputerActivityReport, key: string): void => {
@@ -133,6 +135,7 @@ export function createCloudActivityReporter(deps: {
       try {
         runningAgents = cloudRunningAgents(facts, now());
         fullPriceWork = cloudFullPriceWork(facts);
+        openTerminals = facts.terminals.length;
       } catch (error) {
         deps.logger?.warn("cloud.activity_report_failed", { error: error instanceof Error ? error.message : String(error) });
       }
@@ -146,6 +149,7 @@ export function createCloudActivityReporter(deps: {
           runningAgents,
           reportedAt: now(),
           fullPriceWork,
+          openTerminals,
         };
         const key = keyOf(report, idle.awakeSince);
         if (key === sentKey) return;
