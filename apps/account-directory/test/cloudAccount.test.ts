@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { revylSpentMicros } from "../src/cloud/phoneRoute";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_MAC_SHAPE, CLOUD_PRICING_HEADER, CLOUD_PRICING_VERSION, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord, type CloudIdleHeldKind, CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, CLOUD_SIGN_IN_CODE_REFUSED, CLOUD_SIGN_IN_MAX_CODES, CLOUD_SIGN_IN_TOO_MANY_CODES, CLOUD_LAUNCH_COMPUTER_STOPPED, CLOUD_LAUNCH_OUT_OF_CREDITS, CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_MAC_SHAPE, CLOUD_PRICING_HEADER, CLOUD_PRICING_VERSION, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord, type CloudIdleHeldKind, CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, CLOUD_SIGN_IN_CODE_REFUSED, CLOUD_SIGN_IN_MAX_CODES, CLOUD_SIGN_IN_TOO_MANY_CODES, CLOUD_LAUNCH_COMPUTER_STOPPED, CLOUD_LAUNCH_OUT_OF_CREDITS, CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT, CLOUD_MAC_START_FAILED_SENTENCES } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
@@ -3188,16 +3188,24 @@ describe("ADE Cloud server launcher", () => {
       expect(usedMilli(harness)).toBe(used);
     });
 
-    it.each<[string, boolean, string, string | null]>([
-      ["back within the grace: the launch goes on", true, "joining", null],
-      ["still stopped after the grace: the launch ends with Retry", false, "failed", CLOUD_LAUNCH_COMPUTER_STOPPED],
-    ])("a stop the server didn't make (the provider's, a Mac's) waits 10 minutes before it ends a launch: %s", async (_label, cameBack, state, error) => {
+    it.each<[string, boolean, string | null, string, string | null]>([
+      ["back within the grace: the launch goes on", true, null, "joining", null],
+      ["still stopped after the grace: the launch ends with Retry", false, null, "failed", CLOUD_LAUNCH_COMPUTER_STOPPED],
+      ["a Mac whose start failed for good: the launch ends at the next tick with the Mac's sentence", false, "queue_expired", "failed", CLOUD_MAC_START_FAILED_SENTENCES.queue_expired],
+    ])("a stop the server didn't make (the provider's, a Mac's) waits 10 minutes before it ends a launch: %s", async (_label, cameBack, macStartFailed, state, error) => {
       expect((await harness.send(OWNER, "POST", "/cloud/launches", launchBody)).status).toBe(201);
       at(1);
       // What the tick writes when the provider says stopped on its own (`seen_by_tick`).
       harness.exec("update cloud_computers set status = 'stopped', status_changed_at = ? where instance_id = ?", clock, MADE);
       harness.insert("cloud_power_log", { instance_id: MADE, user_id: OWNER, action: "stop", reason: "seen_by_tick", created_at: clock });
+      if (macStartFailed) harness.exec("update cloud_computers set provider = 'nomac', mac_start_failed = ? where instance_id = ?", macStartFailed, MADE);
       const sweep = () => failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      if (macStartFailed) {
+        at(2);
+        await sweep();
+        expect(harness.row("select state, error from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state, error });
+        return;
+      }
       at(9);
       await sweep();
       expect(harness.row("select state from cloud_launches where launch_id = ?", LAUNCH).state).toBe("joining");

@@ -23,6 +23,7 @@ import {
   CLOUD_LAUNCH_METADATA,
   CLOUD_LAUNCH_RECORD_TTL_MS,
   CLOUD_LAUNCH_COMPUTER_STOPPED,
+  CLOUD_MAC_START_FAILED_SENTENCES,
   CLOUD_LAUNCH_OUT_OF_CREDITS,
   CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT,
   CLOUD_LAUNCH_SIGN_IN_TIMED_OUT,
@@ -1912,7 +1913,9 @@ const SERVER_STOP_REASONS: ReadonlySet<string> = new Set(["out_of_hours", "block
  * Any other stop (one the provider reported, a Mac's: `boot_failed`,
  * `mac_switch_off`, …) ends the launch only after this long: the code that
  * stopped it may end the launch itself with its own sentence first, and a
- * launch whose state changed is left as it is.
+ * launch whose state changed is left as it is. A Mac whose start failed for
+ * good (`mac_start_failed`: no stopped Mac comes back by itself) doesn't wait,
+ * and its launch ends with the Mac's own sentence.
  */
 const OTHER_STOP_GRACE_MS = 10 * 60_000;
 
@@ -1927,17 +1930,21 @@ const OTHER_STOP_GRACE_MS = 10 * 60_000;
  */
 async function failStoppedLaunches(env: CloudEnv, now: number, onProgress?: (record: CloudLaunchRecord) => Promise<void>): Promise<number> {
   const rows = (await env.DB.prepare(`
-    select l.*, c.status_changed_at as stopped_at,
+    select l.*, c.status_changed_at as stopped_at, c.provider as computer_provider, c.mac_start_failed,
       (select p.reason from cloud_power_log p where p.instance_id = l.instance_id and p.action = 'stop' order by p.created_at desc limit 1) as stop_reason
     from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
     where l.state in (select value from json_each(?)) and c.status = 'stopped' and c.deleted_at is null limit ?
-  `).bind(JSON.stringify(BEFORE_CHAT_STATES), UNJOINED_PER_TICK).all<LaunchRow & { stop_reason: string | null; stopped_at: number | null }>()).results ?? [];
+  `).bind(JSON.stringify(BEFORE_CHAT_STATES), UNJOINED_PER_TICK)
+    .all<LaunchRow & { stop_reason: string | null; stopped_at: number | null; computer_provider: string | null; mac_start_failed: string | null }>()).results ?? [];
   let ended = 0;
   for (const row of rows) {
     // The agent started: the lane is the person's, and its chat ended or rests like any other.
     if (row.state === "running" && agentStartedIn(row)) continue;
-    if (!SERVER_STOP_REASONS.has(row.stop_reason ?? "") && now - (row.stopped_at ?? now) < OTHER_STOP_GRACE_MS) continue;
-    const error = await stoppedLaunchSentence(env, row.user_id, row.stop_reason, now).catch((cause: unknown) => {
+    const macFailed = row.computer_provider === "nomac" && row.mac_start_failed && Object.hasOwn(CLOUD_MAC_START_FAILED_SENTENCES, row.mac_start_failed)
+      ? CLOUD_MAC_START_FAILED_SENTENCES[row.mac_start_failed as keyof typeof CLOUD_MAC_START_FAILED_SENTENCES]
+      : null;
+    if (!macFailed && !SERVER_STOP_REASONS.has(row.stop_reason ?? "") && now - (row.stopped_at ?? now) < OTHER_STOP_GRACE_MS) continue;
+    const error = macFailed ?? await stoppedLaunchSentence(env, row.user_id, row.stop_reason, now).catch((cause: unknown) => {
       reportCloudFailure("cloud.launch_stopped_sentence_failed", { launchId: row.launch_id, message: cause instanceof Error ? cause.name : "unknown" });
       return CLOUD_LAUNCH_COMPUTER_STOPPED;
     });
@@ -1947,7 +1954,7 @@ async function failStoppedLaunches(env: CloudEnv, now: number, onProgress?: (rec
     `).bind(error, now, row.launch_id, row.instance_id, row.state).run();
     if ((failed.meta?.changes ?? 0) !== 1) continue;
     ended += 1;
-    logCloud("cloud.launch_computer_stopped", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id, reason: row.stop_reason ?? "unknown" });
+    logCloud("cloud.launch_computer_stopped", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id, reason: macFailed ? `mac_start_failed:${row.mac_start_failed}` : row.stop_reason ?? "unknown" });
     try {
       if (row.state === "waiting_for_sign_in") await failQueuedMessagesStatement(env, row.launch_id, error, now).run();
       const latest = await readLaunch(env, row.launch_id);
