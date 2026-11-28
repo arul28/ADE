@@ -1,26 +1,52 @@
-# ADE Cloud iPhone
+# DAEX Cloud iPhone
 
-An iOS Simulator that runs in the cloud for the ADE account, not on a machine of
+An iOS Simulator that runs in the cloud for the DAEX account, not on a machine of
 the person's. Two providers can run it, NoMac (nomac.app) or Revyl
 (revyl.ai), behind one shape: the same commands, screen text, steps and pane
-for both, with a few abilities that differ (see **Providers**). Any machine drives it with the same `ade apple`
-commands it uses on a Mac's simulator: a Windows PC, a Linux box, a Mac, or an
-ADE Cloud computer. The Work tools pane shows it in 3D or flat on the desktop;
-ADE Web shows the same pane as a flat live view, and the ADE iPhone app shows it
-from a chat's Tools menu. The launch plan is `docs/plans/ade-cloud-iphone-launch.md`.
+for both, with a few abilities that differ (see **Providers**). Any machine drives it with the same `daex apple`
+commands it uses on a Mac's simulator: a Windows PC, a Linux box, a Mac, or a
+DAEX Cloud computer. The Work tools pane shows it in 3D or flat on the desktop;
+DAEX Web shows the same pane as a flat live view, and the DAEX iPhone app shows it
+from a chat's Tools menu.
 
-Server: `apps/account-directory/src/cloud/phones.ts` (routes, credits, the
-guard), one record per provider behind `phoneProvider.ts` (`phoneNomac.ts`,
-`phoneRevyl.ts` for Revyl's workspaces and calls), `phoneRoute.ts` (which
-provider: the lock, the router, failover), `phoneViewerPage.ts` (the
-viewer page for Revyl's stream) and `phoneBeta.ts` (the owner's beta list).
-Brain:
-`apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`, with one driver
-per provider (`cloudPhoneDriver.ts`, `cloudPhoneNomacDriver.ts`,
-`cloudPhoneRevylDriver.ts`, `cloudPhoneScreenText.ts`).
-CLI: `apps/ade-cli/src/cliCloudIphone.ts`. Shapes:
-`apps/account-directory/src/cloud/contract.ts` and
-`apps/desktop/src/shared/cloudPhone.ts`.
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/account-directory/src/cloud/phones.ts` | Server routes `/cloud/phone*`, credits and the money guard. |
+| `apps/account-directory/src/cloud/phoneProvider.ts`, `phoneNomac.ts`, `phoneRevyl.ts` | One record per provider; the only places that hold the provider keys. |
+| `apps/account-directory/src/cloud/phoneRoute.ts` | Which provider: the lock, the router, failover. |
+| `apps/account-directory/src/cloud/phoneViewerPage.ts`, `phoneBeta.ts` | Revyl's viewer page; the owner's beta list. |
+| `apps/account-directory/src/cloud/contract.ts`, `apps/desktop/src/shared/cloudPhone.ts` | Shapes shared by server and clients. |
+| `apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts` | The brain's `cloud_phone` action domain; holds one phone token in memory. |
+| `apps/desktop/src/main/services/adeCloud/cloudPhoneDriver.ts`, `cloudPhoneNomacDriver.ts`, `cloudPhoneRevylDriver.ts`, `cloudPhoneScreenText.ts` | One driver per provider; the screen as text. |
+| `apps/desktop/src/main/services/adeCloud/cloudPhoneRun.ts`, `cloudPhoneViewHost.ts` | Run bookkeeping and chat notices; the offscreen window that paints the provider's control page for the desktop pane. |
+| `apps/ade-cli/src/cliCloudIphone.ts`, `cliDevices.ts` | `daex apple` verbs as `cloud_phone` actions; the `ios@cloud` device row. |
+| `apps/desktop/src/renderer/components/apple/CloudIphonePanel.tsx`, `useCloudPhoneFrames.ts`, `apps/desktop/src/renderer/state/cloudPhoneLive.ts` | The tools pane, its frames, and the live state the pane and top bar share. |
+| `apps/ios/ADE/Services/SyncService+CloudPhone.swift`, `apps/ios/ADE/Views/Cloud/CloudPhoneSheet.swift` | The iPhone app's sheet. |
+
+## Gotchas / fragile areas
+
+- **Provider keys are Worker secrets.** `NOMAC_API_KEY` (and Revyl's key)
+  never reach a brain, CLI or renderer. A brain gets a 2-hour token for one
+  phone that cannot start, list or stop phones, and never logs it.
+- **One phone per account.** Every chat that picked `ios@cloud` drives the same
+  phone, and every lane shares the plan's credits. Every command starts a phone
+  (reads too), idle minutes count, and a phone stops after 5 idle minutes or
+  2 hours.
+- **`keepAlive` never starts a phone.** A brain without the token asks with
+  `attach`, which answers 409 `phone_not_running`.
+- **Uploads skip secrets.** `launch` and `test` pack git-tracked files minus
+  build output, dependencies and key files (`.env*`, `*.p8`, `*.p12`,
+  `*.pem`, `*.key`, provisioning profiles, keystores, SSH keys, `.netrc`).
+- **View links are short-lived** and, with `NOMAC_EMBED_SECRET`, signed per
+  account. The desktop view accepts only the provider's own view URL, denies
+  navigation and window opens, and never logs the URL.
+- **Older brains** (before 1.2.131) have no `cloud_phone` domain; clients say
+  to update DAEX on that machine (`isCloudPhoneMissingAnswer`), never that the
+  account lacks the phone.
+- **Every provider, both surfaces.** Agents reach the phone only through
+  `daex apple`, so all 13 providers (chat and CLI) drive it the same way.
 
 ## Access
 
@@ -37,10 +63,10 @@ The Worker var `CLOUD_PHONE_ACCESS` decides who has it, with no app release:
   (`DELETE /cloud/phone`) works whatever the access.
 - `CLOUD_PHONES_PAUSED=1` refuses new phones (503 `phone_paused`); running
   ones finish.
-- In ADE, the iPhone tool's "Runs on" row shows the "ADE Cloud" chip only for
-  an account with access; otherwise the row keeps its "ADE Cloud soon" note.
+- In DAEX, the iPhone tool's "Runs on" row shows the "DAEX Cloud" chip only for
+  an account with access; otherwise the row keeps its "DAEX Cloud soon" note.
   Picking the chip is the chat's device choice, the same as
-  `ade devices use ios@cloud`; `ade devices` lists the `ios@cloud` row only
+  `daex devices use ios@cloud`; `daex devices` lists the `ios@cloud` row only
   with access.
 
 ## Credits and the money guard
@@ -82,21 +108,21 @@ computer's start does, once the account may use the phone at all
   account blocked), `enforcePhoneAllowance` stops the phone at once if nothing
   is left, or sets its `stop_at` to when its credits run out; the minute tick
   stops it then (`stopPhonesDue`). The ten-minute check runs the same for every
-  live phone. ADE never pays NoMac for a minute nobody pays for.
+  live phone. DAEX never pays NoMac for a minute nobody pays for.
 - **Free-use cap:** a free-plan phone start is refused (503, never naming why)
   once the month's free use reached the owner's cap, as a free computer is.
 - **Agents:** a person and an attended chat use the phone freely within the
-  credits. An agent nobody watches (full-auto chat, automation run, ADE MCP
+  credits. An agent nobody watches (full-auto chat, automation run, DAEX MCP
   app) uses it only when the agent limits let agents spend (`unattendedSpend`,
   the same switch as hours); a plan-mode chat never. The RPC server stamps who
   is asking on the spending `cloud_phone` actions (`CLOUD_PHONE_SPEND_ACTIONS`);
   `cloudPhoneAgentGuard` in `registry.ts` checks it.
-- **What agents read:** `ade cloud status` carries `credits` (the iPhone's
+- **What agents read:** `daex cloud status` carries `credits` (the iPhone's
   rate), `iphone` (access, the credits it used this period, reset day) and
   `plans` (each plan's price, credits and price past the plan), so an agent
-  answers plan and credit questions from one read. On a machine that isn't a Mac, the `ade-apple` skill
+  answers plan and credit questions from one read. On a machine that isn't a Mac, the `daex-apple` skill
   is shown only while the account has the iPhone (`refreshIphoneSkill` in
-  `cloudAccess.ts`, cached 10 minutes like ADE Cloud's own access); on a Mac it
+  `cloudAccess.ts`, cached 10 minutes like DAEX Cloud's own access); on a Mac it
   always shows (its own simulators).
 - **Warnings:** the credit balance's emails (80%, 95% and out), once each a
   period; the ten-minute check sends them to accounts that used the phone,
@@ -120,8 +146,8 @@ both used, without changing anything an agent or a person sees.
   that lacks an ability says so. Only providers that can start here
   (`CLOUD_PHONE_REVYL=on` for Revyl) and that this client can drive count.
 - **A tester's pick.** An account on the beta list may pick one provider for
-  every phone of theirs (`auto`, `nomac` or `revyl`), from the toggle an ADE
-  beta build shows, or `ade cloud phone-provider`. It is stored in the beta
+  every phone of theirs (`auto`, `nomac` or `revyl`), from the toggle a DAEX
+  beta build shows, or `daex cloud phone-provider`. It is stored in the beta
   row's `provider` (`POST /cloud/phone/provider`, 403 for anyone else, and
   `CloudAccountState.phone.providerChoice` tells a tester's apps). A pick is
   the only provider tried, never a quiet fallback; when it can't start, 503;
@@ -137,13 +163,13 @@ both used, without changing anything an agent or a person sees.
   differs is listed as abilities (`CLOUD_PHONE_PROVIDER_ABILITIES` in
   `contract.ts`): NoMac has `tests`, `uninstall`, `storekit`, `locale`,
   `timezone`, `statusBar`, `launchEnv`; Revyl has `perf` (the launched app's
-  CPU, memory and frame rate, `ade apple perf`), `shake` and `orientation`
+  CPU, memory and frame rate, `daex apple perf`), `shake` and `orientation`
   (`portrait`/`landscape`). `GET /cloud/phone` returns `abilities` (the live
   phone's, or what a new one could have); the brain's status adds `lacks`
   and leaves out `capabilities` it can't do. A phone without an ability a
   command needs answers "This cloud iPhone can't X." (409 `phone_lacks` from
   the server for a running phone); `needs` never changes which provider a new
-  phone starts on. `ade apple status`, `ade devices
+  phone starts on. `daex apple status`, `ade devices
   use ios@cloud` and `ade apple --help` on the cloud iPhone print the
   ability lines.
 - **What is shared.** The server owns the credits, `stop_at`, the minute tick, the
@@ -156,7 +182,7 @@ both used, without changing anything an agent or a person sees.
   service reaches both.
 - **NoMac.** The brain holds a per-phone token and calls NoMac's tools
   directly. Its phone has NoMac's own spend cap and time limit.
-- **Revyl.** Each ADE account gets its own Revyl workspace, made with ADE's
+- **Revyl.** Each DAEX account gets its own Revyl workspace, made with DAEX's
   partner key (`REVYL_PARTNER_API_KEY`) under `ade-<userId>` and a synthetic
   `revyl+<hash>@ade-app.dev` address (never the person's email). The server
   mints short session credentials and keeps them in memory only. There is no
@@ -169,11 +195,11 @@ both used, without changing anything an agent or a person sees.
   keyboard) and runs the same `act` steps with plain taps, swipes and typing;
   it never uses Revyl's AI-priced targeting. `launch` uploads the packed
   checkout and builds it on Revyl's runners (about 60 s for a small app; the
-  ADE iOS app, about 3 minutes). The runner image is
+  DAEX iOS app, about 3 minutes). The runner image is
   `ios-macos-26-xcode-27.0`: Xcode 27.0, the iOS 27.0 SDK (seen 2026-11-27;
   whether a build can pick a newer image is a question for Revyl). Xcode 27.0
   and 27.1 ship the same Swift (6.4), so `#if compiler(>=6.4)` can't keep
-  iOS 27.1 API calls away from it: the ADE iOS app gates those blocks on
+  iOS 27.1 API calls away from it: the DAEX iOS app gates those blocks on
   `!ADE_IOS_SDK_27_0` too, a flag its project sets only for the 27.0 SDKs.
   A failed build reads Revyl's log (`build.logs`, the tail a page at a time)
   in 1,000-line pages back to the start, and shows its first
@@ -219,12 +245,12 @@ both used, without changing anything an agent or a person sees.
   failure with the server's sentence. `test` is never moved (Revyl has no
   tests); it gets the plain sentence. Logs: `cloud.phone_build_gap`,
   `cloud.phone_build_swap`, and `builds` on `cloud.phone_started`.
-- **The pane.** For a Revyl phone, the view link is ADE's own viewer page,
+- **The pane.** For a Revyl phone, the view link is DAEX's own viewer page,
   `<server>/cloud/phone/viewer#whep=…&ws=…`. It shows Revyl's WebRTC video
   as it is, with a clear canvas over it that takes touches (copying each frame
   into a canvas cost the iPhone app's web view about 3× the CPU; see
   `docs/perf/macos-baseline.md`). Touches, keys and Home go over Revyl's input
-  socket, so the desktop view host, ADE Web's iframe and the iPhone app's web
+  socket, so the desktop view host, DAEX Web's iframe and the iPhone app's web
   view open it the way they open NoMac's page. Revyl types at a point, so keys
   go to the last place tapped, sent together every 25 ms; Enter and Backspace
   are keys of their own. A hidden input with no on-screen keyboard
@@ -236,7 +262,7 @@ both used, without changing anything an agent or a person sees.
 ## Architecture
 
 ```
-tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
+tools pane (CloudIphonePanel)     CLI (daex apple …)     any provider's agent
               \                         |                        /
         cloud_phone action domain on the machine's brain (cloudPhoneService)
                                   |
@@ -268,11 +294,11 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   something reads this brain (a pane, the top bar, the next phone call), so a
   phone a terminal agent started may tell its end late. The notice and run
   bookkeeping live in `cloudPhoneRun.ts`.
-- **CLI.** `cliCloudIphone.ts` turns each `ade apple` verb into one
+- **CLI.** `cliCloudIphone.ts` turns each `daex apple` verb into one
   `cloud_phone` action on this machine's brain. `cliDevices.ts` adds the
-  `ios@cloud` row and the `ade devices use ios@cloud` choice.
+  `ios@cloud` row and the `daex devices use ios@cloud` choice.
 - **Tools pane.** `CloudIphonePanel.tsx` shows the credits left, Start/Stop, and the
-  phone in 3D (ADE's device body) or Flat. `useCloudPhoneFrames.ts` holds the
+  phone in 3D (DAEX's device body) or Flat. `useCloudPhoneFrames.ts` holds the
   picture; `cloudPhoneViewHost.ts` paints NoMac's control page in an offscreen
   window in the desktop main process and streams the cropped canvas as JPEG.
   Taps, drags, scrolls and keys go to that page through its own debugger
@@ -281,11 +307,11 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   noise, plus one keyframe a second; after 2 s of a still picture the page
   paints at 4 fps until it changes or input arrives (idle cost measured on
   Windows: 17.5% of a core before, 8.5% after; 2.3% with the pane closed).
-  ADE Web has no main process to paint the page, so its pane skips the rail and
+  DAEX Web has no main process to paint the page, so its pane skips the rail and
   puts NoMac's own view in an iframe at the phone's aspect ratio. Both clients
   reach the same `cloud_phone` domain: the desktop through its runtime pin, the
   web through the `cloudPhone.*` sync commands on the chat's machine. The
-  chat's agents drive the phone with `ade apple` from every client.
+  chat's agents drive the phone with `daex apple` from every client.
 - **Running strip and top bar.** While the phone runs, the pane's strip says
   its model, how long it has been on, the credits left (about how many minutes) and when the
   idle stop comes; in its last 90 s it counts in seconds and offers Keep on
@@ -303,13 +329,13 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   through a brain that didn't drive the phone answers no `lastActivityAt` and
   never erases a known one; a read well past the stop time that still finds
   the phone on means something else uses it, so the countdown hides. Keep on
-  stays while the phone reads ready, past the estimate too. A tab bound to ADE Cloud has no brain to
+  stays while the phone reads ready, past the estimate too. A tab bound to DAEX Cloud has no brain to
   read through, so its top bar shows only what a tools pane reads.
 - **Older machines.** A brain from before 1.2.131 has no `cloud_phone`
-  domain. The pane's "Runs on" row and the pick-a-Mac screen, `ade devices`
-  and `ade devices use ios@cloud` say to update ADE on that machine
+  domain. The pane's "Runs on" row and the pick-a-Mac screen, `daex devices`
+  and `daex devices use ios@cloud` say to update DAEX on that machine
   (`isCloudPhoneMissingAnswer`), never that the account lacks the phone.
-- **ADE iPhone app.** A Work chat's ⋯ › Tools › ADE Cloud iPhone (also the Duo
+- **DAEX iPhone app.** A Work chat's ⋯ › Tools › DAEX Cloud iPhone (also the Duo
   and iPad Tools rails) opens a sheet over the same `cloudPhone.*` commands,
   sent to the chat's machine: the credits left, Start and Stop, why it ended, and
   the live phone in a sandboxed web view of NoMac's player (only
@@ -318,14 +344,14 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   stopped by itself shows Start again).
   (`apps/ios/ADE/Services/SyncService+CloudPhone.swift`,
   `apps/ios/ADE/Views/Cloud/CloudPhoneSheet.swift`)
-- **Every provider.** Agents reach the phone only through `ade apple`, so all 13
+- **Every provider.** Agents reach the phone only through `daex apple`, so all 13
   providers, chat and CLI, drive it the same way. There is no provider-specific
   phone code.
 
 ## Request flow
 
-1. `ade devices use ios@cloud` makes the chat's iPhone the cloud one (or one
-   command takes `--machine cloud`). `ade apple status` reads
+1. `daex devices use ios@cloud` makes the chat's iPhone the cloud one (or one
+   command takes `--machine cloud`). `daex apple status` reads
    `cloud_phone.getStatus`: `on`, the minutes, the live phone, and
    `capabilities`.
 2. Any command that needs the phone starts it when none runs. The brain sends
@@ -340,21 +366,21 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
    build takes about 11 s; the next, about 4 s.
 4. `screenshot` downloads a full-size PNG to `--out` (inside the project or the
    temp folder; any other path is refused) or a temp file, and files
-   it in the proof drawer with the caption "ADE Cloud iPhone screenshot";
+   it in the proof drawer with the caption "DAEX Cloud iPhone screenshot";
    `--no-proof` skips that. The tool's own link to the file lasts 7 days, as a
    recording's MP4 does.
 5. The desktop pane asks for a view link (`POST /cloud/phone/view`, a control
    link by default), keeps it fresh a minute before it expires, and sends taps,
    scroll and keys back in device points.
-6. `ade apple stop` (or the pane's Stop) ends the phone. Its apps and their data
+6. `daex apple stop` (or the pane's Stop) ends the phone. Its apps and their data
    go; the project and its build cache stay for the next one.
 
 ## CLI
 
 ```bash
-ade devices use ios@cloud          # this chat's iPhone (refused without access)
-ade devices                        # lists ios@cloud with the minutes left
-ade apple launch --machine cloud   # one command on the phone
+daex devices use ios@cloud          # this chat's iPhone (refused without access)
+daex devices                        # lists ios@cloud with the minutes left
+daex apple launch --machine cloud   # one command on the phone
 ```
 
 `status` lists the phone's capabilities; every other verb is one `cloud_phone`
@@ -433,7 +459,7 @@ one sentence. The screen reads as text: one element per line,
   minutes count, and every command starts a phone (reads too), so a few
   short visits cost more than one batch. `GET /cloud/phone` answers this
   period's phones (`recent`: start, end, minutes, how it ended; NoMac's own
-  idle stop or limit reads `on_its_own`), and `ade apple status --text`
+  idle stop or limit reads `on_its_own`), and `daex apple status --text`
   lists them, so a person can see where the minutes went.
 - Three models: iPhone 17 Pro (default), iPhone 17 Pro Max, and iPad Pro
   11-inch (M5), on iOS 27, on US hosts. iOS only: there is no Android here.
@@ -498,53 +524,40 @@ and its pending invite. NoMac's billing records stay under the label, which is
 an id, never an email. The repeats of the deletion (`accountErasure.ts`) run
 it again.
 
-## Speed (measured 2026-11-19, from a Mac)
+## Speed
 
-ADE's part is small; the phone's own steps take the time:
-
-| Command | Time |
-|---|---|
-| `status` | 0.5 s |
-| `start` (new phone) | 8–13 s |
-| `snapshot` | 0.7–1.1 s |
-| `act` (one tap) | 2–3 s; 11–21 s for an app's first launch on a new phone |
-| `launch --no-build` (Safari) | 14 s (10 s of it the app's launch) |
-| `open-url` | 2 s |
-| `screenshot` (to the proof drawer) | 3.7 s |
-| `stop` | 1.3 s |
-
-An `act` answers some seconds after the steps it reports ("1 step done in
-5.9 s" took 11.4 s): NoMac waits for the screen to settle and reads it. A step
-right after a navigation can say the content "can't be read" while the page
-loads; a `snapshot` a moment later reads it. The `ade-apple` skill tells agents
-to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
+Most commands answer in 0.5–4 s; starting a new phone takes 8–13 s and an
+app's first launch on a new phone 11–21 s. An `act` answers a few seconds
+after its steps because the provider waits for the screen to settle. The
+`daex-apple` skill tells agents to read with `snapshot`, batch steps in one
+`act`, and mind the idle stop.
 
 ## Known gaps
 
 - Builds on the phone are Xcode projects only: Swift and Objective-C, SwiftUI
   and UIKit, Swift packages, CocoaPods from `Podfile.lock`, and XcodeGen
   `project.yml`. An app built elsewhere goes up as a Simulator build:
-  `ade apple install --app <path to a Simulator .app>` uploads the whole
+  `daex apple install --app <path to a Simulator .app>` uploads the whole
   bundle, installs it and launches it. Expo/EAS needs `"simulator": true`;
   Flutter needs `flutter build ios --simulator`.
 - **Metal shaders.** Xcode 26 and later ship the Metal compiler as a separate
   download (`xcodebuild -downloadComponent MetalToolchain`, about 870 MB for
   27.2). NoMac's build hosts don't have it (seen 2026-11-27; asked to add
   it), and its `app_run` takes no build command, so a project that compiles a
-  `.metal` file (the ADE iOS app does, through SwiftTerm's `Shaders.metal`)
+  `.metal` file (the DAEX iOS app does, through SwiftTerm's `Shaders.metal`)
   fails there. Revyl's runner has it (a Metal test app built there
-  2026-11-27), and its build step, which ADE writes (`buildCommand` in
+  2026-11-27), and its build step, which DAEX writes (`buildCommand` in
   `phoneRevyl.ts`), fetches it anyway when a build fails for want of it (at
   most 420 s, bounded by the shell, inside the build's 900 s) and builds
   once more; the first build's toolchain line is left out of the output, so
   a later error is never blamed on it. A named workspace still gets its
-  folder's `pod install`. What ADE does
+  folder's `pod install`. What DAEX does
   about it is in **Build tools a provider lacks**.
 - No Android. The cloud phone is iOS only.
-- **ADE Web.** The hosted web client's phone is a flat iframe of NoMac's view,
+- **DAEX Web.** The hosted web client's phone is a flat iframe of NoMac's view,
   without the 3D body or the rail: Home, Screenshot and Record stay in the
-  desktop app. Agents on the web still drive the phone with `ade apple`.
-- The ADE iPhone app's sheet has no Record (the desktop rail has it).
+  desktop app. Agents on the web still drive the phone with `daex apple`.
+- The DAEX iPhone app's sheet has no Record (the desktop rail has it).
 - **Abilities differ by phone.** Revyl's phone has no app tests, uninstall,
   StoreKit, locale, time zone or status bar overrides, and passes no launch
   `env`; NoMac's has no perf, shake or orientation. See **Abilities, not
@@ -552,7 +565,7 @@ to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
   answered an empty list on every partner session we tried.
 - **Older brains.** A brain names the phones it can drive (`providers` on
   `POST /cloud/phone`); one from before Revyl names none. A router account
-  then gets NoMac; a Revyl-locked account gets "Update ADE".
-- NoMac's beta allows 20 phones at once across all ADE accounts. Past that, a
+  then gets NoMac; a Revyl-locked account gets "Update DAEX".
+- NoMac's beta allows 20 phones at once across all DAEX accounts. Past that, a
   start waits in line and gives up with "No cloud iPhone was free" after 6
   minutes.

@@ -1,6 +1,6 @@
-# ADE Inspector (Swift inspector kit)
+# DAEX Inspector (Swift inspector kit)
 
-ADE Inspector is the bridge that lets the Apple device column say
+DAEX Inspector is the bridge that lets the Apple device column say
 "the user just tapped *that* SwiftUI view, defined at this file
 and line, with these accessibility tags." It runs entirely inside the
 debug build of the iOS app under inspection, publishes a JSON snapshot
@@ -9,7 +9,7 @@ container, and the simulator service correlates that snapshot with a
 helper accessibility tree (and a screenshot) to produce
 `IosScreenSnapshot` and `IosElementContextItem` values.
 
-Snapshot reads happen inside whichever ADE runtime owns the active
+Snapshot reads happen inside whichever DAEX runtime owns the active
 simulator session. Because the simulator is macOS-only, that runtime
 is always a Mac (local or remote-Mac); the renderer is purely a viewer
 over the resulting elements. Inspect, select, screenshot, input, and
@@ -31,6 +31,41 @@ not carry inspector overhead or expose component metadata.
 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | `getAppContainerPath()` resolves the active bundle's data dir via `xcrun simctl get_app_container <udid> <bundleId> data`; `readInspectorSnapshot()` reads `Documents/ade-inspector-elements.json` and normalises it into `IosInspectorSnapshot` (`schemaVersion: 1`, `screen { width, height, scale }`, `elements: IosInspectableElement[]`). |
 | `apps/desktop/src/shared/types/iosSimulator.ts` | `IosInspectorSnapshot`, `IosInspectableElement`, `IosInspectableFrame`, `IosScreenElement` (the unified app + accessibility row), `IosScreenSnapshot.providers[]` (which sources contributed), `IosElementContextItem` (what the chat composer ends up with). |
 | `apps/desktop/src/main/services/ios/iosSemanticActions.ts` | The second reader of this metadata. `buildElementRef` turns a matched `componentId` into a `component:` ref, the tier an agent uses to name an element instead of a pixel. See [README.md](./README.md#semantic-actions). |
+
+## Gotchas / fragile areas
+
+- **Element id stability.** The id is computed from
+  `componentId | file | line | key | sortedMetadata`. Renaming a
+  metadata key, swapping line numbers via reformatting, or moving
+  the `.adeInspectable` call across files all change the id. That is
+  fine for the live snapshot (the desktop just sees a new element),
+  but cached `IosElementContextItem`s referencing an old id will not
+  re-resolve to the new view on a re-tap. Treat ids as ephemeral.
+- **Hosts must be unique per scene.** Mounting `.adeInspectorHost()`
+  twice in the same hierarchy causes both overlays to write to the
+  same JSON path and last-writer-wins; in practice they will fight
+  over the file. Mount once at the root.
+- **Schema version is load-bearing.** The Electron side currently
+  ignores `schemaVersion` but the field is reserved for breaking
+  changes. Any layout change (frame shape, new mandatory metadata)
+  must bump the version and the desktop reader must gate on it; do
+  not silently extend the existing schema.
+- **`#if DEBUG` is the on/off switch.** Release builds compile both
+  modifiers to no-ops. The desktop side correctly reports
+  `providers[ade-inspector].error: "No ADEInspector snapshot..."` in
+  that case, which the chat panel surfaces as "use accessibility
+  fallback" rather than failing the whole snapshot.
+- **The data container path is bundle-scoped.** Every reinstall and
+  every app switch invalidates the path the desktop is reading from.
+  `readInspectorSnapshot` re-resolves the container on every call so
+  it tolerates app re-launches, but background readers should not
+  cache the path.
+- **Snapshot timing.** `task(id: snapshotIdentity)` lets the writer
+  skip identical frames, but it also means the on-disk file lags
+  behind any view that is changing every render frame (e.g. an
+  animated counter). The desktop should not assume the JSON is
+  current down to the millisecond — only that it reflects the most
+  recent stable layout.
 
 ## Annotating views
 
@@ -61,7 +96,7 @@ Three argument shapes the kit cares about:
   alongside the source file/line.
 
 The element id used for the snapshot is derived deterministically
-from `componentId | file | line | key | sortedMetadata` (see
+from `componentId | file | line | key | metadata` (metadata keys sorted) (see
 `adeInspectorElementId(payload:)` in `ADEInspectable.swift`). Two
 views with the same `componentId` at the same source location will
 collide on id unless they carry distinct keys or metadata — that is
@@ -100,7 +135,7 @@ and hands it to `ADEInspectorSnapshotEmitter`.
      full `ADEInspectorSnapshot { schemaVersion, generatedAt, screen,
      elements }`.
 3. The emitter passes the snapshot through a
-   `task(id: snapshotIdentity)` keyed on the JSON shape of the
+   `task(id: signature)` keyed on the JSON shape of the
    elements (`id:px:py:pw:ph` joined per element) so the underlying
    `await ADEInspectorSnapshotWriter.write(...)` only fires when the
    snapshot actually changed.
@@ -252,37 +287,3 @@ zero-area frames, but uselessly tagging structural containers
 inflates the JSON and creates ambiguous hit-tests when the user taps
 inside a button that lives inside an annotated card.
 
-## Fragile and tricky wiring
-
-- **Element id stability.** The id is computed from
-  `componentId | file | line | key | sortedMetadata`. Renaming a
-  metadata key, swapping line numbers via reformatting, or moving
-  the `.adeInspectable` call across files all change the id. That is
-  fine for the live snapshot (the desktop just sees a new element),
-  but cached `IosElementContextItem`s referencing an old id will not
-  re-resolve to the new view on a re-tap. Treat ids as ephemeral.
-- **Hosts must be unique per scene.** Mounting `.adeInspectorHost()`
-  twice in the same hierarchy causes both overlays to write to the
-  same JSON path and last-writer-wins; in practice they will fight
-  over the file. Mount once at the root.
-- **Schema version is load-bearing.** The Electron side currently
-  ignores `schemaVersion` but the field is reserved for breaking
-  changes. Any layout change (frame shape, new mandatory metadata)
-  must bump the version and the desktop reader must gate on it; do
-  not silently extend the existing schema.
-- **`#if DEBUG` is the on/off switch.** Release builds compile both
-  modifiers to no-ops. The desktop side correctly reports
-  `providers[ade-inspector].error: "No ADEInspector snapshot..."` in
-  that case, which the chat panel surfaces as "use accessibility
-  fallback" rather than failing the whole snapshot.
-- **The data container path is bundle-scoped.** Every reinstall and
-  every app switch invalidates the path the desktop is reading from.
-  `readInspectorSnapshot` re-resolves the container on every call so
-  it tolerates app re-launches, but background readers should not
-  cache the path.
-- **Snapshot timing.** `task(id: snapshotIdentity)` lets the writer
-  skip identical frames, but it also means the on-disk file lags
-  behind any view that is changing every render frame (e.g. an
-  animated counter). The desktop should not assume the JSON is
-  current down to the millisecond — only that it reflects the most
-  recent stable layout.

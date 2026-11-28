@@ -1,7 +1,7 @@
 # Apple device
 
-ADE drives a per-lane Apple simulator from the Work tab's Apple Development tool and from
-`ade apple`. It makes a new device for the lane (or attaches one the user names), builds and launches
+DAEX drives a per-lane Apple simulator from the Work tab's Apple Development tool and from
+`daex apple`. It makes a new device for the lane (or attaches one the user names), builds and launches
 the selected app, streams the device framebuffer through a vendored Swift
 helper, and turns gestures into simulator input or context items for the
 active chat. Agent launches stay in the background.
@@ -12,16 +12,98 @@ SimulatorKit). There is no idb, no Screen Recording grant, and no
 Simulator.app window. Creating a device never downloads anything; a runtime is
 downloaded only when the person asks, from the Runtimes section (see below).
 
-`ade ios-sim` is a deprecated alias of `ade apple` for one minor release. It
-prints one deprecation line to stderr per process.
+`daex ios-sim` is a deprecated alias of `daex apple` and prints one
+deprecation line to stderr per process. `ade` works for every command.
 
-The ADE Cloud iPhone (`ios@cloud`) is the same `ade apple` surface on an iOS
+The DAEX Cloud iPhone (`ios@cloud`) is the same `daex apple` surface on an iOS
 Simulator rented from NoMac for the account, so Windows and Linux machines use
 it too: [ade-cloud-iphone.md](./ade-cloud-iphone.md).
 
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/desktop/native/ADESimHelper/` | Vendored Swift helper: framebuffer capture, H.264 encode, HID input, accessibility tree, recording (`RecordingSession.swift`, idle-gap cut in `IdleGapCompressor.swift`). Every device lookup goes through `SimServiceContextCache.swift`: the helper lives as long as the brain, and after CoreSimulatorService restarts its shared context keeps the old device list (new devices missing, booted ones reading Shutdown), so a lookup that misses or finds a device not booted asks a new context, at most once a second, and keeps it. |
+| `apps/desktop/scripts/build-sim-helper.mjs` | Builds `resources/native/ade-sim-helper` for macOS dist. |
+| `apps/desktop/src/main/services/ios/` | Device lifecycle, launch, screenshots, helper transport, recording, Preview Lab. Preload namespace stays `iosSimulator`. |
+| `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The `ios_simulator` service: app sessions, input, streams, screenshots, and the wiring of the modules below. |
+| `apps/desktop/src/main/services/ios/laneDeviceRegistry.ts` | One device per lane: create, attach, takeover, the `lane_apple_devices` rows, the ownership marker, the cleanup pass (`reconcile`), and `releaseLaneAppleDevice` / `endLaneDeviceOnDisk` for a lane that ends. |
+| `apps/desktop/src/main/services/ios/xcodeGenProjects.ts` | XcodeGen: a `project.yml` with no tracked `.xcodeproj` beside it (in the build root, a folder in it, or a folder under `apps/`) is generated into one before a launch, install or test, and before a work copy's targets are listed. A tracked `.xcodeproj` is never rewritten. |
+| `apps/desktop/src/main/services/ios/laneDeviceMaintenance.ts` | The background cleanup timer and idle power-off, with the shared activity file. |
+| `apps/desktop/src/main/services/ios/simulatorMemoryReclaim.ts` | The pure rules of the memory guard: which step a sample takes and whether a device is idle. Also owns the "a tool uses this device" check the idle power-off shares. |
+| `apps/ade-cli/src/services/runtime/simulatorMemoryReclaimer.ts` | The machine brain's memory guard: reads the devices and processes, sends the warnings, shuts idle devices down. |
+| `apps/desktop/src/main/services/ios/laneDeviceLifecycle.ts` | `deviceDetach`, `deviceDelete`, the takeover release, and `deviceDeleteInstalled`. Runs each verb's teardown in one order. |
+| `apps/desktop/src/main/services/ios/simulatorPower.ts` | The one place DAEX boots or powers off a simulator. It resets the helper session, stops a recording, and drops the cached `simctl list`. |
+| `apps/desktop/src/main/services/ios/iosDeviceHub.ts`, `simHelperClient.ts` | Device sessions, and the NDJSON client that supervises the helper. |
+| `apps/desktop/src/main/services/ios/appleStreamRelay.ts`, `appleStreamRelayForService.ts`, `appleLocalViewers.ts` | Brain-side forwarder for the H.264 stream and a Duo's pose notes, the relay over the simulator service (which captures it starts and stops, the pose it forwards), and which lanes have a viewer on this machine. |
+| `apps/desktop/src/main/services/ios/appleStreamPacing.ts` | Per-viewer pacing from acks and the lane's adaptive encoder cap. |
+| `apps/desktop/src/main/services/ios/recording/simRecordingService.ts` | Recording rules: auto-record, caps, orphan recovery, filing each recording as proof. |
+| `apps/desktop/src/main/services/ios/recording/appleRecordingsStore.ts` | The on-disk layout `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/<id>.mp4` plus the `<id>.json` sidecar. Every walk of that layout goes through it. |
+| `apps/desktop/src/main/services/chat/laneAppleDeviceDirective.ts` | The turn-time hint that tells an agent its lane has a device. |
+| `apps/desktop/src/shared/types/iosSimulator.ts` | Cross-process types, including `AppleLaneDevice`, recording records, `APPLE_AGENT_ACTIONS` and `APPLE_USER_ONLY_ACTIONS`. |
+| `apps/desktop/src/shared/runtimeClientNames.ts` | `DESKTOP_CLIENT_NAMES` and `isDesktopClientName`, the gate for user-only verbs on the RPC server. |
+| `apps/desktop/src/shared/types/workToolShow.ts` | The show-request surfaces (`apple`, `floating-apple`, `browser`, `proof`) and event shape. |
+| `apps/desktop/src/renderer/components/apple/AppleDevicePane.tsx` | The pane body. It composes the picker, stage, rail, drawer and status strip. |
+| `apps/desktop/src/renderer/components/apple/useAppleLaneDeviceList.ts` | Service status (polled while on screen) and the lane's device list for the pane. |
+| `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
+| `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx`, `components/device/useDeviceInspect.ts` | Inspect mode: one snapshot per switch-on, the hovered and selected element (shared with Android), and the Apple overlay. |
+| `apps/desktop/src/renderer/components/device/deviceScene.ts`, `deviceModelLoader.ts`, `deviceOrbit.ts`, `apple/AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader and the orbit (shared with Android), and the Apple 3D presenter. |
+| `apps/desktop/src/renderer/components/device/DeviceRenderSheet.tsx`, `deviceRenderProof.ts`, `apple/appleRenderProof.ts` | The Render sheet and the render-to-proof steps (shared with Android), and the Duo's pose passes. |
+| `apps/desktop/src/renderer/components/device/deviceDrawerState.ts`, `DeviceToolsDrawerShell.tsx`, `DeviceLocationRows.tsx`, `shared/RecordingRow.tsx` | The Tools drawer's state, frame, Location rows and recording rows, shared with Android. |
+| `apps/desktop/src/main/services/device/deviceLease.ts` | `daex apple lease`: the advisory, queued, expiring turn on a lane's device for agents that share it. |
+| `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `daex apple render` broker. |
+| `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |
+| `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoDock.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the Duo's dock under the device (hinge or screen, and turn), and Apple's physical Duo body. |
+| `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `apps/desktop/src/renderer/components/device/proceduralFoldBody.ts`, `device/HingeSlider.tsx` | The foldable "Duo" mode: the pure posture state machine, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder (with its panel rotations) and the hinge slider, which Android foldables share. Capability-gated; unused on non-foldable devices. |
+| `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old DAEX? tags, Clean up). |
+| `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
+| `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |
+| `apps/desktop/src/renderer/components/ui/DangerConfirmMenuItem.tsx` | The shared two-row destructive menu item (a disabled idle row plus a confirmation row) used by the card menu and the Apple and Android device pickers. |
+| `apps/desktop/src/renderer/components/apple/AppleDeviceMiniPlayer.tsx`, `appleMiniPlayerStore.ts` | The floating device player over the chat. |
+| `apps/desktop/src/renderer/components/apple/AppleRenderHost.tsx`, `AppleRenderHostJob.tsx`, `useAppleRenderRequests.ts` | `daex apple render`: the pane's render and broker handshake, the shared render body, and the per-project host that renders off screen when no pane takes the request. |
+| `apps/ade-cli/src/cli.ts` | `daex apple` typed commands. `daex ios-sim` is the deprecated alias. |
+| `apps/ade-cli/src/help/appleHelp.ts` | Help text for each `daex apple` subcommand, and the help aliases. |
+| `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
+| `apps/ade-cli/src/services/workTools/workToolShowRequests.ts` | `daex apple show` / `daex ui show` on the brain side. |
+| `apps/desktop/resources/agent-skills/daex-apple/SKILL.md` | Agent skill for the verbs below. |
+| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift`, `AppleDeviceViewerModel.swift` | The phone's simulator viewer on the live stage (watch, hold to control, the menu, fold mirroring) and the model that owns its ticket, posture and mode. |
+| `apps/ios/ADE/Views/Work/AppleStreamSession.swift` | The live stream both phone viewers share (simulator and emulator): the socket, the decoder, the health clock, the speed readout and the automatic redial. |
+| `apps/ios/ADE/Views/Work/LiveStage.swift`, `LiveStageChrome.swift` | The phone's live stage: placement and Turn per context and the root host that draws the stream full screen or over the Duo's pane, with the pane slot (`LiveStage.swift`); the aspect-fit rule, the screen viewers' shared frame, the floating menu button and its panel, and the device viewers' shared touch rules, status card, speed readout and keyboard bar (`LiveStageChrome.swift`). |
+| `apps/ios/ADE/Views/Work/AppleDeviceControl.swift` | The phone's touch mapping, gesture rule, input commands, Control blockers and the tap→screen probe. |
+| `apps/ios/ADE/Views/Work/AppleDeviceStream.swift` | The phone's ticket, record parser, health clock, decoder layer and the acking stream socket. |
+| `apps/ios/ADE/Services/SyncService+AppleDevice.swift` | The phone's `apple.*` calls, asked of the machine that owns the lane. |
+| `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | DEBUG-only Swift helpers that publish element frames into the app container. See [inspector.md](./inspector.md). |
+
+## Gotchas / fragile areas
+
+- **macOS only, no Simulator.app.** Frames and input go through
+  `ade-sim-helper` (CoreSimulator / SimulatorKit). No idb, no Screen Recording
+  grant. Non-macOS runtimes report `supported: false`; `status` is the
+  capability gate. Windows and Linux use the [DAEX Cloud iPhone](ade-cloud-iphone.md).
+- **Nothing downloads by itself.** Creating a device never downloads; a runtime
+  downloads only when the person asks in the Runtimes section.
+- **DAEX never deletes a simulator it did not create.** Attached devices are
+  only detached (`device-delete --force` detaches), never idle-powered-off,
+  and the cleanup pass never deletes anything when `simctl list` cannot be read.
+- **CoreSimulatorService restarts leave a stale context.** The helper lives as
+  long as the brain; `SimServiceContextCache.swift` asks a new context (at
+  most once a second) when a lookup misses or finds a booted device reading
+  Shutdown.
+- **Extras never stream, record, launch or run tests**; those act on the
+  lane's own device. A lost extra row is re-adopted as an extra, never as the
+  lane's device.
+- **Leases are advisory and token-free in output.** `daex apple lease` queues
+  agents that share a device; status names the holder, never the token.
+- **Agents cannot be stopped from a raw `simctl create`.** The skill and the
+  device hint say not to; the cleanup pass and ownership marker catch leftovers.
+- **Push banners** appear on screenshots from a signed-in, paired simulator;
+  capture on a fresh lane or extra device.
+- **User-only verbs** (`APPLE_USER_ONLY_ACTIONS`) are gated on the RPC
+  client name (`isDesktopClientName` in `shared/runtimeClientNames.ts`).
+
 ## Runtime ownership
 
-The simulator service runs where the ADE runtime runs. A local Mac runtime can
+The simulator service runs where the DAEX runtime runs. A local Mac runtime can
 build, launch, stream, and control a local simulator. Non-macOS runtimes
 report `supported: false`; every CLI command except `status` rejects with the
 macOS-only error. `status` is the capability gate and reports
@@ -32,17 +114,17 @@ A remote Mac runtime supports control, screenshots, recording, and Preview
 Lab. Its live view is the same helper H.264 path; a Windows desktop bound to
 that Mac watches and drives over the stream.
 
-**ADE Cloud.** An ADE Cloud computer is Linux, so it runs no simulator. The
-Apple tool is never hidden for a chat on ADE Cloud. It says "Apple simulators
+**DAEX Cloud.** A DAEX Cloud computer is Linux, so it runs no simulator. The
+Apple tool is never hidden for a chat on DAEX Cloud. It says "Apple simulators
 stream here from a Mac" and offers the person's own Macs in its **Runs on**
 row (`useToolMachines`, `workToolStartState.tsx`). The chat's cloud computer
-shows as "ADE Cloud", never by its own name, and no other cloud computer is
+shows as "DAEX Cloud", never by its own name, and no other cloud computer is
 listed.
 
 When a desktop simulator request is interrupted by a project switch, the error
 names the requested action and explains that the active project changed or is
 still loading. Wait for loading to finish, return to the simulator's project,
-and retry. If the error persists, close and reopen that project tab. ADE keeps
+and retry. If the error persists, close and reopen that project tab. DAEX keeps
 the project-routing guard in place so a request cannot target the wrong project.
 Requests started on a loaded project retain that project's runtime until they
 finish. Live-view cleanup captures the runtime when it acquires the stream,
@@ -92,9 +174,9 @@ only the iPhone Duo, so `--device-type "iPad Pro 11-inch (M5)"` lands on 27.0.
 ### Extra devices
 
 A lane may hold up to two EXTRA devices beside its own
-(`APPLE_LANE_EXTRA_DEVICE_LIMIT`; `ADE_APPLE_LANE_EXTRA_DEVICES` in ADE's
+(`APPLE_LANE_EXTRA_DEVICE_LIMIT`; `ADE_APPLE_LANE_EXTRA_DEVICES` in DAEX's
 environment raises it, up to 8), for a second model in the same piece of work:
-an iPad next to an iPhone Duo. `device-create --extra` makes one (an empty ADE
+an iPad next to an iPhone Duo. `device-create --extra` makes one (an empty DAEX
 device named `ADE · <lane> · <model>`) and boots it; a boot that fails names the
 device and its udid, since it already holds a slot. Extras are their own
 local-only table, `lane_apple_extra_devices` (keyed by udid), and their marker
@@ -105,7 +187,7 @@ noted for idle power-off); without `--device` everything still drives the lane's
 own device, and the pane never streams an extra. `boot --device <udid>` boots one
 and answers `Booted` only after `simctl` lists it so, after `bootstatus`. The
 cleanup pass treats them as
-held, idle power-off turns them off like any ADE device, and the lane's end
+held, idle power-off turns them off like any DAEX device, and the lane's end
 (archive or delete) deletes them with the lane's own. `device-delete --device
 <udid>` deletes one now. The picker lists them with the held devices, never as
 free, and `device-attach` refuses one (`APPLE_DEVICE_IS_EXTRA`).
@@ -123,13 +205,13 @@ xcodebuild runs at a time in a lane's DerivedData: an install is refused while a
 launch, a test run or another install builds there (`APPLE_BUILD_BUSY`), and a
 launch or test run is refused while an install builds. It is an action of the
 `ios_simulator` domain with the lane's pin, so it runs on the lane's machine.
-`ade apple device-promote --device <udid|name>`
+`daex apple device-promote --device <udid|name>`
 (`ios_simulator.devicePromote`) makes an extra the lane's own device, keeping
 what is installed and signed in on it, for the case where the extra already has
 the build. The swap runs in the lane's lifecycle queue and is refused with
 `APPLE_LANE_DEVICE_BUSY` while the old device is streaming, recording, running
 tests or a launch, or while another chat holds the lane's lease. The old device
-is kept: an ADE device becomes an extra in the promoted one's slot, and an
+is kept: a DAEX device becomes an extra in the promoted one's slot, and an
 attached simulator is detached back to the user. Every path that refuses an
 extra prints the promote verb, and a refused `launch` also prints the
 `install --device … --launch` that does the build.
@@ -139,7 +221,7 @@ extra prints the promote verb, and a refused `launch` also prints the
 One agent should drive a device: it does the taps, screenshots and
 recordings, and other agents hand it work or wait for its results. When agents
 truly must drive one device in parallel, they take turns with
-`ade apple lease` (`ios_simulator.deviceLease`, `device/deviceLease.ts`).
+`daex apple lease` (`ios_simulator.deviceLease`, `device/deviceLease.ts`).
 
 - Each device has its own line: the lane's device, and each extra with
   `--device`. A lease waits up to `--wait` seconds (max 540) and lasts `--ttl`
@@ -172,7 +254,7 @@ builds on, is one rule (`shared/appleRuntimeVersions.ts`): the newest runtime
 that runs that model.
 
 - `runtimeList`: every installed runtime with its size (`simctl runtime list`),
-  the simulators on it (ADE's or the person's), `newest`, and `superseded` — a
+  the simulators on it (DAEX's or the person's), `newest`, and `superseded` — a
   newer runtime runs every *current* model it runs and every model one of its
   simulators uses. Retired models (their max runtime is below this Xcode's SDK)
   never keep a runtime around. Point releases can be narrow: iOS 27.1 runs only
@@ -193,7 +275,7 @@ that runs that model.
   `plutil` and a `du`. Nothing counts while a download runs or when the image
   list could not be read. The panel shows each as "left behind" with its size
   and the steps to remove it (restart, then Remove if it is listed again,
-  else Xcode ▸ Settings ▸ Components); the folder is SIP-protected, so ADE
+  else Xcode ▸ Settings ▸ Components); the folder is SIP-protected, so DAEX
   never removes it itself.
 - `runtimeInstall`: `xcodebuild -downloadPlatform iOS` as a background job
   (checks ~10 GB free first, cancellable, `apple.runtime.install` progress
@@ -213,7 +295,7 @@ that runs that model.
   `xcode-select -p` and `appPath` the `.app` that holds it (null for the
   Command Line Tools alone); both are optional, so an older brain omits them.
 
-CLI: `ade apple runtimes [list|install [--version x.y]|cancel]`. Removing is the
+CLI: `daex apple runtimes [list|install [--version x.y]|cancel]`. Removing is the
 person's call, from the panel.
 
 ### Xcode build data (DerivedData)
@@ -240,7 +322,7 @@ Both calls go to the machine by the lane's pin, like the runtimes.
   `confirmedByUser: true`, and refuses while Xcode or xcodebuild runs. Each
   path must be a real folder (not a link) directly inside the root and one
   Xcode made (the list's rule); anything else comes back in `errors`, never
-  deleted. Every folder is first renamed to ADE's `.ade-deleting-` trash beside
+  deleted. Every folder is first renamed to DAEX's `.ade-deleting-` trash beside
   it (fast, so a build that starts now no longer finds it), then the trash
   folders are measured under one 20-second deadline (they are gone already, so
   the person does not wait on a walk) and removed in the background
@@ -248,10 +330,10 @@ Both calls go to the machine by the lane's pin, like the runtimes.
   `freedIsLowerBound`; Settings then shows the sizes its confirm listed. A leftover trash folder is
   finished on the next list. Xcode rebuilds what it needs on the next build.
 
-CLI: `ade apple derived-data [--measure]` (read only). Deleting is the
+CLI: `daex apple derived-data [--measure]` (read only). Deleting is the
 person's call, from Settings.
 
-`origin` on the lane row is `created` for a device ADE made, `clone` for one
+`origin` on the lane row is `created` for a device DAEX made, `clone` for one
 made before this change (treated exactly the same), and `attached` for the
 user's own simulator (`isAdeOwnedLaneDevice`).
 
@@ -261,18 +343,18 @@ Archive and delete both end the lane's hold on its device
 (`releaseLaneAppleDevice`, called from `laneService`; the live session is
 stopped first through `teardownDeps.iosSimulatorService.stopForLane`):
 
-- An ADE device is powered off and deleted, with all its data.
-- An attached device is the user's. ADE uninstalls only the apps ADE installed
-  on it, powers it off, and unbinds it. ADE never deletes it. An install counts
-  as ADE's only when `simctl get_app_container` said the app was absent before
+- A DAEX device is powered off and deleted, with all its data.
+- An attached device is the user's. DAEX uninstalls only the apps DAEX installed
+  on it, powers it off, and unbinds it. DAEX never deletes it. An install counts
+  as DAEX's only when `simctl get_app_container` said the app was absent before
   and present after (a check that cannot answer counts as "the user had it");
   the list lives on the lane's local-only row
-  (`ade_installed_bundle_ids`), never in the synced `kv` table. ADE waits five
+  (`ade_installed_bundle_ids`), never in the synced `kv` table. DAEX waits five
   seconds after the last uninstall before the power-off: on iOS 26.3 a
   shutdown straight after `simctl uninstall` sometimes brought the app back.
 - When another lane holds the same udid (should not happen, has happened), the
   ending lane only drops its row and the device is left alone.
-- When the delete fails, or an app ADE installed is still there after the
+- When the delete fails, or an app DAEX installed is still there after the
   uninstall, the row is kept (with the apps still left). The lane has ended, so
   the cleanup pass tries again. An attached device gets one retry, which leaves
   its power as it found it; an app still there after that, or one whose state
@@ -297,10 +379,10 @@ disk; `appleTestRun.ts` runs `xcodebuild test`.
 
 ### Ownership marker and the cleanup pass
 
-Every device ADE makes carries a marker file,
+Every device DAEX makes carries a marker file,
 `~/Library/Developer/CoreSimulator/Devices/<udid>/ade-lane-device.json`
 (`projectRoot`, `laneId`, `name`, `createdAt`). The marker, not only the row,
-proves a device is ADE's: a row can be lost, and an unmarked leaked device looks
+proves a device is DAEX's: a row can be lost, and an unmarked leaked device looks
 exactly like the user's own. Rows for devices made before markers existed get
 one on the first cleanup pass.
 
@@ -331,7 +413,7 @@ anything when `simctl list` cannot be read.
   named it. The current project's own rows are read before every delete.
 
 `device-detach` acts only on the lane's own device and refuses `--device` (an
-extra is removed with `device-delete --device`). Detaching an ADE device stamps
+extra is removed with `device-delete --device`). Detaching a DAEX device stamps
 the marker `detachedAt`. The device is
 then a leftover: it is never re-adopted, and the first pass after the 5-minute
 grace deletes it (so within about 20 minutes) unless a lane attaches it again.
@@ -345,32 +427,32 @@ Leaving the marker unstamped would not do, because the pass gives an
 unstamped marker of a live lane back to that lane as a lost row. A kept device
 is `ade-kept` in the picker's ownership read ("Kept"), not a leftover, so
 Clean up does not count it. Attaching it again rewrites the marker without
-`keptAt`, and it is an ADE device of that lane again. It stays until a lane
+`keptAt`, and it is a DAEX device of that lane again. It stays until a lane
 takes it or the person deletes it from the picker. Agents pass `--keep` only
 when the user asked.
 
-Every desktop path that gives up an ADE-made device says so first (one
+Every desktop path that gives up a DAEX-made device says so first (one
 helper, `confirmAppleDeviceRelease`, a `checkboxConfirmDialog`): the tools
 card's Release device… and the pane's "Choose another device" on an off
-device. The confirm says ADE deletes it, with its apps and data, in about
+device. The confirm says DAEX deletes it, with its apps and data, in about
 5 minutes unless a lane picks it again, and offers "Keep it as a free
 simulator instead". A simulator the user attached is released in one click,
-as before, since it stays installed. The rail's "Switch device…" deletes an
-ADE device at once; its confirm now says so ("Delete <name> and pick
-another?"). The picker shows a released ADE device as "Deletes in N min"
+as before, since it stays installed. The rail's "Switch device…" deletes a
+DAEX device at once; its confirm now says so ("Delete <name> and pick
+another?"). The picker shows a released DAEX device as "Deletes in N min"
 (from `ownership.deletesAfter`, counted down on the shared 30-second ticker),
 and starting it takes it back for the lane. The web client runs the same
 components through its adapter, with the lane's pin. The phone has no release
 or delete path for Apple devices (it reads status, streams, and sends input). Attaching this project's marked
-device (the picker, or an agent for a leftover) makes it that lane's ADE device
-again (`origin: created`) and rewrites the marker. Another project's ADE device
+device (the picker, or an agent for a leftover) makes it that lane's DAEX device
+again (`origin: created`) and rewrites the marker. Another project's DAEX device
 follows the same check: while that project uses it, nobody here may attach it
 (user or agent, `APPLE_DEVICE_NOT_LANE_OWNED`); once it is stale, attaching
-takes it over as this lane's ADE device, with the marker rewritten to this
+takes it over as this lane's DAEX device, with the marker rewritten to this
 project, so it is deleted when this lane ends. Detaching an ATTACHED device uninstalls the
-apps ADE installed on it in the background and leaves its power state as it was.
+apps DAEX installed on it in the background and leaves its power state as it was.
 
-`ade apple device-cleanup` and the picker's **Clean up** run it on demand, with
+`daex apple device-cleanup` and the picker's **Clean up** run it on demand, with
 `--power-off-idle`. A requested power-off always runs, even when a background
 pass is already in flight. For an agent caller, the power-off reaches only its
 own lane's device. When the power-off is skipped as a whole (Simulator.app is
@@ -379,11 +461,11 @@ tells the user.
 
 ### Idle power-off
 
-A booted ADE device that nothing touched for 30 minutes is powered off through
+A booted DAEX device that nothing touched for 30 minutes is powered off through
 `deviceStop` (`ADE_APPLE_IDLE_POWER_OFF_MINUTES`, `0` turns it off). A booted
 simulator holds several gigabytes of memory; on a Mac that is short of it, swap
 grows on the same disk the devices use. The device is idle since the latest of
-these, so use outside ADE counts too: a device `simctl` lists as `Booting` is
+these, so use outside DAEX counts too: a device `simctl` lists as `Booting` is
 never idle (its clock restarts), CoreSimulator's own last-boot time
 (`lastBootedAt`, `lastUsedAt` on Xcode 27) covers a raw `simctl boot`, and the
 mtime of the device's `data/Containers/Bundle/Application` folder covers a raw
@@ -395,16 +477,16 @@ It is a file, not memory, so the desktop and the brain see each other's use. Any
 running process outside the simulator whose command line names the device's
 udid (in either case) also counts, as does an `xcodebuild`, `simctl` or `xctest`
 that names it by `name=`; the device's own processes do not. While Simulator.app is running, nothing is powered off: a
-person may be driving a device in its window, which leaves no trace ADE can
+person may be driving a device in its window, which leaves no trace DAEX can
 read. The power-off names the udid the pass checked. Attached devices are never
 powered off by the timer.
 
 The pass also records WHY it powered a device off, in
 `<device dir>/ade-powered-off` (`at`, `reason` — `idle` or a Clean up — and the
-idle minutes). The next command that boots the device, `ade apple status` and
+idle minutes). The next command that boots the device, `daex apple status` and
 `device-list` then say so: `ADE powered iPad Air 11 off after 31 min idle at
 10:12; the next --device command boots it again.` without it, an agent found its
-device off and blamed its own last command. The record is cleared when ADE boots
+device off and blamed its own last command. The record is cleared when DAEX boots
 the device again and ignored while `simctl` lists it Booted; a record from an
 earlier day carries its date. Every call that names an extra counts as use,
 reads included (`--device` on `screenshot`, `snapshot`, `tap`, …), so the timer
@@ -424,16 +506,16 @@ simulators hold at least 3 GB and 10% of RAM. macOS only.
    low. Your lane has simulator <name> booted. Shut it down if you do not need
    it now."). Nothing is shut down, and no idle session is woken.
 2. **Shut down idle devices.** Ten minutes later, or on a later critical
-   sample, ADE runs `simctl shutdown` on the devices that nothing uses. It never
+   sample, DAEX runs `simctl shutdown` on the devices that nothing uses. It never
    erases or deletes a device. A pass that shut a device down is followed by a
    60-minute wait; an empty pass tries again on the next sample.
 
 The decision is the pure `classifySimulatorForMemoryReclaim`
 (`ios/simulatorMemoryReclaim.ts`). A device stays on when any of these is true:
-ADE streams, records, tests or launches on it, or a viewer watches it; ADE used
+DAEX streams, records, tests or launches on it, or a viewer watches it; DAEX used
 it, installed on it or booted it in the last 15 minutes; a process outside the
 simulator names its udid; a `simctl` command works on `booted`; a test run names
-no device; its boot time cannot be read; ADE did not make it and it booted less
+no device; its boot time cannot be read; DAEX did not make it and it booted less
 than 2 hours ago. While Simulator.app runs, the device it shows stays on and
 every other device needs 2 hours without use. The pass reads these facts again
 before each shutdown.
@@ -445,11 +527,11 @@ keeps the warnings and turns the shutdown off.
 
 ### Tests
 
-`ade apple test` (`runTests`) runs `xcodebuild test` on the lane's device with
+`daex apple test` (`runTests`) runs `xcodebuild test` on the lane's device with
 `-parallel-testing-enabled NO`, DerivedData in the lane's cache, and a result
 bundle under `.ade/cache/ios-simulator/test-results` (the newest three kept).
 Output streams to `.ade/cache/ios-simulator/test-logs/<stamp>.log`. One run at a
-time per ADE runtime (`APPLE_TEST_RUN_BUSY`), claimed before the device boots. A failing test resolves with
+time per DAEX runtime (`APPLE_TEST_RUN_BUSY`), claimed before the device boots. A failing test resolves with
 `passed: false`, the failing lines and the log path. Default timeout 30 minutes,
 at most 2 hours. `testsExecuted`, `testsFailed` and `testsSkipped` come from the
 run-wide `Executed N tests, with K tests skipped and M failures` line — the one
@@ -466,7 +548,7 @@ counts. `failures` lists each failing test once, in log order, as `{test,
 file, line, message}`: XCTest's `file:line: error: -[Mod.Class testX] : msg`
 becomes `Mod/Class/testX` (what `-only-testing` takes), Swift Testing's
 `Test name() recorded an issue at File.swift:6:40: msg` keeps the test's name,
-and a test with several issues joins their messages. `ade apple test --text`
+and a test with several issues joins their messages. `daex apple test --text`
 prints the counts, that list, xcodebuild's failure lines verbatim, and the log
 and result bundle paths (it used to squash them into one 96-character cell).
 
@@ -488,13 +570,13 @@ chat claim and the hub session in the same order.
 
 - `device-detach` (`deviceDetach`) gives up the lane's device. Nothing is
   deleted now, and the power state is unchanged. A simulator the user
-  attached stays installed and shows as free in the picker. A device ADE made
+  attached stays installed and shows as free in the picker. A device DAEX made
   is a leftover the cleanup pass deletes after its grace (see the marker
   section) unless a lane attaches it again; the answer's `deletesAfter` and
   the `--text` sentence say so. Agents may call it.
-- `device-delete` (`deviceDelete`) removes an ADE device. The registry powers the
+- `device-delete` (`deviceDelete`) removes a DAEX device. The registry powers the
   device off first. An attached device is refused unless `--force`, and
-  `--force` only detaches it. ADE never deletes a simulator it did not create.
+  `--force` only detaches it. DAEX never deletes a simulator it did not create.
   The device is also deleted on lane archive and delete. The answer
   (`AppleDeviceDeleteResult`) names what went: `deleted` (udid, name, whether
   it was an extra), `detached` when `--force` only released an attached
@@ -524,14 +606,14 @@ client's own claim, not authentication. It separates the desktop from the
 `ade` CLI, and from an agent shell that has no chat identity.
 Automations cannot run it. The phone and the web client reach it through the
 `apple.invoke` remote command, which is controller-only. The registry refuses
-a device that any lane holds. Before the delete, ADE stops each stream and hub
+a device that any lane holds. Before the delete, DAEX stops each stream and hub
 session that still reads a device no lane holds.
 
 **One lane owns a device at a time.** `device-attach` on a simulator another
 lane holds MOVES the binding rather than adding a second one: the losing lane's
 stream and session are released, its row is re-keyed to the new lane in one
-statement, and `origin`/`ade_installed_bundle_ids` travel with the device so an ADE device stays
-ADE's to delete. The simulator is NOT powered off — the new owner is about to
+statement, and `origin`/`ade_installed_bundle_ids` travel with the device so a DAEX device stays
+DAEX's to delete. The simulator is NOT powered off — the new owner is about to
 drive it. The losing lane gets `apple.device.state` `phase: "released"` and
 re-lists, which lands it on the picker. Attaching the device a lane already
 holds is answered as-is; the picker only offers this behind a confirmation that
@@ -559,7 +641,7 @@ on every `ios_simulator` call (a caller cannot set or clear it). The rules:
   bound, released or booted.
 - The skill and the device hint tell agents never to make a simulator with
   `simctl create`/`clone` and to keep any hand-run `xcodebuild` DerivedData in
-  the lane's cache. ADE cannot block a raw `simctl` call; the cleanup pass and
+  the lane's cache. DAEX cannot block a raw `simctl` call; the cleanup pass and
   the storage view make such a device visible.
 
 Every other device verb follows the same rule for an agent
@@ -568,7 +650,7 @@ screenshots, element queries, recording, streaming, proof and device settings
 run on the lane's device only. A `--device`/`--udid` naming another simulator
 is refused with `APPLE_DEVICE_NOT_LANE_OWNED`, and so is `stop --udid`. With no
 lane device there is no "first booted iPhone" fallback: the call is refused
-with a message naming `ade apple start`, except `launch` and `open-device`,
+with a message naming `daex apple start`, except `launch` and `open-device`,
 which create the lane's device. User clients keep the fallback.
 
 "Agent caller" means a chat, run, step or attempt identity, or an `ade`
@@ -610,7 +692,7 @@ is no separate column.
   switch is over.
 - The **tools card** names the lane's device and its power state
   (`{name} · Running | Starting | Shut down`) and carries a corner menu that
-  boots, opens, releases, or — for an ADE device only — deletes the device
+  boots, opens, releases, or — for a DAEX device only — deletes the device
   without opening the pane. Releasing a device with a live session confirms
   first. The mark beside each lane in the Work session list is green while the
   device is booted and muted while it is claimed but off.
@@ -626,7 +708,7 @@ name is never an input.
 `native/ADESimHelper/.../Vendor/serve-sim/VENDORED.md`): Device Hub's own
 `HIDVendorDefined` send (usage page `0xFF61`, usage `0x5B`, an
 IOCFSerialize'd `{provider, source: hinge-slider-control|orientation-picker-control, type, value}`)
-reaching `dtuhidd` in the guest. ADE's `DevicePosture.swift` adds the
+reaching `dtuhidd` in the guest. DAEX's `DevicePosture.swift` adds the
 `posture` and `posture-get` commands, and streaming a Duo starts its posture watcher (`posture-changed`). The stream relay forwards each change to remote viewers as a
 `{t:"posture", angle, screen, displayOrientation, tableMode}` text note (the
 last one is replayed to a viewer that joins, before its first frame, and the
@@ -638,12 +720,12 @@ two agree): a phone mirroring its hinge sends a stream of these. Remote
 steps: SpringBoard's fold state machine can stick on a 0°↔180° jump, leaving
 the wrong panel lit. A raw angle releases Tent's Table Mode and stands a
 face-down phone up. Service: `setPosture` / `getPosture`, events
-`apple.device.posture`; CLI `ade apple fold <pose>|--angle N|--sequence a,b,c`
-and `ade apple posture`.
+`apple.device.posture`; CLI `daex apple fold <pose>|--angle N|--sequence a,b,c`
+and `daex apple posture`.
 
 **Panels.** Screen 1 is the cover (1398×2034), screen 3 the inner display
 (2007×2853, mounted a quarter turn from its framebuffer). Capture follows the
-panel CoreDevice reports active (an ADE patch to the vendored `FrameCapture`);
+panel CoreDevice reports active (a DAEX patch to the vendored `FrameCapture`);
 the service republishes the stream's pixel and point sizes on each switch, and
 a restarted capture re-applies the panel. Input on a Duo goes through
 CoreDevice's digitizer and keyboard services to touchscreen `0x100 + screenId`:
@@ -748,7 +830,7 @@ same way), an orientation press never moves it, and a device report within 2°
 window hears it, off the slider or off the window). A fold that fails puts the
 slider back to the device's own angle. The 3D body eases into every pose (hinge,
 the landscape turn, the half turn that shows the cover) and the camera eases
-to each new fit; while ADE's own fold sweeps (up to 8 s), the simulator's
+to each new fit; while DAEX's own fold sweeps (up to 8 s), the simulator's
 intermediate reports are held off so the hinge does not jump back. The body
 turns to the screen the fold ends on (`appleDuoFacingScreen`), not the one the
 simulator reports mid-sweep: it reports the switch only once its sweep ends,
@@ -783,16 +865,16 @@ than stretched into it, with the overlays placed on the picture rather than
 the frame. A recording that never changes panel is drawn exactly as before.
 
 **Apple's Duo skill.** The Duo menu's **Add Apple's Duo skill to this lane**
-(`addDuoSkill`, `ade apple duo-skill`) exports Xcode's agent skills
+(`addDuoSkill`, `daex apple duo-skill`) exports Xcode's agent skills
 (`xcrun agent skills export`) and copies `app-resizability` into the lane's
-`.agents/skills`; a lane that has it keeps its copy. Tested before shipping: an
-ADE agent (GPT-6 Luna) following it took a legacy UIKit sample that did not
+`.agents/skills`; a lane that has it keeps its copy. Tested before shipping: a
+DAEX agent (GPT-6 Luna) following it took a legacy UIKit sample that did not
 launch on the iOS 27 SDK (no scene life cycle) and laid itself out from
 `UIScreen.main`, to one that refilled the cover (3 columns, 382 pt) and the
 inner panel (5 columns, 867 pt) across folds without relaunching. The skill
 asks once whether the scene manifest goes in Info.plist or code. Xcode's other
-Duo skill, `device-interaction`, drives Xcode's own MCP tools, so ADE leaves it
-out: `ade apple` covers the same ground.
+Duo skill, `device-interaction`, drives Xcode's own MCP tools, so DAEX leaves it
+out: `daex apple` covers the same ground.
 
 ### 3D renders
 
@@ -806,12 +888,12 @@ window pinned to another machine files where the chat lives. The answer names
 that chat and the file, so the toast says where the renders went ("this
 chat's proof drawer", the chat that holds the device, or the lane's proof)
 with **Open proof** (when it is the chat on screen) and, on the device's own
-machine, **Show in Finder**. `ade apple render` prints a `cite:` line per
+machine, **Show in Finder**. `daex apple render` prints a `cite:` line per
 proof: the service credits each render filed for the lane while the request
 is open to it.
 
-`ade apple render` asks for the same thing from the CLI, and needs no pane:
-only an ADE desktop window with the project open, on the device's machine or
+`daex apple render` asks for the same thing from the CLI, and needs no pane:
+only a DAEX desktop window with the project open, on the device's machine or
 bound to it (a project on another machine must be that window's front tab: a
 parked remote tab does not hear the request). The service emits `apple.render.request` (with the asking chat)
 to every such window, and the first `renderAck` takes the job:
@@ -848,13 +930,13 @@ never to `capabilities`.
 Agents often see only a skill index, not the `ade-apple` skill body. So when a
 lane holds a device, the chat service adds a short hint to the
 provider-bound prompt (`laneAppleDeviceDirective.ts`). The hint names the
-device and points the agent at `ade apple`, not at `simctl` or
+device and points the agent at `daex apple`, not at `simctl` or
 `Simulator.app`. It is sent on the first turn after a device is bound, and
 again only when the bound udid changes. It never enters the transcript. Off
 macOS there is no lookup and no hint.
 
-An agent can put its device on the user's screen with `ade apple show`
-(or `ade ui show apple`). `--floating` shows the floating player instead of
+An agent can put its device on the user's screen with `daex apple show`
+(or `daex ui show apple`). `--floating` shows the floating player instead of
 the pane. The brain publishes a show request on the runtime event stream. The
 desktop renderer that shows the chat opens the surface and answers. The CLI
 prints `shown`, `held` (a window has the project open but not this chat), or
@@ -862,77 +944,22 @@ prints `shown`, `held` (a window has the project open but not this chat), or
 floating player by itself, unless the user turned off "Show preview when
 minimized" for that chat.
 
-## Source file map
-
-| Path | Role |
-|---|---|
-| `apps/desktop/native/ADESimHelper/` | Vendored Swift helper: framebuffer capture, H.264 encode, HID input, accessibility tree, recording (`RecordingSession.swift`, idle-gap cut in `IdleGapCompressor.swift`). Every device lookup goes through `SimServiceContextCache.swift`: the helper lives as long as the brain, and after CoreSimulatorService restarts its shared context keeps the old device list (new devices missing, booted ones reading Shutdown), so a lookup that misses or finds a device not booted asks a new context, at most once a second, and keeps it. |
-| `apps/desktop/scripts/build-sim-helper.mjs` | Builds `resources/native/ade-sim-helper` for macOS dist. |
-| `apps/desktop/src/main/services/ios/` | Device lifecycle, launch, screenshots, helper transport, recording, Preview Lab. Preload namespace stays `iosSimulator`. |
-| `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The `ios_simulator` service: app sessions, input, streams, screenshots, and the wiring of the modules below. |
-| `apps/desktop/src/main/services/ios/laneDeviceRegistry.ts` | One device per lane: create, attach, takeover, the `lane_apple_devices` rows, the ownership marker, the cleanup pass (`reconcile`), and `releaseLaneAppleDevice` / `endLaneDeviceOnDisk` for a lane that ends. |
-| `apps/desktop/src/main/services/ios/xcodeGenProjects.ts` | XcodeGen: a `project.yml` with no tracked `.xcodeproj` beside it (in the build root, a folder in it, or a folder under `apps/`) is generated into one before a launch, install or test, and before a work copy's targets are listed. A tracked `.xcodeproj` is never rewritten. |
-| `apps/desktop/src/main/services/ios/laneDeviceMaintenance.ts` | The background cleanup timer and idle power-off, with the shared activity file. |
-| `apps/desktop/src/main/services/ios/simulatorMemoryReclaim.ts` | The pure rules of the memory guard: which step a sample takes and whether a device is idle. Also owns the "a tool uses this device" check the idle power-off shares. |
-| `apps/ade-cli/src/services/runtime/simulatorMemoryReclaimer.ts` | The machine brain's memory guard: reads the devices and processes, sends the warnings, shuts idle devices down. |
-| `apps/desktop/src/main/services/ios/laneDeviceLifecycle.ts` | `deviceDetach`, `deviceDelete`, the takeover release, and `deviceDeleteInstalled`. Runs each verb's teardown in one order. |
-| `apps/desktop/src/main/services/ios/simulatorPower.ts` | The one place ADE boots or powers off a simulator. It resets the helper session, stops a recording, and drops the cached `simctl list`. |
-| `apps/desktop/src/main/services/ios/iosDeviceHub.ts`, `simHelperClient.ts` | Device sessions, and the NDJSON client that supervises the helper. |
-| `apps/desktop/src/main/services/ios/appleStreamRelay.ts`, `appleStreamRelayForService.ts`, `appleLocalViewers.ts` | Brain-side forwarder for the H.264 stream and a Duo's pose notes, the relay over the simulator service (which captures it starts and stops, the pose it forwards), and which lanes have a viewer on this machine. |
-| `apps/desktop/src/main/services/ios/appleStreamPacing.ts` | Per-viewer pacing from acks and the lane's adaptive encoder cap. |
-| `apps/desktop/src/main/services/ios/recording/simRecordingService.ts` | Recording rules: auto-record, caps, orphan recovery, filing each recording as proof. |
-| `apps/desktop/src/main/services/ios/recording/appleRecordingsStore.ts` | The on-disk layout `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/<id>.mp4` plus the `<id>.json` sidecar. Every walk of that layout goes through it. |
-| `apps/desktop/src/main/services/chat/laneAppleDeviceDirective.ts` | The turn-time hint that tells an agent its lane has a device. |
-| `apps/desktop/src/shared/types/iosSimulator.ts` | Cross-process types, including `LaneDevice`, recording records, `APPLE_AGENT_ACTIONS` and `APPLE_USER_ONLY_ACTIONS`. |
-| `apps/desktop/src/shared/runtimeClientNames.ts` | `DESKTOP_CLIENT_NAMES` and `isDesktopClientName`, the gate for user-only verbs on the RPC server. |
-| `apps/desktop/src/shared/types/workToolShow.ts` | The show-request surfaces (`apple`, `floating-apple`, `browser`, `proof`) and event shape. |
-| `apps/desktop/src/renderer/components/apple/AppleDevicePane.tsx` | The pane body. It composes the picker, stage, rail, drawer and status strip. |
-| `apps/desktop/src/renderer/components/apple/useAppleLaneDeviceList.ts` | Service status (polled while on screen) and the lane's device list for the pane. |
-| `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
-| `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx`, `components/device/useDeviceInspect.ts` | Inspect mode: one snapshot per switch-on, the hovered and selected element (shared with Android), and the Apple overlay. |
-| `apps/desktop/src/renderer/components/device/deviceScene.ts`, `deviceModelLoader.ts`, `deviceOrbit.ts`, `apple/AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader and the orbit (shared with Android), and the Apple 3D presenter. |
-| `apps/desktop/src/renderer/components/device/DeviceRenderSheet.tsx`, `deviceRenderProof.ts`, `apple/appleRenderProof.ts` | The Render sheet and the render-to-proof steps (shared with Android), and the Duo's pose passes. |
-| `apps/desktop/src/renderer/components/device/deviceDrawerState.ts`, `DeviceToolsDrawerShell.tsx`, `DeviceLocationRows.tsx`, `shared/RecordingRow.tsx` | The Tools drawer's state, frame, Location rows and recording rows, shared with Android. |
-| `apps/desktop/src/main/services/device/deviceLease.ts` | `ade apple lease`: the advisory, queued, expiring turn on a lane's device for agents that share it. |
-| `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
-| `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |
-| `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoDock.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the Duo's dock under the device (hinge or screen, and turn), and Apple's physical Duo body. |
-| `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `apps/desktop/src/renderer/components/device/proceduralFoldBody.ts`, `device/HingeSlider.tsx` | The foldable "Duo" mode: the pure posture state machine, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder (with its panel rotations) and the hinge slider, which Android foldables share. Capability-gated; unused on non-foldable devices. |
-| `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old ADE? tags, Clean up). |
-| `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
-| `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |
-| `apps/desktop/src/renderer/components/ui/DangerConfirmMenuItem.tsx` | The shared two-row destructive menu item (a disabled idle row plus a confirmation row) used by the card menu and the Apple and Android device pickers. |
-| `apps/desktop/src/renderer/components/apple/AppleDeviceMiniPlayer.tsx`, `appleMiniPlayerStore.ts` | The floating device player over the chat. |
-| `apps/desktop/src/renderer/components/apple/AppleRenderHost.tsx`, `AppleRenderHostJob.tsx`, `useAppleRenderRequests.ts` | `ade apple render`: the pane's render and broker handshake, the shared render body, and the per-project host that renders off screen when no pane takes the request. |
-| `apps/ade-cli/src/cli.ts` | `ade apple` typed commands. `ade ios-sim` is the deprecated alias. |
-| `apps/ade-cli/src/help/appleHelp.ts` | Help text for each `ade apple` subcommand, and the help aliases. |
-| `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
-| `apps/ade-cli/src/services/workTools/workToolShowRequests.ts` | `ade apple show` / `ade ui show` on the brain side. |
-| `apps/desktop/resources/agent-skills/ade-apple/SKILL.md` | Agent skill for the verbs below. |
-| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift`, `AppleDeviceViewerModel.swift` | The phone's simulator viewer on the live stage (watch, hold to control, the menu, fold mirroring) and the model that owns its ticket, posture and mode. |
-| `apps/ios/ADE/Views/Work/AppleStreamSession.swift` | The live stream both phone viewers share (simulator and emulator): the socket, the decoder, the health clock, the speed readout and the automatic redial. |
-| `apps/ios/ADE/Views/Work/LiveStage.swift`, `LiveStageChrome.swift` | The phone's live stage: placement and Turn per context and the root host that draws the stream full screen or over the Duo's pane, with the pane slot (`LiveStage.swift`); the aspect-fit rule, the screen viewers' shared frame, the floating menu button and its panel, and the device viewers' shared touch rules, status card, speed readout and keyboard bar (`LiveStageChrome.swift`). |
-| `apps/ios/ADE/Views/Work/AppleDeviceControl.swift` | The phone's touch mapping, gesture rule, input commands, Control blockers and the tap→screen probe. |
-| `apps/ios/ADE/Views/Work/AppleDeviceStream.swift` | The phone's ticket, record parser, health clock, decoder layer and the acking stream socket. |
-| `apps/ios/ADE/Services/SyncService+AppleDevice.swift` | The phone's `apple.*` calls, asked of the machine that owns the lane. |
-| `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | DEBUG-only Swift helpers that publish element frames into the app container. See [inspector.md](./inspector.md). |
-
 ## CLI
 
-Canonical group: `ade apple`. Alias: `ade ios-sim` (one deprecation line per
+Canonical group: `daex apple`. Alias: `daex ios-sim` (one deprecation line per
 process). New verbs call `deviceCreate`, `deviceAttach`, `deviceList`,
 `deviceDelete`, `recordStart`, `recordStop`, `recordList`, `recordDelete`,
 and `frame` on the `ios_simulator` RPC namespace.
 
 ```bash
-ade --socket apple status --text
-ade --socket apple device-create --text
-ade --socket apple apps --text
-ade --socket apple launch --target <id> --follow --text
-ade --socket apple stream-start --fps 60 --text
-ade --socket apple frame --out .ade/tmp/sim.png --text
-ade --socket apple proof-bundle --caption "Settings row renders" --text
-ade --socket apple shutdown --text
+daex --socket apple status --text
+daex --socket apple device-create --text
+daex --socket apple apps --text
+daex --socket apple launch --target <id> --follow --text
+daex --socket apple stream-start --fps 60 --text
+daex --socket apple frame --out .ade/tmp/sim.png --text
+daex --socket apple proof-bundle --caption "Settings row renders" --text
+daex --socket apple shutdown --text
 ```
 
 ### Verb map
@@ -948,44 +975,44 @@ Existing verbs keep their RPC methods: `status` → `getStatus`, `apps` →
 `live-start` is deleted. `--backend` is deleted. `--fps`, `--scale-factor`,
 and `--bitrate-kbps` survive on `stream-start`.
 
-### New verbs
+### Device and recording verbs
 
 ```bash
-ade --socket apple device-create [--runtime <r>] [--device-type <t>] [--from <simulator>] [--name <name>] --text
-ade --socket apple device-attach --simulator <udid|name> --text
-ade --socket apple device-promote --device <udid|name> [--ignore-ownership] --text
-ade --socket apple device-list [--installed] [--runtimes] [--disk] [--lane <lane-id>] --text
-ade --socket apple device-delete [--force] --text
-ade --socket apple device-cleanup [--power-off-idle] --text
-ade --socket apple test [--target <id>|--scheme <s>] [--only <ids>] [--build-only] --text
+daex --socket apple device-create [--runtime <r>] [--device-type <t>] [--from <simulator>] [--name <name>] --text
+daex --socket apple device-attach --simulator <udid|name> --text
+daex --socket apple device-promote --device <udid|name> [--ignore-ownership] --text
+daex --socket apple device-list [--installed] [--runtimes] [--disk] [--lane <lane-id>] --text
+daex --socket apple device-delete [--force] --text
+daex --socket apple device-cleanup [--power-off-idle] --text
+daex --socket apple test [--target <id>|--scheme <s>] [--only <ids>] [--build-only] --text
 
-ade --socket apple record-start [--overlays on|off] [--label <text>] [--plain] [--max-seconds <n>] --text
-ade --socket apple record-stop [--keep|--discard] --text
-ade --socket apple record-list --text
-ade --socket apple record-delete --id <id> --text
+daex --socket apple record-start [--overlays on|off] [--label <text>] [--plain] [--max-seconds <n>] --text
+daex --socket apple record-stop [--keep|--discard] --text
+daex --socket apple record-list --text
+daex --socket apple record-delete --id <id> --text
 
-ade --socket apple start [--udid <udid>|--runtime <r> --device-type <t>|--create <sourceUdid>] --text
-ade --socket apple stop [--force] --text
-ade --socket apple device-detach [--force] --text
-ade --socket apple show [--floating] --text
-ade --socket apple scroll down [--anchor-x <x> --anchor-y <y>] [--amount <n>] --text
-ade --socket apple foreground [--wait <seconds>] --text
-ade --socket apple screenshot [--out <path>] [--no-proof] --text
-ade --socket apple launch [--configuration <name>] [--launch-arg=<v>] [-- <app args>] --text
-ade --socket apple relaunch --bundle-id <id> [-- <app args>] --text
-ade --socket apple lease [--device <id>] [--wait <s>] [--ttl <s>] [--holder <name>] [--token <t>] --text
-ade --socket apple lease release --token <t> --text
-ade --socket apple lease status [--device <id>] --text
-ade --socket apple install [--device <id>] [--launch] [--configuration <c>] [--target <id>] [--no-build] --text [-- <app args>]
-ade --socket apple window [--size WxH|--fill|--left|--right|--top|--bottom|--split|--thirds|--quarters|--slide-over] [--device <id>] --text
-ade --socket apple auto-record [on|off] --text
+daex --socket apple start [--udid <udid>|--runtime <r> --device-type <t>|--create <sourceUdid>] --text
+daex --socket apple stop [--force] --text
+daex --socket apple device-detach [--force] --text
+daex --socket apple show [--floating] --text
+daex --socket apple scroll down [--anchor-x <x> --anchor-y <y>] [--amount <n>] --text
+daex --socket apple foreground [--wait <seconds>] --text
+daex --socket apple screenshot [--out <path>] [--no-proof] --text
+daex --socket apple launch [--configuration <name>] [--launch-arg=<v>] [-- <app args>] --text
+daex --socket apple relaunch --bundle-id <id> [-- <app args>] --text
+daex --socket apple lease [--device <id>] [--wait <s>] [--ttl <s>] [--holder <name>] [--token <t>] --text
+daex --socket apple lease release --token <t> --text
+daex --socket apple lease status [--device <id>] --text
+daex --socket apple install [--device <id>] [--launch] [--configuration <c>] [--target <id>] [--no-build] --text [-- <app args>]
+daex --socket apple window [--size WxH|--fill|--left|--right|--top|--bottom|--split|--thirds|--quarters|--slide-over] [--device <id>] --text
+daex --socket apple auto-record [on|off] --text
 
-ade --socket apple frame [--out <path>] --text
-ade --socket apple button home --text
-ade --socket apple rotate landscape-left --text
+daex --socket apple frame [--out <path>] --text
+daex --socket apple button home --text
+daex --socket apple rotate landscape-left --text
 
-ade --socket apple type "reddit" --submit --text
-ade --socket apple key return --text
+daex --socket apple type "reddit" --submit --text
+daex --socket apple key return --text
 ```
 
 `screenshot` reads no accessibility tree, so it prints no `elements` line
@@ -1140,7 +1167,7 @@ verified from its posture instead (see Foldable mode).
 5. There is no auto-delete. Recordings live under
    `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/`. Pruning auto
    recordings an agent never cited was considered and left out: each one is
-   already a proof row the user may have opened, and nothing tells ADE that
+   already a proof row the user may have opened, and nothing tells DAEX that
    they did not. The opt-outs above stop the ones nobody wants.
 6. A second chat sees `APPLE_OWNED_BY_OTHER_SESSION` with the owning chat,
    lane, and age.
@@ -1219,25 +1246,25 @@ live display's orientation at each gesture's start). A viewer (the pane, a
 remote window, the phone) maps clicks onto the framebuffer it draws turned,
 so its input (`source: "user"`) goes as is.
 
-`--text` is the one flag that reads two ways. A bare `--text` selects ADE's
+`--text` is the one flag that reads two ways. A bare `--text` selects DAEX's
 human-readable output. `--text <value>` is the element query's substring
 match. Write `--text-match <value>` when you want no ambiguity.
 
 The semantic loop:
 
 ```bash
-ade --socket apple open-device --text
-ade --socket apple snapshot --text
-ade --socket apple tap-element --label "Sign in" --text
-ade --socket apple fill-element --identifier email-field --value ada@example.com --text
-ade --socket apple wait-for-element --label "Welcome" --timeout-ms 8000 --text
-ade --socket apple assert-visible --label "Welcome" --text
-ade --socket apple proof-bundle --caption "Sign-in succeeds" --text
+daex --socket apple open-device --text
+daex --socket apple snapshot --text
+daex --socket apple tap-element --label "Sign in" --text
+daex --socket apple fill-element --identifier email-field --value ada@example.com --text
+daex --socket apple wait-for-element --label "Welcome" --timeout-ms 8000 --text
+daex --socket apple assert-visible --label "Welcome" --text
+daex --socket apple proof-bundle --caption "Sign-in succeeds" --text
 ```
 
 ### iPad windows
 
-`ade apple window` (`ios_simulator.windowLayout`) lays out the front app's
+`daex apple window` (`ios_simulator.windowLayout`) lays out the front app's
 window on an iPad in windowed mode (iPadOS 26+). No simctl or CoreSimulator
 call sets a window's frame or the multitasking mode, so it works the way a
 person does, through the accessibility tree and the helper's touches, and
@@ -1252,7 +1279,7 @@ checks the result:
   points in from the window's top left (43 under the status bar), and a
   `Resize <app>` grabber (`resize-grabber`, value `Bottom Right`, or `Bottom
   Left` on a Slide Over window) on a bottom corner. The grid walk often
-  misses them, so ADE hit-tests (`ax-hit`) where they can be: near the last
+  misses them, so DAEX hit-tests (`ax-hit`) where they can be: near the last
   frame it saw or the place it just sent the window, on the slots a window
   that size tiles into, the corners 20 points apart, and last the whole
   screen for the controls, 30 by 18 points apart. All point reads for one
@@ -1273,8 +1300,8 @@ checks the result:
 - `--fill`, `--left`, `--right`, `--top`, `--bottom`, `--split` (Left and
   Right), `--thirds`, `--quarters` and `--slide-over` are the window's own
   menu: a long press on Zoom opens Move & Resize, Fill & Arrange and Enter
-  Slide Over, and ADE taps the item by its label. A filled window has no
-  controls, so ADE first takes it out of Fill; a window partly off the screen
+  Slide Over, and DAEX taps the item by its label. A filled window has no
+  controls, so DAEX first takes it out of Fill; a window partly off the screen
   (its controls can be off it) is first dragged wholly onto it. A menu
   without the item answers with what it offers and closes with Escape.
 - `applied` is `judgeAppleWindowLayout` (`appleWindowLayout.ts`): the frame
@@ -1310,7 +1337,7 @@ checks the result:
   its controls (its top-left 62x65 points) are off it; a window that outgrew
   a bottom or right slot keeps its controls, and dragging it would untile it.
 - `APPLE_WINDOWING_UNAVAILABLE`: no window (an iPhone, or an iPad set to Full
-  Screen Apps), or a window ADE cannot find. Held landscape works too: the
+  Screen Apps), or a window DAEX cannot find. Held landscape works too: the
   helper turns SpringBoard's elements, which come back in the portrait
   framebuffer's points, onto the screen (see below).
 - Measured both ways up on that iPad: `status`, `--size`, `--move`
@@ -1439,9 +1466,9 @@ by itself, with a fresh single-use ticket each time:
   asks for a new stream up to three times, then shows "Video stopped." with
   Reconnect.
 
-When the Mac's ADE cannot find its simulator helper, the phone says the
-helper is missing on the Mac and that reinstalling or updating ADE there
-restores it. "Update ADE on your Mac" is kept for a Mac that lacks the
+When the Mac's DAEX cannot find its simulator helper, the phone says the
+helper is missing on the Mac and that reinstalling or updating DAEX there
+restores it. "Update DAEX on your Mac" is kept for a Mac that lacks the
 commands, or whose ticket has no point size.
 
 ### The phone: watch and control
@@ -1598,14 +1625,14 @@ result reports `matchCount`.
 | Tier | Source | Survives |
 |---|---|---|
 | `id:` | Accessibility identifier | Re-render and layout change |
-| `component:` | ADE Inspector component id | Re-render, not a rename |
+| `component:` | DAEX Inspector component id | Re-render, not a rename |
 | `label:` | Role, type, label, value | Re-render, not a copy change |
 | `pos:` | Tree path | Nothing |
 
 Read a `pos:` ref as a warning. Ask for an accessibility identifier.
 
 With several matches the order is: elements read from the screen before ones
-ADE inferred, the app layer before the accessibility layer, a control (a
+DAEX inferred, the app layer before the accessibility layer, a control (a
 Button, cell, link) before text or an image inside it, then the snapshot's own
 order (smallest first). `find` and `tap-element` say which match they used,
 why, list the others with their points, and name the `--index` for the next.
@@ -1645,7 +1672,7 @@ closest match was found in and the flag that queries it (`The closest is the
 identifier "BackButton"; query it with --identifier "BackButton".`).
 
 Snapshot and inspect are served by the helper's accessibility tree, with the
-DEBUG ADE Inspector kit as a source overlay. See [inspector.md](./inspector.md).
+DEBUG DAEX Inspector kit as a source overlay. See [inspector.md](./inspector.md).
 
 ## Event log and proof bundles
 
@@ -1655,7 +1682,7 @@ required `bundleId`. The predicate is `(subsystem BEGINSWITH "<bundle id or
 app's `CFBundleExecutable` (`simctl get_app_container … app`), or `--process`.
 Each value is refused, not escaped, when it holds a quote, a backslash or a
 line break, and a process name must look like one. Every row carries
-`deviceUdid` (an ADE row names the device it drove), and `getEventLog` keeps
+`deviceUdid` (a DAEX row names the device it drove), and `getEventLog` keeps
 the named device's rows, else the followed device's. After 8 s with no app
 row the page carries a `hint` that names the predicate and the flags to widen
 it; `print()` never reaches the log. `captureProofBundle` writes `screen.png`,
@@ -1669,11 +1696,11 @@ recording. With no `outDir` the bundle lands in
 
 | State | What to do |
 |---|---|
-| No installed simulator | Open Xcode ▸ Settings ▸ Components. ADE never downloads one. |
+| No installed simulator | Open Xcode ▸ Settings ▸ Components. DAEX never downloads one. |
 | `APPLE_RUNTIME_NOT_INSTALLED` | The runtime or model named is not on this Mac; the message lists what is. |
 | `APPLE_TEST_RUN_BUSY` | Another `apple test` is running. Wait, then run again. |
-| Disk full of simulators | Open Apple Development's picker and press **Clean up**, or run `ade apple device-cleanup --power-off-idle`. Delete an "Old ADE?" device from its own menu. |
-| `APPLE_HELPER_UNAVAILABLE` | No usable helper: missing everywhere ADE looked (the message lists the folders: the app's `resources/native`, a standalone brain's `$ADE_RUNTIME_ROOT/native`, the installed ADE app), or one that speaks another helper protocol. |
+| Disk full of simulators | Open Apple Development's picker and press **Clean up**, or run `daex apple device-cleanup --power-off-idle`. Delete an "Old DAEX?" device from its own menu. |
+| `APPLE_HELPER_UNAVAILABLE` | No usable helper: missing everywhere DAEX looked (the message lists the folders: the app's `resources/native`, a standalone brain's `$ADE_RUNTIME_ROOT/native`, the installed DAEX app), or one that speaks another helper protocol. |
 | `APPLE_STREAM_NOT_RUNNING` | `frame` needs a live stream. Use `screenshot`, or `stream-start` first. |
 | `APPLE_DEVICE_OFF` | A viewer asked to watch a device that is off. Watching never boots; `apple start` does. |
 | `APPLE_BUTTON_UNSUPPORTED` | That button is not a helper `button` name, and this Xcode's `simctl` has no equivalent (today: `shake`). |
@@ -1681,8 +1708,8 @@ recording. With no `outDir` the bundle lands in
 | `APPLE_RECORDING_PINNED` | Proof-marked recordings cannot be deleted by an agent. |
 | `APPLE_DEVICE_ALREADY_RECORDING` | Another lane records this device. Run `record-stop --lane <that lane>`. |
 | `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` | Ask, then `shutdown --force` / `open-device --force` / `claim --ignore-ownership`. |
-| `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` | Re-run `ade --socket apple apps --text`. |
-| `IOS_SIMULATOR_LAUNCH_IN_PROGRESS` | Wait, or `ade --socket apple shutdown --force --text`. |
+| `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` | Re-run `daex --socket apple apps --text`. |
+| `IOS_SIMULATOR_LAUNCH_IN_PROGRESS` | Wait, or `daex --socket apple shutdown --force --text`. |
 | `IOS_SIMULATOR_LANE_NOT_RESOLVED` | Pass `--project-root`. |
 | `IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT` | `--out` must be inside the build root (the lane worktree); a relative path resolves there. |
 | `APPLE_EXTRA_DEVICE_LIMIT` | The lane holds its limit of extra devices (two, or `ADE_APPLE_LANE_EXTRA_DEVICES`). `device-delete --device <udid>` one first. |
