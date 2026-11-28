@@ -20,7 +20,7 @@ import { readCloudSettings, settingChangedAt, type CloudSettings } from "./setti
 import { readConsent, sponsoredRequester, startsOnFor, yesHolds, type ConsentRow, type SponsoredRequester } from "./sponsoredConsent";
 import { freeRuleCharges, smallLookUntil } from "./sponsoredSmall";
 import { adTerms, gravitySwitches, pricingV3Mode, pricingV3Reaches, type PricingV3Mode, type SponsoredMode } from "./sponsoredSwitch";
-import { logCloud, reportCloudFailure, restartStretchAtStatements, shownPlanIdOf, statusGuard, type AccountRow, type ComputerRow } from "./store";
+import { isPendingId, logCloud, reportCloudFailure, restartStretchAtStatements, shownPlanIdOf, statusGuard, type AccountRow, type ComputerRow } from "./store";
 
 /**
  * Pricing v3: the ad price (`docs/features/ade-cloud/README.md`, "Plans,
@@ -364,6 +364,17 @@ export async function syncAccountPrices(env: GravityEnv, account: AccountRow, no
 export async function syncAdPricesInTick(env: GravityEnv, tickRows: ComputerRow[], now: number): Promise<void> {
   try {
     const switches = await pricingSwitches(env);
+    // A new computer whose create died before its first message counted (and nobody asked again): it counts now.
+    const unproved = switches.mode === "off" ? [] : tickRows.filter((computer) => computer.ad_first_proof != null && !isPendingId(computer.instance_id));
+    if (unproved.length) {
+      const accounts = await env.DB.prepare("select * from cloud_accounts where user_id in (select value from json_each(?))")
+        .bind(JSON.stringify([...new Set(unproved.map((computer) => computer.user_id))])).all<AccountRow>();
+      const byUser = new Map((accounts.results ?? []).map((account) => [account.user_id, account]));
+      for (const computer of unproved) {
+        const account = byUser.get(computer.user_id);
+        if (account) await countStoredFirstProof(env, account, computer, now);
+      }
+    }
     // The rows as the tick's own status changes left them: a computer it just woke is awake now.
     const computers = switches.mode === "off" || tickRows.length === 0 ? tickRows
       : (await env.DB.prepare("select * from cloud_computers where deleted_at is null and instance_id in (select value from json_each(?))")
@@ -375,15 +386,16 @@ export async function syncAdPricesInTick(env: GravityEnv, tickRows: ComputerRow[
     const userIds = [...new Set(candidates.map((computer) => computer.user_id))];
     const ctxs = await contextsFor(env, switches, userIds);
     const targets = await targetsOf(env, candidates.map((computer) => computer.instance_id));
-    const moved: string[] = [];
+    // A proof just counted may have moved its computer too: the rest of the tick reads it as written.
+    const moved: string[] = unproved.map((computer) => computer.instance_id);
     const statements = candidates.flatMap((computer) => {
       const ctx = ctxs.get(computer.user_id);
       const move = ctx ? computerPriceStatements(env, computer, targets.get(computer.instance_id) ?? null, ctx, now) : [];
       if (move.length) moved.push(computer.instance_id);
       return move;
     });
-    if (statements.length === 0) return;
-    await env.DB.batch(statements);
+    if (statements.length) await env.DB.batch(statements);
+    if (moved.length === 0) return;
     // The rest of the tick (the settle, the zero stop, the daily settle) reads the rows it passed in:
     // each moved one gets its rate and stretch as written (a guarded move a race refused keeps the old).
     const fresh = await env.DB.prepare("select instance_id, multiplier_milli, ad_full_milli, awake_since from cloud_computers where instance_id in (select value from json_each(?))")
@@ -662,6 +674,37 @@ export async function countAdProof(
   `).bind(key, account.user_id, proof.targetAt ?? now, now)));
   await syncAccountPrices(env, account, now, scope);
   return { counted: true };
+}
+
+/** `cloud_computers.ad_first_proof` as written by the create's reservation (`[chat id, message id]`), or null. */
+export function readFirstProof(value: string | null | undefined): { chatId: string; messageId: string } | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.length === 2 && typeof parsed[0] === "string" && typeof parsed[1] === "string" ? { chatId: parsed[0], messageId: parsed[1] } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The first message a new computer's create was priced at the ad price for
+ * (`ad_first_proof`, kept by its reservation): counted as its proof once, by
+ * whichever comes first, the create itself, a replay of it (the create died
+ * after the provider made the computer) or the minute tick (nobody asked
+ * again), for the whole window from the reservation's time. Then cleared.
+ * Never another message than the one the create's gate checked, and never
+ * fails the caller.
+ */
+export async function countStoredFirstProof(env: GravityEnv, account: AccountRow, computer: Pick<ComputerRow, "instance_id" | "created_at" | "ad_first_proof">, now: number): Promise<void> {
+  const proof = readFirstProof(computer.ad_first_proof);
+  if (!proof || isPendingId(computer.instance_id)) return;
+  try {
+    await countAdProof(env, account, { chatId: proof.chatId, turnId: `msg:${proof.messageId}`, kind: "sent", freeModel: false, instanceId: computer.instance_id, phoneId: null, targetAt: computer.created_at }, now);
+    await env.DB.prepare("update cloud_computers set ad_first_proof = null where instance_id = ? and ad_first_proof = ?").bind(computer.instance_id, computer.ad_first_proof).run();
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.first_message_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
 }
 
 /** The day's count of proofs by product (`proof:<product>` for replies, `sent:<product>` for messages), for the owner's report: added only with the proof's own row. */

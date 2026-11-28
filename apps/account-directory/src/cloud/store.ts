@@ -170,6 +170,11 @@ export type ComputerRow = {
   join_asn?: number | null;
   /** Pricing v3 (`adPrice.ts`, migration 0073): its full rate while it runs at the ad price; null (or absent) at the full price. */
   ad_full_milli?: number | null;
+  /**
+   * Pricing v3 (migration 0077): the first message its create was priced at the ad price for
+   * (`[chat id, message id]`), until it counts as its proof (`countStoredFirstProof`).
+   */
+  ad_first_proof?: string | null;
   /** While a move runs: the computer it moves (see `MOVE_GRACE_MS`). */
   moving_from: string | null;
   /** When an owner's block cut it off the internet (migration 0037, `safety.ts`); null again on unblock. */

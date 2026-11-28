@@ -83,8 +83,14 @@ function sqliteD1() {
       if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
       return { success: true, meta: { changes: Number(db.prepare(sql).run(...params).changes) } };
     },
-    first: async <T>() => (db.prepare(sql).get(...params) ?? null) as T | null,
-    all: async <T>() => ({ success: true, results: db.prepare(sql).all(...params) as T[] }),
+    first: async <T>() => {
+      if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
+      return (db.prepare(sql).get(...params) ?? null) as T | null;
+    },
+    all: async <T>() => {
+      if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
+      return { success: true, results: db.prepare(sql).all(...params) as T[] };
+    },
     apply: () => {
       if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
       // As in D1, a read in a batch answers its rows.
@@ -7174,6 +7180,49 @@ describe("Pricing v3's ad price", () => {
       saveChat("chat-app", String(made[0]!.instance_id));
       expect(await sent({ instanceId: made[0]!.instance_id, chatId: "chat-app", messageId: "first-1" })).toEqual({ counted: false, reason: "repeat" });
     }
+  });
+
+  // A create that dies after the provider made the computer (a request cut off at the app's timeout) never ran its last steps.
+  it.each<[string, "adoption" | "finish", "replay" | "tick"]>([
+    ["it died before its adoption; the app asks again", "adoption", "replay"],
+    ["it died after its adoption; the app asks again", "finish", "replay"],
+    ["it died after its adoption; nobody asks again", "finish", "tick"],
+  ])("a create priced at the ad price for a first message keeps that price and counts the message once: %s", async (_label, dies, then) => {
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    // Free at 0 credits with ads on: only the ad price lets its Small run.
+    harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+    const body = { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_request_id: "req-first" }, adProof: { chatId: "chat-new", messageId: "first-1" } };
+    harness.injectFault((sql) => (dies === "adoption" ? /update cloud_computers set instance_id = \?/ : /select instance_id, created_at, ad_first_proof/).test(sql));
+    const died = await fromHome("POST", "/cloud/instances", body).catch(() => null);
+    harness.injectFault(null);
+    expect(died?.status ?? 500).toBeGreaterThanOrEqual(500);
+    expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([]);
+    // From its reservation it holds the gate's price: no full-price stretch before the message counts.
+    expect(harness.rows("select multiplier_milli as rate, ad_full_milli as adFull from cloud_computers where deleted_at is null")).toEqual([{ rate: 0, adFull: 500 }]);
+
+    if (then === "replay") {
+      // A repeat naming another message gets nothing for it; the message the gate checked counts once, however many repeats.
+      expect((await fromHome("POST", "/cloud/instances", { ...body, adProof: { chatId: "chat-x", messageId: "other-1" } })).status).toBe(200);
+      expect((await fromHome("POST", "/cloud/instances", body)).status).toBe(200);
+      expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([{ turn_id: "msg:first-1" }]);
+    }
+    await harness.tick();
+    expect(harness.rows("select chat_id, turn_id, instance_id from cloud_ad_proofs")).toEqual([{ chat_id: "chat-new", turn_id: "msg:first-1", instance_id: "madenew12345" }]);
+    expect(harness.row("select sum(count) as n from cloud_sponsored_days where kind like 'sent:%'").n).toBe(1);
+    expect(harness.row("select status, multiplier_milli as rate, ad_full_milli as adFull, ad_first_proof as stored, zero_stop_started_at as zeroStop from cloud_computers where instance_id = 'madenew12345'"))
+      .toEqual({ status: "running", rate: 0, adFull: 500, stored: null, zeroStop: null });
+  });
+
+  it("a blocked account's computer returned by a repeat of its create is stopped", async () => {
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    const body = { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_request_id: "req-blocked" } };
+    harness.injectFault((sql) => /update cloud_computers set instance_id = \?/.test(sql));
+    expect((await fromHome("POST", "/cloud/instances", body).catch(() => null))?.status ?? 500).toBeGreaterThanOrEqual(500);
+    harness.injectFault(null);
+    // The block lands while the provider makes it; the repeat comes inside the router's "not blocked" memory.
+    harness.insert("cloud_blocks", { user_id: OWNER, reason: "abuse", created_at: clock });
+    expect((await fromHome("POST", "/cloud/instances", body)).status).toBe(200);
+    expect(computer(harness, "madenew12345").status).toBe("stopped");
   });
 
   it("a proof from the network of the account's own computers doesn't count; from the provider's network otherwise it counts and the owner hears of it", async () => {

@@ -369,7 +369,8 @@ Chats on the person's own machines never get a card.
 ### The ad price (Pricing v3, behind a switch)
 
 `adPrice.ts` (the price), `adProof.ts` (a message's proof), migrations
-`0073_ad_price`, `0074_ad_price_outside` and `0075_phone_ad_minutes`. Under Pricing v3 every plan can turn ads on, and
+`0073_ad_price`, `0074_ad_price_outside`, `0075_phone_ad_minutes` and
+`0077_first_proof_on_reservation`. Under Pricing v3 every plan can turn ads on, and
 a computer or the DAEX Cloud iPhone used with ads costs less. All of it is behind
 the setting `pricing_v3` (`off`, `testers`, `all`; held under the deploy var
 `PRICING_V3`, unset is a hard off). At `off` no answer and no number changes.
@@ -429,7 +430,13 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   gone (the queue's launch, under the chat's id; not a resting CLI's, which is
   full-price work), or the app's `POST /cloud/instances` with `adProof`.
   One message id counts once on any chat id, so the app's later `/sent` of it
-  is a repeat. An automation's or agent's launch has no such proof. Known
+  is a repeat. The create's reservation already holds the ad rates and the
+  message (`cloud_computers.ad_first_proof`), so a create that died after the
+  provider made the computer (a request cut off at the app's timeout) keeps
+  that price: the message counts once, at the create, at a replay of it (with
+  its other last steps: a block, an outside agent's work), or in the next
+  minute tick, whichever comes first, and only ever the message the create
+  checked. An automation's or agent's launch has no such proof. Known
   limit: a new lane in a DAEX Free Models chat with ads off gets none (its
   proof is the first reply's ad request), so at 0 credits such a new lane is
   refused. A
