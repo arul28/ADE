@@ -49,6 +49,10 @@ export const MARKETING_FEATURES = {
   // `/pricing`'s plan finder: the visitor's first change to one of its
   // controls (sent once per page view; the inputs themselves are not sent).
   USE_PLAN_FINDER: "use_plan_finder",
+  // The "With ads / No ads" control (`/pricing`, the home page's cloud section):
+  // the visitor's first switch to each side, once per visit.
+  CHOOSE_NO_ADS_PRICES: "choose_no_ads_prices",
+  CHOOSE_AD_PRICES: "choose_ad_prices",
   // The home feature wall's "See every feature" button.
   VIEW_ALL_FEATURES: "view_all_features",
   // Install dialog. The dialog captures its own open event so every trigger
