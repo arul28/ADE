@@ -1915,7 +1915,8 @@ const SERVER_STOP_REASONS: ReadonlySet<string> = new Set(["out_of_hours", "block
  * stopped it may end the launch itself with its own sentence first, and a
  * launch whose state changed is left as it is. A Mac whose start failed for
  * good (`mac_start_failed`: no stopped Mac comes back by itself) doesn't wait,
- * and its launch ends with the Mac's own sentence.
+ * except after the boot cap's own stop (`boot_failed`), and its launch ends
+ * with the Mac's own sentence.
  */
 const OTHER_STOP_GRACE_MS = 10 * 60_000;
 
@@ -1943,7 +1944,10 @@ async function failStoppedLaunches(env: CloudEnv, now: number, onProgress?: (rec
     const macFailed = row.computer_provider === "nomac" && row.mac_start_failed && Object.hasOwn(CLOUD_MAC_START_FAILED_SENTENCES, row.mac_start_failed)
       ? CLOUD_MAC_START_FAILED_SENTENCES[row.mac_start_failed as keyof typeof CLOUD_MAC_START_FAILED_SENTENCES]
       : null;
-    if (!macFailed && !SERVER_STOP_REASONS.has(row.stop_reason ?? "") && now - (row.stopped_at ?? now) < OTHER_STOP_GRACE_MS) continue;
+    // The boot cap's own stop (`bootFailed`: stop, then mac_start_failed, then its launch end, three writes)
+    // waits the grace like any other, so its own sentence wins; after it, the Mac's sentence ends the launch.
+    const waits = !SERVER_STOP_REASONS.has(row.stop_reason ?? "") && (!macFailed || row.stop_reason === "boot_failed");
+    if (waits && now - (row.stopped_at ?? now) < OTHER_STOP_GRACE_MS) continue;
     const error = macFailed ?? await stoppedLaunchSentence(env, row.user_id, row.stop_reason, now).catch((cause: unknown) => {
       reportCloudFailure("cloud.launch_stopped_sentence_failed", { launchId: row.launch_id, message: cause instanceof Error ? cause.name : "unknown" });
       return CLOUD_LAUNCH_COMPUTER_STOPPED;

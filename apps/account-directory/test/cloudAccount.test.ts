@@ -3188,24 +3188,29 @@ describe("ADE Cloud server launcher", () => {
       expect(usedMilli(harness)).toBe(used);
     });
 
-    it.each<[string, boolean, string | null, string, string | null]>([
-      ["back within the grace: the launch goes on", true, null, "joining", null],
-      ["still stopped after the grace: the launch ends with Retry", false, null, "failed", CLOUD_LAUNCH_COMPUTER_STOPPED],
-      ["a Mac whose start failed for good: the launch ends at the next tick with the Mac's sentence", false, "queue_expired", "failed", CLOUD_MAC_START_FAILED_SENTENCES.queue_expired],
-    ])("a stop the server didn't make (the provider's, a Mac's) waits 10 minutes before it ends a launch: %s", async (_label, cameBack, macStartFailed, state, error) => {
+    it.each<[string, boolean, string | null, string, string, string | null]>([
+      ["back within the grace: the launch goes on", true, null, "seen_by_tick", "joining", null],
+      ["still stopped after the grace: the launch ends with Retry", false, null, "seen_by_tick", "failed", CLOUD_LAUNCH_COMPUTER_STOPPED],
+      ["a Mac whose start failed for good: the launch ends at the next tick with the Mac's sentence", false, "queue_expired", "seen_by_tick", "failed", CLOUD_MAC_START_FAILED_SENTENCES.queue_expired],
+      // The boot cap ends its own launch first (`bootFailed`); one that never did ends after the grace.
+      ["the boot cap's own stop waits the grace, then ends with the Mac's sentence", false, "unavailable", "boot_failed", "failed", CLOUD_MAC_START_FAILED_SENTENCES.unavailable],
+    ])("a stop the server didn't make (the provider's, a Mac's) waits 10 minutes before it ends a launch: %s", async (_label, cameBack, macStartFailed, stopReason, state, error) => {
       expect((await harness.send(OWNER, "POST", "/cloud/launches", launchBody)).status).toBe(201);
       at(1);
       // What the tick writes when the provider says stopped on its own (`seen_by_tick`).
       harness.exec("update cloud_computers set status = 'stopped', status_changed_at = ? where instance_id = ?", clock, MADE);
-      harness.insert("cloud_power_log", { instance_id: MADE, user_id: OWNER, action: "stop", reason: "seen_by_tick", created_at: clock });
+      harness.insert("cloud_power_log", { instance_id: MADE, user_id: OWNER, action: "stop", reason: stopReason, created_at: clock });
       if (macStartFailed) harness.exec("update cloud_computers set provider = 'nomac', mac_start_failed = ? where instance_id = ?", macStartFailed, MADE);
       const sweep = () => failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
-      if (macStartFailed) {
+      if (macStartFailed && stopReason !== "boot_failed") {
         at(2);
         await sweep();
         expect(harness.row("select state, error from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state, error });
         return;
       }
+      at(2);
+      await sweep();
+      expect(harness.row("select state from cloud_launches where launch_id = ?", LAUNCH).state).toBe("joining");
       at(9);
       await sweep();
       expect(harness.row("select state from cloud_launches where launch_id = ?", LAUNCH).state).toBe("joining");
