@@ -139,6 +139,7 @@ export function useCloudMachineGroup(args: {
       box={ctx.box}
       catalog={cloudCatalogOf(cloudResult?.account)}
       words={cloudUnitWords(cloudResult?.account)}
+      account={cloudResult?.account ?? null}
       work={ctx.work}
       pending={cloudActions.pendingById[ctx.box.instanceId] ?? null}
       approvalUrl={cloudActions.approvalById[ctx.box.instanceId] ?? null}

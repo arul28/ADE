@@ -29,6 +29,8 @@ import { cloudBoxWork, type CloudBoxWork } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import { useCloudMachines, watchedCloudMachines } from "./useCloudMachines";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudTiers } from "../../../shared/cloudTiers";
+import { cloudAdsViewOf, cloudPricingOf, cloudRateText, cloudTierRatePair } from "../../../shared/cloudAdPriceWords";
 import { BRAND } from "../../../shared/brand";
 
 /** What one box is doing in the list right now, shown on its card. */
@@ -361,7 +363,14 @@ export function useCloudBoxActions(args: {
     const copyMachine = window.ade.cloud?.copyMachine;
     if (!copyMachine) return;
     // The cards that offer Copy keep the list watched, so its account gives the words.
-    const rate = ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate, cloudUnitWords(watchedCloudMachines()?.account)) : null;
+    // A copy is a new computer at the same size: its rate is the size's, both prices under Pricing v3.
+    const account = watchedCloudMachines()?.account;
+    const words = cloudUnitWords(account);
+    const view = cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+    const shape = view && ctx.box.shapeId ? cloudShapeById(ctx.box.shapeId) : null;
+    const tier = shape ? cloudTiers(cloudCatalogOf(account)).find((entry) => entry.cpu === shape.cpu && entry.memoryGb === shape.memoryGb && entry.multiplierMilli === Math.round((ctx.box.hoursRate ?? -1) * 1000)) : null;
+    const rate = tier ? `uses ${cloudRateText(cloudTierRatePair(tier), view, words)}`
+      : ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate, words) : null;
     const ok = await confirmDialog({
       title: `Copy ${ctx.name}?`,
       message: `${BRAND.NAME} makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate} while awake` : ""}. A big disk takes a few minutes.`,
@@ -566,6 +575,8 @@ function CloudResizeDialog({
   const account = useCloudMachines(true).result?.account;
   const catalog = cloudCatalogOf(account);
   const words = cloudUnitWords(account);
+  const view = cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+  const tiers = cloudTiers(catalog);
   const running = work.runningChats > 0;
   return (
     <Dialog
@@ -590,7 +601,10 @@ function CloudResizeDialog({
         ) : null}
         <div role="radiogroup" aria-label="Size" className="ade-cx-cloud-shapes">
           {CLOUD_SHAPES.map((shape) => {
-            const rate = capitalizeCloudPhrase(formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog), words));
+            const full = cloudHoursRate(kind, shape.id, catalog);
+            // Under Pricing v3, both prices of the size (the one the person pays now first).
+            const tier = view ? tiers.find((entry) => entry.cpu === shape.cpu && entry.memoryGb === shape.memoryGb && entry.multiplierMilli === Math.round(full * 1000)) : null;
+            const rate = tier ? cloudRateText(cloudTierRatePair(tier), view, words) : capitalizeCloudPhrase(formatCloudHoursRate(full, words));
             const isCurrent = shape.id === current;
             return (
               <button
