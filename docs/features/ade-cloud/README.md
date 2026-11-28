@@ -75,8 +75,8 @@ Server (`apps/account-directory/src/cloud/`): `routes.ts`, `store.ts`,
 `launchFiles.ts`, `moves.ts`, `laneBackups.ts`, `idleCleanup.ts`,
 `planCleanup.ts`, `updates.ts`, `computerStatus.ts`, `automations.ts`,
 `eventWakes.ts`, `limits.ts`, `integrations.ts`, `ctoCopy.ts`, `referrals.ts`,
-`freePlan.ts`, `safety.ts`, `blocks.ts`, `costReport.ts`, `gravity.ts` and the
-`sponsored*.ts` files.
+`freePlan.ts`, `safety.ts`, `blocks.ts`, `costReport.ts`, `gravity.ts`,
+`adPrice.ts` and the `sponsored*.ts` files.
 
 Shared: `apps/desktop/src/shared/adeCloud.ts`, `adeCloud/` (binding, chat queue,
 account calls), `cloudApiClient.ts` (typed fetch client), `cloudTiers.ts`,
@@ -259,7 +259,8 @@ Medium-hour; the person sees credits.
 - **Sizes** (`catalog.sizes`): Small (2 vCPU / 4 GB, uses no credits, disk ≤12
   GB), Medium (4/8, 1×, 20 GB), Large (4/8 full, 2.5×, 50 GB), X-Large (4/16
   full, 4×, 100 GB). The DAEX Cloud iPhone draws one credit a minute
-  (`credits.ts`, `phones.ts`).
+  (`credits.ts`, `phones.ts`). Pricing v3 changes the shown scale and these
+  rates: [the ad price](#the-ad-price-pricing-v3-behind-a-switch).
 - **Disk is per computer** up to its size's `diskMaxGb` (`disk_limit`,
   `tier_limit`); no extra disk is sold.
 - **Computer limit** counts every computer, asleep or not; at the limit, 403
@@ -356,7 +357,7 @@ Chats on the person's own machines never get a card.
   subagents, and while nobody has the computer's chat open.
 - Daily limits per account (120 ads, 20 searches); viewer rows pruned after a
   day. iOS asks App Tracking Transparency once before the first card.
-- **Small on Free** needs cards: without a recent US look and a yes, Small costs
+- **Small on Free** (before Pricing v3) needs cards: without a recent US look and a yes, Small costs
   half a credit an hour (`sponsoredSmall.ts`, `SMALL_NO_CARDS_RATE_MILLI`). A
   look is a reply's first ad request in the account's own DAEX Cloud chat
   (`noteCardRequest`, any answer, a no-fill too); an open chat or terminal
@@ -364,6 +365,76 @@ Chats on the person's own machines never get a card.
   alerts the owner when looks come from DAEX Cloud's own network.
 - Consent rules by law (`sponsoredConsent.ts`) are written once in
   [account-test-tool.md](account-test-tool.md#where-cards-start-on).
+
+### The ad price (Pricing v3, behind a switch)
+
+`adPrice.ts`, migration `0073`. Under Pricing v3 every plan can turn ads on, and
+a computer or the DAEX Cloud iPhone used with ads costs less. All of it is behind
+the setting `pricing_v3` (`off`, `testers`, `all`; held under the deploy var
+`PRICING_V3`, unset is a hard off). At `off` no answer and no number changes.
+`ad_discount_pct` (default 20) and `ad_window_minutes` (default 60) are owner
+settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
+"Pricing v3" section of `contract.ts`.
+
+- **Rates** (`plans.ts`, `pricingV3Rates`): milli-credits stay as stored; the
+  catalog adds `creditScale` 10 (one shown credit is 100 milli),
+  `sizes[].adMultiplierMilli` and `phone`. Each ad rate is the full rate less
+  the discount, rounded down to a whole shown credit (`adRateMilli`); shapes
+  not in the size list round down too (`v3FullRateMilli`). The iPhone is 500
+  milli a minute. Small on Free is 500 milli an hour full and free with ads
+  while `gravity_ads` reaches the account; Small on a paid plan is free. At a
+  discount of 0 both rates are equal and apps show one price.
+- **Where ads are**: on to start in the US outside California; asked first in
+  California, Canada, the UK and Australia; nowhere else. No ad before the
+  account saw the notice (`notice_seen_at`, sent as `noticeSeen` on
+  `PUT /cloud/sponsored/consent`; one answer on every device).
+- **What makes a minute cost the ad price** (`decidePrice`, in this order):
+  ads off (and no live DAEX Free Models proof) is full; full-price work is
+  full; otherwise a proof inside the window is the ad price, and no proof is
+  full (`not_in_use`, or `unverified` after a request that did not count).
+- **Proofs** come from an app a person uses, never from the cloud computer: a
+  finished reply's ad request (`POST /cloud/sponsored/ad`, counted when no ad
+  fills too) and a sent message (`POST /cloud/sponsored/sent`). Each restarts
+  that computer's (or iPhone's, through `phoneId`) window. One (account, chat,
+  turn or message) counts once on any number of devices (`cloud_ad_proofs`), and
+  only for the caller's own computer. Apps send `/sent` only while the account
+  state has `pricing`; a caller Pricing v3 does not reach gets a cheap 404.
+- **Requests that do not count**: a proof from the network of one of the
+  account's own cloud computers (its `net_asn`, or a recent join's) is not
+  counted, Gravity is not asked, the owner gets an alert and the price reads
+  `unverified`. No ban.
+- **Full-price work** (`fullPriceWork` on the brain's activity report, sent on
+  change with no new poll; `noteFullPriceWork`):
+  - `cli_session`: an agent CLI session is alive on the computer (any of the 13
+    providers launched by DAEX, or one started by hand in a shell and found by
+    its process name). Chat CLIs (`*-chat` rows) count as their chat.
+  - `automation`: an automation's chat has work in hand.
+  - `outside_agent`: an outside agent (DAEX MCP) sent a message through the
+    account queue; cleared at the computer's next idle report.
+  - Not detected: an outside agent on a live link straight to the brain, and a
+    chat's own scheduled turns. Neither sends a proof, so the computer goes to
+    the full price when its window ends.
+- **Billing**: the price lives on `cloud_computers.multiplier_milli`; a change
+  ends the stretch at its edge and starts a new one (`rateMoveStatements`).
+  A window that ends goes back to full at the end of the window, any other
+  change at once ("off" takes effect at the next minute). The minute tick
+  (`syncAdPricesInTick`) and every write that can move a price (consent, a
+  proof, a report) run the same decision. `ad_full_milli` holds the full rate
+  while a computer is at the ad price, so the settle records the discount
+  (`cloud_computer_days.ad_discount_milli`, `ad_ms`). The iPhone keeps its rate
+  per row (`cloud_phones.rate_milli`) and subtracts `ad_saved_milli`. Under
+  Pricing v3 this replaces the 7-day Small rule.
+- **What apps read**: `CloudAccountState.pricing` (only with the request header
+  `X-ADE-Pricing: 3`): the ads state for this request's country, and each
+  computer's and the iPhone's price now, with the reason and `adUntil`. A
+  request without the header is an older build: on Free it keeps today's
+  `sponsored` answer and 7-day look, on a paid plan it gets neither. That path
+  goes away once the client minimum passes the first build that sends the
+  header.
+- **Owner**: `scripts/cloud-owner.mjs ad-price [--days N]` (ad income against
+  the discount, by product), also in the daily sponsored report.
+- **Website**: `GET /public/pricing` (no auth, CORS `*`, no-store) says whether
+  Pricing v3 is on and the visitor's ad terms.
 
 ### DAEX Free Models (any plan, behind a switch)
 
