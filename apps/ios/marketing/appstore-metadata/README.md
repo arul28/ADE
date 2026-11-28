@@ -2,7 +2,7 @@
 
 Ready to push with the first rebranded build. Canonical `asc metadata` layout.
 
-- `app-info/en-US.json`: store name (30 chars max: "DAEX - Agentic Dev Environment" is exactly 30), subtitle, privacy URL.
+- `app-info/en-US.json`: store name (30 chars max), subtitle, privacy URL.
 - `version/NEXT/en-US.json`: description, keywords (keeps "ade" so old searches still find the app), promotional text, URLs.
 - `review-notes.txt`: App Review notes with the product renamed (the sign-in steps are unchanged).
 

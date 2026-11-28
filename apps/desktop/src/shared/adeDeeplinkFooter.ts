@@ -9,7 +9,7 @@
 import { buildDeeplink } from "./deeplinks";
 import { BRAND } from "./brand";
 
-export const ADE_DEEPLINK_FOOTER_LOGO_URL = "https://ade-app.dev/icon.png";
+export const ADE_DEEPLINK_FOOTER_LOGO_URL = "https://ade-app.dev/icon-flat.png";
 /** The logo footers written before the square icon; still in older PR bodies. */
 export const ADE_DEEPLINK_FOOTER_LEGACY_LOGO_URL = "https://ade-app.dev/logo.png";
 
