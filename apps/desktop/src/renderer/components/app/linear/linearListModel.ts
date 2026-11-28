@@ -8,7 +8,9 @@ import type {
   LinearIssueOrdering,
   LinearIssueRef,
 } from "../../../../shared/types";
-import { isNormalizedIssue, type BrowserIssue } from "../linearIssueBrowserModel";
+import { isClosedLinearStateType, LINEAR_LIST_CHILDREN_PAGE_SIZE, LINEAR_STATE_TYPE_ORDER } from "../../../../shared/linearIssueNormalize";
+import type { LinearIssuePrefill } from "../../../lib/issueCreateRequests";
+import { isNormalizedIssue, issueLabelEntries, PRIORITY_CHOICES, type BrowserIssue } from "../linearIssueBrowserModel";
 
 /**
  * The issue list's shape, in one pure pass: loaded issues + display
@@ -37,18 +39,6 @@ export type LinearListCatalog = {
   viewerId: string | null;
 };
 
-/** What a group's `+` fills in on a new issue. */
-export type LinearGroupPrefill = {
-  teamKey?: string | null;
-  stateId?: string | null;
-  assigneeId?: string | null;
-  projectId?: string | null;
-  priority?: number | null;
-  labelIds?: string[];
-  cycleId?: string | null;
-  milestoneId?: string | null;
-};
-
 export type LinearGroupIcon =
   | { kind: "state"; stateType: string }
   | { kind: "priority"; priority: number }
@@ -68,7 +58,7 @@ export type LinearListGroup = {
   icon: LinearGroupIcon;
   /** Linear ids this group stands for (state ids of every merged team, a user id, ...). */
   ids: string[];
-  prefill: LinearGroupPrefill;
+  prefill: LinearIssuePrefill;
   /** Sort rank: primary number, then text. */
   rank: number;
   rankText: string;
@@ -124,7 +114,9 @@ export type LinearListModel = {
   navigable: number[];
   /** Longest identifier, in characters, so the id column lines up. */
   identifierChars: number;
-  /** Number of issues shown (after the completed filter), counted once each. */
+  /** Issues in the shown groups (after the completed filter and hidden groups), once each, in load order. Folded groups count. */
+  issueIds: string[];
+  /** `issueIds.length`. */
   issueCount: number;
 };
 
@@ -140,48 +132,41 @@ export type LinearListInput = {
   teamKeys?: readonly string[] | null;
 };
 
-const CLOSED_STATE_TYPES = new Set(["completed", "canceled", "duplicate"]);
-const STATE_TYPE_RANK: Record<string, number> = {
-  triage: 0,
-  started: 1,
-  unstarted: 2,
-  backlog: 3,
-  completed: 4,
-  canceled: 5,
-  duplicate: 6,
-};
-const PRIORITY_GROUP: Array<{ value: number; label: string }> = [
-  { value: 1, label: "Urgent" },
-  { value: 2, label: "High" },
-  { value: 3, label: "Medium" },
-  { value: 4, label: "Low" },
-  { value: 0, label: "No priority" },
+/**
+ * Closed issues show when Display asks for them, or when the tab asks only for
+ * closed types (the search keeps those types on purpose; see applyCompletedFilter).
+ */
+function showsClosedIssues(input: Pick<LinearListInput, "prefs" | "allowedStateTypes">): boolean {
+  if (input.prefs.showCompletedIssues) return true;
+  const allowed = input.allowedStateTypes;
+  return Boolean(allowed && allowed.length > 0 && allowed.every((type) => isClosedLinearStateType(type)));
+}
+
+const STATE_TYPE_RANK: ReadonlyMap<string, number> = new Map(LINEAR_STATE_TYPE_ORDER.map((type, index) => [type, index]));
+/** Priority groups in Linear's order: Urgent first, "No priority" last. */
+export const LINEAR_PRIORITY_GROUP_ORDER: ReadonlyArray<{ value: number; label: string }> = [
+  ...PRIORITY_CHOICES.filter((choice) => choice.value > 0),
+  ...PRIORITY_CHOICES.filter((choice) => choice.value === 0),
 ];
 // Above any real rank (cycle groups rank by start time in ms), so "No …" groups sort last.
 const NONE_RANK = 9e15;
 const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 
-export function isClosedStateType(stateType: string | null | undefined): boolean {
-  return CLOSED_STATE_TYPES.has(stateType ?? "");
+function stateTypeRank(stateType: string): number {
+  return STATE_TYPE_RANK.get(stateType) ?? LINEAR_STATE_TYPE_ORDER.length;
 }
 
-export function stateTypeRank(stateType: string): number {
-  return STATE_TYPE_RANK[stateType] ?? 7;
-}
-
-/** Done + canceled over all sub-issues. Linear's list read stops at 25 children. */
+/**
+ * Done + canceled over all sub-issues. Linear's list read stops at
+ * `LINEAR_LIST_CHILDREN_PAGE_SIZE` children, so a full page is "capped": more may exist.
+ */
 export function subIssueProgress(issue: BrowserIssue): { done: number; total: number; capped: boolean } | null {
   if (!isNormalizedIssue(issue)) return null;
   const children = issue.childIssues;
   if (!children || children.length === 0) return null;
   let done = 0;
-  for (const child of children) if (isClosedStateType(child.stateType)) done += 1;
-  return { done, total: children.length, capped: children.length >= 25 };
-}
-
-/** The ordering's natural direction, used when someone picks it. */
-export function defaultOrderingDirection(ordering: LinearIssueOrdering): "asc" | "desc" {
-  return ordering === "dueDate" || ordering === "title" || ordering === "manual" ? "asc" : "desc";
+  for (const child of children) if (isClosedLinearStateType(child.stateType)) done += 1;
+  return { done, total: children.length, capped: children.length >= LINEAR_LIST_CHILDREN_PAGE_SIZE };
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,8 +177,8 @@ type Ctx = {
   stateOrder: Map<string, number>;
   usersById: Map<string, LinearCatalogUser>;
   projectsById: Map<string, CtoLinearProject>;
+  labels: LinearCatalogLabel[];
   labelsById: Map<string, LinearCatalogLabel>;
-  labelsByName: Map<string, LinearCatalogLabel[]>;
   teamsByKey: Map<string, { id: string; key: string; name: string; color?: string | null }>;
   cyclesById: Map<string, { id: string; number: number; name: string | null; startsAt: string }>;
   viewerId: string | null;
@@ -207,19 +192,12 @@ function buildCtx(catalog: LinearListCatalog): Ctx {
     const position = typeof state.position === "number" ? state.position : index;
     stateOrder.set(state.id, position);
   });
-  const labelsByName = new Map<string, LinearCatalogLabel[]>();
-  for (const label of catalog.labels) {
-    const key = label.name.trim().toLowerCase();
-    const list = labelsByName.get(key);
-    if (list) list.push(label);
-    else labelsByName.set(key, [label]);
-  }
   return {
     stateOrder,
     usersById: new Map(catalog.users.map((user) => [user.id, user])),
     projectsById: new Map(catalog.projects.map((project) => [project.id, project])),
+    labels: catalog.labels,
     labelsById: new Map(catalog.labels.map((label) => [label.id, label])),
-    labelsByName,
     teamsByKey: new Map(catalog.teams.map((team) => [team.key, team])),
     cyclesById: new Map((catalog.cycles ?? []).map((cycle) => [cycle.id, cycle])),
     viewerId: catalog.viewerId,
@@ -245,8 +223,8 @@ function stateGroup(stateType: string, stateName: string, stateId: string | null
 }
 
 function priorityGroup(priority: number): LinearListGroup {
-  const index = PRIORITY_GROUP.findIndex((entry) => entry.value === priority);
-  const entry = PRIORITY_GROUP[index] ?? PRIORITY_GROUP[PRIORITY_GROUP.length - 1]!;
+  const index = LINEAR_PRIORITY_GROUP_ORDER.findIndex((entry) => entry.value === priority);
+  const entry = LINEAR_PRIORITY_GROUP_ORDER[index] ?? LINEAR_PRIORITY_GROUP_ORDER[LINEAR_PRIORITY_GROUP_ORDER.length - 1]!;
   return {
     key: `priority:${entry.value}`,
     grouping: "priority",
@@ -254,7 +232,7 @@ function priorityGroup(priority: number): LinearListGroup {
     icon: { kind: "priority", priority: entry.value },
     ids: [String(entry.value)],
     prefill: { priority: entry.value },
-    rank: index < 0 ? PRIORITY_GROUP.length : index,
+    rank: index < 0 ? LINEAR_PRIORITY_GROUP_ORDER.length : index,
     rankText: "",
   };
 }
@@ -417,26 +395,6 @@ const ALL_GROUP: LinearListGroup = {
   rankText: "",
 };
 
-function issueLabels(issue: BrowserIssue, ctx: Ctx): Array<{ id: string | null; name: string; color: string | null }> {
-  if (isNormalizedIssue(issue) && issue.labelColors) {
-    return issue.labelColors.map((label) => {
-      if (label.id && label.color) return { id: label.id, name: label.name, color: label.color };
-      const match = label.id ? ctx.labelsById.get(label.id) : pickLabelByName(ctx, label.name, issue.teamId);
-      return { id: label.id ?? match?.id ?? null, name: label.name, color: label.color ?? match?.color ?? null };
-    });
-  }
-  return issue.labels.map((name) => {
-    const match = pickLabelByName(ctx, name, issue.teamId);
-    return { id: match?.id ?? null, name: match?.name ?? name, color: match?.color ?? null };
-  });
-}
-
-function pickLabelByName(ctx: Ctx, name: string, teamId: string): LinearCatalogLabel | null {
-  const list = ctx.labelsByName.get(name.trim().toLowerCase());
-  if (!list) return null;
-  return list.find((label) => label.teamId === teamId) ?? list.find((label) => !label.teamId) ?? list[0] ?? null;
-}
-
 /** Every group an issue belongs to (several for labels). */
 function groupsForIssue(issue: BrowserIssue, grouping: LinearIssueGrouping, ctx: Ctx): LinearListGroup[] {
   const normalized = isNormalizedIssue(issue) ? issue : null;
@@ -450,9 +408,10 @@ function groupsForIssue(issue: BrowserIssue, grouping: LinearIssueGrouping, ctx:
     case "project":
       return [projectGroup(issue.projectId || null, issue.projectName ?? null, ctx)];
     case "label": {
-      const labels = issueLabels(issue, ctx);
+      const labels = issueLabelEntries(issue, ctx.labels);
       if (labels.length === 0) return [labelGroup(null, null, null)];
-      return labels.map((label) => labelGroup(label.id, label.name, label.color));
+      // The catalog spells the name the way Linear shows it (a lane copy keeps it lowercase).
+      return labels.map((label) => labelGroup(label.id, (label.id ? ctx.labelsById.get(label.id)?.name : null) ?? label.name, label.color));
     }
     case "cycle":
       return [cycleGroup(normalized?.cycleId ?? null, normalized?.cycleName ?? null, normalized?.cycleStartsAt ?? null, ctx)];
@@ -472,16 +431,17 @@ function emptyGroupsFor(
 ): LinearListGroup[] {
   const teamFilter = input.teamKeys && input.teamKeys.length > 0 ? new Set(input.teamKeys) : null;
   const allowedTypes = input.allowedStateTypes && input.allowedStateTypes.length > 0 ? new Set(input.allowedStateTypes) : null;
-  const { catalog, prefs } = input;
+  const { catalog } = input;
+  const showClosed = showsClosedIssues(input);
   switch (grouping) {
     case "workflowState":
       return catalog.states
         .filter((state) => (!teamFilter || teamFilter.has(state.teamKey))
           && (!allowedTypes || allowedTypes.has(state.type))
-          && (prefs.showCompletedIssues || !isClosedStateType(state.type)))
+          && (showClosed || !isClosedLinearStateType(state.type)))
         .map((state) => stateGroup(state.type, state.name, state.id, state.teamKey, ctx));
     case "priority":
-      return PRIORITY_GROUP.map((entry) => priorityGroup(entry.value));
+      return LINEAR_PRIORITY_GROUP_ORDER.map((entry) => priorityGroup(entry.value));
     case "assignee":
       return [
         ...catalog.users.filter((user) => user.active).map((user) => assigneeGroup(user.id, user.displayName ?? user.name, user.avatarUrl ?? null, ctx)),
@@ -521,9 +481,15 @@ function compareGroups(left: LinearListGroup, right: LinearListGroup): number {
   return left.rank - right.rank || collator.compare(left.rankText, right.rankText);
 }
 
+/**
+ * Hidden groups are Linear's ids for the grouping (a workflow state id, a
+ * user id, "0".."4" for priority, ...); "No X" groups have no id and match on
+ * their ADE key (`assignee:none`). Checked per issue before merging, so hiding
+ * one team's "In Progress" leaves another team's issues in the merged group.
+ */
 function isHidden(group: LinearListGroup, hidden: ReadonlySet<string>): boolean {
   if (hidden.size === 0) return false;
-  if (hidden.has(group.key)) return true;
+  if (group.ids.length === 0) return hidden.has(group.key);
   for (const id of group.ids) if (hidden.has(id)) return true;
   return false;
 }
@@ -728,6 +694,16 @@ function emitBucketIssues(issues: BrowserIssue[], groupPath: string, state: Emit
   }
 
   const visited = new Set<string>();
+  // A folded parent hides its whole loaded subtree; mark it placed so the "orphans" sweep skips it.
+  const markSubtreePlaced = (start: BrowserIssue[]) => {
+    const stack = [...start];
+    while (stack.length > 0) {
+      const next = stack.pop()!;
+      if (visited.has(next.id)) continue;
+      visited.add(next.id);
+      for (const grandchild of childrenOf.get(next.id) ?? []) stack.push(grandchild);
+    }
+  };
   const emitTree = (issue: BrowserIssue, depth: number, guides: boolean[], last: boolean) => {
     if (visited.has(issue.id)) return;
     visited.add(issue.id);
@@ -748,14 +724,7 @@ function emitBucketIssues(issues: BrowserIssue[], groupPath: string, state: Emit
     });
     if (children.length === 0) return;
     if (childrenCollapsed) {
-      // Mark the hidden subtree as placed so the "orphans" sweep skips it.
-      const stack = [...children];
-      while (stack.length > 0) {
-        const next = stack.pop()!;
-        if (visited.has(next.id)) continue;
-        visited.add(next.id);
-        for (const grandchild of childrenOf.get(next.id) ?? []) stack.push(grandchild);
-      }
+      markSubtreePlaced(children);
       return;
     }
     const sorted = children.slice().sort(state.compareChildren);
@@ -793,7 +762,7 @@ function emitBucketIssues(issues: BrowserIssue[], groupPath: string, state: Emit
       childrenCollapsed,
     });
     if (childrenCollapsed) {
-      for (const issue of block.issues) visited.add(issue.id);
+      markSubtreePlaced(block.issues);
       continue;
     }
     block.issues.forEach((issue, index) => emitTree(issue, 1, [], index === block.issues.length - 1));
@@ -819,6 +788,7 @@ function bucketize(
   const buckets = new Map<string, Bucket>();
   for (const issue of issues) {
     for (const group of groupsForIssue(issue, grouping, ctx)) {
+      if (isHidden(group, hidden)) continue;
       let bucket = buckets.get(group.key);
       if (!bucket) {
         bucket = { group, issues: [] };
@@ -832,14 +802,14 @@ function bucketize(
     }
   }
   for (const group of extraGroups) {
+    if (isHidden(group, hidden)) continue;
     const bucket = buckets.get(group.key);
     if (!bucket) buckets.set(group.key, { group, issues: [] });
     else if (group.grouping === "workflowState") {
       for (const id of group.ids) if (!bucket.group.ids.includes(id)) bucket.group.ids.push(id);
     }
   }
-  const out: Bucket[] = [];
-  for (const bucket of buckets.values()) if (!isHidden(bucket.group, hidden)) out.push(bucket);
+  const out = [...buckets.values()];
   out.sort((left, right) => compareGroups(left.group, right.group));
   return out;
 }
@@ -847,9 +817,9 @@ function bucketize(
 export function buildLinearListModel(input: LinearListInput): LinearListModel {
   const { prefs, collapsed } = input;
   const ctx = buildCtx(input.catalog);
-  const issues = prefs.showCompletedIssues
+  const issues = showsClosedIssues(input)
     ? input.issues
-    : input.issues.filter((issue) => !isClosedStateType(issue.stateType));
+    : input.issues.filter((issue) => !isClosedLinearStateType(issue.stateType));
 
   const loadedById = new Map<string, BrowserIssue>();
   let identifierChars = 0;
@@ -876,8 +846,15 @@ export function buildLinearListModel(input: LinearListInput): LinearListModel {
 
   if (grouping === "none") {
     emitBucketIssues(issues, "all", state);
-    return { rows: state.rows, groups, headerIndices, navigable: state.navigable, identifierChars, issueCount: issues.length };
+    const issueIds = issues.map((issue) => issue.id);
+    return { rows: state.rows, groups, headerIndices, navigable: state.navigable, identifierChars, issueIds, issueCount: issueIds.length };
   }
+
+  // Label grouping lists an issue once per label; the ids are counted once.
+  const shownIds = new Set<string>();
+  const markShown = (list: BrowserIssue[]) => {
+    for (const issue of list) shownIds.add(issue.id);
+  };
 
   const extra = prefs.showEmptyGroups ? emptyGroupsFor(grouping, input, ctx) : [];
   for (const bucket of bucketize(issues, grouping, ctx, extra, hidden)) {
@@ -886,12 +863,15 @@ export function buildLinearListModel(input: LinearListInput): LinearListModel {
     groups.push({ group: bucket.group, count: bucket.issues.length });
     headerIndices.push(state.rows.length);
     state.rows.push({ kind: "group", key: `g:${path}`, path, depth: 0, group: bucket.group, count: bucket.issues.length, collapsed: groupCollapsed });
-    if (groupCollapsed || bucket.issues.length === 0) continue;
+    if (bucket.issues.length === 0) continue;
     if (subGrouping === "none") {
-      emitBucketIssues(bucket.issues, path, state);
+      markShown(bucket.issues);
+      if (!groupCollapsed) emitBucketIssues(bucket.issues, path, state);
       continue;
     }
     for (const sub of bucketize(bucket.issues, subGrouping, ctx, [], hidden)) {
+      markShown(sub.issues);
+      if (groupCollapsed) continue;
       const subPath = `${path}/${sub.group.key}`;
       const subCollapsed = collapsed.has(`g:${subPath}`);
       state.rows.push({ kind: "group", key: `g:${subPath}`, path: subPath, depth: 1, group: sub.group, count: sub.issues.length, collapsed: subCollapsed });
@@ -899,10 +879,84 @@ export function buildLinearListModel(input: LinearListInput): LinearListModel {
     }
   }
 
-  return { rows: state.rows, groups, headerIndices, navigable: state.navigable, identifierChars, issueCount: issues.length };
+  const issueIds = issues.filter((issue) => shownIds.has(issue.id)).map((issue) => issue.id);
+  return { rows: state.rows, groups, headerIndices, navigable: state.navigable, identifierChars, issueIds, issueCount: issueIds.length };
 }
 
-/** Group prefill merged with what the group's own issues agree on (a team for a status group). */
-export function groupPrefill(group: LinearListGroup, parent?: LinearListGroup | null): LinearGroupPrefill {
-  return { ...(parent?.prefill ?? {}), ...group.prefill };
+/**
+ * What a group's "+" fills in: the scope's fields, the parent group's, then
+ * the group's own, for one team. The team is the group's (a status or team
+ * group), else one its issues share, else the scope's or workspace's only
+ * team, else the team a picked state, cycle or label belongs to. Team-bound
+ * ids from another team are swapped for the chosen team's match (a status of
+ * the same name and type) or left out, so the form never mixes teams.
+ */
+export function groupCreatePrefill({
+  rows,
+  index,
+  catalog,
+  scopePrefill,
+  scopeTeamKeys,
+}: {
+  rows: readonly LinearListRow[];
+  index: number;
+  catalog: LinearListCatalog;
+  scopePrefill: LinearIssuePrefill;
+  scopeTeamKeys: readonly string[] | null;
+}): LinearIssuePrefill | null {
+  const row = rows[index];
+  if (!row || row.kind !== "group") return null;
+  let parent: LinearListGroupRow | null = null;
+  if (row.depth === 1) {
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      const candidate = rows[cursor];
+      if (candidate?.kind === "group" && candidate.depth === 0) { parent = candidate; break; }
+    }
+  }
+  const prefill: LinearIssuePrefill = { ...scopePrefill, ...(parent?.group.prefill ?? {}), ...row.group.prefill };
+  const statesById = new Map(catalog.states.map((state) => [state.id, state]));
+  const cyclesById = new Map((catalog.cycles ?? []).map((cycle) => [cycle.id, cycle]));
+  const labelsById = new Map(catalog.labels.map((label) => [label.id, label]));
+
+  let teamKey = prefill.teamKey ?? null;
+  if (!teamKey) {
+    for (let cursor = index + 1; cursor < rows.length; cursor += 1) {
+      const candidate = rows[cursor];
+      if (!candidate || (candidate.kind === "group" && candidate.depth <= row.depth)) break;
+      if (candidate.kind === "issue" && candidate.issue.teamKey) { teamKey = candidate.issue.teamKey; break; }
+    }
+  }
+  if (!teamKey && scopeTeamKeys?.length === 1) teamKey = scopeTeamKeys[0]!;
+  if (!teamKey && catalog.teams.length === 1) teamKey = catalog.teams[0]!.key;
+  if (!teamKey) {
+    teamKey = (prefill.stateId ? statesById.get(prefill.stateId)?.teamKey : null)
+      ?? (prefill.cycleId ? cyclesById.get(prefill.cycleId)?.teamKey : null)
+      ?? (prefill.labelIds ?? []).map((id) => labelsById.get(id)?.teamKey).find((key): key is string => Boolean(key))
+      ?? null;
+  }
+  prefill.teamKey = teamKey;
+  if (!teamKey) return prefill;
+
+  if (prefill.stateId) {
+    // An id the catalog does not know stays: only a known other team's status is swapped.
+    const state = statesById.get(prefill.stateId);
+    if (state && state.teamKey !== teamKey) {
+      const lower = state.name.trim().toLowerCase();
+      const match = catalog.states.find((entry) => entry.teamKey === teamKey && entry.type === state.type && entry.name.trim().toLowerCase() === lower);
+      if (match) prefill.stateId = match.id;
+      else delete prefill.stateId;
+    }
+  }
+  if (prefill.cycleId) {
+    const cycle = cyclesById.get(prefill.cycleId);
+    if (cycle && cycle.teamKey !== teamKey) delete prefill.cycleId;
+  }
+  if (prefill.labelIds) {
+    // Workspace labels (no team) fit any team; a label the catalog does not know stays.
+    prefill.labelIds = prefill.labelIds.filter((id) => {
+      const label = labelsById.get(id);
+      return !label || !label.teamId || label.teamKey === teamKey;
+    });
+  }
+  return prefill;
 }

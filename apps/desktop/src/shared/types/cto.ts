@@ -515,8 +515,10 @@ export type CtoSearchLinearIssuesArgs = {
   /** Only issues carrying this label (rail favorite of a label). */
   labelId?: string | null;
   /**
-   * Server-side order (Linear `sort`). Absent = Linear's default (manual
-   * `sortOrder`). The renderer still orders within its groups.
+   * Server-side order (Linear `sort`). Absent = most recently updated first
+   * (`orderBy: updatedAt`). `manual` sends Linear's manual sort (`sortOrder`,
+   * the order people drag issues into; Linear accepts it with every filter
+   * here). The renderer still orders within its groups.
    */
   ordering?: LinearIssueOrdering | null;
   /**
@@ -575,32 +577,50 @@ export type CtoLinearCustomView = {
 // ---------------------------------------------------------------------------
 
 /** Linear `issueGrouping` values ADE can render. Others read as "workflowState". */
-export type LinearIssueGrouping =
-  | "workflowState"
-  | "assignee"
-  | "project"
-  | "priority"
-  | "cycle"
-  | "label"
-  | "projectMilestone"
-  | "team"
-  | "none";
+export const LINEAR_ISSUE_GROUPINGS = [
+  "workflowState",
+  "assignee",
+  "project",
+  "priority",
+  "cycle",
+  "label",
+  "projectMilestone",
+  "team",
+  "none",
+] as const;
+export type LinearIssueGrouping = (typeof LINEAR_ISSUE_GROUPINGS)[number];
+export function isLinearIssueGrouping(value: unknown): value is LinearIssueGrouping {
+  return typeof value === "string" && (LINEAR_ISSUE_GROUPINGS as readonly string[]).includes(value);
+}
 
 /** Linear `viewOrdering` values ADE can render. Others read as "manual". */
-export type LinearIssueOrdering =
-  | "manual"
-  | "priority"
-  | "updatedAt"
-  | "createdAt"
-  | "dueDate"
-  | "estimate"
-  | "title";
+export const LINEAR_ISSUE_ORDERINGS = [
+  "manual",
+  "priority",
+  "updatedAt",
+  "createdAt",
+  "dueDate",
+  "estimate",
+  "title",
+] as const;
+export type LinearIssueOrdering = (typeof LINEAR_ISSUE_ORDERINGS)[number];
+export function isLinearIssueOrdering(value: unknown): value is LinearIssueOrdering {
+  return typeof value === "string" && (LINEAR_ISSUE_ORDERINGS as readonly string[]).includes(value);
+}
 
 /** Linear `issueNesting`: none = flat, showAll/showMatching = sub-issues under their parent. */
-export type LinearIssueNesting = "none" | "showAll" | "showMatching";
+export const LINEAR_ISSUE_NESTINGS = ["none", "showAll", "showMatching"] as const;
+export type LinearIssueNesting = (typeof LINEAR_ISSUE_NESTINGS)[number];
+export function isLinearIssueNesting(value: unknown): value is LinearIssueNesting {
+  return typeof value === "string" && (LINEAR_ISSUE_NESTINGS as readonly string[]).includes(value);
+}
 
 /** Linear's view types for the issue tabs ADE shows. */
-export type LinearIssueViewType = "allIssues" | "activeIssues" | "backlog" | "myIssues" | "cycle" | "project";
+export const LINEAR_ISSUE_VIEW_TYPES = ["allIssues", "activeIssues", "backlog", "myIssues", "cycle", "project"] as const;
+export type LinearIssueViewType = (typeof LINEAR_ISSUE_VIEW_TYPES)[number];
+export function isLinearIssueViewType(value: unknown): value is LinearIssueViewType {
+  return typeof value === "string" && (LINEAR_ISSUE_VIEW_TYPES as readonly string[]).includes(value);
+}
 
 export type LinearIssueDisplayFields = {
   id: boolean;
@@ -629,7 +649,15 @@ export type LinearDisplayPreferences = {
   showEmptyGroups: boolean;
   /** Linear `showCompletedIssues`: whether closed issues are listed. */
   showCompletedIssues: boolean;
-  /** Group keys hidden in the list (Linear `hiddenGroupsList`). */
+  /**
+   * Groups hidden in the list (Linear `hiddenGroupsList`), by Linear's own id
+   * for the active grouping, so ADE and linear.app hide the same groups:
+   * workflowState -> workflow state id, assignee -> user id, project ->
+   * project id, priority -> "0".."4", label -> label id, cycle -> cycle id,
+   * projectMilestone -> milestone id, team -> team id. The "No X" groups use
+   * ADE keys (`assignee:none`, `project:none`, `cycle:none`, `label:none`,
+   * `milestone:none`). Desktop and iOS both match on these.
+   */
   hiddenGroups: string[];
   fields: LinearIssueDisplayFields;
   /**

@@ -441,7 +441,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "fetchIssueComments", "getIssuePickerData", "getConnectionStatus", "getQuickView",
       "getStatus", "getWorkflowCatalog", "listCustomViews", "listLabels", "listIssues",
       "listNotifications", "listProjects", "listWorkflowStates", "listUsers", "searchIssues",
-      "getViewPreferences", "getRailData", "getDocument", "findIssueByBranch",
+      "getViewPreferences", "getRailData", "getDocument",
     ],
     write: [
       "addIssueLabel", "addLabel", "cancelIssue", "createComment", "createFollowUpIssue",

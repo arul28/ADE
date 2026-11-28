@@ -1520,7 +1520,6 @@ export const IPC = {
   ctoUpdateLinearViewPreferences: "ade.cto.updateLinearViewPreferences",
   ctoGetLinearRailData: "ade.cto.getLinearRailData",
   ctoGetLinearDocument: "ade.cto.getLinearDocument",
-  ctoFindLinearIssueByBranch: "ade.cto.findLinearIssueByBranch",
   ctoSetLinearOAuthClient: "ade.cto.setLinearOAuthClient",
   ctoClearLinearOAuthClient: "ade.cto.clearLinearOAuthClient",
   ctoStartLinearOAuth: "ade.cto.startLinearOAuth",

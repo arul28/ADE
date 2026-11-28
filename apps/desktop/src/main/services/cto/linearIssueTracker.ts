@@ -1,20 +1,29 @@
 import type { IssueTracker } from "./issueTracker";
 import { parseLinearIssueCreateInput } from "../../../shared/linearIssueCreateInput";
-import type {
-  CtoGetLinearViewPreferencesArgs,
-  CtoLinearRailData,
-  CtoUpdateLinearViewPreferencesArgs,
-  CtoUpdateLinearViewPreferencesResult,
-  LinearDisplayPreferences,
-  LinearIssueViewType,
-  NormalizedLinearIssue,
+import {
+  isLinearIssueViewType,
+  type CtoGetLinearViewPreferencesArgs,
+  type CtoLinearRailData,
+  type CtoUpdateLinearViewPreferencesArgs,
+  type CtoUpdateLinearViewPreferencesResult,
+  type LinearDisplayPreferences,
+  type LinearIssueViewType,
 } from "../../../shared/types";
+import {
+  applyLinearDisplayPatch,
+  defaultLinearDisplayPreferences,
+  emptyLinearRailData,
+  LINEAR_NOT_CONNECTED_DISPLAY_REASON,
+  mergeLinearDisplayPatches,
+  parseLinearDisplayPatch,
+  type LinearDisplayPatch,
+} from "../../../shared/linearDisplayPreferences";
 import type { Logger } from "../logging/logger";
 import type { LinearClient } from "./linearClient";
-import { getErrorMessage, isRecord } from "../shared/utils";
+import { evictOldestEntries, getErrorMessage, isRecord } from "../shared/utils";
 import { budgetIsLow, OPEN_ISSUE_STATE_TYPES } from "./linearClientShared";
 import {
-  defaultLinearDisplayPreferences,
+  isLinearViewPreferencesRefusal,
   linearDisplayPreferencesFromValues,
   mergeLinearViewValues,
   type LinearViewPreferencesRead,
@@ -26,34 +35,22 @@ export type LinearDisplayStore = {
   setJson: (key: string, value: unknown) => void;
 };
 
-type ViewPreferencesPatch = CtoUpdateLinearViewPreferencesArgs["patch"];
+type ViewPreferencesPatch = LinearDisplayPatch;
 
-const VIEW_TYPES: ReadonlySet<LinearIssueViewType> = new Set(["allIssues", "activeIssues", "backlog", "myIssues", "cycle", "project"]);
 const VIEW_PREFERENCES_TTL_MS = 60_000;
+const VIEW_READS_MAX = 50;
 const RAIL_TTL_MS = 60_000;
-const BRANCH_LOOKUP_TTL_MS = 5 * 60_000;
-const BRANCH_CACHE_MAX = 200;
+const RAIL_CACHE_MAX = 20;
 const ADE_STATUS_KEY = "linear:display:ade-status:v1";
 /** Display changes Linear would not store, per view: kept in the project database across reloads. */
 const ADE_PREFERENCES_KEY = "linear:display:ade-preferences:v1";
 
 function viewTypeOf(value: unknown): LinearIssueViewType {
-  return typeof value === "string" && VIEW_TYPES.has(value as LinearIssueViewType) ? value as LinearIssueViewType : "allIssues";
+  return isLinearIssueViewType(value) ? value : "allIssues";
 }
 
 function viewKey(args: { viewType: LinearIssueViewType; customViewId?: string | null }): string {
   return `${args.viewType}|${args.customViewId?.trim() ?? ""}`;
-}
-
-/** Two patches as one: the later wins key by key, display fields merge. */
-function mergePatches(left: ViewPreferencesPatch, right: ViewPreferencesPatch): ViewPreferencesPatch {
-  return { ...left, ...right, ...(left.fields || right.fields ? { fields: { ...left.fields, ...right.fields } } : {}) };
-}
-
-function applyPatch(preferences: LinearDisplayPreferences, patch: ViewPreferencesPatch): LinearDisplayPreferences {
-  const { fields, ...rest } = patch;
-  const clean = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
-  return { ...preferences, ...clean, fields: { ...preferences.fields, ...(fields ?? {}) } } as LinearDisplayPreferences;
 }
 
 function withoutAdeStatus(patch: ViewPreferencesPatch): ViewPreferencesPatch {
@@ -65,25 +62,6 @@ function withoutAdeStatus(patch: ViewPreferencesPatch): ViewPreferencesPatch {
 function patchTouchesLinear(patch: ViewPreferencesPatch): boolean {
   const { fields, ...rest } = withoutAdeStatus(patch);
   return Object.values(rest).some((value) => value !== undefined) || Object.keys(fields ?? {}).length > 0;
-}
-
-/** The patch as sent over IPC or sync, keeping only known keys of the right type. */
-function parsePatch(value: unknown): ViewPreferencesPatch {
-  if (!isRecord(value)) return {};
-  const patch: Record<string, unknown> = {};
-  for (const key of ["grouping", "subGrouping", "ordering", "orderingDirection", "nesting"] as const) {
-    if (typeof value[key] === "string") patch[key] = value[key];
-  }
-  for (const key of ["showEmptyGroups", "showCompletedIssues"] as const) {
-    if (typeof value[key] === "boolean") patch[key] = value[key];
-  }
-  if (Array.isArray(value.hiddenGroups)) {
-    patch.hiddenGroups = value.hiddenGroups.filter((entry): entry is string => typeof entry === "string").slice(0, 200);
-  }
-  if (isRecord(value.fields)) {
-    patch.fields = Object.fromEntries(Object.entries(value.fields).filter(([, flag]) => typeof flag === "boolean"));
-  }
-  return patch as ViewPreferencesPatch;
 }
 
 // Titles this close (word overlap) to an open issue in the same team count as a
@@ -119,6 +97,9 @@ export function createLinearIssueTracker(args: {
   // What Linear holds, per view (60 s), and what Linear refused: those changes
   // stay in ADE for this session and ride along with the next write.
   const viewReads = new Map<string, { read: LinearViewPreferencesRead; at: number }>();
+  // Bumped whenever a save replaces a view's cached read, so a read that
+  // started earlier (and answers later) never overwrites the newer values.
+  const viewReadVersions = new Map<string, number>();
   const unsavedPatches = new Map<string, ViewPreferencesPatch>();
   const writeChains = new Map<string, Promise<CtoUpdateLinearViewPreferencesResult>>();
   // Views Linear will not store for this session (a team-scoped tab with no
@@ -130,7 +111,8 @@ export function createLinearIssueTracker(args: {
       const stored = args.displayStore?.getJson<Record<string, boolean>>(ADE_STATUS_KEY);
       const value = stored && typeof stored === "object" ? stored[key] : undefined;
       return typeof value === "boolean" ? value : true;
-    } catch {
+    } catch (error) {
+      args.logger?.warn("linear.ade_status_read_failed", { error: getErrorMessage(error) });
       return true;
     }
   };
@@ -150,7 +132,8 @@ export function createLinearIssueTracker(args: {
     try {
       const stored = args.displayStore?.getJson<Record<string, ViewPreferencesPatch>>(ADE_PREFERENCES_KEY);
       return stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
-    } catch {
+    } catch (error) {
+      args.logger?.warn("linear.ade_preferences_read_failed", { error: getErrorMessage(error) });
       return {};
     }
   };
@@ -169,25 +152,34 @@ export function createLinearIssueTracker(args: {
 
   const defaultsRead = (): LinearViewPreferencesRead => ({ preferences: defaultLinearDisplayPreferences(), recordId: null, stored: {} });
 
-  /** Linear's record for a view: cached 60 s; Linear's defaults when Linear is unreachable or the budget is low. */
+  /**
+   * Linear's record for a view: cached 60 s; Linear's defaults when Linear is
+   * unreachable or the budget is low. `unread` is true when the read failed
+   * and nothing was cached: the defaults are a guess, not Linear's record.
+   */
   const loadViewRead = async (
     view: { viewType: LinearIssueViewType; customViewId: string | null },
     opts: { fresh?: boolean } = {},
-  ): Promise<LinearViewPreferencesRead> => {
+  ): Promise<{ read: LinearViewPreferencesRead; unread: boolean }> => {
     const key = viewKey(view);
     const cached = viewReads.get(key);
-    if (cached && !opts.fresh && Date.now() - cached.at < VIEW_PREFERENCES_TTL_MS) return cached.read;
-    if (!args.client.isConnected()) return defaultsRead();
+    if (cached && !opts.fresh && Date.now() - cached.at < VIEW_PREFERENCES_TTL_MS) return { read: cached.read, unread: false };
+    if (!args.client.isConnected()) return { read: defaultsRead(), unread: false };
     // Display settings are an extra: never spend the last of Linear's budget on them.
-    if (budgetIsLow(args.client.getRateBudget())) return cached?.read ?? defaultsRead();
+    if (budgetIsLow(args.client.getRateBudget())) return { read: cached?.read ?? defaultsRead(), unread: false };
+    const version = viewReadVersions.get(key) ?? 0;
     try {
       const read = await args.client.readViewPreferences(view);
+      if ((viewReadVersions.get(key) ?? 0) !== version) {
+        // A save landed while this read was out: its values are newer.
+        return { read: viewReads.get(key)?.read ?? read, unread: false };
+      }
       viewReads.set(key, { read, at: Date.now() });
-      while (viewReads.size > 50) viewReads.delete(viewReads.keys().next().value as string);
-      return read;
+      evictOldestEntries(viewReads, VIEW_READS_MAX);
+      return { read, unread: false };
     } catch (error) {
       args.logger?.warn("linear.view_preferences_read_failed", { viewType: view.viewType, error: getErrorMessage(error) });
-      return cached?.read ?? defaultsRead();
+      return cached ? { read: cached.read, unread: false } : { read: defaultsRead(), unread: true };
     }
   };
 
@@ -199,11 +191,16 @@ export function createLinearIssueTracker(args: {
   const effectivePreferences = (key: string, read: LinearViewPreferencesRead): LinearDisplayPreferences => {
     let preferences = read.preferences;
     if (read.preferences.source === "default") {
-      const saved = unsavedPatches.get(key) ?? readAdePatches()[key];
-      if (saved && patchTouchesLinear(saved)) preferences = { ...applyPatch(read.preferences, withoutAdeStatus(saved)), source: "ade" };
+      // Stored JSON: parse it before reading any key.
+      const unsaved = unsavedPatches.get(key);
+      const stored = unsaved ? undefined : readAdePatches()[key];
+      const saved = unsaved ?? (stored ? parseLinearDisplayPatch(stored) : undefined);
+      if (saved && patchTouchesLinear(saved)) {
+        preferences = { ...applyLinearDisplayPatch(read.preferences, withoutAdeStatus(saved)), source: "ade" };
+      }
     } else {
       const unsaved = unsavedPatches.get(key);
-      if (unsaved) preferences = applyPatch(read.preferences, withoutAdeStatus(unsaved));
+      if (unsaved) preferences = applyLinearDisplayPatch(read.preferences, withoutAdeStatus(unsaved));
     }
     return { ...preferences, fields: { ...preferences.fields, adeStatus: readAdeStatus(key) } };
   };
@@ -216,23 +213,24 @@ export function createLinearIssueTracker(args: {
 
   const getViewPreferences = async (raw: CtoGetLinearViewPreferencesArgs): Promise<LinearDisplayPreferences> => {
     const view = viewOf(raw);
-    return effectivePreferences(viewKey(view), await loadViewRead(view));
+    return effectivePreferences(viewKey(view), (await loadViewRead(view)).read);
   };
 
   const updateViewPreferences = (raw: CtoUpdateLinearViewPreferencesArgs): Promise<CtoUpdateLinearViewPreferencesResult> => {
     const view = viewOf(raw);
     const key = viewKey(view);
-    const patch = parsePatch(isRecord(raw) ? raw.patch : null);
+    const patch = parseLinearDisplayPatch(isRecord(raw) ? raw.patch : null);
     // One write per view at a time, each on top of the last: the last write
     // wins and no key of an earlier change is lost.
     const run = async (): Promise<CtoUpdateLinearViewPreferencesResult> => {
       if (typeof patch.fields?.adeStatus === "boolean") writeAdeStatus(key, patch.fields.adeStatus);
       const refused = refusedViews.get(key) ?? null;
-      const read = await loadViewRead(view, { fresh: patchTouchesLinear(withoutAdeStatus(patch)) && !refused });
+      const { read, unread } = await loadViewRead(view, { fresh: patchTouchesLinear(withoutAdeStatus(patch)) && !refused });
       // Changes not in Linear yet: this session's, else (when Linear has
       // nothing for the view) the ones ADE saved earlier.
-      const base = unsavedPatches.get(key) ?? (read.preferences.source === "default" ? readAdePatches()[key] : undefined) ?? {};
-      const pending = mergePatches(base, withoutAdeStatus(patch));
+      const storedPatch = read.preferences.source === "default" ? readAdePatches()[key] : undefined;
+      const base = unsavedPatches.get(key) ?? (storedPatch ? parseLinearDisplayPatch(storedPatch) : {});
+      const pending = mergeLinearDisplayPatches(base, withoutAdeStatus(patch));
       if (!patchTouchesLinear(pending)) {
         return { preferences: effectivePreferences(key, read), savedToLinear: true, reason: null };
       }
@@ -242,10 +240,12 @@ export function createLinearIssueTracker(args: {
         return { preferences: effectivePreferences(key, read), savedToLinear: false, reason };
       };
       if (refused) return keepInAde(refused);
-      if (!args.client.isConnected()) return keepInAde("Linear isn't connected, so ADE kept the change here only.");
+      if (!args.client.isConnected()) return keepInAde(LINEAR_NOT_CONNECTED_DISPLAY_REASON);
       if (budgetIsLow(args.client.getRateBudget())) {
         return keepInAde("Linear's rate limit is running low, so ADE kept the change here only for now.");
       }
+      // Writing over a record ADE couldn't read would replace Linear's saved values with defaults.
+      if (unread) return keepInAde("ADE couldn't read Linear's saved display settings, so it kept the change here only for now.");
       const values = mergeLinearViewValues(read.stored, pending);
       try {
         const { recordId } = await args.client.writeViewPreferences({ ...view, recordId: read.recordId, values });
@@ -255,12 +255,15 @@ export function createLinearIssueTracker(args: {
           stored: values,
         };
         viewReads.set(key, { read: saved, at: Date.now() });
+        evictOldestEntries(viewReads, VIEW_READS_MAX);
+        viewReadVersions.set(key, (viewReadVersions.get(key) ?? 0) + 1);
         unsavedPatches.delete(key);
         writeAdePatch(key, null);
         return { preferences: effectivePreferences(key, saved), savedToLinear: true, reason: null };
       } catch (error) {
         const reason = getErrorMessage(error);
-        if (/per team/.test(reason)) refusedViews.set(key, reason);
+        // A team-scoped tab refuses every write the same way: stop asking.
+        if (isLinearViewPreferencesRefusal(error) && error.kind === "team-scoped") refusedViews.set(key, reason);
         return keepInAde(reason);
       }
     };
@@ -272,59 +275,38 @@ export function createLinearIssueTracker(args: {
     return next;
   };
 
-  // ---- Rail extras and lookups ----
+  // ---- Rail extras ----
   const railCache = new Map<string, { value: CtoLinearRailData; at: number }>();
   const railInFlight = new Map<string, Promise<CtoLinearRailData>>();
-  const emptyRail = (): CtoLinearRailData => ({ cycles: [], initiatives: [], favorites: [], documents: [] });
 
   const getRailData = async (raw?: { teamKey?: string | null } | null): Promise<CtoLinearRailData> => {
     const teamKey = isRecord(raw) && typeof raw.teamKey === "string" ? raw.teamKey.trim() : "";
     const cached = railCache.get(teamKey);
     if (cached && Date.now() - cached.at < RAIL_TTL_MS) return cached.value;
-    if (!args.client.isConnected()) return emptyRail();
+    if (!args.client.isConnected()) return emptyLinearRailData();
     // The rail is an extra: keep the budget for the list and edits.
-    if (budgetIsLow(args.client.getRateBudget())) return cached?.value ?? emptyRail();
+    if (budgetIsLow(args.client.getRateBudget())) return cached?.value ?? emptyLinearRailData();
     const inFlight = railInFlight.get(teamKey);
     if (inFlight) return inFlight;
     const run = args.client.getRailData({ teamKey: teamKey || null })
       .then((value) => {
         railCache.set(teamKey, { value, at: Date.now() });
-        while (railCache.size > 20) railCache.delete(railCache.keys().next().value as string);
+        evictOldestEntries(railCache, RAIL_CACHE_MAX);
         return value;
       })
       .catch((error) => {
         args.logger?.warn("linear.rail_read_failed", { error: getErrorMessage(error) });
-        return cached?.value ?? emptyRail();
+        return cached?.value ?? emptyLinearRailData();
       })
       .finally(() => railInFlight.delete(teamKey));
     railInFlight.set(teamKey, run);
     return run;
   };
 
-  // Called only on an explicit link or adopt (never on a hot path), and cached.
-  const branchCache = new Map<string, { value: NormalizedLinearIssue | null; at: number }>();
-  const findIssueByBranch = async (raw: { branch: string }): Promise<NormalizedLinearIssue | null> => {
-    const branch = (isRecord(raw) && typeof raw.branch === "string" ? raw.branch : "").trim().replace(/^refs\/heads\//, "");
-    if (!branch || branch.length > 500) return null;
-    const cached = branchCache.get(branch);
-    if (cached && Date.now() - cached.at < BRANCH_LOOKUP_TTL_MS) return cached.value;
-    if (!args.client.isConnected()) return null;
-    try {
-      const value = await args.client.findIssueByBranch(branch);
-      branchCache.set(branch, { value, at: Date.now() });
-      while (branchCache.size > BRANCH_CACHE_MAX) branchCache.delete(branchCache.keys().next().value as string);
-      return value;
-    } catch (error) {
-      args.logger?.warn("linear.branch_lookup_failed", { error: getErrorMessage(error) });
-      return null;
-    }
-  };
-
   return {
     getViewPreferences,
     updateViewPreferences,
     getRailData,
-    findIssueByBranch,
 
     async getDocument(raw: { documentId: string }) {
       const documentId = isRecord(raw) && typeof raw.documentId === "string" ? raw.documentId.trim() : "";

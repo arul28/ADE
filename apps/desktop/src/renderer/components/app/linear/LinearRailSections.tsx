@@ -15,9 +15,13 @@ import type {
   CtoLinearRailData,
   OpenProjectBinding,
 } from "../../../../shared/types";
+import { LinearProgressRing } from "../../lanes/linearBrand";
 import { LinearProjectIcon, resolveLinearProjectIcon } from "../../lanes/linearProjectIcon";
 import { cn } from "../../ui/cn";
-import { openExternalUrl } from "./adeStatus";
+import { emptyLinearRailData } from "../../../../shared/linearDisplayPreferences";
+import { openExternalUrl } from "../../../lib/openExternal";
+import { getCtoCacheScope } from "./linearIssueBrowserData";
+import { LINEAR_SCOPE_PREFIX } from "./linearScope";
 
 /**
  * The Linear rail's workspace sections: Favorites, Cycles, Initiatives and
@@ -50,43 +54,61 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-const ctoScopes = new WeakMap<object, number>();
-let nextCtoScope = 1;
-
-/** A different bridge object (tests, a reconnected web client) gets its own entries. */
-function ctoScope(): string {
-  const cto = window.ade?.cto as object | undefined;
-  if (!cto) return "none";
-  let scope = ctoScopes.get(cto);
-  if (!scope) {
-    scope = nextCtoScope++;
-    ctoScopes.set(cto, scope);
-  }
-  return String(scope);
-}
-
 function railKey(pinKey: string, teamKey: string | null): string {
-  return `${pinKey}::team:${teamKey ?? "*"}::cto:${ctoScope()}`;
+  return `${pinKey}::team:${teamKey ?? "*"}::cto:${getCtoCacheScope(window.ade?.cto)}`;
 }
 
-function loadRail(key: string, pin: OpenProjectBinding, teamKey: string | null, force = false): void {
+function loadRail(key: string, pin: OpenProjectBinding, teamKey: string | null): void {
   const read = window.ade?.cto?.getLinearRailData;
   if (typeof read !== "function") return;
   const current = railCache.get(key);
   if (current?.promise) return;
-  if (!force && current?.data && Date.now() - current.fetchedAt < REFRESH_AFTER_MS) return;
+  if (current?.data && Date.now() - current.fetchedAt < REFRESH_AFTER_MS) return;
   const promise = Promise.resolve()
     .then(() => read({ teamKey }, pin))
     .then((data) => {
-      railCache.set(key, { data: data ?? null, fetchedAt: Date.now(), promise: null });
+      railCache.set(key, { data: data ?? emptyLinearRailData(), fetchedAt: Date.now(), promise: null });
     })
-    .catch(() => {
+    .catch((error: unknown) => {
       // Keep what was shown; a failed read renders nothing new and no banner.
+      console.warn("[linear] rail read failed", error);
       const entry = railCache.get(key);
       railCache.set(key, { data: entry?.data ?? null, fetchedAt: Date.now(), promise: null });
     })
     .finally(notify);
   railCache.set(key, { data: current?.data ?? null, fetchedAt: current?.fetchedAt ?? 0, promise });
+}
+
+/**
+ * The Linear machine's rail data (favorites, cycles, initiatives, documents)
+ * for a team, or null until the first read lands. Every caller shares one
+ * module cache entry and one in-flight read per pin key and team; it reads
+ * again only after a minute, when the window comes back.
+ */
+export function useLinearRailData(pin: OpenProjectBinding | null, teamKey: string | null): CtoLinearRailData | null {
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const supported = typeof window !== "undefined" && typeof window.ade?.cto?.getLinearRailData === "function";
+  const key = pinKey && supported ? railKey(pinKey, teamKey) : null;
+  const entry = useSyncExternalStore(
+    subscribe,
+    () => (key ? railCache.get(key) ?? null : null),
+    () => null,
+  );
+
+  useEffect(() => {
+    if (!key || !pinRef.current) return undefined;
+    loadRail(key, pinRef.current, teamKey);
+    const onVisible = () => {
+      if (document.visibilityState !== "visible" || !pinRef.current) return;
+      loadRail(key, pinRef.current, teamKey);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [key, teamKey]);
+
+  return entry?.data ?? null;
 }
 
 function readCollapsed(): Record<string, boolean> {
@@ -186,29 +208,9 @@ function RailSection({
   );
 }
 
-/** Linear's cycle ring: a thin track with a pie filled to the share of scope done. */
+/** Linear's cycle ring: the share of the cycle's scope done (empty when unknown). */
 function CycleProgressRing({ progress, size = 14 }: { progress: number | null; size?: number }) {
-  const value = Math.max(0, Math.min(1, progress ?? 0));
-  // A pie drawn as a stroke as wide as its own diameter: radius 2.5, width 5.
-  const pieRadius = 2.5;
-  const pieLength = 2 * Math.PI * pieRadius;
-  return (
-    <svg width={size} height={size} viewBox="0 0 14 14" aria-hidden className="shrink-0">
-      <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeOpacity={0.45} strokeWidth={1.25} />
-      {value > 0 ? (
-        <circle
-          cx="7"
-          cy="7"
-          r={pieRadius}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={pieRadius * 2}
-          strokeDasharray={`${(value * pieLength).toFixed(2)} ${pieLength.toFixed(2)}`}
-          transform="rotate(-90 7 7)"
-        />
-      ) : null}
-    </svg>
-  );
+  return <LinearProgressRing done={Math.max(0, Math.min(1, progress ?? 0))} total={1} size={size} />;
 }
 
 function EntityIcon({ icon, color, fallback }: { icon: string | null; color: string | null; fallback: React.ReactNode }) {
@@ -219,14 +221,15 @@ function EntityIcon({ icon, color, fallback }: { icon: string | null; color: str
 
 // ── Favorites ───────────────────────────────────────────────────────────────
 
-const FAVORITE_SCOPE_PREFIX: Record<string, string> = {
-  project: "project:",
-  customView: "view:",
-  view: "view:",
-  cycle: "cycle:",
-  label: "label:",
-  initiative: "initiative:",
-  document: "document:",
+/** Linear favorite type → the rail scope it opens. */
+const FAVORITE_SCOPE_PREFIX: Readonly<Record<string, string>> = {
+  project: LINEAR_SCOPE_PREFIX.project,
+  customView: LINEAR_SCOPE_PREFIX.view,
+  view: LINEAR_SCOPE_PREFIX.view,
+  cycle: LINEAR_SCOPE_PREFIX.cycle,
+  label: LINEAR_SCOPE_PREFIX.label,
+  initiative: LINEAR_SCOPE_PREFIX.initiative,
+  document: LINEAR_SCOPE_PREFIX.document,
 };
 
 function favoriteIcon(favorite: CtoLinearFavorite): React.ReactNode {
@@ -252,7 +255,7 @@ function favoriteIcon(favorite: CtoLinearFavorite): React.ReactNode {
 }
 
 function favoriteScope(favorite: CtoLinearFavorite): string | null {
-  const prefix = FAVORITE_SCOPE_PREFIX[favorite.type];
+  const prefix = Object.hasOwn(FAVORITE_SCOPE_PREFIX, favorite.type) ? FAVORITE_SCOPE_PREFIX[favorite.type] : undefined;
   return prefix && favorite.targetId ? `${prefix}${favorite.targetId}` : null;
 }
 
@@ -292,27 +295,7 @@ export function LinearRailSections({
   onSelectScope: (scope: string) => void;
   onOpenIssue: (issueIdOrIdentifier: string) => void;
 }): JSX.Element | null {
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
-  const pinKey = pin?.key ?? null;
-  const supported = typeof window !== "undefined" && typeof window.ade?.cto?.getLinearRailData === "function";
-  const key = pinKey && supported ? railKey(pinKey, teamKey) : null;
-  const entry = useSyncExternalStore(
-    subscribe,
-    () => (key ? railCache.get(key) ?? null : null),
-    () => null,
-  );
-
-  useEffect(() => {
-    if (!key || !pinRef.current) return undefined;
-    loadRail(key, pinRef.current, teamKey);
-    const onVisible = () => {
-      if (document.visibilityState !== "visible" || !pinRef.current) return;
-      loadRail(key, pinRef.current, teamKey);
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [key, teamKey]);
+  const data = useLinearRailData(pin, teamKey);
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
   const toggle = useCallback((id: string) => {
@@ -324,7 +307,6 @@ export function LinearRailSections({
   }, []);
   const [showAllFavorites, setShowAllFavorites] = useState(false);
 
-  const data = entry?.data ?? null;
   const favorites = useMemo(
     () => (data?.favorites ?? []).filter((favorite) => favorite.type !== "folder").slice().sort((a, b) => a.sortOrder - b.sortOrder),
     [data],
@@ -385,12 +367,12 @@ export function LinearRailSections({
             return (
               <RailRow
                 key={cycle.id}
-                active={activeScope === `cycle:${cycle.id}`}
+                active={activeScope === `${LINEAR_SCOPE_PREFIX.cycle}${cycle.id}`}
                 icon={<CycleProgressRing progress={cycle.progress} />}
                 title={cycleTitle(cycle, showCycleTeam)}
                 trailing={cycleWhen(cycle)}
                 tooltip={`${cycleTitle(cycle, true)}: ${dates}${progress}`}
-                onClick={() => onSelectScope(`cycle:${cycle.id}`)}
+                onClick={() => onSelectScope(`${LINEAR_SCOPE_PREFIX.cycle}${cycle.id}`)}
               />
             );
           })}
@@ -402,14 +384,14 @@ export function LinearRailSections({
           {initiatives.map((initiative) => (
             <RailRow
               key={initiative.id}
-              active={activeScope === `initiative:${initiative.id}`}
+              active={activeScope === `${LINEAR_SCOPE_PREFIX.initiative}${initiative.id}`}
               icon={<EntityIcon icon={initiative.icon} color={initiative.color} fallback={<Target size={13} />} />}
               title={initiative.name}
               trailing={initiative.status ?? undefined}
               tooltip={[initiative.name, initiative.status, initiative.targetDate ? `Target ${formatShortDate(initiative.targetDate)}` : null]
                 .filter(Boolean)
                 .join(", ")}
-              onClick={() => onSelectScope(`initiative:${initiative.id}`)}
+              onClick={() => onSelectScope(`${LINEAR_SCOPE_PREFIX.initiative}${initiative.id}`)}
             />
           ))}
         </RailSection>
@@ -420,12 +402,12 @@ export function LinearRailSections({
           {documents.map((document) => (
             <RailRow
               key={document.id}
-              active={activeScope === `document:${document.id}`}
+              active={activeScope === `${LINEAR_SCOPE_PREFIX.document}${document.id}`}
               icon={<EntityIcon icon={document.icon} color={document.color} fallback={<FileText size={13} />} />}
               title={document.title || "Untitled document"}
               trailing={formatShortDate(document.updatedAt)}
               tooltip={[document.title, document.projectName].filter(Boolean).join(", ")}
-              onClick={() => onSelectScope(`document:${document.id}`)}
+              onClick={() => onSelectScope(`${LINEAR_SCOPE_PREFIX.document}${document.id}`)}
             />
           ))}
         </RailSection>

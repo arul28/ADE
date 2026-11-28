@@ -3281,7 +3281,6 @@ export type SyncRemoteCommandAction =
   | "cto.updateLinearViewPreferences"
   | "cto.getLinearRailData"
   | "cto.getLinearDocument"
-  | "cto.findLinearIssueByBranch"
   | "cto.updateIdentity"
   | "cto.updateNotes"
   | "cto.updateOpenWork"

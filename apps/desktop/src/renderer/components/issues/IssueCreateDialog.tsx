@@ -152,16 +152,19 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   useEffect(() => {
     rememberIssueProvider(provider);
   }, [provider]);
+  // A group's "+" form is separate and unsaved: it never touches the saved draft.
+  const keepsDraft = initial.keepsDraft;
   useEffect(() => {
+    if (!keepsDraft) return undefined;
     draftRef.current = { title, body, linear, github, jira, formAnswers };
     const timer = window.setTimeout(() => writeIssueDraft(provider, projectRoot, draftRef.current), 400);
     return () => window.clearTimeout(timer);
-  }, [body, formAnswers, github, jira, linear, projectRoot, provider, title]);
+  }, [body, formAnswers, github, jira, keepsDraft, linear, projectRoot, provider, title]);
   // Closing inside the 400 ms window must not lose the last keystrokes. A
   // create clears `draftRef` first, so nothing is written back after it.
   useEffect(() => () => {
-    if (draftRef.current) writeIssueDraft(providerRef.current, projectRoot, draftRef.current);
-  }, [projectRoot]);
+    if (keepsDraft && draftRef.current) writeIssueDraft(providerRef.current, projectRoot, draftRef.current);
+  }, [keepsDraft, projectRoot]);
 
   /* Linear data */
   const catalog = useLinearPickerCatalog();
@@ -414,7 +417,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     setAttachments([]);
     setError(null);
     draftRef.current = null;
-    writeIssueDraft(provider, projectRoot, null);
+    if (keepsDraft) writeIssueDraft(provider, projectRoot, null);
     titleRef.current?.focus();
   };
 
@@ -515,7 +518,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       if (createMore) reset();
       else {
         draftRef.current = null;
-        writeIssueDraft(provider, projectRoot, null);
+        if (keepsDraft) writeIssueDraft(provider, projectRoot, null);
         onClose();
       }
     } catch (cause) {
@@ -608,7 +611,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                 }}
               />
             ) : null}
-            <button type="button" className="kit-icon-btn" aria-label="Close" title="Close (Esc). The draft is kept." onClick={onClose}>
+            <button type="button" className="kit-icon-btn" aria-label="Close" title={keepsDraft ? "Close (Esc). The draft is kept." : "Close (Esc)"} onClick={onClose}>
               <X size={13} />
             </button>
           </span>
@@ -694,7 +697,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                   key={entry.key}
                   type="button"
                   className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left text-[12px] hover:bg-[color:var(--kit-hover)]"
-                  title="Open it. Your draft is kept."
+                  title={keepsDraft ? "Open it. Your draft is kept." : "Open it."}
                   onClick={() => {
                     entry.open();
                     onClose();

@@ -9,11 +9,7 @@ import {
   Stack,
   Triangle,
 } from "@phosphor-icons/react";
-import type {
-  CtoLinearProject,
-  CtoLinearQuickViewProject,
-  LinearIssueDisplayFields,
-} from "../../../shared/types";
+import type { LinearIssueDisplayFields } from "../../../shared/types";
 import type { IssueConflict } from "../../lib/linearBatchLaunch";
 import { cn } from "../ui/cn";
 import {
@@ -24,6 +20,7 @@ import {
   LinearStateIcon,
 } from "../lanes/linearBrand";
 import { LinearProjectIcon } from "../lanes/linearProjectIcon";
+import { isClosedLinearStateType } from "../../../shared/linearIssueNormalize";
 import { initialsFor, isNormalizedIssue, type BrowserIssue } from "./linearIssueBrowserModel";
 import {
   subIssueProgress,
@@ -130,72 +127,6 @@ export function LinearConflictBadge({ conflict }: { conflict: IssueConflict }) {
       {isLane ? <Stack size={11} weight="bold" /> : <Robot size={11} weight="bold" />}
       {label}
     </span>
-  );
-}
-
-export function ScopeNavButton({
-  active,
-  icon,
-  title,
-  count,
-  onClick,
-}: {
-  active: boolean;
-  icon: React.ReactNode;
-  title: string;
-  count: string | null;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        "flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-fg/25",
-        active ? "bg-fg/[0.07] text-fg" : "text-fg/70 hover:bg-fg/[0.04] hover:text-fg",
-      )}
-      onClick={onClick}
-      title={title}
-      aria-current={active ? "page" : undefined}
-    >
-      <span className="grid w-4 shrink-0 place-items-center text-muted-fg">{icon}</span>
-      <span className="min-w-0 flex-1 truncate text-[13px]">{title}</span>
-      {count ? <span className="shrink-0 text-[11.5px] tabular-nums text-muted-fg/70">{count}</span> : null}
-    </button>
-  );
-}
-
-export function ProjectFilterButton({
-  project,
-  active,
-  count,
-  onClick,
-}: {
-  project: CtoLinearProject & { quick: CtoLinearQuickViewProject | null };
-  active: boolean;
-  count: string | null;
-  onClick: () => void;
-}) {
-  const quick = project.quick;
-  return (
-    <button
-      type="button"
-      className={cn(
-        "flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-fg/25",
-        active ? "bg-fg/[0.07] text-fg" : "text-fg/70 hover:bg-fg/[0.04] hover:text-fg",
-      )}
-      onClick={onClick}
-      title={project.name}
-      aria-current={active ? "page" : undefined}
-    >
-      <LinearProjectIcon
-        icon={project.icon ?? quick?.icon}
-        color={project.color ?? quick?.color}
-        name={project.name}
-        size={16}
-      />
-      <span className="min-w-0 flex-1 truncate text-[13px]">{project.name}</span>
-      {count ? <span className="shrink-0 text-[11.5px] tabular-nums text-muted-fg/70">{count}</span> : null}
-    </button>
   );
 }
 
@@ -349,7 +280,7 @@ function TreeLines({ depth, guides, last, hasOpenChildren }: { depth: number; gu
 function LabelChips({ issue, compact, max = 2 }: { issue: BrowserIssue; compact: boolean; max?: number }) {
   const labels = isNormalizedIssue(issue) && issue.labelColors
     ? issue.labelColors
-    : issue.labels.map((name) => ({ name, color: null as string | null }));
+    : issue.labels.map((name) => ({ id: undefined as string | undefined, name, color: null as string | null }));
   if (labels.length === 0) return null;
   if (compact && labels.length > 1) {
     // Tight rows: one chip with the label colors stacked, like Linear's "3 labels".
@@ -361,7 +292,7 @@ function LabelChips({ issue, compact, max = 2 }: { issue: BrowserIssue; compact:
         <span className="flex items-center">
           {labels.slice(0, 3).map((label, index) => (
             <span
-              key={label.name}
+              key={label.id ?? label.name}
               className={cn("block h-2 w-2 rounded-full ring-[1.5px] ring-[color:var(--ade-shell-surface,#121019)]", index > 0 && "-ml-[3px]")}
               style={{ background: label.color ?? "var(--color-muted-fg)" }}
             />
@@ -377,7 +308,7 @@ function LabelChips({ issue, compact, max = 2 }: { issue: BrowserIssue; compact:
     <span data-shrink className="flex min-w-0 items-center gap-1 overflow-hidden" title={labels.map((label) => label.name).join(", ")}>
       {shown.map((label) => (
         <span
-          key={label.name}
+          key={label.id ?? label.name}
           className="inline-flex h-[22px] min-w-0 max-w-[132px] shrink items-center gap-1.5 rounded-full border border-fg/[0.09] px-2 text-[11.5px] text-fg/70"
         >
           <span className="block h-2 w-2 shrink-0 rounded-full" style={{ background: label.color ?? "var(--color-muted-fg)" }} />
@@ -405,8 +336,9 @@ function PropertyChip({ icon, children, title, className }: { icon?: React.React
   );
 }
 
-function hasAdeActivity(status: LinearIssueAdeStatus | null): boolean {
-  return Boolean(status && (status.lanes.length > 0 || status.runningChats > 0 || status.needsInput || status.prs.length > 0));
+/** The ADE cell names a lane; with no lane the conflict badge ("Lane"/"Agent") keeps its place. */
+function hasAdeLanes(status: LinearIssueAdeStatus | null): boolean {
+  return Boolean(status && status.lanes.length > 0);
 }
 
 export const LinearBrowserIssueRow = React.memo(function LinearBrowserIssueRow({
@@ -432,7 +364,7 @@ export const LinearBrowserIssueRow = React.memo(function LinearBrowserIssueRow({
   anyChecked: boolean;
   conflict?: IssueConflict | null;
   adeStatus: LinearIssueAdeStatus | null;
-  onToggleCheck: (issueId: string, event: React.MouseEvent) => void;
+  onToggleCheck: (issueId: string, rowKey: string, event: React.MouseEvent) => void;
   onToggleChildren: (issueId: string) => void;
   onSelect: (issueId: string, rowKey: string) => void;
 }) {
@@ -447,9 +379,9 @@ export const LinearBrowserIssueRow = React.memo(function LinearBrowserIssueRow({
   const due = fields.dueDate && issue.dueDate ? issue.dueDate : null;
   const tone = due ? dueTone(due) : null;
   const delegateName = normalized?.delegateName ?? null;
-  const showAde = fields.adeStatus && hasAdeActivity(adeStatus);
+  const showAde = fields.adeStatus && hasAdeLanes(adeStatus);
   const openBlockers = normalized?.hasOpenBlockers
-    ? (normalized.blockedByIssues ?? []).filter((blocker) => blocker.stateType !== "completed" && blocker.stateType !== "canceled")
+    ? (normalized.blockedByIssues ?? []).filter((blocker) => !isClosedLinearStateType(blocker.stateType))
     : [];
 
   // The row is a `div role="button"` rather than a real <button> so the
@@ -460,7 +392,6 @@ export const LinearBrowserIssueRow = React.memo(function LinearBrowserIssueRow({
       tabIndex={busy ? -1 : 0}
       aria-disabled={busy || undefined}
       aria-pressed={active}
-      aria-level={depth + 1}
       data-linear-issue-row={issue.id}
       data-linear-row-key={row.key}
       className={cn(
@@ -471,7 +402,8 @@ export const LinearBrowserIssueRow = React.memo(function LinearBrowserIssueRow({
       )}
       onClick={() => { if (!busy) onSelect(issue.id, row.key); }}
       onKeyDown={(event) => {
-        if (busy) return;
+        // Keys on the checkbox (or a chip) inside the row belong to that control.
+        if (busy || event.target !== event.currentTarget) return;
         // Space selects. Enter selects a row that is not selected yet; on the
         // selected row it falls through to the browser's primary action.
         if (event.key === " " || (event.key === "Enter" && !active)) {
@@ -487,7 +419,7 @@ export const LinearBrowserIssueRow = React.memo(function LinearBrowserIssueRow({
           role="checkbox"
           aria-checked={checked}
           aria-label={checked ? `Deselect ${issue.identifier}` : `Select ${issue.identifier}`}
-          onClick={(event) => { event.stopPropagation(); onToggleCheck(issue.id, event); }}
+          onClick={(event) => { event.stopPropagation(); onToggleCheck(issue.id, row.key, event); }}
           className={cn(
             "grid h-7 w-7 shrink-0 cursor-pointer place-items-center rounded-md outline-none transition-opacity focus-visible:opacity-100",
             checked || anyRowChecked ? "opacity-100" : "opacity-0 group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
@@ -563,7 +495,7 @@ export const LinearBrowserIssueRow = React.memo(function LinearBrowserIssueRow({
               onToggleChildren(issue.id);
             }}
           >
-            <LinearProgressRing done={progress.done} total={progress.total} size={13} />
+            <LinearProgressRing done={progress.done} total={progress.total} capped={progress.capped} size={13} />
             {progress.done}/{progress.total}{progress.capped ? "+" : ""}
           </button>
         ) : null}
@@ -691,7 +623,7 @@ export function LinearContextRow({
         type="button"
         className="ml-2 inline-flex h-[20px] shrink-0 items-center gap-1 rounded-full px-1.5 text-[11.5px] text-muted-fg/70 hover:bg-fg/[0.06] hover:text-fg"
         aria-expanded={open}
-        aria-label={open ? "Hide sub-issues" : "Show sub-issues"}
+        aria-label={`${open ? "Hide" : "Show"} sub-issues of ${row.ref.identifier}`}
         onClick={(event) => { event.stopPropagation(); onToggleChildren(row.ref.id); }}
       >
         <CaretRight size={10} weight="bold" className={cn("transition-transform", open && "rotate-90")} />

@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, FileText, X } from "@phosphor-icons/react";
 import type { CtoLinearDocument, OpenProjectBinding } from "../../../../shared/types";
+import { isAdeCloudBinding } from "../../../../shared/adeCloud/binding";
+import { isUnsupportedAdeActionError } from "../../../../shared/codedError";
+import { openExternalUrl } from "../../../lib/openExternal";
 import { IssueMarkdown } from "../../issues/issueMarkdown";
 import { resolveLinearProjectIcon } from "../../lanes/linearProjectIcon";
 import { cn } from "../../ui/cn";
-import { openExternalUrl } from "./adeStatus";
+import { Banner } from "../../ui/notice";
 
 /**
  * A Linear document in the right pane: its title, project and last change,
@@ -17,8 +20,21 @@ type ReaderState =
   | { status: "loading" }
   | { status: "ready"; document: CtoLinearDocument }
   | { status: "missing" }
+  /** An ADE Cloud project: the account answers Linear reads and has no documents read. */
+  | { status: "cloud" }
+  | { status: "offline" }
   | { status: "error"; message: string }
   | { status: "unsupported" };
+
+/**
+ * An older machine answers a read it does not have with "not callable" / "not
+ * exposed" (a runtime action), or with no IPC handler (an older desktop main).
+ */
+function isMissingDocumentRead(error: unknown): boolean {
+  if (isUnsupportedAdeActionError(error)) return true;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /no handler registered/i.test(message);
+}
 
 function formatUpdated(value: string | null | undefined): string {
   if (!value) return "";
@@ -74,7 +90,7 @@ export function LinearDocumentReader({
       return;
     }
     if (!readPin) {
-      setState({ status: "error", message: "No computer that reads Linear for this project is online." });
+      setState({ status: "offline" });
       return;
     }
     setState({ status: "loading" });
@@ -82,10 +98,15 @@ export function LinearDocumentReader({
       .then(() => read({ documentId }, readPin))
       .then((document) => {
         if (requestRef.current !== request) return;
-        setState(document ? { status: "ready", document } : { status: "missing" });
+        if (document) setState({ status: "ready", document });
+        else setState({ status: isAdeCloudBinding(readPin) ? "cloud" : "missing" });
       })
       .catch((error: unknown) => {
         if (requestRef.current !== request) return;
+        if (isMissingDocumentRead(error)) {
+          setState({ status: "unsupported" });
+          return;
+        }
         setState({ status: "error", message: error instanceof Error ? error.message : "Linear did not answer." });
       });
   }, [attempt, documentId, pinKey]);
@@ -157,17 +178,34 @@ export function LinearDocumentReader({
             <p className="mt-1 text-[12px] text-muted-fg/60">Update ADE on the computer that reads Linear for this project.</p>
           </div>
         ) : null}
-        {state.status === "error" ? (
+        {state.status === "cloud" ? (
           <div className="px-6 py-10 text-center">
-            <p className="text-[13px] text-fg/85">Could not load this document</p>
-            <p className="mx-auto mt-1 max-w-[46ch] text-[12px] text-muted-fg/60">{state.message}</p>
-            <button
-              type="button"
-              className="mt-3 inline-flex h-7 items-center rounded-md border border-fg/[0.10] px-3 text-[12px] text-fg/85 transition-colors hover:bg-fg/[0.05]"
-              onClick={() => setAttempt((value) => value + 1)}
-            >
-              Try again
-            </button>
+            <p className="text-[13px] text-fg/85">Documents do not open in ADE Cloud projects yet</p>
+            <p className="mt-1 text-[12px] text-muted-fg/60">Open this document in Linear, or open the project on one of your computers.</p>
+          </div>
+        ) : null}
+        {state.status === "offline" ? (
+          <div className="px-6 py-10 text-center">
+            <p className="text-[13px] text-fg/85">No computer that reads Linear is online</p>
+            <p className="mt-1 text-[12px] text-muted-fg/60">The document opens once the computer that reads Linear for this project reconnects.</p>
+          </div>
+        ) : null}
+        {state.status === "error" ? (
+          <div className="px-5 py-5">
+            <Banner
+              layout="inline"
+              model={{
+                id: `linear-document-error:${documentId}`,
+                tone: "error",
+                title: "Could not load this document",
+                report: {
+                  surface: "linear_document",
+                  code: "linear_document_read_failed",
+                  technicalDetail: state.message,
+                },
+                actions: [{ label: "Try again", onClick: () => setAttempt((value) => value + 1) }],
+              }}
+            />
           </div>
         ) : null}
       </div>

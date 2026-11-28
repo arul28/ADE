@@ -139,8 +139,6 @@ export type IssueTracker = {
   getRailData(args?: { teamKey?: string | null } | null): Promise<CtoLinearRailData>;
   /** One document with its markdown, or null when it is gone. */
   getDocument(args: { documentId: string }): Promise<CtoLinearDocument | null>;
-  /** Linear's exact branch -> issue match (`issueVcsBranchSearch`), cached; null when none. */
-  findIssueByBranch(args: { branch: string }): Promise<NormalizedLinearIssue | null>;
   fetchCandidateIssues(query: IssueTrackerCandidateQuery): Promise<NormalizedLinearIssue[]>;
   fetchIssueById(issueId: string): Promise<NormalizedLinearIssue | null>;
   fetchIssuesByIds(issueIds: string[]): Promise<Map<string, NormalizedLinearIssue>>;

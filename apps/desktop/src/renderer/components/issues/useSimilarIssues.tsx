@@ -187,8 +187,9 @@ export function useSimilarIssues(
           rememberSearch(memoryKey, issues);
           if (requestRef.current === request) setServer(issues);
         })
-        .catch(() => {
+        .catch((error: unknown) => {
           // A failed search leaves the local matches; no error under a title field.
+          console.warn("[linear] similar-issue search failed", error);
         });
     }, SEARCH_DELAY_MS);
     return () => window.clearTimeout(timer);

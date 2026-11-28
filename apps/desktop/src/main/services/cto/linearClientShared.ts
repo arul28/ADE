@@ -7,8 +7,8 @@ import { isRecord, asArray } from "../shared/utils";
 /** Linear workflow state types that count as open work. */
 export const OPEN_ISSUE_STATE_TYPES = ["triage", "backlog", "unstarted", "started"];
 
-export { priorityIsValid, toNormalizedIssue } from "../../../shared/linearIssueNormalize";
-import { toNormalizedIssue } from "../../../shared/linearIssueNormalize";
+export { priorityIsValid, toNormalizedIssue, LINEAR_LIST_CHILDREN_PAGE_SIZE } from "../../../shared/linearIssueNormalize";
+import { LINEAR_LIST_CHILDREN_PAGE_SIZE, toNormalizedIssue } from "../../../shared/linearIssueNormalize";
 
 export type LinearRateBudget = {
   requestsRemaining: number | null;
@@ -40,6 +40,31 @@ export type LinearRequestParams = {
   /** Return partial data and hand GraphQL field errors here instead of throwing. */
   onPartialErrors?: (errors: Array<{ message?: string; path?: Array<string | number> }>) => void;
 };
+
+/**
+ * Why a Linear request failed, when it was not a sign-in problem (those throw
+ * `AdeExpectedError`) or a network error (thrown as is):
+ * - `rate-limit`: Linear's rate limit, after the retries.
+ * - `server`: HTTP 5xx after the retries, or an answer with no data.
+ * - `graphql`: Linear rejected the document or its variables (a field, a
+ *   scope, a filter). Asking for less can succeed.
+ */
+export type LinearRequestFailureKind = "rate-limit" | "server" | "graphql";
+
+export class LinearRequestError extends Error {
+  readonly kind: LinearRequestFailureKind;
+
+  constructor(kind: LinearRequestFailureKind, message: string) {
+    super(message);
+    this.name = "LinearRequestError";
+    this.kind = kind;
+  }
+}
+
+/** True when Linear rejected the request itself, so a smaller request may succeed. */
+export function isLinearGraphQLRejection(error: unknown): boolean {
+  return error instanceof LinearRequestError && error.kind === "graphql";
+}
 
 /** The client's GraphQL transport (auth refresh, retries, rate headers). */
 export type LinearRequest = <TData = Record<string, unknown>>(params: LinearRequestParams) => Promise<TData>;
@@ -89,7 +114,7 @@ const ISSUE_BASE_FIELDS = `
 // (blocks / related) come from the detail read below.
 export const ISSUE_FIELDS_FRAGMENT = `
     ${ISSUE_BASE_FIELDS}
-    children(first: 25) { nodes { ${ISSUE_REF_FIELDS} } }
+    children(first: ${LINEAR_LIST_CHILDREN_PAGE_SIZE}) { nodes { ${ISSUE_REF_FIELDS} } }
     inverseRelations(first: 10) { nodes { type issue { ${ISSUE_REF_FIELDS} } } }
   `;
 

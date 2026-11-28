@@ -1118,7 +1118,11 @@ import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagno
 import { forgetLocalProjectDatabaseIdentity, ProjectRegistry } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
-import { defaultLinearDisplayPreferences } from "../cto/linearViewData";
+import {
+  defaultLinearDisplayPreferences,
+  emptyLinearRailData,
+  linearDisplayFallbackUpdate,
+} from "../../../shared/linearDisplayPreferences";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
 import type { ProjectHealthService } from "../../../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
@@ -14750,8 +14754,8 @@ export function registerIpc({
     return ctx.linearIssueTracker.listCustomViews();
   });
 
-  // Display settings, rail lists, documents and the branch lookup. Reads with
-  // no tracker answer empty (the renderer shows Linear's defaults).
+  // Display settings, rail lists and documents. With no tracker, reads answer
+  // Linear's defaults / empty and a change stays in ADE (same as sync and cloud).
   handle(
     IPC.ctoGetLinearViewPreferences,
     async (_event, arg: CtoGetLinearViewPreferencesArgs): Promise<LinearDisplayPreferences> => {
@@ -14765,7 +14769,7 @@ export function registerIpc({
     IPC.ctoUpdateLinearViewPreferences,
     async (_event, arg: CtoUpdateLinearViewPreferencesArgs): Promise<CtoUpdateLinearViewPreferencesResult> => {
       const ctx = getCtx();
-      if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
+      if (!ctx.linearIssueTracker) return linearDisplayFallbackUpdate(arg?.patch);
       return ctx.linearIssueTracker.updateViewPreferences(arg);
     }
   );
@@ -14774,7 +14778,7 @@ export function registerIpc({
     IPC.ctoGetLinearRailData,
     async (_event, arg?: { teamKey?: string | null }): Promise<CtoLinearRailData> => {
       const ctx = getCtx();
-      if (!ctx.linearIssueTracker) return { cycles: [], initiatives: [], favorites: [], documents: [] };
+      if (!ctx.linearIssueTracker) return emptyLinearRailData();
       return ctx.linearIssueTracker.getRailData(arg ?? null);
     }
   );
@@ -14785,15 +14789,6 @@ export function registerIpc({
       const ctx = getCtx();
       if (!ctx.linearIssueTracker || typeof arg?.documentId !== "string") return null;
       return ctx.linearIssueTracker.getDocument(arg);
-    }
-  );
-
-  handle(
-    IPC.ctoFindLinearIssueByBranch,
-    async (_event, arg: { branch: string }): Promise<NormalizedLinearIssue | null> => {
-      const ctx = getCtx();
-      if (!ctx.linearIssueTracker || typeof arg?.branch !== "string") return null;
-      return ctx.linearIssueTracker.findIssueByBranch(arg);
     }
   );
 

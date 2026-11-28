@@ -302,7 +302,7 @@ func linearIssueObject(_ node: [String: Any]) -> [String: Any]? {
   if !blockedBy.isEmpty {
     object["blockedByIssues"] = blockedBy
     object["blockerIssueIds"] = blockedBy.compactMap { $0["id"] }
-    object["hasOpenBlockers"] = blockedBy.contains { ($0["stateType"] as? String).map { $0 != "completed" && $0 != "canceled" } ?? true }
+    object["hasOpenBlockers"] = blockedBy.contains { !linearIsClosedState($0["stateType"] as? String) }
   }
   let relations = linearNodes(node["relations"])
   let blocking = relations.filter { ($0["type"] as? String) == "blocks" }.compactMap { linearRefObject($0["relatedIssue"]) }
@@ -329,41 +329,62 @@ func linearIssueObject(_ node: [String: Any]) -> [String: Any]? {
     return ["id": label["id"] ?? NSNull(), "name": name, "color": label["color"] ?? NSNull()]
   }
   if !labelColors.isEmpty { object["labelColors"] = labelColors }
-  let pullRequests = linearNodes(node["attachments"]).compactMap(linearPullRequestObject)
+  var seenPullRequestUrls = Set<String>()
+  let pullRequests = linearNodes(node["attachments"]).compactMap(linearPullRequestObject).filter { pr in
+    guard let url = pr["url"] as? String else { return false }
+    return seenPullRequestUrls.insert(url).inserted
+  }
   if !pullRequests.isEmpty { object["pullRequests"] = pullRequests }
   return object
 }
 
-/// A GitHub/GitLab attachment that is a pull request (not an issue link), in
-/// the `LinearIssuePullRequest` shape.
+/// `https://host/<repo>/pull/<n>` (GitHub) or `.../-/merge_requests/<n>`
+/// (GitLab), with anything after the number (`/files`, `?x`, `#y`).
+private let linearPullRequestUrlPattern = try! NSRegularExpression(
+  pattern: #"^https?://[^/]+/(.+?)/(?:-/)?(pull|merge_requests)/(\d+)(?:[/?#]|$)"#,
+  options: [.caseInsensitive]
+)
+
+/// The PR state from Linear's attachment metadata (GitHub and GitLab words),
+/// as desktop reads it.
+private func linearPullRequestStatus(_ metadata: [String: Any]) -> String {
+  let raw = (metadata["status"] as? String)?.lowercased()
+  let draft = metadata["draft"] as? Bool == true || metadata["isDraft"] as? Bool == true || raw == "draft"
+  if raw == "merged" { return "merged" }
+  if raw == "closed" || raw == "locked" { return "closed" }
+  if draft { return "draft" }
+  if let raw, ["open", "opened", "reopened", "inreview", "in_review"].contains(raw) { return "open" }
+  return "unknown"
+}
+
+/// A GitHub/GitLab attachment that is a pull request, in the
+/// `LinearIssuePullRequest` shape. Only `/pull/<n>` and `/merge_requests/<n>`
+/// urls count (Linear attaches GitHub issues with the same source), and ADE's
+/// own `oauthClient` links are never the PR.
 func linearPullRequestObject(_ attachment: [String: Any]) -> [String: Any]? {
-  guard let url = attachment["url"] as? String,
-        url.contains("/pull/") || url.contains("/merge_requests/") else { return nil }
+  guard let url = attachment["url"] as? String else { return nil }
+  if attachment["sourceType"] as? String == "oauthClient" { return nil }
+  let range = NSRange(url.startIndex..., in: url)
+  guard let match = linearPullRequestUrlPattern.firstMatch(in: url, range: range),
+        let repoRange = Range(match.range(at: 1), in: url),
+        let numberRange = Range(match.range(at: 3), in: url) else { return nil }
   let metadata = attachment["metadata"] as? [String: Any] ?? [:]
   let number = (metadata["number"] as? NSNumber)?.intValue
-    ?? url.split(separator: "/").last.flatMap { Int($0) }
-  let rawStatus = (metadata["status"] as? String)?.lowercased()
-  let status: String
-  if metadata["draft"] as? Bool == true, rawStatus == nil || rawStatus == "open" {
-    status = "draft"
-  } else if let rawStatus, ["open", "draft", "merged", "closed"].contains(rawStatus) {
-    status = rawStatus
-  } else {
-    status = "unknown"
-  }
-  var repo: String?
+    ?? (metadata["iid"] as? NSNumber)?.intValue
+    ?? Int(url[numberRange])
+  var repo = String(url[repoRange])
   if let login = metadata["repoLogin"] as? String, let name = metadata["repoName"] as? String {
     repo = "\(login)/\(name)"
   }
   return [
     "url": url,
     "number": number ?? NSNull(),
-    "title": (metadata["title"] as? String) ?? (attachment["title"] as? String) ?? "",
-    "status": status,
-    "repo": repo ?? NSNull(),
+    "title": (metadata["title"] as? String) ?? (attachment["title"] as? String) ?? url,
+    "status": linearPullRequestStatus(metadata),
+    "repo": repo,
     "branch": metadata["branch"] ?? NSNull(),
     "linkKind": metadata["linkKind"] ?? NSNull(),
-    "updatedAt": metadata["updatedAt"] ?? NSNull(),
+    "updatedAt": metadata["updatedAt"] ?? attachment["updatedAt"] ?? NSNull(),
   ]
 }
 

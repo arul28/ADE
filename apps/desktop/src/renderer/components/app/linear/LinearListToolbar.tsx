@@ -8,10 +8,8 @@ import {
   SlidersHorizontal,
   X,
 } from "@phosphor-icons/react";
-import type {
-  CtoUpdateLinearViewPreferencesArgs,
-  LinearDisplayPreferences,
-} from "../../../../shared/types";
+import type { LinearDisplayPreferences } from "../../../../shared/types";
+import type { LinearDisplayPatch } from "../../../../shared/linearDisplayPreferences";
 import { cn } from "../../ui/cn";
 import { isImeComposing } from "../../../lib/imeComposition";
 import { LinearDisplayMenu } from "./LinearDisplayMenu";
@@ -42,7 +40,7 @@ export function LinearListToolbar({
   current: string;
   /** Narrow windows hide the rail; this opens it over the list. */
   onOpenRail?: () => void;
-  tabs: ReadonlyArray<LinearToolbarTab> | null;
+  tabs: ReadonlyArray<LinearToolbarTab>;
   activeTab: string;
   onTab: (value: string) => void;
   loading: boolean;
@@ -58,11 +56,11 @@ export function LinearListToolbar({
   };
   display: {
     prefs: LinearDisplayPreferences;
-    onChange: (patch: CtoUpdateLinearViewPreferencesArgs["patch"]) => void;
+    onChange: (patch: LinearDisplayPatch) => void;
     savedToLinear: boolean | null;
     reason: string | null;
   };
-  pane: { visible: boolean; onToggle: () => void } | null;
+  pane: { visible: boolean; onToggle: () => void };
   /** The list column's width in px (0 = not measured yet): narrower drops the breadcrumb root, then button labels. */
   width: number;
 }) {
@@ -100,30 +98,28 @@ export function LinearListToolbar({
         <span className="truncate font-medium text-fg" aria-current="page">{current}</span>
       </nav>
 
-      {tabs ? (
-        <div className="ml-2 flex shrink-0 items-center gap-1" role="tablist" aria-label="Issue tabs">
-          {tabs.map((tab) => {
-            const selected = tab.value === activeTab;
-            return (
-              <button
-                key={tab.value}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                className={cn(
-                  "h-[26px] rounded-md border px-2.5 text-[12.5px] outline-none transition-colors focus-visible:ring-1 focus-visible:ring-fg/30",
-                  selected
-                    ? "border-fg/[0.12] bg-fg/[0.08] text-fg"
-                    : "border-transparent text-muted-fg hover:bg-fg/[0.04] hover:text-fg/90",
-                )}
-                onClick={() => onTab(tab.value)}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+      <div className="ml-2 flex shrink-0 items-center gap-1" role="tablist" aria-label="Issue tabs">
+        {tabs.map((tab) => {
+          const selected = tab.value === activeTab;
+          return (
+            <button
+              key={tab.value}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              className={cn(
+                "h-[26px] rounded-md border px-2.5 text-[12.5px] outline-none transition-colors focus-visible:ring-1 focus-visible:ring-fg/30",
+                selected
+                  ? "border-fg/[0.12] bg-fg/[0.08] text-fg"
+                  : "border-transparent text-muted-fg hover:bg-fg/[0.04] hover:text-fg/90",
+              )}
+              onClick={() => onTab(tab.value)}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
 
       {loading ? <CircleNotch size={12} className="shrink-0 animate-spin text-muted-fg/60" aria-label="Loading" /> : null}
 
@@ -227,18 +223,16 @@ export function LinearListToolbar({
           />
         </LinearPopover>
 
-        {pane ? (
-          <button
-            type="button"
-            className={cn(TOOL_BUTTON, "w-7 justify-center px-0", pane.visible ? "text-fg/85 hover:bg-fg/[0.05]" : "text-muted-fg hover:bg-fg/[0.05] hover:text-fg")}
-            title={pane.visible ? "Hide details" : "Show details"}
-            aria-label={pane.visible ? "Hide details" : "Show details"}
-            aria-pressed={pane.visible}
-            onClick={pane.onToggle}
-          >
-            <SidebarSimple size={15} mirrored />
-          </button>
-        ) : null}
+        <button
+          type="button"
+          className={cn(TOOL_BUTTON, "w-7 justify-center px-0", pane.visible ? "text-fg/85 hover:bg-fg/[0.05]" : "text-muted-fg hover:bg-fg/[0.05] hover:text-fg")}
+          title={pane.visible ? "Hide details" : "Show details"}
+          aria-label={pane.visible ? "Hide details" : "Show details"}
+          aria-pressed={pane.visible}
+          onClick={pane.onToggle}
+        >
+          <SidebarSimple size={15} mirrored />
+        </button>
       </div>
     </div>
   );

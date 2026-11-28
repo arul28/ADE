@@ -340,8 +340,7 @@ struct LinearPrChip: View {
 
 /// "open" | "draft" | "merged" | "closed" | "unknown".
 func linearPrState(_ pr: LinearIssuePullRequest) -> String {
-  let raw = pr.status?.lowercased() ?? "unknown"
-  return ["open", "draft", "merged", "closed"].contains(raw) ? raw : "unknown"
+  (pr.status ?? .unknown).rawValue
 }
 
 /// One state for several PRs: open work wins, then drafts, then merged.

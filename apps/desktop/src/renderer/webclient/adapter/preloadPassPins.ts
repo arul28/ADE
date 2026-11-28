@@ -91,7 +91,6 @@ export const PRELOAD_PASS_PINNED_MEMBERS: Record<string, Record<string, number>>
     countLinearIssues: 1,
     createLinearIssue: 1,
     createLinearIssueComment: 1,
-    findLinearIssueByBranch: 1,
     getLinearCustomViews: 0,
     getLinearDocument: 1,
     getLinearInbox: 1,

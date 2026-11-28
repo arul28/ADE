@@ -2,39 +2,14 @@ import React, { useEffect, useId, useLayoutEffect, useRef, useState, type RefObj
 import { CaretDown, Check } from "@phosphor-icons/react";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { cn } from "../../ui/cn";
+import { useEscapeLayer } from "../../ui/useEscapeLayer";
+import { Z_LAYERS } from "../../ui/zLayers";
 
 /**
- * Small popover kit for the issue list's toolbar (Display, Filter).
- *
- * Escape closes the innermost open layer only (a dropdown inside the popover,
- * then the popover), and never reaches the Linear pane's own dialog, which
- * would otherwise close the whole window. Layers stack in open order.
+ * Small popover kit for the issue list's toolbar (Display, Filter). Escape
+ * closes the innermost layer (a dropdown, then the popover) through
+ * `useEscapeLayer`, never the Linear pane's dialog behind it.
  */
-const escapeLayers: Array<() => void> = [];
-
-function onEscapeCapture(event: KeyboardEvent): void {
-  if (event.key !== "Escape" || escapeLayers.length === 0) return;
-  event.preventDefault();
-  event.stopPropagation();
-  escapeLayers[escapeLayers.length - 1]!();
-}
-
-/** Escape closes this layer (innermost first) instead of the pane behind it. */
-export function useEscapeLayer(active: boolean, close: () => void): void {
-  const closeRef = useRef(close);
-  closeRef.current = close;
-  useEffect(() => {
-    if (!active) return undefined;
-    const layer = () => closeRef.current();
-    if (escapeLayers.length === 0) window.addEventListener("keydown", onEscapeCapture, true);
-    escapeLayers.push(layer);
-    return () => {
-      const index = escapeLayers.lastIndexOf(layer);
-      if (index >= 0) escapeLayers.splice(index, 1);
-      if (escapeLayers.length === 0) window.removeEventListener("keydown", onEscapeCapture, true);
-    };
-  }, [active]);
-}
 
 export function LinearPopover({
   open,
@@ -72,7 +47,7 @@ export function LinearPopover({
   }, [anchorRef, open]);
 
   return (
-    <AnchoredMenu open={open} anchorRef={anchorRef} onClose={onClose} placement="bottom-end" offset={6} zIndex={260}>
+    <AnchoredMenu open={open} anchorRef={anchorRef} onClose={onClose} placement="bottom-end" offset={6} zIndex={Z_LAYERS.dialogPopover}>
       <div
         ref={bodyRef}
         role="dialog"

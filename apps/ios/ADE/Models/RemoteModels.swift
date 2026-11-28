@@ -2861,13 +2861,23 @@ struct LinearIssuePullRequest: Codable, Hashable {
   var url: String?
   var number: Int?
   var title: String?
-  /// "open" | "draft" | "merged" | "closed" | "unknown".
-  var status: String?
+  var status: LinearPullRequestStatus?
   /// "owner/name".
   var repo: String?
   var branch: String?
   var linkKind: String?
   var updatedAt: String?
+}
+
+/// A linked pull request's state. Unknown words read as `.unknown`, so a new
+/// state from a newer brain never fails the issue list.
+enum LinearPullRequestStatus: String, CaseIterable, Codable, Hashable {
+  case open, draft, merged, closed, unknown
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = LinearPullRequestStatus(rawValue: raw.lowercased()) ?? .unknown
+  }
 }
 
 struct LinearIssueLabelColor: Codable, Hashable {
@@ -2941,7 +2951,7 @@ struct LinearDisplayPreferences: Codable, Hashable {
   var showCompletedIssues: Bool = true
   var hiddenGroups: [String] = []
   var fields: LinearIssueDisplayFields = LinearIssueDisplayFields()
-  /// "linear-view" | "linear-user" | "default".
+  /// "linear-view" | "linear-user" | "ade" | "default".
   var source: String = "default"
 
   /// Linear's defaults: group by status, sub-issues nested, manual order.
@@ -2972,6 +2982,8 @@ struct LinearDisplayPreferencesPatch: Codable, Hashable {
   var orderingDirection: String?
   var nesting: LinearIssueNesting?
   var showCompletedIssues: Bool?
+  /// `[]` shows every group again.
+  var hiddenGroups: [String]?
 }
 
 struct LinearViewPreferencesUpdateResult: Codable, Hashable {

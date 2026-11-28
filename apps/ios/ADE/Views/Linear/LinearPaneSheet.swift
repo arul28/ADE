@@ -113,6 +113,11 @@ struct LinearPaneSheet: View {
       showsClose: !embedded,
       onAttachIssue: effectiveAttachSessionId == nil ? nil : { issue in
         Task { await attachIssue(issue) }
+      },
+      onOpenIssue: { issue in
+        if path.last != .issue(issue) {
+          path.append(.issue(issue))
+        }
       }
     )
   }

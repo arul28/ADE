@@ -11,14 +11,9 @@ import {
   LINEAR_PANE_BRAND,
   type IssuePaneBrand,
 } from "./LinearPaneHeader";
+import { LINEAR_PANE_CLOSE_REQUEST_EVENT } from "./linear/linearPaneNavigation";
 
 export type { IssuePaneBrand } from "./LinearPaneHeader";
-
-/**
- * Same string as `LINEAR_PANE_CLOSE_REQUEST_EVENT` in `linear/adeStatus.tsx`;
- * kept literal so the GitHub pane does not load the Linear status index.
- */
-const LINEAR_PANE_CLOSE_REQUEST_EVENT = "ade:linear-pane:close-request";
 
 /**
  * Shared popover chrome for Linear and GitHub issue panes: a centered, portal'd

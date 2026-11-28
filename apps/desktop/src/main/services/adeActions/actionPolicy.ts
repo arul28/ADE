@@ -1361,7 +1361,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "fetchIssueById",
     "fetchIssuesByIds",
     "fetchIssueComments",
-    "findIssueByBranch",
     "graphql",
     "getDocument",
     "getIssuePickerData",

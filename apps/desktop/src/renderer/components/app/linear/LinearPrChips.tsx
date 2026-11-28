@@ -4,38 +4,27 @@ import { useAppStore } from "../../../state/appStore";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../../lanes/laneMachines";
 import { HoverCard } from "../../ui/HoverCard";
 import { cn } from "../../ui/cn";
+import { openExternalUrl } from "../../../lib/openExternal";
 import {
-  navigateFromLinearPane,
-  normalizePrUrl,
-  openExternalUrl,
-  prRepoNumberKey,
-  stopRowActivation,
+  linearOnlyPrChips,
   type LinearIssueAdeStatus,
   type LinearIssueAdeStatusPr,
-} from "./adeStatus";
+  type LinearPrChip,
+  type LinearPrChipState,
+} from "./adeStatusIndex";
+import { navigateFromLinearPane, stopRowActivation } from "./linearPaneNavigation";
 
 /**
- * The pull request chip of a Linear issue row, merged from what Linear knows
- * (the issue's PR attachments) and what ADE knows (its PR rows, with checks
- * and review). One PR reads `#2504`; several read `3 PRs` with a list on
- * hover. A PR ADE knows opens in the PRs tab; any other opens on GitHub.
+ * The pull request chip of a Linear issue row. The list is the status's
+ * `pullRequests` (Linear's PR attachments joined to ADE's PR rows, with
+ * checks and review, in `adeStatusIndex.ts`); an issue ADE knows nothing
+ * about shows Linear's own PRs. One PR reads `#2504`; several read `3 PRs`
+ * with a list on hover. A PR ADE knows opens in the PRs tab; any other opens
+ * on GitHub.
  */
 
-type PrState = "open" | "draft" | "merged" | "closed" | "unknown";
-
-type ChipPr = {
-  key: string;
-  number: number | null;
-  url: string;
-  title: string;
-  repo: string | null;
-  state: PrState;
-  checks: LinearIssueAdeStatusPr["checks"] | null;
-  review: LinearIssueAdeStatusPr["review"] | null;
-  adePath: string | null;
-};
-
-const STATE_RANK: Record<PrState, number> = { open: 0, draft: 1, unknown: 2, merged: 3, closed: 4 };
+type PrState = LinearPrChipState;
+type ChipPr = LinearPrChip;
 
 const STATE_COLOR: Record<PrState, string> = {
   open: "var(--color-success)",
@@ -73,65 +62,6 @@ const REVIEW_LABEL: Record<LinearIssueAdeStatusPr["review"], string> = {
   pending: "Review requested",
   none: "",
 };
-
-/** A merged or closed PR cannot go back to open: a terminal state from either side wins. */
-function mergedState(linear: PrState, ade: LinearIssueAdeStatusPr["state"] | null): PrState {
-  if (!ade) return linear;
-  if (linear === "merged" || linear === "closed") return ade === "merged" || ade === "closed" ? ade : linear;
-  return ade;
-}
-
-function buildChipPrs(issue: NormalizedLinearIssue, status: LinearIssueAdeStatus | null): ChipPr[] {
-  const ade = status?.prs ?? [];
-  const usedAde = new Set<LinearIssueAdeStatusPr>();
-  const findAde = (url: string | null, repo: string | null, number: number | null) => {
-    const normalized = normalizePrUrl(url);
-    const repoKey = prRepoNumberKey(repo, number);
-    return ade.find((pr) => normalizePrUrl(pr.url) === normalized)
-      ?? (repoKey ? ade.find((pr) => prRepoNumberKey(pr.repo, pr.number) === repoKey) : undefined)
-      ?? null;
-  };
-  const out: ChipPr[] = [];
-  const seenUrls = new Set<string>();
-  for (const linear of issue.pullRequests ?? []) {
-    const url = normalizePrUrl(linear.url);
-    if (!url || seenUrls.has(url)) continue;
-    seenUrls.add(url);
-    const match = findAde(linear.url, linear.repo, linear.number);
-    if (match) usedAde.add(match);
-    out.push({
-      key: url,
-      number: linear.number ?? match?.number ?? null,
-      url: linear.url,
-      title: match?.title || linear.title || "",
-      repo: linear.repo ?? match?.repo ?? null,
-      state: mergedState(linear.status, match?.state ?? null),
-      checks: match?.checks ?? null,
-      review: match?.review ?? null,
-      adePath: match?.adePath ?? null,
-    });
-  }
-  // ADE knows PRs for the issue's lanes that Linear has not linked (yet).
-  for (const pr of ade) {
-    if (usedAde.has(pr)) continue;
-    const url = normalizePrUrl(pr.url) ?? `${pr.repo ?? ""}#${pr.number}`;
-    if (seenUrls.has(url)) continue;
-    seenUrls.add(url);
-    out.push({
-      key: url,
-      number: pr.number,
-      url: pr.url,
-      title: pr.title ?? "",
-      repo: pr.repo ?? null,
-      state: pr.state,
-      checks: pr.checks,
-      review: pr.review,
-      adePath: pr.adePath ?? null,
-    });
-  }
-  out.sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state] || (b.number ?? 0) - (a.number ?? 0));
-  return out;
-}
 
 function openChipPr(pr: ChipPr): void {
   if (pr.adePath) navigateFromLinearPane(pr.adePath);
@@ -246,7 +176,7 @@ function PrListRow({ pr, projectRepo }: { pr: ChipPr; projectRepo: string | null
 }
 
 export function LinearPrChips({ issue, status }: { issue: NormalizedLinearIssue; status: LinearIssueAdeStatus | null }): JSX.Element | null {
-  const prs = useMemo(() => buildChipPrs(issue, status), [issue, status]);
+  const prs = useMemo(() => status?.pullRequests ?? linearOnlyPrChips(issue), [issue, status]);
   const knownProjectRepo = useProjectRepo();
   // Project origin not known yet: name repos only when the list spans several.
   const projectRepo = useMemo(() => {

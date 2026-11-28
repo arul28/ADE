@@ -5793,8 +5793,6 @@ declare global {
         getLinearRailData: (args: { teamKey?: string | null } | undefined, pin: OpenProjectBinding) => Promise<CtoLinearRailData>;
         /** One Linear document with its markdown content. */
         getLinearDocument: (args: { documentId: string }, pin: OpenProjectBinding) => Promise<CtoLinearDocument | null>;
-        /** Exact branch -> issue lookup (Linear `issueVcsBranchSearch`). */
-        findLinearIssueByBranch: (args: { branch: string }, pin: OpenProjectBinding) => Promise<NormalizedLinearIssue | null>;
         getLinearAgentOverview: (pin: OpenProjectBinding) => Promise<LinearAgentOverview>;
         startLinearAgentInstall: (pin: OpenProjectBinding) => Promise<LinearAgentInstallStart>;
         getLinearAgentInstallSession: (sessionId: string, pin: OpenProjectBinding) => Promise<LinearAgentInstallSession>;

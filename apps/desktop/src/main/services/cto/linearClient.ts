@@ -24,6 +24,7 @@ import {
   ISSUE_DETAIL_FIELDS_FRAGMENT,
   ISSUE_FIELDS_FRAGMENT,
   type LinearRateBudget,
+  LinearRequestError,
   type LinearRequestMeter,
   priorityIsValid,
   toNormalizedIssue,
@@ -170,16 +171,19 @@ export function createLinearClient(args: LinearClientArgs) {
         errors?: LinearGraphQLErrorEntry[];
       };
 
-      const message = payload.errors?.[0]?.message ?? null;
-      const errorCode = payload.errors?.[0]?.extensions?.code ?? null;
+      // Classify on every error, not just the first: a field error can come
+      // before the RATELIMITED or AUTHENTICATION_ERROR that decides the retry.
+      const errors = Array.isArray(payload.errors) ? payload.errors : [];
+      const message = errors[0]?.message ?? null;
+      const anyError = (code: string, pattern: RegExp): boolean =>
+        errors.some((entry) => entry?.extensions?.code === code || (typeof entry?.message === "string" && pattern.test(entry.message)));
 
       // Reactive refresh: if the access token was rejected, refresh once and
       // retry with the new token (covers a token already expired by the time
       // the request fired, or one with no recorded expiry).
       const isAuthError =
         res.status === 401 ||
-        errorCode === "AUTHENTICATION_ERROR" ||
-        (message ? /authentication|unauthor|invalid.*token|token.*expired/i.test(message) : false);
+        anyError("AUTHENTICATION_ERROR", /authentication|unauthor|invalid.*token|token.*expired/i);
       if (isAuthError && !didAuthRefresh && args.credentials.getStatus().authMode === "oauth") {
         didAuthRefresh = true;
         await ensureFreshAuth({ force: true });
@@ -188,25 +192,31 @@ export function createLinearClient(args: LinearClientArgs) {
 
       const isRateLimited =
         res.status === 429 ||
-        errorCode === "RATELIMITED" ||
-        (message ? /rate\s*limit|too\s*many\s*requests/i.test(message) : false);
+        anyError("RATELIMITED", /rate\s*limit|too\s*many\s*requests/i);
 
-      if ((!res.ok || payload.errors?.length) && (isRateLimited || res.status >= 500) && attempt <= maxRetries) {
+      if ((!res.ok || errors.length > 0) && (isRateLimited || res.status >= 500) && attempt <= maxRetries) {
         await sleep(backoffMs);
         backoffMs = Math.min(15_000, Math.floor(backoffMs * 2));
         continue;
       }
 
-      if (res.ok && payload.data && payload.errors?.length && params.onPartialErrors && !isRateLimited && !isAuthError) {
-        params.onPartialErrors(payload.errors);
+      if (res.ok && payload.data && errors.length > 0 && params.onPartialErrors && !isRateLimited && !isAuthError) {
+        params.onPartialErrors(errors);
         return payload.data;
       }
 
-      if (!res.ok || payload.errors?.length || !payload.data) {
-        const detail = message ?? `Linear GraphQL request failed (HTTP ${res.status})`;
+      if (!res.ok || errors.length > 0 || !payload.data) {
+        const rateLimitMessage = isRateLimited
+          ? errors.find((entry) => entry?.extensions?.code === "RATELIMITED")?.message ?? null
+          : null;
+        const detail = rateLimitMessage ?? message ?? `Linear GraphQL request failed (HTTP ${res.status})`;
         // A Linear sign-in that is gone or was revoked, even after a refresh:
         // the user reconnects Linear in Settings.
-        throw isAuthError ? new AdeExpectedError(detail, "user") : new Error(detail);
+        if (isAuthError) throw new AdeExpectedError(detail, "user");
+        if (isRateLimited) throw new LinearRequestError("rate-limit", detail);
+        // Linear answers a rejected document with errors (HTTP 200 or 400) and no data.
+        if (errors.length > 0 && res.status < 500) throw new LinearRequestError("graphql", detail);
+        throw new LinearRequestError("server", detail);
       }
 
       return payload.data;
@@ -658,7 +668,7 @@ export function createLinearClient(args: LinearClientArgs) {
       if (!id || !key) return [];
       const states = isRecord(teamNode.states) ? asArray(teamNode.states.nodes) : [];
       return states
-        .map((entry) => {
+        .map((entry): LinearCatalogState | null => {
           if (!isRecord(entry)) return null;
           const stateId = asString(entry.id);
           const stateName = asString(entry.name);
@@ -671,7 +681,7 @@ export function createLinearClient(args: LinearClientArgs) {
             teamId: id,
             teamKey: key,
             position: statePosition(entry.position),
-          } satisfies LinearCatalogState as LinearCatalogState;
+          };
         })
         .filter((entry): entry is LinearCatalogState => entry != null);
     });
@@ -1383,7 +1393,6 @@ export function createLinearClient(args: LinearClientArgs) {
     writeViewPreferences: viewData.writeViewPreferences,
     getRailData: viewData.getRailData,
     getDocument: viewData.getDocument,
-    findIssueByBranch: viewData.findIssueByBranch,
     ...issueSearch,
     ...quickView,
     ...inbox,

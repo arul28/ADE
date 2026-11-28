@@ -1,7 +1,6 @@
 import React from "react";
 import { ArrowDown, ArrowUp, Rows, SortAscending } from "@phosphor-icons/react";
 import type {
-  CtoUpdateLinearViewPreferencesArgs,
   LinearDisplayPreferences,
   LinearIssueDisplayFields,
   LinearIssueGrouping,
@@ -9,7 +8,7 @@ import type {
 } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { LinearMenuSelect, LinearSwitch, type LinearMenuOption } from "./LinearPopover";
-import { defaultOrderingDirection } from "./linearListModel";
+import { LINEAR_ORDERING_NATURAL_DIRECTION, type LinearDisplayPatch } from "../../../../shared/linearDisplayPreferences";
 
 const GROUPING_OPTIONS: ReadonlyArray<LinearMenuOption<LinearIssueGrouping>> = [
   { value: "workflowState", label: "Status" },
@@ -50,7 +49,6 @@ const FIELD_OPTIONS: ReadonlyArray<{ key: keyof LinearIssueDisplayFields; label:
   { key: "adeStatus", label: "ADE status" },
 ];
 
-type Patch = CtoUpdateLinearViewPreferencesArgs["patch"];
 
 function directionLabel(ordering: LinearIssueOrdering, direction: "asc" | "desc"): string {
   switch (ordering) {
@@ -74,7 +72,7 @@ export function LinearDisplayMenu({
   reason,
 }: {
   prefs: LinearDisplayPreferences;
-  onChange: (patch: Patch) => void;
+  onChange: (patch: LinearDisplayPatch) => void;
   savedToLinear: boolean | null;
   reason: string | null;
 }) {
@@ -112,7 +110,7 @@ export function LinearDisplayMenu({
               value={prefs.ordering}
               options={ORDERING_OPTIONS}
               className="min-w-0 flex-1"
-              onChange={(ordering) => onChange({ ordering, orderingDirection: defaultOrderingDirection(ordering) })}
+              onChange={(ordering) => onChange({ ordering, orderingDirection: LINEAR_ORDERING_NATURAL_DIRECTION[ordering] })}
             />
             <button
               type="button"
@@ -146,6 +144,18 @@ export function LinearDisplayMenu({
           checked={prefs.showCompletedIssues}
           onChange={(showCompletedIssues) => onChange({ showCompletedIssues })}
         />
+        {prefs.hiddenGroups.length > 0 ? (
+          <div className="flex h-8 items-center justify-between gap-3 px-2 text-[12.5px] text-fg/85">
+            <span>{prefs.hiddenGroups.length === 1 ? "1 hidden group" : `${prefs.hiddenGroups.length} hidden groups`}</span>
+            <button
+              type="button"
+              className="rounded-md px-1.5 py-0.5 text-[12px] text-muted-fg outline-none transition-colors hover:bg-fg/[0.05] hover:text-fg focus-visible:bg-fg/[0.06]"
+              onClick={() => onChange({ hiddenGroups: [] })}
+            >
+              Show all
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <div className="mx-3 my-1.5 h-px bg-fg/[0.07]" />

@@ -189,13 +189,16 @@ export function LinearPriorityIcon({
 export function LinearProgressRing({
   done,
   total,
+  capped = false,
   size = 14,
 }: {
   done: number;
   total: number;
+  /** Only the first page of children was read: more may be open, so never draw "complete". */
+  capped?: boolean;
   size?: number;
 }) {
-  const ratio = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0;
+  const ratio = total > 0 ? Math.min(capped ? 0.95 : 1, Math.max(0, done / total)) : 0;
   const stroke = Math.max(1.5, size * 0.13);
   const center = size / 2;
   const r = size / 2 - stroke / 2;

@@ -1,62 +1,134 @@
 // Linear's own display settings (view preferences), the rail's extra lists
-// (cycles, initiatives, favorites, documents), one document, and the exact
-// branch -> issue lookup. Response shapes are typed from @linear/sdk's
-// generated GraphQL types (`import type`: erased at build, so the CJS main
-// and CLI bundles never load the ESM-only SDK).
+// (cycles, initiatives, favorites, documents) and one document. Response
+// shapes are typed from @linear/sdk's generated GraphQL types (`import type`:
+// erased at build, so the CJS main and CLI bundles never load the ESM-only SDK).
 
 import type { LinearDocument as L } from "@linear/sdk";
 import type { Logger } from "../logging/logger";
-import type {
-  CtoLinearCycle,
-  CtoLinearDocument,
-  CtoLinearFavorite,
-  CtoLinearInitiative,
-  CtoLinearRailData,
-  CtoUpdateLinearViewPreferencesArgs,
-  LinearDisplayPreferences,
-  LinearIssueDisplayFields,
-  LinearIssueGrouping,
-  LinearIssueNesting,
-  LinearIssueOrdering,
-  LinearIssueViewType,
-  NormalizedLinearIssue,
+import {
+  isLinearIssueGrouping,
+  isLinearIssueNesting,
+  type CtoLinearCycle,
+  type CtoLinearDocument,
+  type CtoLinearFavorite,
+  type CtoLinearInitiative,
+  type CtoLinearRailData,
+  type LinearDisplayPreferences,
+  type LinearIssueDisplayFields,
+  type LinearIssueOrdering,
+  type LinearIssueViewType,
 } from "../../../shared/types";
-import { LINEAR_ORDERING_NATURAL_DIRECTION } from "../../../shared/linearIssueNormalize";
+import {
+  defaultLinearDisplayPreferences,
+  LINEAR_ORDERING_NATURAL_DIRECTION,
+  type LinearDisplayPatch,
+} from "../../../shared/linearDisplayPreferences";
 import { asArray, getErrorMessage, isRecord, toOptionalString as asString } from "../shared/utils";
-import { ISSUE_FIELDS_FRAGMENT, type LinearRequest, normalizeIssueNodes } from "./linearClientShared";
+import { isLinearGraphQLRejection, type LinearRequest } from "./linearClientShared";
 
 /** An SDK type as it arrives over the wire: DateTime scalars are ISO strings, not Dates. */
 type Wire<T> = { [K in keyof T]: T[K] extends Date ? string : T[K] extends Date | null | undefined ? string | null | undefined : T[K] };
 
+/** ViewPreferencesValues keys that hold objects (read with a subselection). */
+type ObjectPreferenceKey = "initiativeLabelGroupColumns" | "projectLabelGroupColumns";
+type ScalarPreferenceKey = Exclude<keyof L.ViewPreferencesValues, "__typename" | ObjectPreferenceKey>;
+
 /**
- * The ViewPreferencesValues keys an issue view uses. ADE reads them all so a
- * write-back (Linear replaces the stored JSON on update) keeps the person's
- * other issue settings. `satisfies` fails the typecheck if Linear drops one.
+ * Every scalar key of Linear's ViewPreferencesValues. Linear replaces the
+ * whole stored JSON on update, so ADE reads every key (issue view or not) and
+ * a write-back keeps the ones ADE doesn't edit. `satisfies` fails the
+ * typecheck if Linear drops one; `MissingPreferenceKey` fails it if Linear
+ * adds one this list doesn't read.
  */
-const ISSUE_VIEW_PREFERENCE_KEYS = [
-  "closedIssuesOrderedByRecency", "columnOrderBoard", "columnOrderList",
+const VIEW_PREFERENCE_SCALAR_KEYS = [
+  "automationFieldLastExecuted", "automationFieldStats", "automationFieldTeam", "automationFieldTrigger",
+  "automationGrouping", "automationOrdering", "automationRunHistoryGroupNoChanges",
+  "automationRunHistoryShowChangeCount", "automationRunHistoryShowDuration",
+  "automationRunHistoryShowInitiativeIdentifier", "automationRunHistoryShowIssueIdentifier",
+  "automationRunHistoryShowProjectIdentifier", "automationShowDescendants", "automationShowDisabled",
+  "automationShowTemplates", "automationStatsPeriod", "closedIssuesOrderedByRecency", "columnOrderBoard",
+  "columnOrderList", "continuousPipelineReleaseFieldReleaseDate", "continuousPipelineReleaseFieldReleaseNote",
+  "continuousPipelineReleaseFieldVersion", "continuousPipelineReleasesViewGrouping", "customViewFieldDateCreated",
+  "customViewFieldDateUpdated", "customViewFieldOwner", "customViewFieldVisibility", "customViewsOrdering",
+  "customerFieldDomains", "customerFieldOwner", "customerFieldRequestCount", "customerFieldRevenue",
+  "customerFieldSize", "customerFieldSource", "customerFieldStatus", "customerFieldTier",
+  "customerPageNeedsFieldIssueIdentifier", "customerPageNeedsFieldIssuePriority",
+  "customerPageNeedsFieldIssueStatus", "customerPageNeedsFieldIssueTargetDueDate",
+  "customerPageNeedsShowCompletedIssuesAndProjects", "customerPageNeedsShowImportantFirst",
+  "customerPageNeedsViewGrouping", "customerPageNeedsViewOrdering", "customersViewOrdering",
+  "dashboardFieldDateCreated", "dashboardFieldDateUpdated", "dashboardFieldOwner", "dashboardsOrdering",
+  "documentFieldCreator", "documentFieldDateCreated", "documentFieldDateUpdated", "documentFieldOwner",
+  "documentFieldParent", "embeddedCustomerNeedsShowImportantFirst", "embeddedCustomerNeedsViewOrdering",
   "fieldAssignee", "fieldCustomerCount", "fieldCustomerRevenue", "fieldCycle", "fieldDateArchived",
   "fieldDateCreated", "fieldDateMyActivity", "fieldDateUpdated", "fieldDueDate", "fieldEstimate", "fieldId",
   "fieldLabels", "fieldLinkCount", "fieldMilestone", "fieldPreviewLinks", "fieldPriority", "fieldProject",
   "fieldPullRequests", "fieldRelease", "fieldSentryIssues", "fieldSla", "fieldStatus", "fieldTimeInCurrentStatus",
-  "fieldUserPresence", "groupOrderingMode", "hiddenColumns", "hiddenGroupsList", "hiddenRows",
-  "issueGrouping", "issueGroupingLabelGroupId", "issueNesting", "issueSubGrouping", "issueSubGroupingLabelGroupId",
-  "layout", "showArchivedItems", "showCompletedIssues", "showEmptyGroups", "showEmptyGroupsBoard",
-  "showEmptyGroupsList", "showEmptySubGroups", "showEmptySubGroupsBoard", "showEmptySubGroupsList", "showParents",
-  "showSubIssues", "showSubTeamIssues", "showSupervisedIssues", "showTriageIssues", "viewOrdering",
-  "viewOrderingDirection",
-] as const satisfies ReadonlyArray<keyof L.ViewPreferencesValues>;
+  "fieldUserPresence", "focusViewGrouping", "focusViewOrdering", "focusViewOrderingDirection", "groupOrderingMode",
+  "hiddenColumns", "hiddenGroupsList", "hiddenRows", "inboxViewGrouping", "inboxViewOrdering",
+  "initiativeFieldActivity", "initiativeFieldDateCompleted", "initiativeFieldDateCreated",
+  "initiativeFieldDateUpdated", "initiativeFieldDescription", "initiativeFieldHealth", "initiativeFieldId",
+  "initiativeFieldInitiativeHealth", "initiativeFieldLabels", "initiativeFieldLeadTeam", "initiativeFieldOwner",
+  "initiativeFieldPriority", "initiativeFieldProjects", "initiativeFieldStartDate", "initiativeFieldStatus",
+  "initiativeFieldTargetDate", "initiativeFieldTeams", "initiativeGrouping", "initiativeGroupingLabelGroupId",
+  "initiativesViewOrdering", "issueGrouping", "issueGroupingLabelGroupId", "issueNesting", "issueSubGrouping",
+  "issueSubGroupingLabelGroupId", "layout", "memberFieldJoined", "memberFieldStatus", "memberFieldTeams",
+  "openInSplitView", "projectCustomerNeedsShowCompletedIssuesLast", "projectCustomerNeedsShowImportantFirst",
+  "projectCustomerNeedsViewGrouping", "projectCustomerNeedsViewOrdering", "projectFieldActivity",
+  "projectFieldCustomerCount", "projectFieldCustomerRevenue", "projectFieldDateCompleted", "projectFieldDateCreated",
+  "projectFieldDateUpdated", "projectFieldDescription", "projectFieldDescriptionBoard", "projectFieldHealth",
+  "projectFieldHealthTimeline", "projectFieldId", "projectFieldInitiatives", "projectFieldIssues",
+  "projectFieldLabels", "projectFieldLead", "projectFieldLeadTimeline", "projectFieldMembers",
+  "projectFieldMembersBoard", "projectFieldMembersList", "projectFieldMembersTimeline", "projectFieldMilestone",
+  "projectFieldMilestoneTimeline", "projectFieldPredictions", "projectFieldPredictionsTimeline",
+  "projectFieldPriority", "projectFieldRelations", "projectFieldRelationsTimeline", "projectFieldRoadmaps",
+  "projectFieldRoadmapsBoard", "projectFieldRoadmapsList", "projectFieldRoadmapsTimeline",
+  "projectFieldRolloutStage", "projectFieldStartDate", "projectFieldStatus", "projectFieldStatusTimeline",
+  "projectFieldTargetDate", "projectFieldTeams", "projectFieldTeamsBoard", "projectFieldTeamsList",
+  "projectFieldTeamsTimeline", "projectGroupOrdering", "projectGrouping", "projectGroupingDateResolution",
+  "projectGroupingLabelGroupId", "projectLayout", "projectShowEmptyGroups", "projectShowEmptyGroupsBoard",
+  "projectShowEmptyGroupsList", "projectShowEmptyGroupsTimeline", "projectShowEmptySubGroups",
+  "projectShowEmptySubGroupsBoard", "projectShowEmptySubGroupsList", "projectShowEmptySubGroupsTimeline",
+  "projectSubGrouping", "projectSubGroupingLabelGroupId", "projectViewOrdering", "projectZoomLevel",
+  "releasePipelineFieldLatestRelease", "releasePipelineFieldReleases", "releasePipelineFieldTeams",
+  "releasePipelineFieldType", "releasePipelineGrouping", "releasePipelinesViewOrdering", "reviewFieldAvatar",
+  "reviewFieldChecks", "reviewFieldGithubTeam", "reviewFieldIdentifier", "reviewFieldLabels", "reviewFieldOpenedAt",
+  "reviewFieldPreviewLinks", "reviewFieldQuickToReview", "reviewFieldRepository", "reviewFieldReviewers",
+  "reviewFieldRisk", "reviewFieldSla", "reviewFieldStatusDetails", "reviewGrouping", "reviewViewOrdering",
+  "scheduledPipelineReleaseFieldCompletion", "scheduledPipelineReleaseFieldDescription",
+  "scheduledPipelineReleaseFieldReleaseDate", "scheduledPipelineReleaseFieldReleaseNote",
+  "scheduledPipelineReleaseFieldVersion", "scheduledPipelineReleasesViewGrouping",
+  "scheduledPipelineReleasesViewOrdering", "searchResultType", "searchViewOrdering", "showArchivedItems",
+  "showCompletedAgentSessions", "showCompletedIssues", "showCompletedProjects", "showCompletedReviews",
+  "showDraftReviews", "showEmptyGroups", "showEmptyGroupsBoard", "showEmptyGroupsList", "showEmptySubGroups",
+  "showEmptySubGroupsBoard", "showEmptySubGroupsList", "showNestedInitiatives", "showOnlyLeadTeamProjects",
+  "showOnlySnoozedItems", "showParents", "showReadItems", "showSnoozedItems", "showSubInitiativeProjects",
+  "showSubIssues", "showSubTeamIssues", "showSubTeamProjects", "showSupervisedIssues", "showTeamInitiatives",
+  "showTeamReviews", "showTriageIssues", "showUnreadItemsFirst", "teamFieldCycle", "teamFieldDateCreated",
+  "teamFieldDateUpdated", "teamFieldIdentifier", "teamFieldMembers", "teamFieldMembership", "teamFieldOwner",
+  "teamFieldProjects", "teamViewOrdering", "timelineChronologyShowCycleTeamIds", "timelineChronologyShowWeekNumbers",
+  "timelineShowProjectsAside", "timelineZoomScale", "triageViewOrdering", "viewOrdering", "viewOrderingDirection",
+  "workspaceMembersViewOrdering",
+] as const satisfies ReadonlyArray<ScalarPreferenceKey>;
 
-type IssueViewPreferenceKey = (typeof ISSUE_VIEW_PREFERENCE_KEYS)[number];
-/** The stored issue-view values (only keys Linear had set). */
-export type LinearIssueViewValues = Partial<Pick<L.ViewPreferencesValues, IssueViewPreferenceKey>>;
+type MissingPreferenceKey = Exclude<ScalarPreferenceKey, (typeof VIEW_PREFERENCE_SCALAR_KEYS)[number]>;
+const everyPreferenceKeyRead: [MissingPreferenceKey] extends [never] ? true : MissingPreferenceKey = true;
+void everyPreferenceKeyRead;
 
-const PREFERENCE_FIELDS = ISSUE_VIEW_PREFERENCE_KEYS.join(" ");
+const VIEW_PREFERENCE_OBJECT_FIELDS: Readonly<Record<ObjectPreferenceKey, string>> = {
+  initiativeLabelGroupColumns: "initiativeLabelGroupColumns { id active }",
+  projectLabelGroupColumns: "projectLabelGroupColumns { id active }",
+};
 
-const GROUPINGS: ReadonlySet<LinearIssueGrouping> = new Set([
-  "workflowState", "assignee", "project", "priority", "cycle", "label", "projectMilestone", "team", "none",
-]);
-const NESTINGS: ReadonlySet<LinearIssueNesting> = new Set(["none", "showAll", "showMatching"]);
+const VIEW_PREFERENCE_KEYS: ReadonlyArray<ScalarPreferenceKey | ObjectPreferenceKey> = [
+  ...VIEW_PREFERENCE_SCALAR_KEYS,
+  ...(Object.keys(VIEW_PREFERENCE_OBJECT_FIELDS) as ObjectPreferenceKey[]),
+];
+
+/** The stored view values (only keys Linear had set). */
+export type LinearIssueViewValues = Partial<Omit<L.ViewPreferencesValues, "__typename">>;
+type ViewPreferenceKey = keyof LinearIssueViewValues;
+
+const PREFERENCE_FIELDS = [...VIEW_PREFERENCE_SCALAR_KEYS, ...Object.values(VIEW_PREFERENCE_OBJECT_FIELDS)].join(" ");
 
 /** ADE ordering <-> Linear `viewOrdering` (Linear calls the dates dateCreated / dateUpdated). */
 const ORDERING_TO_LINEAR: Readonly<Record<LinearIssueOrdering, string>> = {
@@ -69,11 +141,13 @@ const ORDERING_TO_LINEAR: Readonly<Record<LinearIssueOrdering, string>> = {
   title: "title",
 };
 const ORDERING_FROM_LINEAR = new Map<string, LinearIssueOrdering>(
-  Object.entries(ORDERING_TO_LINEAR).map(([ade, linear]) => [linear, ade as LinearIssueOrdering]),
+  (Object.entries(ORDERING_TO_LINEAR) as Array<[LinearIssueOrdering, string]>).map(([ade, linear]) => [linear, ade]),
 );
 
+type LinearDisplayFieldKey = Exclude<keyof LinearIssueDisplayFields, "adeStatus">;
+
 /** ADE display field <-> Linear `field*` key. `adeStatus` is ADE-only and never sent. */
-const FIELD_KEYS: Readonly<Record<Exclude<keyof LinearIssueDisplayFields, "adeStatus">, IssueViewPreferenceKey>> = {
+const FIELD_KEYS: Readonly<Record<LinearDisplayFieldKey, ScalarPreferenceKey>> = {
   id: "fieldId",
   status: "fieldStatus",
   priority: "fieldPriority",
@@ -89,46 +163,11 @@ const FIELD_KEYS: Readonly<Record<Exclude<keyof LinearIssueDisplayFields, "adeSt
   updatedAt: "fieldDateUpdated",
 };
 
-/**
- * Linear's defaults when nothing is saved: group by status, nesting on, manual
- * order, and Linear's own quiet default row (no updated date, estimate, cycle
- * or milestone).
- */
-export function defaultLinearDisplayPreferences(): LinearDisplayPreferences {
-  return {
-    grouping: "workflowState",
-    subGrouping: "none",
-    ordering: "manual",
-    orderingDirection: "asc",
-    nesting: "showAll",
-    showEmptyGroups: false,
-    showCompletedIssues: true,
-    hiddenGroups: [],
-    fields: {
-      id: true,
-      status: true,
-      priority: true,
-      assignee: true,
-      labels: true,
-      project: true,
-      cycle: false,
-      milestone: false,
-      estimate: false,
-      dueDate: true,
-      pullRequests: true,
-      createdAt: true,
-      updatedAt: false,
-      adeStatus: true,
-    },
-    source: "default",
-  };
-}
-
 /** Only the keys Linear actually set (null means unset, so the default shows). */
 function storedValues(raw: unknown): LinearIssueViewValues {
   if (!isRecord(raw)) return {};
-  const out: Record<string, unknown> = {};
-  for (const key of ISSUE_VIEW_PREFERENCE_KEYS) {
+  const out: Partial<Record<ViewPreferenceKey, unknown>> = {};
+  for (const key of VIEW_PREFERENCE_KEYS) {
     const value = raw[key];
     if (value !== null && value !== undefined) out[key] = value;
   }
@@ -141,21 +180,15 @@ export function linearDisplayPreferencesFromValues(
   source: LinearDisplayPreferences["source"],
 ): LinearDisplayPreferences {
   const defaults = defaultLinearDisplayPreferences();
-  const grouping = values.issueGrouping && GROUPINGS.has(values.issueGrouping as LinearIssueGrouping)
-    ? values.issueGrouping as LinearIssueGrouping
-    : defaults.grouping;
-  const subGrouping = values.issueSubGrouping && GROUPINGS.has(values.issueSubGrouping as LinearIssueGrouping)
-    ? values.issueSubGrouping as LinearIssueGrouping
-    : "none";
+  const grouping = isLinearIssueGrouping(values.issueGrouping) ? values.issueGrouping : defaults.grouping;
+  const subGrouping = isLinearIssueGrouping(values.issueSubGrouping) ? values.issueSubGrouping : "none";
   const ordering = (values.viewOrdering && ORDERING_FROM_LINEAR.get(values.viewOrdering)) || defaults.ordering;
   const orderingDirection = values.viewOrderingDirection === "asc" || values.viewOrderingDirection === "desc"
     ? values.viewOrderingDirection
     : LINEAR_ORDERING_NATURAL_DIRECTION[ordering];
-  const nesting = values.issueNesting && NESTINGS.has(values.issueNesting as LinearIssueNesting)
-    ? values.issueNesting as LinearIssueNesting
-    : defaults.nesting;
+  const nesting = isLinearIssueNesting(values.issueNesting) ? values.issueNesting : defaults.nesting;
   const fields = { ...defaults.fields };
-  for (const [adeKey, linearKey] of Object.entries(FIELD_KEYS) as Array<[keyof typeof FIELD_KEYS, IssueViewPreferenceKey]>) {
+  for (const [adeKey, linearKey] of Object.entries(FIELD_KEYS) as Array<[LinearDisplayFieldKey, ScalarPreferenceKey]>) {
     const value = values[linearKey];
     if (typeof value === "boolean") fields[adeKey] = value;
   }
@@ -181,14 +214,14 @@ export function linearDisplayPreferencesFromValues(
  */
 export function mergeLinearViewValues(
   stored: LinearIssueViewValues,
-  patch: CtoUpdateLinearViewPreferencesArgs["patch"],
+  patch: LinearDisplayPatch,
 ): LinearIssueViewValues {
-  const next: Record<string, unknown> = { ...stored };
-  if (patch.grouping && GROUPINGS.has(patch.grouping)) next.issueGrouping = patch.grouping;
-  if (patch.subGrouping && GROUPINGS.has(patch.subGrouping)) next.issueSubGrouping = patch.subGrouping;
-  if (patch.ordering && ORDERING_TO_LINEAR[patch.ordering]) next.viewOrdering = ORDERING_TO_LINEAR[patch.ordering];
+  const next: Partial<Record<ViewPreferenceKey, unknown>> = { ...stored };
+  if (isLinearIssueGrouping(patch.grouping)) next.issueGrouping = patch.grouping;
+  if (isLinearIssueGrouping(patch.subGrouping)) next.issueSubGrouping = patch.subGrouping;
+  if (patch.ordering && Object.hasOwn(ORDERING_TO_LINEAR, patch.ordering)) next.viewOrdering = ORDERING_TO_LINEAR[patch.ordering];
   if (patch.orderingDirection === "asc" || patch.orderingDirection === "desc") next.viewOrderingDirection = patch.orderingDirection;
-  if (patch.nesting && NESTINGS.has(patch.nesting)) next.issueNesting = patch.nesting;
+  if (isLinearIssueNesting(patch.nesting)) next.issueNesting = patch.nesting;
   if (typeof patch.showEmptyGroups === "boolean") next.showEmptyGroupsList = patch.showEmptyGroups;
   if (typeof patch.showCompletedIssues === "boolean") {
     const current = typeof stored.showCompletedIssues === "string" ? stored.showCompletedIssues : null;
@@ -197,9 +230,8 @@ export function mergeLinearViewValues(
   }
   if (Array.isArray(patch.hiddenGroups)) next.hiddenGroupsList = patch.hiddenGroups.filter((entry) => typeof entry === "string");
   for (const [adeKey, value] of Object.entries(patch.fields ?? {})) {
-    if (adeKey === "adeStatus" || typeof value !== "boolean") continue;
-    const linearKey = FIELD_KEYS[adeKey as keyof typeof FIELD_KEYS];
-    if (linearKey) next[linearKey] = value;
+    if (typeof value !== "boolean" || !Object.hasOwn(FIELD_KEYS, adeKey)) continue;
+    next[FIELD_KEYS[adeKey as LinearDisplayFieldKey]] = value;
   }
   return next as LinearIssueViewValues;
 }
@@ -209,22 +241,49 @@ export type LinearViewPreferencesRead = {
   preferences: LinearDisplayPreferences;
   /** The person's own Linear record for this view (updated in place), or null. */
   recordId: string | null;
-  /** The record's stored values (the base of a write-back). */
+  /** The values a write-back starts from (the record's own, or what the view inherits). */
   stored: LinearIssueViewValues;
 };
 
 type ViewPreferencesNode = { id: string; preferences: LinearIssueViewValues | null } | null;
 
-/** A Linear refusal, in words a person can read. */
-function refusalReason(error: unknown): string {
+/**
+ * Why Linear would not store a display change. `team-scoped`: the tab keeps
+ * its settings per team (ADE keeps later changes here without asking again);
+ * `scope`: the connection may not write them; `other`: anything else.
+ */
+export type LinearViewPreferencesRefusalKind = "team-scoped" | "scope" | "other";
+
+export class LinearViewPreferencesRefusal extends Error {
+  readonly kind: LinearViewPreferencesRefusalKind;
+
+  constructor(kind: LinearViewPreferencesRefusalKind, message: string) {
+    super(message);
+    this.name = "LinearViewPreferencesRefusal";
+    this.kind = kind;
+  }
+}
+
+export function isLinearViewPreferencesRefusal(error: unknown): error is LinearViewPreferencesRefusal {
+  return error instanceof LinearViewPreferencesRefusal;
+}
+
+/** A Linear refusal, sorted and put in words a person can read. */
+function toRefusal(error: unknown): LinearViewPreferencesRefusal {
   const message = getErrorMessage(error);
   if (/invalid combination/i.test(message)) {
-    return "Linear keeps this tab's display settings per team, so ADE kept the change here only.";
+    return new LinearViewPreferencesRefusal(
+      "team-scoped",
+      "Linear keeps this tab's display settings per team, so ADE kept the change here only.",
+    );
   }
   if (/scope|permission|forbidden|not authorized/i.test(message)) {
-    return "Linear's connection doesn't allow saving display settings, so ADE kept the change here only.";
+    return new LinearViewPreferencesRefusal(
+      "scope",
+      "Linear's connection doesn't allow saving display settings, so ADE kept the change here only.",
+    );
   }
-  return `Linear didn't save the change (${message}), so ADE kept it here only.`;
+  return new LinearViewPreferencesRefusal("other", `Linear didn't save the change (${message}), so ADE kept it here only.`);
 }
 
 export function createLinearViewData(args: { request: LinearRequest; logger?: Logger | null }) {
@@ -235,6 +294,8 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
     customViewId?: string | null;
   }): Promise<LinearViewPreferencesRead> => {
     const customViewId = params.customViewId?.trim() || null;
+    // A custom view's writes go to its own record (created on first write), never the tab's.
+    let ownRecordId: string | null = null;
     if (customViewId) {
       const data = await request<{
         customView?: {
@@ -256,15 +317,17 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
         maxRetries: 1,
       });
       const own = data.customView?.userViewPreferences ?? null;
+      ownRecordId = own?.id ?? null;
       const ownValues = storedValues(own?.preferences);
-      if (own && Object.keys(ownValues).length > 0) {
-        return { preferences: linearDisplayPreferencesFromValues(ownValues, "linear-view"), recordId: own.id, stored: ownValues };
+      if (Object.keys(ownValues).length > 0) {
+        return { preferences: linearDisplayPreferencesFromValues(ownValues, "linear-view"), recordId: ownRecordId, stored: ownValues };
       }
       const viewValues = storedValues(data.customView?.viewPreferencesValues);
       if (Object.keys(viewValues).length > 0) {
-        return { preferences: linearDisplayPreferencesFromValues(viewValues, "linear-view"), recordId: own?.id ?? null, stored: viewValues };
+        return { preferences: linearDisplayPreferencesFromValues(viewValues, "linear-view"), recordId: ownRecordId, stored: viewValues };
       }
-      // A view with no display of its own shows like its tab.
+      // A view with no display of its own shows like its tab, and its first
+      // write starts from the tab's values (not from nothing).
     }
     const data = await request<{ userViewPreferences?: ViewPreferencesNode }>({
       query: `
@@ -276,19 +339,18 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
       maxRetries: 1,
     });
     const record = data.userViewPreferences ?? null;
+    const recordId = customViewId ? ownRecordId : record?.id ?? null;
     const values = storedValues(record?.preferences);
-    if (record && Object.keys(values).length > 0) {
-      return {
-        preferences: linearDisplayPreferencesFromValues(values, "linear-user"),
-        // A custom view's write goes to its own record, never the tab's.
-        recordId: customViewId ? null : record.id,
-        stored: customViewId ? {} : values,
-      };
+    if (Object.keys(values).length > 0) {
+      return { preferences: linearDisplayPreferencesFromValues(values, "linear-user"), recordId, stored: values };
     }
-    return { preferences: defaultLinearDisplayPreferences(), recordId: customViewId ? null : record?.id ?? null, stored: {} };
+    return { preferences: defaultLinearDisplayPreferences(), recordId, stored: {} };
   };
 
-  /** Saves values to Linear: updates the person's record or creates one. Throws a readable reason. */
+  /**
+   * Saves values to Linear: updates the person's record or creates one.
+   * Throws a `LinearViewPreferencesRefusal` (its `kind` says why).
+   */
   const writeViewPreferences = async (params: {
     viewType: LinearIssueViewType;
     customViewId?: string | null;
@@ -332,7 +394,7 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
       return { recordId: id };
     } catch (error) {
       args.logger?.warn("linear.view_preferences_write_failed", { viewType: params.viewType, error: getErrorMessage(error) });
-      throw new Error(refusalReason(error));
+      throw toRefusal(error);
     }
   };
 
@@ -468,9 +530,9 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
 
   /**
    * One request for every section. A section Linear refuses (a partial
-   * GraphQL error, a missing scope) comes back empty; when the whole document
-   * is rejected, each section is asked alone so one bad section cannot blank
-   * the rest.
+   * GraphQL error, a missing scope) comes back empty; when Linear rejects the
+   * whole document, each section is asked alone so one bad section cannot
+   * blank the rest. Other failures throw (the tracker keeps its last answer).
    */
   const getRailData = async (params: { teamKey?: string | null } = {}): Promise<CtoLinearRailData> => {
     const teamKey = params.teamKey?.trim() || null;
@@ -498,6 +560,10 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
       });
     } catch (error) {
       args.logger?.warn("linear.rail_failed", { error: getErrorMessage(error) });
+      // Only a rejected document (one section's field or scope) is worth
+      // asking for again section by section. A sign-in, rate-limit, server or
+      // network failure would fail the same way four more times.
+      if (!isLinearGraphQLRejection(error)) throw error;
       const parts = await Promise.all(sections.map(async (section) => {
         try {
           return await request<RailData>({
@@ -506,7 +572,8 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
             maxRetries: 0,
             onPartialErrors: () => failed.add(section),
           });
-        } catch {
+        } catch (sectionError) {
+          args.logger?.warn("linear.rail_section_failed", { section, error: getErrorMessage(sectionError) });
           failed.add(section);
           return {} as RailData;
         }
@@ -517,7 +584,8 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
       if (failed.has(section)) return [];
       try {
         return map();
-      } catch {
+      } catch (mapError) {
+        args.logger?.warn("linear.rail_section_unreadable", { section, error: getErrorMessage(mapError) });
         return [];
       }
     };
@@ -549,30 +617,11 @@ export function createLinearViewData(args: { request: LinearRequest; logger?: Lo
     }
   };
 
-  /** Linear's exact branch -> issue match (`issueVcsBranchSearch`), null when no issue owns the branch. */
-  const findIssueByBranch = async (branch: string): Promise<NormalizedLinearIssue | null> => {
-    const branchName = branch.trim().replace(/^refs\/heads\//, "");
-    if (!branchName) return null;
-    const data = await request<{ issueVcsBranchSearch?: Record<string, unknown> | null }>({
-      query: `
-        query AdeLinearIssueByBranch($branchName: String!) {
-          issueVcsBranchSearch(branchName: $branchName) {
-            ${ISSUE_FIELDS_FRAGMENT}
-          }
-        }
-      `,
-      variables: { branchName },
-      maxRetries: 1,
-    });
-    return normalizeIssueNodes(data.issueVcsBranchSearch ? [data.issueVcsBranchSearch] : [])[0] ?? null;
-  };
-
   return {
     readViewPreferences,
     writeViewPreferences,
     getRailData,
     getDocument,
-    findIssueByBranch,
   };
 }
 

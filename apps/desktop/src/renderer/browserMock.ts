@@ -5,6 +5,13 @@ import type { TerminalShellSettings } from "../shared/types/terminalShells";
 import { playDemoReply, startManualDemoClock, type DemoChildChat } from "./browserMockDemoReplies";
 import { getAppearanceState } from "./state/appearanceStore";
 import { DEFAULT_SCENE_PREFERENCES } from "./scene/scenePreferences";
+import type { CtoLinearRailData, CtoUpdateLinearViewPreferencesResult, LinearDisplayPreferences } from "../shared/types/cto";
+import {
+  applyLinearDisplayPatch,
+  defaultLinearDisplayPreferences,
+  emptyLinearRailData,
+  parseLinearDisplayPatch,
+} from "../shared/linearDisplayPreferences";
 /**
  * Browser-safe mock for `window.ade`.
  * Injected only when the Electron preload bridge is absent (i.e. opening the
@@ -2617,55 +2624,23 @@ const MOCK_LINEAR_PICKER = {
   labels: MOCK_LINEAR_LABELS,
 };
 
-type MockLinearDisplayPrefs = {
-  grouping: string;
-  subGrouping: string;
-  ordering: string;
-  orderingDirection: "asc" | "desc";
-  nesting: string;
-  showEmptyGroups: boolean;
-  showCompletedIssues: boolean;
-  hiddenGroups: string[];
-  fields: Record<string, boolean>;
-  source: "linear-view" | "linear-user" | "default";
-};
-
-/** Linear's defaults when nothing is saved (the real workspace's common case). */
-function mockLinearDefaultPrefs(): MockLinearDisplayPrefs {
-  return {
-    grouping: "workflowState",
-    subGrouping: "none",
-    ordering: "manual",
-    orderingDirection: "asc",
-    nesting: "showAll",
-    showEmptyGroups: false,
-    showCompletedIssues: true,
-    hiddenGroups: [],
-    fields: {
-      id: true, status: true, priority: true, assignee: true, labels: true, project: true, cycle: false,
-      milestone: false, estimate: false, dueDate: true, pullRequests: true, createdAt: true, updatedAt: false, adeStatus: true,
-    },
-    source: "default",
-  };
-}
-
 /** Display settings saved this session, per (viewType, customViewId). */
-const mockLinearPrefsStore = new Map<string, MockLinearDisplayPrefs>();
+const mockLinearPrefsStore = new Map<string, LinearDisplayPreferences>();
 const mockLinearPrefsKey = (args: { viewType?: string; customViewId?: string | null } = {}) => `${args.viewType ?? "allIssues"}|${args.customViewId ?? ""}`;
 
-function mockLinearGetPrefs(args: { viewType?: string; customViewId?: string | null } = {}): MockLinearDisplayPrefs {
+function mockLinearGetPrefs(args: { viewType?: string; customViewId?: string | null } = {}): LinearDisplayPreferences {
   const saved = mockLinearPrefsStore.get(mockLinearPrefsKey(args));
-  return saved ? { ...saved, fields: { ...saved.fields }, hiddenGroups: [...saved.hiddenGroups] } : mockLinearDefaultPrefs();
+  // Linear's defaults when nothing is saved (the real workspace's common case).
+  return saved ? { ...saved, fields: { ...saved.fields }, hiddenGroups: [...saved.hiddenGroups] } : defaultLinearDisplayPreferences();
 }
 
-function mockLinearUpdatePrefs(args: { viewType?: string; customViewId?: string | null; patch?: Partial<MockLinearDisplayPrefs> }) {
+function mockLinearUpdatePrefs(
+  args: { viewType?: string; customViewId?: string | null; patch?: unknown },
+): CtoUpdateLinearViewPreferencesResult {
   const current = mockLinearGetPrefs(args);
-  const { fields, ...rest } = args.patch ?? {};
   const refused = browserMockFlag("mockLinearPrefsRefuse");
-  const next: MockLinearDisplayPrefs = {
-    ...current,
-    ...rest,
-    fields: { ...current.fields, ...(fields ?? {}) },
+  const next: LinearDisplayPreferences = {
+    ...applyLinearDisplayPatch(current, parseLinearDisplayPatch(args.patch)),
     source: refused ? current.source : (args.customViewId ? "linear-view" : "linear-user"),
   };
   mockLinearPrefsStore.set(mockLinearPrefsKey(args), next);
@@ -2718,8 +2693,8 @@ const MOCK_LINEAR_DOCUMENT_CONTENT = [
   "See [Linear's docs](https://linear.app/docs) for the display options.",
 ].join("\n");
 
-function mockLinearRailData(args: { teamKey?: string | null } = {}) {
-  if (browserMockFlag("mockLinearRailEmpty")) return { cycles: [], initiatives: [], favorites: [], documents: [] };
+function mockLinearRailData(args: { teamKey?: string | null } = {}): CtoLinearRailData {
+  if (browserMockFlag("mockLinearRailEmpty")) return emptyLinearRailData();
   const teamKey = args.teamKey?.trim() || null;
   return {
     cycles: MOCK_LINEAR_CYCLES.filter((cycle) => !teamKey || cycle.teamKey === teamKey).map((cycle) => ({ ...cycle })),
@@ -2732,14 +2707,6 @@ function mockLinearRailData(args: { teamKey?: string | null } = {}) {
     ],
     documents: MOCK_LINEAR_DOCUMENTS.map((doc) => ({ ...doc })),
   };
-}
-
-function mockLinearFindByBranch(branch: string) {
-  const name = branch.trim().replace(/^refs\/heads\//, "").toLowerCase();
-  if (!name) return null;
-  const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.branchName.toLowerCase() === name)
-    ?? MOCK_LINEAR_ISSUES.find((entry) => new RegExp(`(^|[^a-z0-9])${entry.identifier.toLowerCase()}([^0-9]|$)`).test(name));
-  return issue ? { ...issue } : null;
 }
 
 /** Browser mock lane health; matches `LaneHealthCheck` in shared types. */
@@ -10264,7 +10231,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         const doc = MOCK_LINEAR_DOCUMENTS.find((entry) => entry.id === args?.documentId);
         return doc ? { ...doc, content: doc.id === "mock-linear-doc-spec" ? MOCK_LINEAR_DOCUMENT_CONTENT : `# ${doc.title}\n\nShort document in the browser preview.\n\n- One\n- Two` } : null;
       },
-      findLinearIssueByBranch: async (args: { branch: string }) => mockLinearFindByBranch(args?.branch ?? ""),
       getLinearIssue: async (args: { issueId: string }) => {
         const issue = MOCK_LINEAR_ISSUES.find((entry) => entry.id === args.issueId || entry.identifier === args.issueId);
         return issue ? { ...issue } : null;

@@ -7,12 +7,13 @@
 import type {
   CtoLinearQuickViewProject,
   CtoLinearQuickViewTeam,
-  LinearIssueOrdering,
   LinearIssuePullRequest,
   LinearIssueRef,
   NormalizedLinearIssue,
 } from "./types";
+import { isLinearIssueOrdering } from "./types/cto";
 import { linearPriorityLabel } from "./laneLinearIssue";
+import { LINEAR_ORDERING_NATURAL_DIRECTION } from "./linearDisplayPreferences";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -28,12 +29,40 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+/**
+ * Sub-issues a list read returns per issue (the desktop list query's
+ * `children(first: …)`). A list row with this many children may have more.
+ */
+export const LINEAR_LIST_CHILDREN_PAGE_SIZE = 25;
+
 export function priorityIsValid(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 4;
 }
 
+/** Closed in Linear: done, canceled, or marked a duplicate. */
+export function isClosedLinearStateType(stateType: string | null | undefined): boolean {
+  return stateType === "completed" || stateType === "canceled" || stateType === "duplicate";
+}
+
+/** Workflow state types in the issue list's group order (Linear's own list order). */
+export const LINEAR_STATE_TYPE_ORDER = ["triage", "started", "unstarted", "backlog", "completed", "canceled", "duplicate"] as const;
+
+/**
+ * One key per pull request url, so a Linear attachment and an ADE PR match:
+ * "github.com/Owner/Repo/pull/12/files?x" -> "github.com/owner/repo/pull/12"
+ * (GitLab `/-/merge_requests/<n>` reads the same). Other urls lose their query,
+ * hash and trailing slash.
+ */
+export function normalizeLinearPrUrl(url: string | null | undefined): string | null {
+  const trimmed = url?.trim();
+  if (!trimmed) return null;
+  const match = /^(?:https?:\/\/)?(?:www\.)?([^/]+)\/(.+?)\/(?:-\/)?(?:pull|merge_requests)\/(\d+)(?:[/?#]|$)/i.exec(trimmed);
+  if (!match) return trimmed.toLowerCase().replace(/[?#].*$/, "").replace(/\/+$/, "");
+  return `${match[1]}/${match[2]}/pull/${match[3]}`.toLowerCase();
+}
+
 function isOpenStateType(stateType: string): boolean {
-  return stateType !== "completed" && stateType !== "canceled" && stateType !== "duplicate";
+  return !isClosedLinearStateType(stateType);
 }
 
 function isRelatedRelationType(type: string | null): boolean {
@@ -429,17 +458,6 @@ export function buildLinearIssueBaseFilter(params: LinearIssueFilterParams): Rec
   return filter;
 }
 
-/** Each ordering's natural direction in Linear (`viewOrderingDirection` unset). */
-export const LINEAR_ORDERING_NATURAL_DIRECTION: Readonly<Record<LinearIssueOrdering, "asc" | "desc">> = {
-  manual: "asc",
-  priority: "desc",
-  updatedAt: "desc",
-  createdAt: "desc",
-  dueDate: "asc",
-  estimate: "desc",
-  title: "asc",
-};
-
 /**
  * Linear's `sort: [IssueSortInput!]` for an ordering, or null for Linear's
  * default (the caller keeps `orderBy: updatedAt`). `desc` on priority puts
@@ -450,8 +468,8 @@ export function linearIssueSortInput(
   ordering: string | null | undefined,
   direction: string | null | undefined,
 ): Array<Record<string, unknown>> | null {
-  if (!ordering || !Object.prototype.hasOwnProperty.call(LINEAR_ORDERING_NATURAL_DIRECTION, ordering)) return null;
-  const key = ordering as LinearIssueOrdering;
+  if (!isLinearIssueOrdering(ordering)) return null;
+  const key = ordering;
   const dir = direction === "asc" || direction === "desc" ? direction : LINEAR_ORDERING_NATURAL_DIRECTION[key];
   const order = dir === "asc" ? "Ascending" : "Descending";
   switch (key) {

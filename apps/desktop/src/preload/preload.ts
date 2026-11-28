@@ -15927,16 +15927,6 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.ctoGetLinearDocument, args),
       ),
-    findLinearIssueByBranch: async (
-      args: { branch: string },
-      pin?: OpenProjectBinding | null,
-    ): Promise<NormalizedLinearIssue | null> =>
-      callPinnedOrBoundRuntimeActionOr(pin,
-        "linear_issue_tracker",
-        "findIssueByBranch",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoFindLinearIssueByBranch, args),
-      ),
     // ---- The ADE Linear agent (runtime-only; no project, no agent) ----
     getLinearAgentOverview: async (pin?: OpenProjectBinding | null): Promise<LinearAgentOverview> =>
       callPinnedOrBoundRuntimeActionOr(pin, "linear_agent", "getOverview", {}, linearAgentUnavailable),

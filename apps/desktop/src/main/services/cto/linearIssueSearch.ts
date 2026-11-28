@@ -123,31 +123,16 @@ export function createLinearIssueSearch(args: {
   }): Promise<IssueTrackerIssueSearchResult> => {
     const { sort, ...variables } = params;
     const meter: LinearRequestMeter = { requests: 0, complexity: 0 };
+    // One template: a sorted read passes `sort`, the default keeps `orderBy: updatedAt`.
+    const ordering = sort ? { variable: ", $sort: [IssueSortInput!]", argument: "sort: $sort" } : { variable: "", argument: "orderBy: updatedAt" };
     const data = await request<{ issues?: IssueConnectionData }>({
-      query: sort
-        ? `
-        query SearchIssuesSorted($first: Int!, $after: String, $includeArchived: Boolean!, $filter: IssueFilter, $sort: [IssueSortInput!]) {
+      query: `
+        query ${sort ? "SearchIssuesSorted" : "SearchIssues"}($first: Int!, $after: String, $includeArchived: Boolean!, $filter: IssueFilter${ordering.variable}) {
           issues(
             first: $first,
             after: $after,
             includeArchived: $includeArchived,
-            sort: $sort,
-            filter: $filter
-          ) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              ${ISSUE_FIELDS_FRAGMENT}
-            }
-          }
-        }
-      `
-        : `
-        query SearchIssues($first: Int!, $after: String, $includeArchived: Boolean!, $filter: IssueFilter) {
-          issues(
-            first: $first,
-            after: $after,
-            includeArchived: $includeArchived,
-            orderBy: updatedAt,
+            ${ordering.argument},
             filter: $filter
           ) {
             pageInfo { hasNextPage endCursor }
