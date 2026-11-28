@@ -196,7 +196,8 @@ rm -rf "$scratch"
 const clean = String.raw`
 set -euo pipefail
 rm -rf "$HOME/drive/.ade" "$HOME/drive/.daex/home" "$HOME/drive/.cache"
-find "$HOME/drive" -mindepth 1 -maxdepth 1 ! -name .daex -exec rm -rf {} +
+# ~/drive is its own volume: macOS's own folders on it (Spotlight, Trashes, fseventsd) stay.
+find "$HOME/drive" -mindepth 1 -maxdepth 1 ! -name .daex ! -name .Spotlight-V100 ! -name .Trashes ! -name .fseventsd ! -name .TemporaryItems -exec rm -rf {} +
 echo "drive: $(du -sh "$HOME/drive" | cut -f1)"; ls -la "$HOME/drive" "$HOME/drive/.daex"
 `;
 
