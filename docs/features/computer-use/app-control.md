@@ -1,7 +1,7 @@
 # App Control
 
 App Control drives a desktop app that a developer builds, from inside a chat.
-The one supported `AppControlAppKind` is `electron`. ADE launches an Electron
+The one supported `AppControlAppKind` is `electron`. DAEX launches an Electron
 app (or connects to one that is running) through its Chrome DevTools Protocol
 (CDP) port. Then an agent or the user can:
 
@@ -15,186 +15,13 @@ app (or connects to one that is running) through its Chrome DevTools Protocol
 - watch it live from the web client or the phone.
 
 App Control is a bridge. Playwright, agent-browser and other tools can attach to
-the same Electron app. ADE keeps the session, the launch terminal, the captures
+the same Electron app. DAEX keeps the session, the launch terminal, the captures
 and the chat context consistent across them.
 
 App Control runs on the machine the chat runs on. The launch terminal, the CDP
 connection, captures and source matching all run on that host. A renderer only
 shows the frames and chips. `ChatAppControlPanel` takes a `runtimePin` and sends
 it on every call and on its event subscription.
-
-## Sessions are per lane
-
-App Control keeps **one session per lane**, keyed by `laneId`.
-
-- Every `app_control` action accepts `laneId`, plus `chatSessionId` for
-  ownership (`AppControlLaneArgs` in `shared/types/appControl.ts`). A caller
-  acts on its own lane's session.
-- The lane comes from `laneId`, else from the caller's chat, else from the
-  session id it holds. A call with no resolvable lane is refused. There is no
-  fallback to the project's first lane.
-- `launch` and `connect` on a lane that has a live session refuse unless
-  `force` is set. `force` replaces a session only in the same lane.
-- `getStatus` answers for one lane: `laneId` and `activeSession` are that lane's.
-  User clients also get `sessions`, the list of every lane's session in the
-  project.
-- Every `AppControlEventPayload` names its lane, so a pane or a remote viewer
-  picks its own lane's session out of one project stream.
-- `sessionId` on an action picks the session when no lane is named, and guards
-  it when one is: a `sessionId` that is not the lane's session is refused.
-
-From the ADE CLI, `--lane` defaults to `ADE_LANE_ID` and `--chat-session` to
-`ADE_CHAT_SESSION_ID`. Every `ade app-control` call also sends `callerRoot` and
-`callerRootSource` (the same pair `ade mac-desktop` sends). An `ade` process
-with no chat identity that runs inside a lane worktree is bound to that lane.
-
-## Lifecycle
-
-- **Launch.** `launch` runs the command in a chat-owned terminal and attaches
-  over CDP. See "Launch and connect".
-- **Connect.** `connect` attaches to an app that already exposes a CDP port.
-- **Stop.** `stop` quits an app ADE launched, with its whole process tree. It
-  only detaches from an app that `connect` attached to; that app keeps running.
-- **Release.** ADE releases a lane's session when the chat that owns it ends,
-  and when the lane is archived or deleted (`laneService` calls
-  `appControlService.stopForLane(laneId)` in its teardown).
-- `dispose()` is the shutdown path for the whole service.
-
-## Recording
-
-App Control records the app's own window, not the screen. The contract matches
-Mac Desktop recording.
-
-| Action | Arguments | Answer |
-|---|---|---|
-| `app_control.startRecording` | `laneId`, `chatSessionId?`, `caption?`, `plain?` (older name `keepIdle?`), `maxSeconds?` | `AppControlRecordingStatus` |
-| `app_control.stopRecording` | `laneId`, `chatSessionId?` | `AppControlRecordingStatus` with `filePath`, `durationMs`, `wallDurationMs`, `idleCutMs`, `proofArtifactId`, `lastError` |
-| `app_control.getRecordingStatus` | `laneId` | `AppControlRecordingStatus` |
-
-`AppControlRecordingStatus` uses the field names of `MacDesktopRecordingStatus`
-(`running`, `startedAt`, `caption`, `chatSessionId`, `filePath`, `durationMs`,
-`wallDurationMs`, `idleCutMs`, `maxDurationMs`, `stopReason`, `proofArtifactId`,
-`lastError`) and adds `engine` and `sessionId`.
-
-Rules:
-
-- **One per lane.** A lane has at most one recording.
-- **Start.** The start goes through `startHelperRecording`. If the driver
-  watchdog answers a `record.start` as timed out, the recording may still
-  install late, so ADE follows with a stop (only while the start still owns the
-  slot). App Control's per-lane key is exclusive and starts one at a time, so
-  an "already recording" answer here is an orphan: stop it and retry once.
-- **Limits.** Every recording stops itself after 5 minutes of real time
-  (`maxSeconds` sets less; `stopReason: "cap"`), after 2 minutes with no
-  action (`"idle"`), or when the disk is nearly full (`"disk"`). A recording
-  also stops when the app closes (`stopReason: "app-closed"`).
-- **Demo.** The engine records a raw file; the stop turns it into a demo
-  (see [Demo videos](../proof.md#demo-videos)) unless `plain` is set, and only
-  the demo is kept. `durationMs` is the video; `wallDurationMs` is the real
-  time it covers; `idleCutMs` is the difference.
-- **Chat-bound.** The chat that starts a recording owns it. The proof is filed
-  under that chat, whichever chat stops it.
-- **Proof.** A captioned recording is filed as proof when it stops, with
-  provenance `ade-recorder`. With no caption it stays a scratch file, except
-  when the cap or the app closing ended a chat's recording: then it files
-  itself with a default caption, as the Mac Desktop cap does. Its owners are the lane, the chat and the lane's
-  primary PR (resolved the same way as Mac Desktop, through
-  `resolvePrimaryPrUrl`). The chat turn shows the recording card, the same as a
-  Mac Desktop recording.
-- **Events.** A start, stop or failure emits `recording-changed` with the lane
-  and the status.
-
-Engines (`engine`):
-
-- `window-capture` (macOS). The ADEDesktopDriver `CaptureEngine` captures only
-  the App Control app's window (`SCContentFilter(desktopIndependentWindow:)`).
-  It reuses the Mac Desktop writer (`AVAssetWriter`) and writes a raw MP4 that
-  `ade-media` makes into the demo.
-  A start that lacks the Screen Recording grant is refused, and the status
-  carries `permissions`.
-- `screencast` (Windows and Linux). The desktop app writes the CDP screencast
-  frames to an `.aderaw` file, and its Chromium demo engine makes the MP4 demo
-  from it. The status contract is the same. A machine with no
-  ADE desktop app has no encoder, and the start says so.
-
-## Proof
-
-- `ade app-control proof --caption "…"` runs `observe` and files the screenshot
-  through `ingest_computer_use_artifacts` with `backendName: "ade-app-control"`.
-  The CLI names the lane and the chat explicitly, so the proof lands on the
-  caller's lane and chat, and on the lane's PR.
-- A captioned recording is filed when it stops (see "Recording").
-- `screenshot`, `snapshot` and `observe` write scratch files and file nothing.
-
-## Show surfaces
-
-`WorkToolShowSurface` has `app-control` (the App Control tool in the Work tools
-pane) and `floating-app-control` (the floating card over the chat). They go
-through `work_tools.show`, the same path as `mac-desktop`:
-
-- `ade app-control show` and `ade ui show app-control`;
-- `ade app-control show --floating` and `ade ui show floating-app-control`.
-
-The answer is `shown`, `held` (a desktop has the project open but the chat is
-not in front) or `no_desktop` (exit 1). When an agent drives App Control, the
-brain may offer the floating card by itself (an `auto` request), like Mac
-Desktop's driven-device path. The per-chat "Show preview when minimized" choice
-can refuse an auto request.
-
-## Frames follow demand
-
-A lane's CDP screencast streams only while something shows or records it.
-With nobody watching, the attached app encodes nothing and the brain forwards
-nothing. An always-on screencast pushed 80-350 KB JPEGs at the page's repaint
-rate for every lane with a session, filling the brain's heap and the renderer
-whether or not anything painted a frame.
-
-A frame source declares the lanes it shows:
-
-- **Desktop windows.** Every view that paints a lane holds it through the
-  preload (`appControl.holdFrames(laneId)`); a hold with no lane admits every
-  lane. `appControlFrameSubscriptions.ts` keeps the refcounts per window and
-  the window gate is closed by default, so a window that holds nothing
-  receives no frames. A reloaded or crashed renderer forgets its old
-  document's holds.
-- **The sync stream** (web client, phone) declares the lanes it has viewers
-  for.
-- **A recording** demands its lane for as long as it runs.
-
-The desktop pool sends the union of its windows' held lanes to the brain with
-the `appControl.setFrameDemand` RPC. Demand is machine level and per
-connection, kept as data and replayed onto a project scope that restarts under
-an open connection (`apps/ade-cli/src/connectionFrameDemand.ts`). A client that
-subscribes to high-volume events without ever declaring its lanes keeps the
-old always-on behavior, so an older client still sees frames.
-
-A lane with no demand pauses its stream but keeps its CDP client for
-diagnostics. The pause waits out a short grace (5 s) so a view switch does not
-restart the stream. A paused lane drops its cached frame, so a screenshot or a
-new viewer captures the app as it is now rather than as it was; recordings and
-new viewers take a fresh capture. Frames are transient in the runtime event
-buffer: they reach live listeners but are never retained for replay.
-
-## Remote viewing
-
-The web client and the phone watch a lane's session over the sync socket.
-`apps/ade-cli/src/services/sync/appControlSyncStream.ts` forwards the frames
-App Control already gets from the CDP screencast. It declares the lanes it has
-viewers for, so those are the lanes the brain streams, and it never encodes
-video.
-
-| Command | Purpose |
-|---|---|
-| `appControl.status` | The lane's session (or every session, for a project-wide read) and the stream state: `live`, `lastFrameAt`, size, `viewerCount`. |
-| `appControl.streamSubscribe` | Start receiving `appControl.streamFrame` for a lane. |
-| `appControl.streamUnsubscribe` | Stop. `appControl.streamEnded` tells a client the stream ended. |
-
-Each subscription is throttled on the brain: at most `maxFps` frames a second
-(10 by default), a byte budget per second, and only the newest frame is kept. A
-frame that cannot go out is replaced by the next one; nothing queues. A new
-viewer gets the newest frame at once. `SyncAppControlSession` leaves out
-host-only state: the launch command, the CDP endpoint, the pid and the terminal
-ids are always null.
 
 ## Source file map
 
@@ -346,14 +173,14 @@ The chat terminal surface is `ade.terminal.*` (`list`, `read`, `write`,
 - `ChatTerminalDrawer.tsx` gives the App Control launch terminal tab a status
   tone.
 
-### ADE CLI (`apps/ade-cli/src/cli.ts`)
+### DAEX CLI (`apps/ade-cli/src/cli.ts`)
 
-`ade app-control <sub>` (aliases `ade app`, `ade electron`):
+`daex app-control <sub>` (aliases `daex app`, `daex electron`):
 
 - session: `status`, `launch`, `connect`, `claim`, `stop`, `show [--floating]`,
   `actions`;
 - agent loop: `observe`, `click`, `hover`, `fill`, `clear`, `type`, `press` /
-  `key`, `scroll`, `wait`, `trace` — the same target flags as `ade browser`
+  `key`, `scroll`, `wait`, `trace` — the same target flags as `daex browser`
   (`--handle`, `--selector`, `--text-match`, `--test-id`, `--element`,
   `--x --y`), plus `--map`, `--fast`, `--no-observe`, `--session`. Each one maps
   to the `agent*` action; the live-frame primitives are not reachable from the
@@ -368,11 +195,11 @@ The chat terminal surface is `ade.terminal.*` (`list`, `read`, `write`,
 `launch`, `connect` and `claim` read `--session` as the chat. Every other
 subcommand reads `--session` as the App Control session guard. `--cwd` on
 `launch` resolves a relative path from the shell's own directory. `record`
-prints the same lines as `ade mac-desktop record` plus `engine` and a `proof`
+prints the same lines as `daex mac-desktop record` plus `engine` and a `proof`
 line with the filed artifact id.
 
-`ade ui show app-control|floating-app-control` requests the same surfaces as
-`ade app-control show`.
+`daex ui show app-control|floating-app-control` requests the same surfaces as
+`daex app-control show`.
 
 `apps/ade-cli/src/bootstrap.ts` builds an `AppControlService` for the headless
 brain with the same lane resolution as the desktop main process, and registers
@@ -391,17 +218,220 @@ connection closes.
 resolve it on another machine) and the `terminal` domain (`list`, `read`,
 `write`, `signal`, `activeForChat`).
 
+## Gotchas / fragile areas
+
+- **One session per lane, no fallback.** A call with no resolvable lane is
+  refused; it never falls back to the project's first lane. `force` replaces a
+  session only in the same lane.
+- **Frames follow demand.** A lane's CDP screencast streams only while a
+  window holds it (`appControl.holdFrames`), a sync viewer subscribes, or a
+  recording runs. A client that subscribes without declaring lanes keeps the
+  old always-on stream. An always-on screencast once filled the brain's heap.
+- **zsh does not word-split.** An unquoted `$ADE_APP_CONTROL_DEBUG_FLAGS` in a
+  launch command reached the app as one argument, so DAEX substitutes the
+  variable in the command text (outside Windows) instead of relying on the shell.
+- **Debug flags keep covered windows painting**
+  (`--disable-backgrounding-occluded-windows`,
+  `--disable-renderer-backgrounding`), so a screenshot matches the DOM.
+- **Viewport vs document pixels.** `DOM.getNodeForLocation` expects document
+  pixels; App Control adds the layout viewport's `pageX`/`pageY`. Cross-site
+  iframes resolve only to their `<iframe>` element.
+- **Screenshot-space clicks scale by the app's device pixel ratio**, not the
+  downscaled live frame.
+- **Native menu accelerators** are handled by the OS menu; a CDP key event never
+  reaches them.
+- **Driver vs provider spelling.** The driver is `computer_use` (typed, always
+  unavailable; never falls back to CDP); the provider is `computer-use`.
+- **A timed-out `record.start` may install late**, so DAEX follows with a stop;
+  an "already recording" answer on the exclusive per-lane key is an orphan to
+  stop and retry once.
+- **Heavy IPC calls bypass the global 30 s timeout** because CDP captures can
+  take longer.
+
+## Sessions are per lane
+
+App Control keeps **one session per lane**, keyed by `laneId`.
+
+- Every `app_control` action accepts `laneId`, plus `chatSessionId` for
+  ownership (`AppControlLaneArgs` in `shared/types/appControl.ts`). A caller
+  acts on its own lane's session.
+- The lane comes from `laneId`, else from the caller's chat, else from the
+  session id it holds. A call with no resolvable lane is refused. There is no
+  fallback to the project's first lane.
+- `launch` and `connect` on a lane that has a live session refuse unless
+  `force` is set. `force` replaces a session only in the same lane.
+- `getStatus` answers for one lane: `laneId` and `activeSession` are that lane's.
+  User clients also get `sessions`, the list of every lane's session in the
+  project.
+- Every `AppControlEventPayload` names its lane, so a pane or a remote viewer
+  picks its own lane's session out of one project stream.
+- `sessionId` on an action picks the session when no lane is named, and guards
+  it when one is: a `sessionId` that is not the lane's session is refused.
+
+From the DAEX CLI, `--lane` defaults to `ADE_LANE_ID` and `--chat-session` to
+`ADE_CHAT_SESSION_ID`. Every `daex app-control` call also sends `callerRoot` and
+`callerRootSource` (the same pair `daex mac-desktop` sends). A `daex` process
+with no chat identity that runs inside a lane worktree is bound to that lane.
+
+## Lifecycle
+
+- **Launch.** `launch` runs the command in a chat-owned terminal and attaches
+  over CDP. See "Launch and connect".
+- **Connect.** `connect` attaches to an app that already exposes a CDP port.
+- **Stop.** `stop` quits an app DAEX launched, with its whole process tree. It
+  only detaches from an app that `connect` attached to; that app keeps running.
+- **Release.** DAEX releases a lane's session when the chat that owns it ends,
+  and when the lane is archived or deleted (`laneService` calls
+  `appControlService.stopForLane(laneId)` in its teardown).
+- `dispose()` is the shutdown path for the whole service.
+
+## Recording
+
+App Control records the app's own window, not the screen. The contract matches
+Mac Desktop recording.
+
+| Action | Arguments | Answer |
+|---|---|---|
+| `app_control.startRecording` | `laneId`, `chatSessionId?`, `caption?`, `plain?` (older name `keepIdle?`), `maxSeconds?` | `AppControlRecordingStatus` |
+| `app_control.stopRecording` | `laneId`, `chatSessionId?` | `AppControlRecordingStatus` with `filePath`, `durationMs`, `wallDurationMs`, `idleCutMs`, `proofArtifactId`, `lastError` |
+| `app_control.getRecordingStatus` | `laneId` | `AppControlRecordingStatus` |
+
+`AppControlRecordingStatus` uses the field names of `MacDesktopRecordingStatus`
+(`running`, `startedAt`, `caption`, `chatSessionId`, `filePath`, `durationMs`,
+`wallDurationMs`, `idleCutMs`, `maxDurationMs`, `stopReason`, `proofArtifactId`,
+`lastError`) and adds `engine` and `sessionId`.
+
+Rules:
+
+- **One per lane.** A lane has at most one recording.
+- **Start.** The start goes through `startHelperRecording`. If the driver
+  watchdog answers a `record.start` as timed out, the recording may still
+  install late, so DAEX follows with a stop (only while the start still owns the
+  slot). App Control's per-lane key is exclusive and starts one at a time, so
+  an "already recording" answer here is an orphan: stop it and retry once.
+- **Limits.** Every recording stops itself after 5 minutes of real time
+  (`maxSeconds` sets less; `stopReason: "cap"`), after 2 minutes with no
+  action (`"idle"`), or when the disk is nearly full (`"disk"`). A recording
+  also stops when the app closes (`stopReason: "app-closed"`).
+- **Demo.** The engine records a raw file; the stop turns it into a demo
+  (see [Demo videos](../proof.md#demo-videos)) unless `plain` is set, and only
+  the demo is kept. `durationMs` is the video; `wallDurationMs` is the real
+  time it covers; `idleCutMs` is the difference.
+- **Chat-bound.** The chat that starts a recording owns it. The proof is filed
+  under that chat, whichever chat stops it.
+- **Proof.** A captioned recording is filed as proof when it stops, with
+  provenance `ade-recorder`. With no caption it stays a scratch file, except
+  when the cap or the app closing ended a chat's recording: then it files
+  itself with a default caption, as the Mac Desktop cap does. Its owners are the lane, the chat and the lane's
+  primary PR (resolved the same way as Mac Desktop, through
+  `resolvePrimaryPrUrl`). The chat turn shows the recording card, the same as a
+  Mac Desktop recording.
+- **Events.** A start, stop or failure emits `recording-changed` with the lane
+  and the status.
+
+Engines (`engine`):
+
+- `window-capture` (macOS). The ADEDesktopDriver `CaptureEngine` captures only
+  the App Control app's window (`SCContentFilter(desktopIndependentWindow:)`).
+  It reuses the Mac Desktop writer (`AVAssetWriter`) and writes a raw MP4 that
+  `ade-media` makes into the demo.
+  A start that lacks the Screen Recording grant is refused, and the status
+  carries `permissions`.
+- `screencast` (Windows and Linux). The desktop app writes the CDP screencast
+  frames to an `.aderaw` file, and its Chromium demo engine makes the MP4 demo
+  from it. The status contract is the same. A machine with no
+  DAEX desktop app has no encoder, and the start says so.
+
+## Proof
+
+- `daex app-control proof --caption "…"` runs `observe` and files the screenshot
+  through `ingest_computer_use_artifacts` with `backendName: "ade-app-control"`.
+  The CLI names the lane and the chat explicitly, so the proof lands on the
+  caller's lane and chat, and on the lane's PR.
+- A captioned recording is filed when it stops (see "Recording").
+- `screenshot`, `snapshot` and `observe` write scratch files and file nothing.
+
+## Show surfaces
+
+`WorkToolShowSurface` has `app-control` (the App Control tool in the Work tools
+pane) and `floating-app-control` (the floating card over the chat). They go
+through `work_tools.show`, the same path as `mac-desktop`:
+
+- `daex app-control show` and `daex ui show app-control`;
+- `daex app-control show --floating` and `daex ui show floating-app-control`.
+
+The answer is `shown`, `held` (a desktop has the project open but the chat is
+not in front) or `no_desktop` (exit 1). When an agent drives App Control, the
+brain may offer the floating card by itself (an `auto` request), like Mac
+Desktop's driven-device path. The per-chat "Show preview when minimized" choice
+can refuse an auto request.
+
+## Frames follow demand
+
+A lane's CDP screencast streams only while something shows or records it.
+With nobody watching, the attached app encodes nothing and the brain forwards
+nothing. An always-on screencast pushed 80-350 KB JPEGs at the page's repaint
+rate for every lane with a session, filling the brain's heap and the renderer
+whether or not anything painted a frame.
+
+A frame source declares the lanes it shows:
+
+- **Desktop windows.** Every view that paints a lane holds it through the
+  preload (`appControl.holdFrames(laneId)`); a hold with no lane admits every
+  lane. `appControlFrameSubscriptions.ts` keeps the refcounts per window and
+  the window gate is closed by default, so a window that holds nothing
+  receives no frames. A reloaded or crashed renderer forgets its old
+  document's holds.
+- **The sync stream** (web client, phone) declares the lanes it has viewers
+  for.
+- **A recording** demands its lane for as long as it runs.
+
+The desktop pool sends the union of its windows' held lanes to the brain with
+the `appControl.setFrameDemand` RPC. Demand is machine level and per
+connection, kept as data and replayed onto a project scope that restarts under
+an open connection (`apps/ade-cli/src/connectionFrameDemand.ts`). A client that
+subscribes to high-volume events without ever declaring its lanes keeps the
+old always-on behavior, so an older client still sees frames.
+
+A lane with no demand pauses its stream but keeps its CDP client for
+diagnostics. The pause waits out a short grace (5 s) so a view switch does not
+restart the stream. A paused lane drops its cached frame, so a screenshot or a
+new viewer captures the app as it is now rather than as it was; recordings and
+new viewers take a fresh capture. Frames are transient in the runtime event
+buffer: they reach live listeners but are never retained for replay.
+
+## Remote viewing
+
+The web client and the phone watch a lane's session over the sync socket.
+`apps/ade-cli/src/services/sync/appControlSyncStream.ts` forwards the frames
+App Control already gets from the CDP screencast. It declares the lanes it has
+viewers for, so those are the lanes the brain streams, and it never encodes
+video.
+
+| Command | Purpose |
+|---|---|
+| `appControl.status` | The lane's session (or every session, for a project-wide read) and the stream state: `live`, `lastFrameAt`, size, `viewerCount`. |
+| `appControl.streamSubscribe` | Start receiving `appControl.streamFrame` for a lane. |
+| `appControl.streamUnsubscribe` | Stop. `appControl.streamEnded` tells a client the stream ended. |
+
+Each subscription is throttled on the brain: at most `maxFps` frames a second
+(10 by default), a byte budget per second, and only the newest frame is kept. A
+frame that cannot go out is replaced by the next one; nothing queues. A new
+viewer gets the newest frame at once. `SyncAppControlSession` leaves out
+host-only state: the launch command, the CDP endpoint, the pid and the terminal
+ids are always null.
+
 ## Launch and connect
 
 `launch(args)`:
 
 1. **Arguments.** `appKind` defaults to `electron`. `cwd` is resolved against the
    lane worktree and refused if it escapes it. A free `cdpPort` is picked when
-   none is given. ADE sets `ADE_APP_CONTROL_CDP_PORT` and
+   none is given. DAEX sets `ADE_APP_CONTROL_CDP_PORT` and
    `ADE_APP_CONTROL_DEBUG_FLAGS`. The debug flags also carry
    `--disable-backgrounding-occluded-windows` and
    `--disable-renderer-backgrounding`, so a covered window keeps painting and
-   a screenshot matches the DOM. ADE then:
+   a screenshot matches the DOM. DAEX then:
    - substitutes a literal `{ADE_APP_CONTROL_DEBUG_FLAGS}` in the command, and
      outside Windows also a `$ADE_APP_CONTROL_DEBUG_FLAGS` or
      `${ADE_APP_CONTROL_DEBUG_FLAGS}` reference, quoted or not (dropping a
@@ -415,13 +445,13 @@ resolve it on another machine) and the `terminal` domain (`list`, `read`,
    - for `electron` / `npx electron`, appends the flags; or
    - for any other launcher, only exports the variables. That launcher must
      forward `ADE_APP_CONTROL_DEBUG_FLAGS`, or read `ADE_APP_CONTROL_CDP_PORT`
-     and pass `--remote-debugging-port`. ADE's own `npm run dev:desktop`
+     and pass `--remote-debugging-port`. DAEX's own `npm run dev:desktop`
      launcher accepts the substituted flags and passes the port and render
      flags through to Electron.
 2. **Visible terminal.** The command runs in the chat-owned PTY, so the user
    sees its output. The session records `terminalSessionId` and
    `terminalPtyId`.
-3. **CDP discovery.** ADE polls `http://127.0.0.1:<port>/json` every 500 ms,
+3. **CDP discovery.** DAEX polls `http://127.0.0.1:<port>/json` every 500 ms,
    then every 2 s once a target is picked. `pickCdpTarget` prefers `page`, then
    `webview`, then any non-`devtools://` URL.
 4. **Attach.** A `CdpClient` WebSocket opens. The session moves `starting` →
@@ -505,7 +535,7 @@ its saved observation, so a pruned or foreign handle fails with a clear error.
 A `text` match prefers an exact match, then the smallest element whose own text
 carries the string resolved to its closest clickable ancestor — so a list row
 wins over the list container that merely contains the same text. `agentClick`
-takes `button` (`left`, `middle`, `right`); `ade app-control right-click` is the
+takes `button` (`left`, `middle`, `right`); `daex app-control right-click` is the
 `button: right` shorthand. The target is scrolled into view and focused; a
 disabled target is refused. `fill` and `clear` need an editable target, and
 `fill` types only an explicit `value`. `agentType` has no target: it types into
@@ -537,7 +567,7 @@ spelling: the driver is `computer_use`, the provider is `computer-use`.
 
 ## Chat-owned terminal
 
-The launch terminal is a normal ADE chat terminal. `terminal_sessions` has a
+The launch terminal is a normal DAEX chat terminal. `terminal_sessions` has a
 nullable, indexed `chat_session_id` column. `ptyService` tracks the terminals of
 each chat and its active one; when the active terminal closes, the newest
 sibling becomes active. `listTerminals`, `readTerminal`, `writeTerminal`,
@@ -546,7 +576,7 @@ sibling becomes active. `listTerminals`, `readTerminal`, `writeTerminal`,
 
 `agentChatService` sets `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`,
 `ADE_PROJECT_ROOT` and `ADE_WORKSPACE_ROOT` for agents, so an agent can run
-`ade app-control logs` or `ade terminal read --chat-session "$ADE_CHAT_SESSION_ID"`
+`daex app-control logs` or `daex terminal read --chat-session "$ADE_CHAT_SESSION_ID"`
 without looking anything up.
 
 ## Cross-links
@@ -554,7 +584,7 @@ without looking anything up.
 - [`README.md`](./README.md) — the proof broker and the shared action answer.
 - [`../mac-desktop/README.md`](../mac-desktop/README.md) — the lane's private
   macOS display. An App Control window can be moved there with
-  `ade mac-desktop claim --window <id>` (optional).
+  `daex mac-desktop claim --window <id>` (optional).
 - [`../chat/composer-and-ui.md`](../chat/composer-and-ui.md) — chips for
   `AppControlContextItem`s.
 - [`../terminals-and-sessions/README.md`](../terminals-and-sessions/README.md) —
