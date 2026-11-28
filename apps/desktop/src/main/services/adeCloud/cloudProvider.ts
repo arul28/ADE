@@ -131,8 +131,11 @@ export type CloudProvider = {
    * Wakes a sleeping machine or starts a stopped one. Every wake is use; none
    * is allowed at 0 hours. `origin: "mcp"`: an outside agent asked, refused on
    * the free plan (`outside_agent_free_plan`). Answers with the new status.
+   * `adProof` (Pricing v3): a person's message is why it wakes (the same ids
+   * the app sends to `/sent`), counted as the computer's ad proof first, so a
+   * Small on Free with ads wakes at 0 credits.
    */
-  startInstance(id: string, options?: { origin?: "mcp" }): Promise<string>;
+  startInstance(id: string, options?: { origin?: "mcp"; adProof?: CloudWakeAdProof }): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */
   stopInstance(id: string): Promise<string>;
   /**
@@ -273,3 +276,6 @@ export type CloudProvider = {
    */
   readonly account?: string;
 };
+
+/** A person's message that wakes a computer (`POST /cloud/instances/:id/start` `adProof`). */
+export type CloudWakeAdProof = { chatId: string; messageId: string };

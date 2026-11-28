@@ -52,6 +52,7 @@ import { CloudSizes } from "./CloudSizes";
 import { CloudAdsBand } from "./CloudAdsBand";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
+import { CloudFreeModelsCard } from "./CloudFreeModelsCard";
 import { useHasOwnComputer, useOwnWebComputers } from "../../../state/ownComputers";
 import { useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import {
@@ -351,12 +352,14 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           <CloudSignIns />
           <div className="adecd-stack">
             <CloudAgentLimitsCard />
+            <CloudFreeModelsCard account={account} />
             <CloudInviteCard account={account} onChanged={refresh} />
           </div>
         </div>
       ) : (
         <div className="adecd-stack">
           {connectedMachine || isWebClientMode() ? <CloudAgentLimitsCard /> : null}
+          <CloudFreeModelsCard account={account} />
           <CloudInviteCard account={account} onChanged={refresh} />
         </div>
       )}

@@ -559,12 +559,12 @@ export function registerCloudIpc(args: {
   // Remote connections wake a sleeping box the person is about to use. Only a
   // machine known as a cloud box is looked up (`knowsBox`: at most one bounded
   // read for an unknown one), so a Connect to a laptop barely waits.
-  setCloudWakeForUse(async (target) => {
+  setCloudWakeForUse(async (target, use) => {
     const machineKey = target.pairedMachine?.machineKey?.trim();
     if (!machineKey || !(await machines.knowsBox(machineKey))) return false;
     const client = await savedClient().catch(() => null);
     if (!client) return false;
-    const result = await wakeCloudMachineForUse(client, { machineKey, hostname: target.hostname }, { logger }).catch((error: unknown) => {
+    const result = await wakeCloudMachineForUse(client, { machineKey, hostname: target.hostname }, { logger, adProof: use?.adProof ?? null }).catch((error: unknown) => {
       logger.warn("cloud.wake_for_use_failed", { error: getErrorMessage(error) });
       return null;
     });

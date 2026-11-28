@@ -44,6 +44,7 @@ import {
   type CloudProvider,
   type CloudUpdateChannel,
   type CloudUpdateCheck,
+  type CloudWakeAdProof,
 } from "./cloudProvider";
 import { cloudSavedChatUrl, cloudSavedChatsUrl, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import { markExpected } from "../../../shared/expectedError";
@@ -356,8 +357,9 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return statusOf(await request("POST", instancePath(id, "idle"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
 
-    async startInstance(id: string, options?: { origin?: "mcp" }): Promise<string> {
-      const body = options?.origin === "mcp" ? { origin: "mcp" } : {};
+    async startInstance(id: string, options?: { origin?: "mcp"; adProof?: CloudWakeAdProof }): Promise<string> {
+      // An outside agent's wake never carries a person's message.
+      const body = options?.origin === "mcp" ? { origin: "mcp" } : options?.adProof ? { adProof: options.adProof } : {};
       return statusOf(await request("POST", instancePath(id, "start"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "running");
     },
 

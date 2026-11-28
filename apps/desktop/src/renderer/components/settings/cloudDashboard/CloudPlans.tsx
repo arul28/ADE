@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowSquareOut, Clock, Coins, CreditCard, Desktop, Gift, Info, Infinity, Lightning, Megaphone, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
-import { noteSponsoredNoticeShown, setCloudFreeModelsConsent, setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
-import { askAdeFreeModelsConsent } from "../../shared/ModelPicker/AdeFreeModelsConsentDialog";
+import { ArrowSquareOut, Clock, Coins, CreditCard, Desktop, Info, Infinity, Lightning, Megaphone, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
+import { noteSponsoredNoticeShown, setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
 import { useOnScreen } from "../../chat/sponsored/sponsoredOnScreen";
 import { turnOnSponsoredCards } from "../../chat/sponsored/SponsoredReplySlot";
 import { useDocumentVisible } from "../../chat/sponsored/useSponsoredViewer";
@@ -120,9 +119,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const current = cloudPlanIdOf(account);
   const paid = account.plan === "paid";
   const pastDue = account.billing.notice === "past_due";
-  const { billing, extraHours, sponsored, freeModels } = account;
-  // DAEX Free Models: their own switch, separate from sponsored cards. Off is the consent's no.
-  const freeModelsOn = freeModels?.consent === "granted";
+  const { billing, extraHours, sponsored } = account;
   // Shown where cards can show, and to an account that said yes, so a paid
   // plan can still take that yes back before a move to Free.
   // Under Pricing v3 the hero's Ads switch is the one switch (`CloudAdsBand`): this row stays away.
@@ -426,27 +423,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           <p data-quiet=""><span>{CLOUD_SMALL_FAIR_USE_SENTENCE}</span></p>
         </div>
 
-        {extraHours.available || sponsoredToggle || providerPick || freeModels ? (
+        {extraHours.available || sponsoredToggle || providerPick ? (
           <div className="adecd-addons">
-            {freeModels ? (
-              <div className="kit-panel adecd-addon" data-on={freeModelsOn || undefined}>
-                <div className="adecd-addon-top">
-                  <span className="adecd-addon-icon"><Gift size={15} weight="duotone" /></span>
-                  <b>{BRAND.NAME} Free Models</b>
-                  <SettingsToggle
-                    checked={freeModelsOn}
-                    disabled={busy}
-                    label={`${BRAND.NAME} Free Models`}
-                    onChange={(enabled) => void run(() => (enabled ? askAdeFreeModelsConsent() : setCloudFreeModelsConsent("declined")))}
-                  />
-                </div>
-                <small className="adecd-addon-state">
-                  {freeModelsOn
-                    ? `On. Free models in the model picker, on any computer and any plan; each chat that uses one shows an ad. Turning this off stops them on every device.`
-                    : `Off. When on, free models show in the model picker; each chat that uses one shows an ad.`}
-                </small>
-              </div>
-            ) : null}
             {sponsoredToggle ? (
               <div ref={sponsoredRowRef} className="kit-panel adecd-addon" data-on={sponsoredOn || undefined}>
                 <div className="adecd-addon-top">
