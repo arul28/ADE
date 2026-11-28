@@ -297,6 +297,7 @@ Pick a named layer and never type a z-index:
 | `toast` | 250 | `ToastViewport`; above dialogs so a toast raised from a dialog is visible |
 | `dialogOverToasts` | 260 | A modal that shows its results inside itself (the report dialog opened from an error toast) |
 | `tooltip` | 300 | Tooltips and hover cards, including ones inside dialogs |
+| `composerMenu` | 1000 | The chat composer's `/`, `@` and `#` menu; over a composer inside a dialog and over the toasts beside it |
 | `contextMenu` | 9999 | A row context menu and its click-away layer |
 | `onboardingTour` | 10000 | The guided onboarding tour (cursor, ring, card). Above menus, because a step points into an open menu. Only the small card takes pointer events, it sits beside its control, and the tour hides while a modal is open |
 | `macDesktop` | 40000 | A lane's private macOS screen, above context menus |

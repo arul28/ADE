@@ -27,6 +27,7 @@ import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
 import { BRAND } from "../../../shared/brand";
+import { Z_LAYERS } from "../ui/zLayers";
 
 /**
  * Import the logins you already have.
@@ -251,7 +252,8 @@ export function BrowserLoginImportDialog({
                 as the same kind of interruption rather than a stray panel. */}
             <Dialog.Overlay asChild>
               <motion.div
-                className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-2xl"
+                className="fixed inset-0 bg-black/70 backdrop-blur-2xl"
+                style={{ zIndex: Z_LAYERS.dialog }}
                 initial={reduceMotion ? false : { opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -261,11 +263,13 @@ export function BrowserLoginImportDialog({
             <Dialog.Content asChild>
               <motion.div
                 className={cn(
-                  "fixed left-1/2 top-[12%] z-[130] flex max-h-[76vh] w-[560px] max-w-[94vw] -translate-x-1/2",
+                  "fixed left-1/2 top-[12%] flex max-h-[76vh] w-[560px] max-w-[94vw] -translate-x-1/2",
                   "flex-col overflow-hidden rounded-[var(--radius-xl)]",
                   "font-sans text-[12px] text-fg/80 focus:outline-none",
                 )}
                 style={{
+                  // The scrim's layer too: the panel comes after it, so it draws on top.
+                  zIndex: Z_LAYERS.dialog,
                   background:
                     "radial-gradient(120% 120% at 0% 0%, rgba(167,139,250,0.10), transparent 55%), "
                     + "radial-gradient(100% 100% at 100% 100%, rgba(82,56,175,0.10), transparent 60%), "

@@ -83,6 +83,13 @@ export const Z_LAYERS = {
   dialogOverToasts: 260,
   /** Tooltips and hover cards; above dialogs so a dialog's tooltips work. */
   tooltip: 300,
+  /**
+   * The chat composer's `/`, `@` and `#` menu. It opens over the composer it
+   * types into, which can sit inside a dialog, and over the toasts by the
+   * composer, so it is above `dialogOverToasts` and `tooltip`; below context
+   * menus. The value it always had.
+   */
+  composerMenu: 1000,
   /** A right-click / row context menu and its click-away layer, above every app surface. */
   contextMenu: 9999,
   /**

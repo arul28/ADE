@@ -13,6 +13,7 @@ import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { BRAND } from "../../../shared/brand";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 
 type ForeignLaneContextMenuProps = {
   lane: LaneSummary;
@@ -77,119 +78,121 @@ export function ForeignLaneContextMenu({
   const openIn = resolveOpenInTarget({ worktreePath: lane.worktreePath, binding });
 
   return (
-    <div
-      ref={ref}
-      role="menu"
-      tabIndex={-1}
-      className="ade-liquid-glass-menu"
-      style={{
-        position: "fixed",
-        zIndex: 50,
-        minWidth: 220,
-        maxHeight: "calc(100vh - 20px)",
-        overflowY: "auto",
-        border: `1px solid ${COLORS.outlineBorder}`,
-        padding: "4px 0",
-        left: position?.left ?? x,
-        top: position?.top ?? y,
-        visibility: position ? "visible" : "hidden",
-      }}
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      <div style={{ padding: "6px 14px 7px", fontFamily: MONO_FONT }}>
-        <div
-          style={{
-            maxWidth: 260,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            fontSize: 11,
-            fontWeight: 700,
-            color: COLORS.textPrimary,
+    <ViewportOverlayHost layer="contextMenu">
+      <div
+        ref={ref}
+        role="menu"
+        tabIndex={-1}
+        className="ade-liquid-glass-menu"
+        style={{
+          position: "absolute",
+          pointerEvents: "auto",
+          minWidth: 220,
+          maxHeight: "calc(100vh - 20px)",
+          overflowY: "auto",
+          border: `1px solid ${COLORS.outlineBorder}`,
+          padding: "4px 0",
+          left: position?.left ?? x,
+          top: position?.top ?? y,
+          visibility: position ? "visible" : "hidden",
+        }}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <div style={{ padding: "6px 14px 7px", fontFamily: MONO_FONT }}>
+          <div
+            style={{
+              maxWidth: 260,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontSize: 11,
+              fontWeight: 700,
+              color: COLORS.textPrimary,
+            }}
+          >
+            {lane.name}
+          </div>
+          <div style={{ marginTop: 2, fontSize: 9.5, color: COLORS.textDim }}>
+            {machineName}{online ? "" : " · offline"}
+          </div>
+        </div>
+        {separator}
+        <HoverButton style={menuItemStyle} disabled={!online} onClick={onStartChat}>
+          Start chat in lane
+        </HoverButton>
+        <HoverButton style={menuItemStyle} disabled={!online} onClick={onManage}>
+          Manage lane
+        </HoverButton>
+        <HoverButton style={menuItemStyle} disabled={!online} onClick={onOpenInLanes}>
+          Open in Lanes
+        </HoverButton>
+        <HoverButton style={menuItemStyle} disabled={!online} onClick={onOpenHistory}>
+          Commit history
+        </HoverButton>
+        {online && openIn ? (
+          <OpenInSubmenu
+            rootPath={openIn.rootPath}
+            remote={openIn.remote}
+            onClose={onClose}
+            style={{
+              ...menuItemStyle,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+            hoverBackground={COLORS.hoverBg}
+          />
+        ) : null}
+        {lane.worktreePath ? (
+          <>
+            {separator}
+            <HoverButton
+              style={menuItemStyle}
+              onClick={() => copyText(lane.worktreePath ?? "")}
+            >
+              Copy path
+            </HoverButton>
+          </>
+        ) : null}
+        {separator}
+        <HoverButton
+          style={menuItemStyle}
+          onClick={() => {
+            void linkOwnershipFor(binding).then((ownership) => {
+              copyText(buildDeeplink({ kind: "lane", laneId: lane.id, ...(ownership ? { ownership } : {}) }));
+            });
           }}
         >
-          {lane.name}
-        </div>
-        <div style={{ marginTop: 2, fontSize: 9.5, color: COLORS.textDim }}>
-          {machineName}{online ? "" : " · offline"}
-        </div>
-      </div>
-      {separator}
-      <HoverButton style={menuItemStyle} disabled={!online} onClick={onStartChat}>
-        Start chat in lane
-      </HoverButton>
-      <HoverButton style={menuItemStyle} disabled={!online} onClick={onManage}>
-        Manage lane
-      </HoverButton>
-      <HoverButton style={menuItemStyle} disabled={!online} onClick={onOpenInLanes}>
-        Open in Lanes
-      </HoverButton>
-      <HoverButton style={menuItemStyle} disabled={!online} onClick={onOpenHistory}>
-        Commit history
-      </HoverButton>
-      {online && openIn ? (
-        <OpenInSubmenu
-          rootPath={openIn.rootPath}
-          remote={openIn.remote}
-          onClose={onClose}
-          style={{
-            ...menuItemStyle,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
+          Copy {BRAND.NAME} Lane Link
+        </HoverButton>
+        <HoverButton
+          style={menuItemStyle}
+          onClick={() => {
+            onClose();
+            void linkOwnershipFor(binding).then((ownership) => {
+              openExternalUrl(buildWebClientUrl({ kind: "lane", laneId: lane.id, ...(ownership ? { ownership } : {}) }));
+            });
           }}
-          hoverBackground={COLORS.hoverBg}
-        />
-      ) : null}
-      {lane.worktreePath ? (
-        <>
-          {separator}
+        >
+          Open in web
+        </HoverButton>
+        {branch ? (
           <HoverButton
             style={menuItemStyle}
-            onClick={() => copyText(lane.worktreePath ?? "")}
+            onClick={() => copyText(branch)}
           >
-            Copy path
+            Copy branch name
           </HoverButton>
-        </>
-      ) : null}
-      {separator}
-      <HoverButton
-        style={menuItemStyle}
-        onClick={() => {
-          void linkOwnershipFor(binding).then((ownership) => {
-            copyText(buildDeeplink({ kind: "lane", laneId: lane.id, ...(ownership ? { ownership } : {}) }));
-          });
-        }}
-      >
-        Copy {BRAND.NAME} Lane Link
-      </HoverButton>
-      <HoverButton
-        style={menuItemStyle}
-        onClick={() => {
-          onClose();
-          void linkOwnershipFor(binding).then((ownership) => {
-            openExternalUrl(buildWebClientUrl({ kind: "lane", laneId: lane.id, ...(ownership ? { ownership } : {}) }));
-          });
-        }}
-      >
-        Open in web
-      </HoverButton>
-      {branch ? (
-        <HoverButton
-          style={menuItemStyle}
-          onClick={() => copyText(branch)}
-        >
-          Copy branch name
-        </HoverButton>
-      ) : null}
-      {lane.linearIssue?.url ? (
-        <HoverButton
-          style={menuItemStyle}
-          onClick={() => copyText(lane.linearIssue?.url ?? "")}
-        >
-          Copy Linear Issue Link
-        </HoverButton>
-      ) : null}
-    </div>
+        ) : null}
+        {lane.linearIssue?.url ? (
+          <HoverButton
+            style={menuItemStyle}
+            onClick={() => copyText(lane.linearIssue?.url ?? "")}
+          >
+            Copy Linear Issue Link
+          </HoverButton>
+        ) : null}
+      </div>
+    </ViewportOverlayHost>
   );
 }

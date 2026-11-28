@@ -9,6 +9,7 @@ import {
   type CSSProperties,
 } from "react";
 import { createPortal } from "react-dom";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ChatCircleDots,
@@ -781,7 +782,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.12, ease: "easeOut" }}
-            className="ade-chat-drawer-glass ade-chat-drawer-solid fixed z-[1000] flex flex-col overflow-hidden"
+            className="ade-chat-drawer-glass ade-chat-drawer-solid pointer-events-auto absolute flex flex-col overflow-hidden"
             style={menuStyle}
           >
             {/* Header hint */}
@@ -1098,7 +1099,9 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       </AnimatePresence>
     );
 
-    return typeof document === "undefined" ? menu : createPortal(menu, document.body);
+    return typeof document === "undefined"
+      ? menu
+      : createPortal(<ViewportOverlayHost layer="composerMenu">{menu}</ViewportOverlayHost>, document.body);
   },
 );
 
