@@ -8,7 +8,7 @@ keep GitHub state warm.
 Detail docs:
 
 - [`github-stacked-prs.md`](./github-stacked-prs.md): native GitHub stacks.
-- [`conflict-simulation.md`](./conflict-simulation.md): conflict prediction before Merge.
+- [Conflicts](../conflicts/README.md): conflict prediction, `prs.getConflictAnalysis` and rebase needs.
 
 Commands are spelled `daex prs …`; `ade prs …` still works.
 
