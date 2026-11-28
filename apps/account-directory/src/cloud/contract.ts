@@ -2427,6 +2427,12 @@ export type CloudServerLaunchRequest = {
      * messages and is sent once, as the chat's first message.
      */
     messageId?: string;
+    /**
+     * Set by the server when the person moved this waiting chat to a DAEX
+     * Free Model (`POST /cloud/launches/:id/free-model`): what it asked for
+     * first. A Retry that sends that first choice again keeps the free model.
+     */
+    switchedFrom?: { provider: string; modelId: string };
   };
   /**
    * Who asked: a person on the web or the phone (the default), or an

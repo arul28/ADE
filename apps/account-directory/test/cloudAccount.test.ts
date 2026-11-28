@@ -3065,6 +3065,18 @@ describe("ADE Cloud server launcher", () => {
         at(6);
         await cancel();
       }, 0],
+      ["a move to a free model, then a failed setup and the client's Retry of its first request: one new computer, on the free model, the wait free", freeModelsOn, async () => {
+        at(5);
+        expect((await harness.send(OWNER, "POST", `/cloud/launches/${LAUNCH}/free-model`, {})).status).toBe(200);
+        at(6);
+        expect((await stages({ state: "failed", error: "The clone failed." })).status).toBe(200);
+        // The client sends its own copy of the first request (the first provider) again.
+        const retried = await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium", retry: true });
+        expect(retried.status).toBe(201);
+        expect(((await retried.json()) as { request: { chat: Row } }).request.chat).toMatchObject({ provider: "opencode", modelId: "opencode/ade-free/deepseek-v4.1-flash", prompt: launchBody.chat.prompt });
+        expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
+        expect(madeCalls()).toHaveLength(2);
+      }, 0],
       ["a finished sign-in charges the whole wait from the computer's start, as before", () => {}, async () => {
         at(20);
         expect((await stages({ state: "joined" })).status).toBe(200);
