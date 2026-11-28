@@ -157,7 +157,11 @@ src="$(mktemp -d /tmp/daex-src.XXXXXX)"
 git clone --quiet --depth 1 --branch "${source}" https://github.com/arul28/ADE.git "$src/ADE"
 cd "$src/ADE/apps/ade-cli"
 npm ci --no-audit --no-fund --maxsockets=50 > "$src/npm.log" 2>&1 || { tail -n 40 "$src/npm.log"; exit 1; }
-npm run build:static -- --target "$target" > "$src/build.log" 2>&1 || { tail -n 60 "$src/build.log"; exit 1; }
+# build:static needs an official Node binary (Homebrew's has no SEA fuse): the release of the Mac's own version.
+node_version="$(node -p process.version)"; node_arch="$([ "$target" = darwin-arm64 ] && echo arm64 || echo x64)"
+curl -fsSL "https://nodejs.org/dist/$node_version/node-$node_version-darwin-$node_arch.tar.gz" | tar -xz -C "$src"
+export ADE_STATIC_NODE_BINARY="$src/node-$node_version-darwin-$node_arch/bin/node"
+PATH="$(dirname "$ADE_STATIC_NODE_BINARY"):$PATH" npm run build:static -- --target "$target" > "$src/build.log" 2>&1 || { tail -n 60 "$src/build.log"; exit 1; }
 bin="$(find dist-static -maxdepth 2 -type f -name "ade-$target" | head -n 1)"
 native="$(find dist-static -maxdepth 2 -type f -name "ade-$target.native.tar.gz" | head -n 1)"
 [ -n "$bin" ] && [ -n "$native" ] || { ls -laR dist-static | head -n 40; echo "no runtime in dist-static"; exit 1; }
