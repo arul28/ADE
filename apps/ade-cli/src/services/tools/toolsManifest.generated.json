@@ -98,33 +98,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "@opencode/cli-darwin-arm64",
-          "version": "2.0.29",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-2.0.29.tgz",
-          "integrity": "sha512-2tJOM20RpOjNeWsYcV3VfRFPDTeu1yMMbEqAQm1sEKmHX9087Sx/TxhwBlvtiudOGq6Kr3zyKmW1t7aFF6qCsQ=="
+          "version": "2.4.2",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-2.4.2.tgz",
+          "integrity": "sha512-vQr0GEmoWTqtd1u0JTmakB9Gy4E1gXGssEPTNc4rJAcXpWhcjnXaDqJ8VgD8cuC/qLz9BTC8aiGhEALMJ32GcA=="
         },
         "darwin-x64": {
           "package": "@opencode/cli-darwin-x64",
-          "version": "2.0.29",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-x64/-/cli-darwin-x64-2.0.29.tgz",
-          "integrity": "sha512-3jPLK7Tv/qw+DOLSZTbJ97EOJDkM1VEioABnxPKaLS5K+iYJ+Y25sfZO/aKPtpeMWqfqxCtMql2R7wEpQRZ1HQ=="
+          "version": "2.4.2",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-darwin-x64/-/cli-darwin-x64-2.4.2.tgz",
+          "integrity": "sha512-YaklyUG54X/Y9kouEvlnCzck5xKSb64LWKUMMDt0SZYXGC+St8cHiuBQGV5ovrgmGDmQk0Ao/gjREaT5wxzhsA=="
         },
         "linux-arm64": {
           "package": "@opencode/cli-linux-arm64",
-          "version": "2.0.29",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.29.tgz",
-          "integrity": "sha512-EsCnvp5lMJNem0YoQJM9PkXY0KrkiugL55M9J2JlImQzKdQnZ4CKutrPAXOnsa889qHhY5tjRpAnD/ZYFzhkRA=="
+          "version": "2.4.2",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.4.2.tgz",
+          "integrity": "sha512-OCK0FwedJUQyY2oafpnSau6Fmd9KkLvkq6f2h2Lh6DFiRSh6FIutbbBicQbgJVlzgWJxG9B33sjmE4TBuw/xYQ=="
         },
         "linux-x64": {
           "package": "@opencode/cli-linux-x64",
-          "version": "2.0.29",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.0.29.tgz",
-          "integrity": "sha512-pdG/T4uBxSC3hjUTOrTlx2pXlZl2VqABlb0AgDlZ8VO/q1pUUOYvooWmN5VeSi+EP8cKGVUsj0GUmMDeB2ympA=="
+          "version": "2.4.2",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-linux-x64/-/cli-linux-x64-2.4.2.tgz",
+          "integrity": "sha512-ixF2h06p99LEAreP0DRTqX2IgBLkKNbnRNNrBk0a40k48SVx3l0YxcJOHdoujiXWm97K4LjWXQ7fCS0nHw2lXA=="
         },
         "win32-x64": {
           "package": "@opencode/cli-windows-x64-baseline",
-          "version": "2.0.29",
-          "tarball": "https://registry.npmjs.org/@opencode/cli-windows-x64-baseline/-/cli-windows-x64-baseline-2.0.29.tgz",
-          "integrity": "sha512-HL6OFN3+scqOpIGXTdnl+pADtLpNuEyMp08w3nnwo7Ob8P2aC5oMhNzlFAUH1tYy9BLPW8uiGTsMh1ucOl0knQ=="
+          "version": "2.4.2",
+          "tarball": "https://registry.npmjs.org/@opencode/cli-windows-x64-baseline/-/cli-windows-x64-baseline-2.4.2.tgz",
+          "integrity": "sha512-j/vMPQ0g7DOemDv1s1cFva9KNfek1NTPJvNASB5h4KOrvCSldT0VDaCXHlYCcYP4jZXO3oEU3ZFvnVYvT3VPbg=="
         }
       }
     },
