@@ -1,545 +1,15 @@
 # Sync and Multi-Device
 
-ADE syncs live runtime state across an ADE machine runtime and any connected
+DAEX syncs live runtime state across a DAEX machine runtime and any connected
 controllers (other computers, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first:
 eligible routes are preferred in **LAN → Tailscale → Relay** order for
 desktop-to-runtime and iOS connections. The account-gated cloud
-tunnel relay is eligible whenever the machine is signed in to an ADE account,
-unless its owner turned **ADE Relay** off for that computer in Settings ›
+tunnel relay is eligible whenever the machine is signed in to a DAEX account,
+unless its owner turned **DAEX Relay** off for that computer in Settings ›
 Account (see *Per-computer relay switch* below). Two
 machines on the same LAN (or Tailscale tailnet) converge their application
 state directly.
-
-This README covers the sync model, the runtime/controller role split, what
-does and does not travel, and the layers that implement it. Deep-dives:
-
-- `crdt-model.md` — cr-sqlite CRR retrofit, schema implications, merge
-  semantics, and the iOS pure-SQL emulation layer.
-- `ios-companion.md` — the iPhone controller path: SwiftUI app, native
-  SQLite, pairing, tab structure, command routing from phone to runtime.
-- `../web-client/README.md` — the hosted browser controller path: static
-  Cloudflare Pages SPA, account sign-in and directory adoption, WebCrypto DPoP,
-  browser-safe sync transports, no local DB, and the `window.ade` adapter over
-  remote commands.
-- `remote-commands.md` — the `syncRemoteCommandService` registry that
-  turns client actions into runtime-executed mutations.
-- [`devices-and-machines.md`](./devices-and-machines.md) — the one model
-  agents learn for using a device on any machine: the words (machine, device,
-  source, lane, "your code there"), `ade devices`, `devices use|current`,
-  `--machine`, `--code synced|as-is|fresh`, `--clone`,
-  `--no-code`, `--to` on `chat handoff|move`, MCP, and the ADE Cloud iPhone.
-- `cross-machine-agents.md` — agents and the CLI on other machines:
-  `--machine`, `--all-machines`, children that wake parents across machines and
-  projects, remote device drive with proof filed back (the implementation
-  under `devices-and-machines.md`).
-- `cross-machine-session-handoff.md` — moving a Work chat to another
-  machine: the brain-owned move record and its states, agent and CLI control,
-  approval, the source banner and send routing, the Git contract (clean and
-  published, or uncommitted work carried as a bundle), the bounded context
-  capsule, destination setup, and idempotent recovery.
-- `push-notifications.md` — Activity's account-wide source of truth and
-  its APNs + Live Activity pipeline: machine publishers, the Cloudflare
-  consolidation relay, desktop/web/iOS reads, native Mac presentation,
-  per-device policy, exact routing, acknowledgments, and ownership fences.
-
-Web client: the browser client is another controller of the same machine
-runtime. New hosted connections are account-only: the browser signs in, chooses
-a same-account machine from the directory, and receives DPoP-bound paired
-credentials through Relay. It does not keep a local SQLite replica; it uses
-changeset batches as invalidation signals and refreshes state through remote
-commands, file requests, and chat/terminal streams. For ADE Cloud it reads
-the account server and GitHub (see *ADE Cloud and the account server*).
-
-Fresh controller launches require an ADE account. A device paired earlier
-may use its explicitly labeled direct/local recovery path while signed out, but
-that path is not a guest account and never becomes an account-wide view.
-
-Account Activity deliberately does **not** follow that selected machine or
-project binding. Every signed-in brain publishes all of its active projects to
-the account relay, while signed-in desktop, hosted web, and iOS read
-the consolidated account stream through an account-scoped path. Navigation and
-actions still carry the owning machine/project/session so the client can adopt
-or select the correct destination. Without an account, a client may show only a
-truthfully labeled local or explicitly connected-machine snapshot; it must
-never present that subset as the account view.
-
-
-The brain rejects iOS builds older than `MIN_SUPPORTED_MOBILE_APP_BUILD` with `protocol_version_mismatch` and `updateTarget: client`, then closes the connection. The phone asks the user to update ADE.
-
-## Where the sync authority runs
-
-The sync authority is the machine-owned `ade serve` runtime in
-`apps/ade-cli/`. The desktop renderer is a client of that runtime through the
-local runtime connection pool, as the iOS app is. A desktop window bound to a
-remote runtime is not the authority either; the remote `ade serve` is.
-
-The legacy in-process desktop sync host is off. It runs only with
-`ADE_ENABLE_DESKTOP_SYNC_HOST=1` (and without `ADE_DISABLE_SYNC_HOST=1`).
-
-Windows x64 can host sync like macOS and Linux: a per-user, per-channel named
-pipe for local RPC and `vendor/crsqlite/win32-x64/crsqlite.dll` for CRR.
-Linux x64 and arm64 ship `crsqlite.so` in the standalone tarball. The typed
-`crdtSyncAvailable` status blocks pairing when the extension is missing, and
-Connections shows reinstall guidance. macOS computer use and the iOS
-Simulator do not gate Windows pairing.
-
-### The machine-wide sync host lease
-
-Hosting phone sync is exclusive per machine. `syncHostSingleton.ts` owns an
-advisory lock file at `$TMPDIR/ade-sync-host-<uid>.json` (override
-`ADE_SYNC_HOST_LOCK_PATH`) with the owner's pid, channel, home, project root
-and port. A project scope takes it when its sync service starts. A projectless
-brain with the shared listener takes a `projectRoot: null` lease and drops it
-when a scope takes over.
-
-The brain also takes that lease beside a scope that stays a viewer (a project
-saved to follow another machine): the project follows, the machine still
-hosts and publishes. Without it, a machine whose newest project followed
-another one published nothing and left the account. While the brain holds it
-beside a viewer, machine-wide sync calls (status, PIN, devices, relay status)
-answer for the machine even when the caller names the project; the runtime
-name stays per project (`machineWideSyncService` in
-`multiProjectRpcServer.ts`). When the scope later takes its own lease, the
-brain hands its lease back (`onSyncHostSingletonLeaseAcquired`). One process
-can hold two leases for a moment; releasing the one the lock file names
-rewrites the file for the other instead of deleting it. A failed switch no
-longer reads as one in progress: `hasSyncHostOrSwitchInFlight`.
-
-Two subsystems gate on the lease, not on a bound listener:
-
-- the relay tunnel (`syncTunnelClientService`), because the relay keeps one
-  host socket per `machineKey` and evicts the previous one with close code
-  `4505`;
-- the account-directory publisher (`accountMachinePublisherService`), because
-  a runtime that does not host sync must not advertise endpoints.
-
-`holdsSyncHostSingleton()` reports authority, and
-`onSyncHostSingletonAuthorityChanged()` reports changes. A loss is debounced
-by `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` (5 s), because
-`ProjectScopeRegistry.performSyncHostSwitch` stops the old host before it
-starts the new one. Without the grace, each project switch would restart the
-relay tunnel and the publisher.
-
-#### Two ADE apps on one computer
-
-One machine has one sync host. A second ADE app (for example the release
-build and an Alpha build, each with its own `ADE_HOME`) takes no lease, binds
-no listener and publishes nothing. It does not retry into ownership and does
-not stop the other app.
-
-- `getStatus` reports `no_active_sync_scope` with the owner app and pid in
-  `skipReason`. Connections says "another ADE app on this computer owns sync
-  for this machine (ADE Alpha, pid 9253)" and "Quit that ADE to let this one
-  host sync." `ade doctor` shows the same sentence.
-- A brain that loses the lease does not stay a viewer.
-  `watchSyncHostAuthorityForRehost` runs the startup loop again when a loss
-  outlives the grace, so the other owner's exit hands sync back.
-- The `sync_not_started` state shows **Start sync** on the This-machine card
-  (`thisComputerAction` → `account.startSyncHost`, the same
-  `recoverSyncHostConnection` as the phone's "Fix connection"). The card then
-  says "No ADE on this computer is hosting sync right now".
-  `repairMachinePairing` on a non-host says to start sync first.
-- To test the second app over the relay, quit the owner first.
-- A startup conflict logs its quit instructions once, then one line with a
-  count at most every ten minutes.
-
-#### A brain started by hand
-
-An `ade serve` that a person, an agent or a test starts beside the installed
-brain does not host sync. `runServe` asks
-`serviceBrainPidBesideHandRunBrain()` (`apps/ade-cli/src/serviceManager/index.ts`)
-for the channel's service brain (launchd on macOS; the systemd unit or the
-detached supervisor on Linux; the supervisor's pid record on Windows). If that
-brain is alive and is another process, this brain starts with sync off, prints
-"ADE: sync disabled because the installed ADE brain (pid …) hosts phone sync
-on this computer", and logs `sync.host_left_to_service_brain`. `--no-sync`
-silences the line.
-
-The service brain always keeps sync:
-
-- Windows: its parent is the supervisor the pid record names.
-- macOS: launchd's pid for the job must be this brain. A parent of pid 1
-  proves nothing, because launchd adopts every orphan.
-- Linux: the unit's MainPID is this brain or its parent (a wrapper).
-- Each `systemctl` or `launchctl` lookup has a 2 s limit; no answer leaves
-  sync on. A dead service brain does not count.
-- A dev test machine (`npm run dev:machine`) has its own home and lease and
-  keeps sync.
-
-### Hosting sync, and publishing, with no project
-
-A brain that holds the lease and has the shared listener bound hosts phone
-sync, publishes itself and dials the relay with an empty
-`~/.ade/projects.json`. That is the normal state of a headless box and of a
-new install.
-
-- `projectlessSyncSnapshot.ts` builds the `SyncRoleSnapshot`. Hosting means
-  the lease **and** a bound port; a listener without the lease reports
-  `buildDegradedProjectlessSyncSnapshot`. A hosting snapshot has the real
-  port, the identity from `~/.ade/secrets/sync-device-id` and `sync-site-id`,
-  `pairingConnectInfo` and relay health.
-- The publisher gates on `listenerBound` and `pairingConnectInfo`, so
-  `runServe`'s `getSnapshot` uses the projectless builder whenever this brain
-  holds the lease, and null only when it does not.
-- **"Open a project" is never the fix for an unpublished machine.**
-  `no_active_sync_scope` means another ADE process holds the lease. The
-  per-state advice is in `describeUnpublishedAccountDirectory`
-  (`apps/desktop/src/shared/types/sync.ts`).
-- The runtime name and Tailscale Serve belong to a project scope, so the
-  snapshot reports them absent ("Open a project to publish this machine on
-  your tailnet."). The pairing PIN is machine-level: the snapshot reports its
-  real state, and exposes the PIN and bootstrap token under the same
-  `hosting` gate. Publishing does not need a PIN; account membership is the
-  auth path.
-- `machineRelayTunnel.ts` builds the relay tunnel for both paths; `runServe`
-  builds it on the event that takes the projectless lease. Relay is never a
-  precondition: a failure logs `sync.projectless_relay_start_failed` and
-  startup goes on.
-
-#### One ingress implementation, two ingress paths
-
-- `syncHelloProtocol.ts` — the one parser for `hello` and `pairing_request`
-  (`bootstrap`, `paired`, `account`, `account_sealed`, `connectionAttempt`).
-- `syncAccountHelloAuth.ts` — the account-hello gates (attestation, same
-  account, device key, pairing mint or rotate, commit lock) and the
-  rejection messages. The brain leaves the connection-arbitration and
-  sealed-adoption options unset; the gate order, strings and codes are
-  shared.
-- `brainMachineSyncStores.ts` — the machine-level PIN, pairing and security
-  stores, one set per secrets directory (key `pathKey(resolvedDir)`, so
-  `C:\Users\…` and `\\?\C:\Users\…` share one set). The ingress handler and RPC
-  must share the instances, so a PIN set over RPC works at once.
-
-#### `sync.*` on a machine with no project
-
-`multiProjectRpcServer.ts` routes `sync.*` through `withSyncService`: the
-project-scoped service when one owns sync, else the `ProjectlessSyncControls`
-(`createProjectlessSyncControls`, on `brainMachineSyncStores`). Without
-controls (tests, embedded runtimes) a call fails with "Sync service is not
-available. Register a project first."
-
-- With a fallback: `sync.getPin`, `setPin`, `generatePin`, `clearPin`,
-  `sync.forgetDevice`, `sync.getRequireDpop`, `setRequireDpop`,
-  `sync.getCloudRelayStatus`.
-- Empty answers: `sync.refreshDiscovery` (the machine snapshot),
-  `sync.listDevices` (`[]`), `sync.getRuntimeName` (`null`).
-- Still the register-a-project error: `sync.setRuntimeName`,
-  `sync.updateLocalDevice`, transfer readiness.
-- Lane presence is accepted and waits for the sync host.
-- `machineSyncStatusWithPin` echoes a just-written PIN on the snapshot,
-  because the store reports only a code it set itself.
-
-`buildSyncCloudRelayStatus` (`syncCloudRelayStatus.ts`) is the one relay
-status for both paths. Its `accountSignedIn` gate is ownership, not
-usability; see
-[remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
-
-## Who participates
-
-- **Machine runtime** — the per-channel, per-machine `ade serve`. It owns
-  agents, PTYs, worktrees and the sync WebSocket server. It holds several
-  open projects behind one listener on a stable port. A phone picks a
-  project from the machine catalog; when the hosted project changes, the new
-  host **adopts** the open sockets.
-- **Desktop renderer** — a client of the local runtime, or of a remote
-  runtime (then sync state lives on that machine).
-- **iOS app** — always a client, over the same `SyncEnvelope` protocol.
-- **Browser web client** — always a client (`device_type: "browser"`). It
-  adopts a same-account machine through the directory and Relay, then
-  reconnects with a per-device secret and WebCrypto DPoP. It keeps **no**
-  SQLite replica: changesets are invalidation signals. A four-client pool
-  bounds live sockets. For ADE Cloud it reads the account server and GitHub.
-  See `../web-client/README.md`.
-- **Cloud computers** — `ade serve` brains on ADE Cloud, one for each cloud
-  lane, sync authorities while awake. While one sleeps, the account server
-  answers reads for it.
-- **Lane share guest** — another account that the owner shared one lane
-  with. It connects over Relay only with
-  `auth: { kind: "guest", deviceId, ticket, dpop }` (a one-use ticket the host
-  redeems with its owner's token, and a DPoP proof). It gets no changesets,
-  catalog, roster or runtime RPC, only a default-refuse list for the granted
-  lane, and no pairing record. See
-  [lane sharing](../lanes/lane-sharing.md#the-guest-connection).
-- **Cluster state** — the singleton `sync_cluster_state` row
-  (`brain_device_id`, `brain_epoch`) names the device that owns execution.
-
-"Brain" and "host" in code, schema and protocol types mean the **sync
-authority**.
-
-## Connection route policy
-
-Every native paired controller ranks routes the same way:
-
-1. current LAN endpoints;
-2. current Tailscale endpoints;
-3. ADE Relay, only with a fresh matching account proof.
-
-- Current discovery beats stale saved metadata; recent successes break ties.
-- The desktop pool walks the ranking in phases
-  (`buildPairedEndpointCandidates`). iOS races the plan: Relay joins a few
-  hundred milliseconds behind the leading direct candidate, or first when it
-  is the proven route for the current network (see *Route ranking, route
-  memory, and roaming* in `ios-companion.md`).
-- First-time adoption also uses LAN → tailnet → Relay when the directory row
-  has a verifiable host signing key, because `ade-adopt-v1` seals the account
-  credential. An unsigned legacy host is Relay-only; ADE never sends a
-  plaintext account bearer to an unverified direct peer.
-- The hosted web client applies the same ranking to routes a browser may
-  dial, which in production is normally Relay only.
-
-Each native connect keeps one random correlation id and at most eight
-attempts (route kind, host and port, start, duration, outcome, coarse failure
-class; no paths, tokens or error text). The id goes on Relay dials and tunnel
-logs. Directory requests send `X-ADE-Correlation-ID`; the Worker validates or
-replaces it, returns it, and logs route, method, status class and duration.
-
-## Mobile compatibility contract
-
-Phones must reach older and newer brains long enough to show update state and
-run supported commands. The hello is additive: a missing host feature puts the
-phone in a limited mode, and the socket stays up.
-
-`apps/desktop/src/shared/syncMobileCompatibility.ts` holds the contract. The
-brain advertises `features.mobileCompatibility` (version, required actions,
-missing actions). iOS treats an omitted feature as a limited legacy host,
-gates unsupported actions before it sends them, and shows update guidance.
-When a phone release needs new host behavior, update the contract and the iOS
-compatibility tests in the same branch.
-
-The **optional** list (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`) holds
-additive commands that newer phones feature-detect, so a host without them is
-not `limited`. Each entry has a comment with what the phone does without it
-(for example: the Linear connection commands, `cto.getAttention`, the
-session lifecycle commands, the new-lane launch commands).
-`machine.updateImpact` and `machine.updateAndRestart` ("Update & restart" for
-a computer from a phone or ADE Web) are optional too: only a brain started by
-`ade serve` that can update itself registers them, and a client that does not
-see them keeps its "update ADE there" fallback.
-See `remote-commands.md` and `../linear-integration/README.md`.
-
-## What syncs, what does not
-
-| Data category | Sync mechanism | Devices |
-|---|---|---|
-| Replicated ADE runtime tables in `.ade/ade.db` | cr-sqlite CRRs over WebSocket | All connected devices |
-| Source code files | `git push`/`git pull` | Desktop peers only |
-| Shared ADE scaffold/config (`.ade/.gitignore`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
-| Account settings: launch defaults, quick slots, new-lane defaults, lane templates, CTO home, automation rules (filed under `repo:<origin>`) | Account settings store through the relay, last writer wins per key; automation rules are a rule key and a home key per rule, and only a rule's home computer runs it | Every computer and phone signed in to the account; the web reads and writes them too |
-| Passwords and provider API keys (`provider_api_key`) | Account vault through the push relay; never readable from a browser | Every computer, ADE Cloud too; the iPhone through its own routes |
-| Cloud lanes' chats, CLI/shell copies, Git summaries, lane index | Account server (see *ADE Cloud and the account server*) | Every client, with no computer awake |
-| Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`), including automation rules scoped to one chat or in a project with no remote | **Never syncs** | Machine-specific |
-| Worktrees, PTY processes, caches, transcripts, artifacts and proof, sockets, machine-only secrets, connection drafts | **Never syncs** | Machine-specific |
-| Product-analytics installation IDs, consent, budgets/deduplication state, and the local `usage_events` export ledger | **Never syncs** | Machine/browser/iOS-client specific; paired-client consent is socket-scoped |
-| PR detail bodies (`pull_request_snapshots`: `files_json`, `comments_json`, `reviews_json`) | Desktop peers replicate them; phones fetch them on demand via `prs.refresh` instead | Desktop peers only |
-| Cross-machine Work chat continuation | Explicit Git publication + bounded handoff capsule over a connected machine runtime; not CRDT replication | Connected ADE desktops |
-| Personal chat summaries/transcripts/attachments | Runtime commands + `chatScope: "personal"` transcript stream; not active-project CRR changesets | Controllers connected to the owning machine brain |
-
-Two devices in one cluster do **not** have identical `.ade/` folders: Git
-gives them the tracked scaffold, sync gives them the replicated DB, and each
-keeps its own local directories. Two disconnected desktops share no live
-session; live state converges only through one running sync authority.
-
-### Host-authoritative columns are peer-scoped
-
-A few columns on replicated tables are host decisions:
-`terminal_sessions.settled_at`, `settle_override`, `settle_source`,
-`activity_status_json` and `activity_status_changed_at`
-(`HOST_AUTHORITATIVE_COLUMNS_BY_TABLE` in `syncHostService.ts`).
-`sessionService` decides settlement against live work and stamps activity
-reports. cr-sqlite merges last-writer-wins per column, so a controller's
-optimistic `settled_at` would merge in even when the host refused the settle.
-
-The host drops those columns from inbound changesets **from phone peers
-only**:
-
-- **It is peer-scoped on purpose.** A paired desktop runs the same
-  `sessionService` gate, so its writes must keep replicating. They are not
-  applied blind: `applyChanges` reports settle columns that moved, and the
-  receiving host re-asserts them through its own gate, so they get its
-  lifecycle revision (see
-  [settle-teardown-design.md](../terminals-and-sessions/settle-teardown-design.md) §6d).
-- **A paired phone cannot opt out.** `isMobilePeer` reads the **pairing
-  record** for record-backed peers, so `deviceType: "desktop"` in the hello
-  does not help. A bootstrap-token peer is still classified from its hello,
-  so this is a compatibility guard; the host-local lifecycle revision is the
-  real closure. Current iOS never writes these columns
-  (`PendingSessionSettleStates.swift` is a local overlay).
-- The drop is silent and per column. The rest of the batch applies, including
-  the phone's own snooze fields (`snoozed_until`, `snoozed_at`, `woke_*`). The
-  batch still acks `ok`, because a rejecting ack would stall the peer's
-  cursor. The phone's value heals when `refreshWorkSessions` replaces the
-  rows from `work.listSessions`.
-
-See [terminals and sessions](../terminals-and-sessions/README.md#gotchas).
-
-### The host never exports from an uncorroborated peer cursor
-
-A replica peer names its resume point in `hello.peer.dbVersionBySite`. The
-host exports `db_version > cursor`, so an inflated claim would lose rows for
-good.
-
-- The host records what it delivered in
-  `sync_peer_changeset_watermarks(peer_device_id, host_site_id, db_version,
-  updated_at)`. It is host-local (`LOCAL_ONLY_CRR_EXCLUDED_TABLES`), keyed by
-  peer and host site. `syncHostService` writes it on an `ok` ack, on the
-  immediate advance for a peer without `changesetAck`, and on an empty-window
-  advance, at most once a second per peer, and flushes it on socket close. A
-  database with the older single-column table recreates it.
-- `resolveInitialPeerCursor` (`syncPeerCursorResolution.ts`) seeds
-  `lastKnownServerDbVersion` on the first hello, on handoff adoption and on
-  every reconnect:
-  - with a watermark for this peer and host site: `min(claimed, watermark)`.
-    The watermark is a **ceiling, never a floor**, so a reset phone's lower
-    claim replays;
-  - with no watermark: `0`, whatever the claim says. A poisoned claim usually
-    sits below `hostDbVersion`, so there is no "looks plausible" branch.
-    `claimExceededHostDbVersion` is log detail only.
-- A device with no watermark gets a full replay once per host site (CRR apply
-  is idempotent). The row is written on resolve and raised on each ack.
-- A rewind logs `sync_host.peer_cursor_rewound` (`claimed`, `resolved`, the
-  reason, `claimExceededHostDbVersion`). Handoff adoption clamps the deposited
-  cursor by the watermark too.
-- On the peer, `HostConnectionProfile.cursorSchemaVersion` clears an older
-  profile's cursors once, and the merge takes the host's batch boundary, not
-  the `max`. iOS `advanceRemoteDbCursor` advances only from the batch's
-  `toDbVersion`, never from its own write clock.
-
-## ADE Cloud and the account server
-
-ADE works with no computer of your own. ADE Cloud is one machine that every
-signed-in account has, and it shows in every machine list and every "Run on"
-menu on web, iPhone and desktop. Behind it, each cloud lane has its own cloud
-computer. A cloud computer runs the same `ade serve` brain as an own
-computer, and it sleeps when it is idle. Clients never show a cloud computer
-by its own name.
-
-The account server (`apps/account-directory`) is the second source of truth
-next to sync. It keeps what a person can read while a cloud computer sleeps:
-
-| Data | Written by | Read by |
-|---|---|---|
-| Saved chats (encrypted, after each turn; subagent chats too) | Cloud computers only | Work on every client |
-| CLI session and shell copies (shells keep the last 5,000 lines) | Cloud computers only | Work |
-| Git summary at rest (branch, ahead/behind, changed files with line counts) | Cloud computers, before sleep | Files, Git panel, History |
-| Project overview (lanes and computers of one repository) | The server, from the rows above | Lanes, Work |
-| Fork capsules for chats whose computer is deleted | Idle cleanup, before the delete | The next computer of that chat |
-| Account lane index (name, branch, machine, PR number; one row for each lane on each machine) | Every brain, own computers too | Lane mentions only (PR rows, notifications, CTO, search) |
-| CTO account copy | The CTO home | The CTO page |
-
-Own computers never upload chats, sessions or Git summaries. The lane index
-does not fill the Lanes tab.
-
-**Reading never wakes a computer.** Files and History read GitHub at the
-lane's branch. PRs, issues, branches and checks read GitHub through the
-account. Linear and Jira go through the account server with the account's
-own sign-in. Usage, account settings and automations come from the account.
-A client reads these with the existing triggers (open, focus, a send); none
-of them polls.
-
-**Doing wakes the computer, and the UI does not wait.** A send, a terminal,
-an edit, opening a changed file or its diff, and a Git action wake the
-lane's computer. A message to an asleep or deleted cloud chat or CLI goes to
-the account's queue (`POST /cloud/chats/:machineKey/:chatId/messages`). The
-server keeps it, wakes the computer, and the computer claims it and reports
-it once (`clientSendId`). A chat whose computer was deleted continues on a
-new computer in the same chat row (fork-continue): Claude, Codex and OpenCode
-restore a native capsule; the other ten providers replay the saved
-transcript.
-
-**Refusals.** A wake that the server refuses (out of hours, too many awake,
-blocked, deleting, over the plan's disk) shows the server's sentence on every
-client. Reading still works. A blocked account can read and export its saved
-chats, read-only. A cloud computer that idle cleanup will delete shows a
-"Deleting soon" notice in its lane's chats, with **Keep it**. A Linear event
-or a webhook for a sleeping computer wakes it.
-
-**Account sync.** These follow the account to every computer:
-
-- Passwords (the account vault), including provider API keys in one store
-  (`provider_api_key`) and the Qwen DashScope key. A browser can never read
-  the vault: the push relay answers a browser only on the routes in
-  `BROWSER_ACCOUNT_ROUTES` (`apps/push-relay/src/relay.ts`), and no vault
-  route is on that list.
-- Provider sign-ins carry to cloud computers. ADE proxy logins carry as
-  access-only copies (no refresh token), and only to cloud computers.
-- Account settings through the push relay: launch defaults
-  (`chat.launchDefaults.v1`), quick slots (`quickSlots.v1`), new-lane
-  defaults, lane templates, the CTO home and automation rules.
-
-Personal (no-project) chats stay on their machine and do not show while it
-is offline. Moving a lane or chat onto ADE Cloud is not built.
-
-**Git identity on cloud computers.** At join, a cloud computer sets Git's
-`user.name` and `user.email` from the account's GitHub noreply identity, else
-`ADE Cloud <cloud@users.noreply.ade-app.dev>`. It never replaces a value that
-a person set.
-
-See [ADE Cloud](../ade-cloud/README.md) for the server routes and the
-[web client](../web-client/README.md#ade-cloud-reads) for the client side.
-
-## Architecture layers
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│ Renderer (Electron) / iOS SwiftUI                                │
-│   - reads local SQLite (instant, offline)                        │
-│   - writes: state-only → local; execution → remote command       │
-└──────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ Desktop runtime IPC bridge (renderer → main → runtime)           │
-│   - sync.* preload calls route through                           │
-│     callProjectRuntimeSyncOr(method, params, fallback)           │
-│   - prefers the remote runtime if the window is bound,           │
-│     otherwise the local runtime                                  │
-└──────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ ade-cli machine runtime (`ade serve`)                            │
-│   - syncService — orchestrator, draft persistence, pin store     │
-│   - syncHostService — WebSocket server, peers, project catalog   │
-│   - syncRemoteCommandService — registry of executable actions    │
-│   - deviceRegistryService — devices + cluster_state singleton    │
-│   - hosts MULTIPLE projects per machine                          │
-│   - one brain-level shared listener (sharedSyncListener);        │
-│     per-project host services adopt peers across switches        │
-└──────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ Sync transport (ws)                                              │
-│   - SyncEnvelope: hello, pairing, changeset_batch,               │
-│     changeset_ack, heartbeat, file_request/response,             │
-│     terminal_*, chat_*, brain_status (legacy name),              │
-│     project_catalog/project_switch/project actions,              │
-│     command / command_ack / command_result,                      │
-│     envelope_chunk                                               │
-│   - negotiated deflate above 512 B; no offer keeps the exact     │
-│     legacy encoder (gzip at 4 KB, or web JSON)                   │
-│   - compressed payloads ride a binary frame ("ADE1" magic, u32   │
-│     header length, header JSON, raw bytes) for peers declaring   │
-│     "binaryEnvelopes"; everyone else keeps base64-in-JSON        │
-│   - permessage-deflate on both listeners; when a peer negotiates │
-│     it the application codec is skipped (stacking measures worse │
-│     than either layer alone)                                     │
-│   - decode capped at 25 MB; reassembly capped and expires at 30 s│
-│   - encoded envelopes >720 KB sliced bidirectionally after the   │
-│     host confirms the peer's "chunkedEnvelopes" capability;      │
-│     binary peers slice into binary chunks (no base64 re-tax)     │
-└──────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ cr-sqlite CRDT layer                                             │
-│   - desktop/runtime: loadable .dylib extension, crsql_as_crr()   │
-│   - iOS: pure-SQL emulation in Database.swift                    │
-│   - AdeDb.sync: getSiteId, getDbVersion,                         │
-│     exportChangesSince, applyChanges                             │
-└──────────────────────────────────────────────────────────────────┘
-```
 
 ## Source file map
 
@@ -577,13 +47,13 @@ Runtime support files outside `services/sync/`:
   work copy a chat on another machine runs commands in here: a hidden git
   worktree per chat, its guarded sync, and its cleanups (see
   [cross-machine agents](cross-machine-agents.md)). `apps/ade-cli/src/cliRemoteWork.ts`
-  builds what a `--machine` call sends for it, and moves `ade files push|pull`
+  builds what a `--machine` call sends for it, and moves `daex files push|pull`
   chunks; `remoteWork/remoteWorkFiles.ts` is the host side of those transfers.
   `remoteWork/remoteWorkScratch.ts` makes and sweeps the empty folders a
   `--no-code` command runs in (`<ADE_HOME>/remote-work/scratch/`).
-- `apps/ade-cli/src/cliDevices.ts` — `ade devices` (list, `use`, `current`)
+- `apps/ade-cli/src/cliDevices.ts` — `daex devices` (list, `use`, `current`)
   and the device commands following a chat's choice; the ids, the choice's
-  shape and the subcommand parse ADE MCP's command check shares live in
+  shape and the subcommand parse DAEX MCP's command check shares live in
   `apps/desktop/src/shared/types/deviceSources.ts` (see
   [devices and machines](devices-and-machines.md)).
 - `apps/desktop/src/shared/rpcLiveness.ts` — whether a connection that went
@@ -610,7 +80,7 @@ Runtime support files outside `services/sync/`:
     example "MacBook Pro · Alpha", after `resolveDeviceDisplayNameSettled`)
     and keeps the single-use pairing grant in memory for 10 minutes
     (`consumePairingGrant`; cleared on sign-out). A removed machine needs that
-    grant, so Reconnect and `ade machines reconnect` use the device flow.
+    grant, so Reconnect and `daex machines reconnect` use the device flow.
   - `apps/account-directory/src/deviceAuthorization.ts` shows **Confirm this
     sign-in** with a read-only code for a link with `user_code` (the desktop),
     and the typed form for the bare page (the CLI). Validation is the same.
@@ -681,7 +151,7 @@ Runtime support files outside `services/sync/`:
     `describeAdeInstall` sends `channel` (`stable` only for `~/.ade`) and
     `adeHome` (relative to the home folder, never a username); the Worker
     stores them (`0011_machine_install.sql`) and returns them.
-    `accountMachineRowLabel` shows "MacBook Pro · ADE Alpha".
+    `accountMachineRowLabel` shows "MacBook Pro · DAEX Alpha".
   - **Timing.** A 30 s heartbeat keeps the row in the 90 s online window (an
     unchanged heartbeat updates only `last_seen_at`) and carries the
     token-free provider and model inventory. Failures retry after 1, 2, 5, 10
@@ -691,7 +161,7 @@ Runtime support files outside `services/sync/`:
     coalesced publish, which becomes the new heartbeat anchor. Each
     publication reads the snapshot and token again.
   - **Status.** The last outcome is `routeHealth.accountDirectory` in
-    `sync.getStatus`, `ade sync status` and the This computer card (origin,
+    `sync.getStatus`, `daex sync status` and the This computer card (origin,
     HTTP status, `lastHttpReason` from at most 512 bytes of the Worker's
     `error` or `message`, times, route count). It never logs the bearer.
   - **Analytics.** Only two episodes, through `episodeAnalytics.ts` (one event
@@ -723,7 +193,7 @@ Runtime support files outside `services/sync/`:
   - **The raw id never leaves the process.** The wire value is
     `sha256("ade-machine-anchor-v2:" + userId + ":" + rawUuid + ":" +
     adeHomePath)`, so two accounts on one computer get unrelated values.
-  - **An anchor names an ADE install, not a chassis.** The canonical ADE home
+  - **An anchor names a DAEX install, not a chassis.** The canonical DAEX home
     is folded in (lowercased through `canonicalWindowsPath` on Windows), so
     Stable, Alpha and a second OS user differ, and a reinstall at the same
     path matches.
@@ -745,26 +215,27 @@ Runtime support files outside `services/sync/`:
     left alone, because a repair then would undo the user's removal.
   - The budget is a persisted 6-hour allowance in the identity file. With no
     account session it does not try.
-  - Logs: `account.machine_auto_repair_episode_started`, `_started`,
-    `_failed`, `account.machine_auto_repaired`, `_budget_exhausted`,
-    `_episode_ended`.
+  - Logs: `account.machine_auto_repair_episode_started`,
+    `account.machine_auto_repair_started`, `account.machine_auto_repair_failed`,
+    `account.machine_auto_repaired`, `account.machine_auto_repair_budget_exhausted`,
+    `account.machine_auto_repair_episode_ended`.
   - `onGaveUp` (`cli.ts`) sends the diagnostic report and calls
     `recordPairingRecoveryGaveUp`, so publisher health has
     `recoveryGaveUpAt` beside `revokedAt` until the next success or episode.
     The desktop banner names the date, offers **Reconnect this computer**,
-    and after a give-up adds "ADE stopped trying to reconnect it on its
+    and after a give-up adds "DAEX stopped trying to reconnect it on its
     own."
 - `apps/ade-cli/src/services/account/thisMachineRefusalText.ts` — the CLI's
   words for a refusal: the removal day (ISO), whether auto repair stopped,
-  and `ade machines reconnect`. `readThisMachineRefusalFromWire` reads it; a
+  and `daex machines reconnect`. `readThisMachineRefusalFromWire` reads it; a
   partial record from an older brain is no refusal. It appears in
-  `ade auth status` (`thisComputerRefusal` in JSON), `ade sync status --text`
-  and the `ade doctor` **Publish health** row (`doctorPublishHealthFromSync`).
-  See the [ADE CLI README](../../../apps/ade-cli/README.md).
+  `daex auth status` (`thisComputerRefusal` in JSON), `daex sync status --text`
+  and the `daex doctor` **Publish health** row (`commands/doctor.ts`).
+  See the [DAEX CLI README](../../../apps/ade-cli/README.md).
 - `apps/desktop/src/shared/reconnectOutcome.ts` — one sentence for what a
   reconnect did (`describeReconnectOutcome`, `reconnectNeedsFreshSignIn`,
   `readReconnectResult`), read by the desktop and
-  `ade machines reconnect --text`. A fresh sign-in reads "Confirm it's you".
+  `daex machines reconnect --text`. A fresh sign-in reads "Confirm it's you".
 - `apps/desktop/src/shared/accountMachineRefusal.ts` — `readAccountRefusalCode`,
   the one decoder of a directory refusal, and `readThisMachineRefusal`
   (`revokedAt`, `recoveryGaveUpAt`). **403 only**; an unknown 403 is
@@ -872,7 +343,7 @@ Runtime support files outside `services/sync/`:
     drops its seqs** even when a later DELETE cannot be sent.
   - A write that cannot reach disk rolls back and fails. A cache of another
     account is discarded.
-  - The store is keyed by machine ADE directory, shared by every project
+  - The store is keyed by machine DAEX directory, shared by every project
     scope, and exists only when sync is on (`--no-sync` has none).
   - **When it pulls.** The relay returns settings and vault **change marks**
     (`accountChanges`, kept in `accountChangeMarks.ts`) on each publish. A
@@ -905,22 +376,22 @@ Runtime support files outside `services/sync/`:
     `removed`. An adopted copy lives only in `github.ghAccountToken.v1`, never
     in `gh`'s files, and is tried last (`shared/githubOperationCredential.ts`).
     `gh` and `git` in agent shells, CLI sessions and chats get it too when
-    they have no sign-in of their own and the repository owner has no ADE
+    they have no sign-in of their own and the repository owner has no DAEX
     GitHub App installation (`github/githubSessionEnv.ts`): the App token
-    first, then this copy. So `gh` works on an ADE Cloud computer for an
+    first, then this copy. So `gh` works on a DAEX Cloud computer for an
     organization without the App.
-  - The ADE GitHub App sign-in is not a vault item. The account directory
+  - The DAEX GitHub App sign-in is not a vault item. The account directory
     holds it (`apps/account-directory/src/githubApp/`, D1
     `github_app_grants`): it runs the web flow, seals the refresh token with
     `GITHUB_APP_TOKEN_KEY`, and gives machines only short-lived access tokens
     (`POST /github/app/token`). GitHub's callback shows a confirm page naming
-    the ADE account and the login; only its one-time POST saves the grant.
+    the DAEX account and the login; only its one-time POST saves the grant.
   - Machines cache the token in `github.accountAppToken.v1`
     (`shared/github/accountAppTokenClient.ts`) and use it as `account_app`
     after their own sign-ins and before a `gh` copy. When GitHub refuses it,
     the install check and relay poll ask once for a different token and
     retry once (at most once a minute per refused token; "Check again" always
-    asks). The "Connected to your ADE account as @login" line reads again
+    asks). The "Connected to your DAEX account as @login" line reads again
     when its answer is older than 30 s. A legacy device-flow sign-in moves to
     the account (`POST /github/app/adopt`). Without
     `GITHUB_APP_CLIENT_SECRET` the routes answer 503.
@@ -986,7 +457,7 @@ Runtime support files outside `services/sync/`:
   (Workers Logs sample 10%). Ids appear as 8-character prefixes. There is no
   admin restore route; support uses a D1 statement.
 - `apps/account-directory/src/diagnostics.ts` — `POST /diagnostics/upload`,
-  the write-only R2 sink for the report dialog and `ade report-issue --send`.
+  the write-only R2 sink for the report dialog and `daex report-issue --send`.
   `index.ts` matches it before the directory router, because it is not
   account-scoped. Authentication is optional but never downgraded. The body
   is capped at 512 KB (header and counted stream). Quotas: five a day per
@@ -1056,15 +527,14 @@ Desktop connection UI:
 - `apps/desktop/src/shared/types/sync.ts` — the account-directory state union,
   `isSyncAccountDirectoryState` (narrows an RPC string), and
   `describeUnpublishedAccountDirectory`, the **only** `{ summary, nextAction }`
-  advice table (Connections and `ade setup`). Never show `skipReason` to a
+  advice table (Connections and `daex setup`). Never show `skipReason` to a
   user. A surface with a button for the fix (**Repair** for
   `token_unreadable`) drops `nextAction`.
   - `sync_disabled`: sync is off; nothing to wait for.
   - `sync_not_started`: sync should run and has not come up yet ("other
-    devices can't reach this computer yet", `ade doctor`). The Machines panel
+    devices can't reach this computer yet", `daex doctor`). The Machines panel
     treats it as inactive (`PUBLISH_INACTIVE_STATES`), not failing.
-  - `unpublishedMachineLabel` guards with `isSyncAccountDirectoryState`; an
-    unknown state reads "Signed in — sync state isn't available on this
+  - An unknown state reads "Signed in — sync state isn't available on this
     computer yet".
 - `apps/desktop/src/renderer/components/settings/accountDirectorySummary.ts` —
   the Connections line `Signed in — <summary>`. A refusal of this computer
@@ -1076,7 +546,7 @@ Desktop connection UI:
   `useReconnectThisComputer`). A computer that is not connected is one line
   (name, "Offline · last seen 6h ago", Connect, ···). The full error card
   appears only after the person pressed Connect, Retry or Reconnect on that
-  row and it failed; ADE's own reconnects stay a word in the state line.
+  row and it failed; DAEX's own reconnects stay a word in the state line.
   "Why offline?", Details and "How to connect" live in the row's ··· menu.
   "Not connected" and "Not reachable right now" fold to one line with
   Show/Hide when they hold two or more rows and none is online, updating,
@@ -1110,8 +580,8 @@ Desktop connection UI:
   health's `failedLeg`: only the HTTP leg's timeout or transport error is
   "no reply" and reads "no internet connection". The same `transport_error`
   on the token leg (a sign-in service answering 429/5xx, a refresh another
-  process holds) reads "can't refresh your ADE sign-in", and the setup leg
-  (the publisher failing on this computer) "ADE couldn't publish this
+  process holds) reads "can't refresh your DAEX sign-in", and the setup leg
+  (the publisher failing on this computer) "DAEX couldn't publish this
   computer". A brain built before `failedLeg` sends none and is read as the
   HTTP leg.
 - `apps/desktop/src/renderer/components/app/ConnectionsPanel.tsx` — the
@@ -1136,10 +606,10 @@ Desktop connection UI:
     When only the PIN's PBKDF2 hash is known, the card can set a new PIN.
   - It says "sync has not started" once, not twice. The internal "no active
     sync project scope" reads "Other devices can reach this computer once a
-    project is open in ADE".
+    project is open in DAEX".
   - Load failures show one recovery step and keep the raw message under
     **Technical details** (open a project; install this build and reopen it;
-    restart ADE).
+    restart DAEX).
   - `isBrainAccountSessionFailure(...)` (`token_unreadable`) shows **Repair**;
     the re-read after it is forced. A refusal of this computer shows
     **Reconnect this computer** or **Confirm it's you**, only for the local
@@ -1147,7 +617,7 @@ Desktop connection UI:
     still show this computer.
   - **Stop following \<machine\>** shows when the project's own routed
     status (`useSyncConnections().projectStatus`) follows another machine.
-    The confirm names what ADE forgets and needs the tick "I understand this
+    The confirm names what DAEX forgets and needs the tick "I understand this
     computer will host sync for \<project\>". It re-reads the status and
     sends `sync.disconnectFromBrain` only if the project still follows; it
     does nothing if the window changed project. A brain refusal reads "This
@@ -1173,7 +643,7 @@ Desktop connection UI:
   `window.ade.app.restartBackgroundService()`, which resolves when the new
   service answers a ping. `repair.available` feature-detects (no web, no
   mock). A failure shows "Repair didn't finish." with the reason, and a
-  **Restart ADE** button if the service stayed down. `disabled` lets
+  **Restart DAEX** button if the service stayed down. `disabled` lets
   Reconnect block it. Used by the This Mac card, the Machines publish row and
   `YourMacsCard`.
 - `apps/desktop/src/renderer/components/account/YourMacsCard.tsx` — Account
@@ -1303,12 +773,12 @@ Cross-machine Work chat handoff:
   non-replayable actions. The pool keeps each paired target's
   `SyncRuntimeTransport` (`hello.features` and `endpoint` are needed for
   `getAttachmentUploadRoute`).
-  - When ADE on the machine goes away, the status has `recovery`:
+  - When DAEX on the machine goes away, the status has `recovery`:
     `reconnecting` (the installed app's 30 s maintenance, or bounded redials of
     1 s then backoff for at most 10 minutes), or `waiting_for_user` (auto
     reconnect off or redials done). Disconnect, Cancel, Remove and quit end
     the redials.
-  - A link taken by another ADE app on this computer is `held_elsewhere`,
+  - A link taken by another DAEX app on this computer is `held_elsewhere`,
     never redialed, with "Use it here". The words come from
     `connectionDiagnosis.ts` (`describeLinkHeldByOtherAdeApp`,
     `RELAY_HELD_BY_OTHER_ADE_APP`, `describeHostWentAway`).
@@ -1368,7 +838,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncRouteHealth.ts` — `deriveListenerHealth` and `buildRelayRouteHealth`,
   the one description of a machine's inbound routes, used by
   `syncService.getStatus` and `buildProjectlessSyncSnapshot`. Connections and
-  `ade doctor` show its strings, and the publisher gates on its booleans. The
+  `daex doctor` show its strings, and the publisher gates on its booleans. The
   differences between the paths are parameters. A loopback check counts only
   while it names the bound port.
 - `projectlessSyncSnapshot.ts` — see *Hosting sync, and publishing, with no
@@ -1521,7 +991,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   - `createForeignChatTranscriptResolver({ projectRegistry })` maps a
     registered foreign project and session id to its transcript, refuses
     unsafe ids and paths outside the project's transcripts folder, and never
-    boots a runtime. `ade serve` wires it as `foreignChatProvider`.
+    boots a runtime. `daex serve` wires it as `foreignChatProvider`.
 - `sharedSyncListener.ts` — the brain-level WebSocket listener shared by the
   project hosts.
   - **Port.** 8787 first (`buildSyncHostPortCandidates`), with up to about 8
@@ -1533,12 +1003,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
     iOS, CLI peers and the relay bridge (whose proof header is checked
     apart).
   - **Zombie reaping.** On `EADDRINUSE` in 8787–8999 (`SYNC_HOST_MAX_PORT`),
-    a stale ADE brain holding the port is confirmed twice by pid and start
+    a stale DAEX brain holding the port is confirmed twice by pid and start
     time, stopped (`sync_listener.zombie_reaped`), and the port retried once.
     Only this process is excluded (launchd's main pid is often the wedged
     one). Another channel's brain is left alone.
   - Port diagnosis is `syncListenerPortInspect.ts`, also used by the
-    `ade doctor` Sync-port row. Doctor says it cannot see a root-owned
+    `daex doctor` Sync-port row. Doctor says it cannot see a root-owned
     holder, such as a stranded `tailscale serve` (`tailscale serve status`,
     `netstat -an -p tcp`); the next tailnet publish reclaims it.
   - **Handoff.** On a project switch the new host adopts the sockets (peer
@@ -1561,7 +1031,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `readAttachmentChunk` for previews; see
   [Chunked staging for file-shaped attachments](#chunked-staging-for-file-shaped-attachments).
 - `syncListenerPortInspect.ts` — `inspectSyncListenerPort`, the port-holder
-  probe for zombie reaping and `ade doctor`.
+  probe for zombie reaping and `daex doctor`.
 - `brainProjectActionsSyncHandler.ts` — the machine-wide fallback handler
   before a project host is active.
   - It takes a `secretsDir` and resolves stores through
@@ -1611,7 +1081,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   - `skipListenerScan` keeps the hello path and `host_unavailable` replies on
     the lock alone, because the scan runs `lsof` or PowerShell synchronously.
     Only `sync.diagnoseHost` scans.
-  - `ade brain status` uses it (`--scan-listeners` opts into the scan); the
+  - `daex brain status` uses it (`--scan-listeners` opts into the scan); the
     CLI injects the running brain's listener health and excludes its pid.
     `cli.ts` wires `startSyncHost`, `restartBrain` and `prove` into
     `configureSyncHostRecovery`.
@@ -1684,7 +1154,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
     catch-up), `chat.acceptCrossMachineHandoff` and
     `chat.markCrossMachineHandoff`. Acceptance is not queueable and is keyed
     by the capsule's id and fingerprint. The desktop reaches the destination
-    over multi-project RPC (`rpc_data`, or `ade rpc --stdio` over SSH), so the
+    over multi-project RPC (`rpc_data`, or `daex rpc --stdio` over SSH), so the
     command responder timeout does not bound it.
   - Stalled-turn recovery is viewer-allowed, not queueable. Remote Codex CLI
     launches add the opted-in Computer Use MCP client. Controller CLI
@@ -1702,7 +1172,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
     (no dial, no pairing). `usage.getQuotaSnapshot` reads cached limits;
     `usage.refreshQuota` runs the quota-only path with no interactive auth.
   - Model-picker commands use the machine's CRR-backed store. Recents live
-    there. Favorites live on the ADE account (`/account/model-favorites`);
+    there. Favorites live on the DAEX account (`/account/model-favorites`);
     iOS reads the machine's favorites only when it is signed out or the
     account server predates that route.
   - `personalChats.*` (from `PERSONAL_CHAT_ACTIONS`, `scope: "runtime"`) call
@@ -1727,7 +1197,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   background (single-flight, kept 30 s, `windowsHide`).
   `localSyncDeviceDefaults()` names the machine without a project DB.
 - `syncPairingStore.ts` — validates `pairing_request` against `syncPinStore`,
-  mints the per-device secret and stores it in `paired_devices`.
+  mints the per-device secret and stores it with the pairing records.
   - Each `SyncPairingRecord` has `accountOwnerUserId` (null for a QR, PIN or
     SSH pairing) and the sticky `localTrustOrigin`.
     `pairPeerViaAccount` mints or rotates from a verified same-account
@@ -1810,7 +1280,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
     keeps the route until the last known lease expiry. Sign-out, a missing
     lease, a switch or expiry closes everything.
   - **In-process pipe.** TLS ends at the relay, which can read the traffic.
-    Each pipe becomes the peer socket in process (`openInProcessTunnel` →
+    Each pipe becomes the peer socket in process (`dialInProcessTunnel` →
     `SharedSyncListener.acceptRelayPipe`) with `relay-bridge` provenance, the
     host's `maxPayload` and backpressure. The relay never dials
     `127.0.0.1:<port>`, so another program on that port cannot intercept it.
@@ -1841,7 +1311,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   - **`4505` (`RELAY_CLOSE_CONTROL_REPLACED`).** Another process has the same
     `machineKey`. Retry at a 60 s floor (`CONTROL_REPLACED_RETRY_BASE_MS`) at
     most 3 times (`MAX_CONTROL_REPLACED_REATTEMPTS`), then `controlSuppressed`
-    with "Another ADE process owns the relay connection for this machine."
+    with "Another DAEX process owns the relay connection for this machine."
     The dial itself checks suppression. It re-arms after 10 minutes
     (`CONTROL_REPLACED_REARM_MS`), on `clearControlSuppression()`, and after a
     stable control. Events: `sync_tunnel.control_replaced`,
@@ -1850,7 +1320,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   - **`409` claim conflict.** The store rotates; with the budget spent the
     client latches `identityRotationCapped` and reports
     `RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE` ("This computer needs to be
-    reconnected to your ADE account."), ranked above the raw text in
+    reconnected to your DAEX account."), ranked above the raw text in
     `syncRouteHealth.ts`. The next good claim clears it.
   - **Observability.** Upgrade rejections keep the status and at most 512
     bytes; closes keep code, reason and whether it opened. Events:
@@ -1861,7 +1331,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
     `lastControlOpenAt`, `lastBridgeValidationAt`, `relayControlSuppressed`,
     `relayControlSuppressedReason` and `relayControlFailingSinceMs` (the start
     of the current outage). Suppression outranks every other reason in
-    `ade doctor` and the banner.
+    `daex doctor` and the banner.
 - `syncRelaySelfProbe.ts` — `probeRelayEndToEnd`, the stateless relay
   round-trip check used by the tunnel client's `runSelfProbe`. It opens
   `wss://<relay>/connect/<machineKey>?ready=2`, requires an `accepted` v2 first
@@ -1920,7 +1390,7 @@ Account Activity and push:
   `running` while background subagents live, and demoting a snoozed running chat
   to `stale`/`idle` unless it is failed or needs-you), the title/preview tables, the
   2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`. The `needs_you`
-  privacy preview reads "An ADE agent needs you." — the same two words the status
+  privacy preview reads "A DAEX agent needs you." — the same two words the status
   label and the title suffix use.
 - `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
   delivery, machine-revocation, and machine-acknowledgment state. Machine
@@ -2043,7 +1513,7 @@ Account Activity and push:
   in-surface gear cannot drift. Every row saves on change; there is no Save
   button, which the popover it replaced did have.
 - `apps/desktop/src/renderer/lib/legacyRoutes.ts` — `LEGACY_ROUTE_ALIASES`
-  maps `/attention` to `/activity`. ADE's shell matches top-level surfaces with
+  maps `/attention` to `/activity`. DAEX's shell matches top-level surfaces with
   pathname predicates rather than `<Route>` elements, so there is no
   router-level redirect to hang a rename on; this is the route-level twin of
   `settingsManifest.ts`'s `LEGACY_TAB_ALIASES`.
@@ -2177,6 +1647,775 @@ iOS widget files (under `apps/ios/`):
   `ADE/Resources/DatabaseBootstrap.sql` (generated from desktop
   `kvDb.ts`).
 
+## Gotchas
+
+- **Sync carries state; actions still go to the owning machine.** A phone, web
+  client or second desktop reads synced rows, but a command about a chat,
+  lane, terminal or session is sent to the machine that owns it, by its pin
+  (see [Remote Runtime → Gotchas](../remote-runtime/README.md#gotchas--fragile-areas)).
+  Account-wide things (Activity, the vault, account settings, DAEX Cloud) come
+  from the account server and take no pin.
+
+### Another program on the sync port's loopback address
+
+macOS and Windows let a second program bind `127.0.0.1:<port>` while DAEX holds
+`*:<port>`, and that program then gets all local traffic for the port. The
+usual offender is `wrangler dev`, whose default port is DAEX's 8787. What each
+route needs from loopback:
+
+- **Relay:** nothing. Pipes are handed to the host in process.
+- **LAN:** nothing. Peers reach the wildcard bind, so the account directory
+  publishes LAN whenever the listener is bound (`listenerBound`), not only
+  when loopback validates.
+- **Tailscale:** everything. Serve forwards to 127.0.0.1, so Tailscale
+  publishes only while some local route answers as this listener.
+
+**The public port does not move for a loopback shadow.** A phone that sees its
+machine's port change redials (seen on a real iPhone: a Wi-Fi socket dropped
+110 ms after a move), so the listener keeps its port and opens a **side door**:
+a second server bound on exactly `127.0.0.1:<free port>` (one of the 24 ports
+above; never an OS-assigned one, so a stale Tailscale entry left by a crash is
+still recognized by its shape, `adeLoopbackForwardPort`), wired like the main
+one (`createServerPair`) and validated
+with the same identity probe. `getLoopbackPort()` returns it, the validation
+status records it as `loopbackPort` (with `shadowedBy`, program name only), and
+Tailscale Serve (`--tcp` and the HTTPS route) forwards there while the
+tailnet-facing port stays the sync port. The listener re-checks every
+`SYNC_LISTENER_SELF_HEAL_INTERVAL_MS` (30 s; one local HTTP request per
+address) and on `healNow()`; it records only the final verdict, so a working
+side door never flaps Tailscale. When loopback answers as DAEX again the side
+door closes (its sockets kept until they close). Logs:
+`sync_listener.loopback_side_door_opened` / `_closed`. A startup bind on a
+wildcard accepts a loopback-shadowed candidate for the same reason.
+
+The port **does** move (`sync_listener.loopback_shadowed_at_runtime`, then
+`sync_listener.moved_off_shadowed_port` and `onPortChanged`) only when it has
+to: another program answers on one of this machine's own LAN addresses (the
+self-check probes each external IPv4 address; only a foreign answer counts,
+never a timeout or refusal), a loopback-only bind is shadowed, or the side door
+cannot open. Already-connected sockets stay up through any move: the old
+server stops accepting but its upgraded sockets are kept. The scope's sync
+service (or the projectless brain) updates the lease port, the device row,
+Bonjour, Tailscale Serve and the directory. The move back to the preferred
+port (normally 8787) once it frees is the hosting scope's sync service's job
+(every 15 s while it hosts); with no project host attached, the listener's own
+30 s self-check does it. The move back validates its
+candidate without touching the live port's status, so it cannot flap the route.
+A project host never refuses to start over a shadow
+(`sync_host.loopback_shadowed_hosting_degraded`). A loopback-only bind
+(`ADE_SYNC_BIND_HOST=127.0.0.1`) has nothing else to serve, so one whose every
+candidate is shadowed fails to bind and the startup loop retries.
+
+- **Phone-sync port 8787 is canonical.** Bind order always tries 8787 first,
+  even when device-registry `lastPort` is 8788. Zombie reap may terminate a
+  same-channel wedged predecessor still holding 8787 (excluding only this
+  process pid). A live listener that landed on a fallback keeps probing
+  `tryMigrateToPort(8787)` so phones that saved 8787 reconnect without a
+  restart. The "DAEX is already running with phone sync" dialog is the
+  cross-channel case (DAEX vs DAEX Alpha) and is intentional.
+
+- **Cross-machine session handoff is not database sync or provider-session
+  migration.** It publishes the exact Git commit and sends a bounded,
+  sanitized capsule to a compatible destination runtime. Provider-native
+  thread ids, full transcripts, terminals, artifacts, caches, secrets, and
+  dirty worktree data remain on the source. See
+  [the handoff contract](./cross-machine-session-handoff.md).
+
+- **The release trust reset is deliberate and non-recurring.** Do not broaden
+  it into a general cache/account wipe or rerun it on dev launches. Desktop's
+  pending marker exists so a failed service restart is retried without deleting
+  newly created pairings again; iOS writes its marker only after connection
+  tokens clear; web scopes its version marker to the environment store.
+
+- **A table only leaves `MOBILE_CHANGESET_EXCLUDED_TABLES` territory if the
+  phone has another way to get it.** The diet is not "drop what looks big" — it
+  is "drop what the phone re-fetches anyway." `pull_request_snapshots` is the
+  clearest case: 11.2 MB of a 28.1 MB synced project DB (39.7%), and iOS reads it in
+  exactly one query (the per-PR detail behind `fetchPullRequestSnapshot(prId:)`)
+  which it populates on demand through `prs.refresh` →
+  `replacePullRequestHydration` (the argument-less form carries only open PRs
+  and PRs on live lanes, capped at 6 MiB; see `remote-commands.md`). That works for every paired build, however old,
+  because `prs.refresh` and `prs.getMobileSnapshot` are both in the **required**
+  remote-command set. Lists and badges are unaffected — the slim `pull_requests`
+  rows still replicate. Devices paired before an exclusion keep the rows they
+  already have (nothing deletes them); they simply stop receiving updates
+  through the changeset pump. Excluding a table the phone reads with no
+  on-demand path would silently blank a surface, so check the iOS queries and
+  the required-command set before adding one. The seven event-log tables added
+  alongside the PR cache clear that bar the other way: they have *no* iOS read
+  path at all (the only reference anywhere under `apps/ios/` is the
+  `DatabaseBootstrap.sql` `create table`), so nothing on the phone can render
+  them and there is nothing to re-fetch.
+
+- **The mobile diet is an outbound filter; a local-only conversion is not.**
+  They look similar and their failure modes are opposite. Excluding a table
+  from `MOBILE_CHANGESET_EXCLUDED_TABLES` only drops rows on the way out to a
+  phone — CRR metadata is untouched, existing rows on paired devices are left
+  alone, and the peer's ack watermark still advances through the filtered
+  versions, so there is no apply hazard for a peer on any build. Moving a table
+  into `LOCAL_ONLY_CRR_EXCLUDED_TABLES` changes what cr-sqlite knows about the
+  table and *does* have an apply hazard, which is why `applyChanges` skips
+  inbound rows for those tables (see
+  [the CRDT model](./crdt-model.md#apply)). Do not reason about one from the
+  other. Related but independent: whether the host prunes a table is a third,
+  orthogonal question — `linear_ingress_events` and `worker_agent_runs` are on
+  the mobile-exclusion list yet deliberately never age-pruned on the host.
+
+- **A host-side check does not guard a replicated column.** If the host decides
+  a value, a controller writing that same column into its own replica can win
+  the merge and undo the decision — the check was never reached. The fix is to
+  stop the controller writing it (a local, non-persisted overlay is what buys
+  the optimistic feel) and to drop the column from that peer's inbound
+  changesets, not to add another host-side check. Both halves are needed: the
+  client change fixes new builds, the host filter covers every paired device
+  still on an old one. See
+  [Host-authoritative columns](#host-authoritative-columns-are-peer-scoped).
+
+- **The wire and the stored transcript share one chat-event compaction policy,
+  and the wire runs storage compaction first.** `compactChatEventEnvelopeForSync`
+  is an adapter; the policy is `shared/chatEventCompaction.ts`. Two
+  implementations with two cap tables is what this replaced, and they drifted:
+  the wire only redacted inline images, so a multi-megabyte event went out live
+  and came back small after reconnect hydration. Compaction is applied to events
+  that are already compacted (hydration, the replay ring), so it must be
+  idempotent. Dropping a field from the wire (`tool_result.structured`,
+  `toolResultMeta`) is safe without a capability gate only because no client
+  decodes it; anything that *adds* or reshapes a wire field still needs one.
+
+- **The runtime owns sync. Desktop is a client.** A desktop window bound
+  to a remote runtime is *not* the sync authority for that project; the remote
+  runtime is. Code that wants the sync service must reach into the
+  runtime IPC bridge, not into the renderer or the Electron main
+  process.
+- **Relay ownership is machine-wide, so "has a listener" is never the test.**
+  Any runtime can bind an ephemeral sync listener — a dev `daex serve`, a
+  headless one-shot, an embedded fallback. Only one may dial the relay or
+  publish to the account directory, because the relay Durable Object keeps one
+  host control socket per `machineKey` and evicts the previous holder with
+  close code `4505`. New machine-exclusive subsystems must gate on
+  `holdsSyncHostSingleton()` (through `relayTunnelAuthorityGate` or the same
+  authority subscription), and must tolerate the momentary `false` that a
+  project switch produces by riding it out for
+  `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` rather than reacting on the edge.
+- **A project is not a precondition for anything machine-level.** Hosting phone
+  sync, publishing to the account directory, and dialing the relay all gate on
+  the sync-host lease plus a bound shared listener — never on an open or
+  registered project. Copy that tells a user to open a project in order to link
+  or publish a machine is wrong, and per-state advice belongs in
+  `describeUnpublishedAccountDirectory` rather than in each surface.
+- **`ADE_ENABLE_DESKTOP_SYNC_HOST` is a diagnostics escape hatch.** If
+  you turn it on, both an in-process host and the standing runtime can be
+  alive simultaneously on the same machine — that's intentional for
+  comparing behaviors, but production builds should never run with
+  that flag set. A packaged build drops the in-process project runtime from
+  main, so the flag only works from a dev build; set it there.
+- **Project-scoped commands need `projectId`.** A runtime hosting
+  multiple projects has no implicit "current project". Forward the
+  active `projectId` on every project-scoped command or the runtime
+  rejects with `code: missing_project`. The host accepts the runtime
+  catalog id and the DB-local project id as aliases for the same open
+  project when both are known.
+- **CRR retrofit strips non-PK UNIQUE constraints.** Upserts on
+  synced tables must target the primary key only. Use explicit
+  select-then-update for non-PK merge cases.
+- **Bootstrap token must match on every connection.** A changed token
+  invalidates all existing connections until paired devices are
+  re-provisioned.
+- **The runtime listens on all interfaces.** Treat the current posture as
+  trusted-LAN/tailnet only; TLS is not enforced for localhost/LAN.
+  Revocation works per paired device from the appropriate **Connections** tab.
+- **The pairing PIN is user-managed, not ADE-managed.** There is no
+  expiry and no rotation. A machine that leaves the PIN set is
+  perpetually pairable by anyone on the network who knows the digits
+  (subject to the per-IP rate limiter). Clearing the PIN from the **This computer**
+  card in Connections is how you stop accepting new direct pairings;
+  already-paired
+  devices keep their per-device secret and remain connected. Because
+  only the hash persists, a restarted runtime can report that a PIN is
+  configured but cannot reveal it.
+- **`brain_*` is legacy naming.** In new docs and code comments prefer
+  "sync authority" or "machine runtime"; existing database column names
+  are kept for compatibility.
+- **iOS and desktop do not share the cr-sqlite binary.** iOS uses a
+  pure-SQL emulation because Apple platforms reject
+  `sqlite3_load_extension()` and `sqlite3_auto_extension()`. Changeset
+  wire format is identical; cr-sqlite feature parity is **not**
+  guaranteed — any desktop-only cr-sqlite feature that DAEX grows to
+  depend on must also be implementable in SQL triggers on iOS.
+- **iOS sends unpacked primary keys; the desktop/runtime path repacks
+  them.** The iOS emulation captures `crsql_changes.pk` as the raw
+  scalar (a string, integer, or already-bytes value) instead of the
+  cr-sqlite packed type-tagged byte string desktop emits. On the
+  receive side, `apps/desktop/src/main/services/state/kvDb.ts`
+  applies `normalizeIncomingCrsqlChange` to every inbound row before
+  the `crsql_changes` insert: bytes that already look packed are
+  passed through, while raw strings / ints / `0` / `1` are wrapped
+  into the matching `packedCrsqlPrimaryKey` byte layout the native
+  cr-sqlite extension expects. Skipping this step is how phone-side
+  edits silently fail to apply on the desktop.
+- **Rolling schema removals are filtered before apply.** Peers on older
+  builds may still export changes for dropped local tables such as
+  `unified_memories` and its FTS side tables. `kvDb.ts` filters those
+  rows, plus rows for tables that no longer exist locally, before
+  opening the apply transaction. A batch that contains only ignored
+  tables is a no-op and preserves the local database version.
+- **Controller command queues replay on reconnect, but an attempted live chat
+  send is ambiguity-sensitive.** If the runtime advertises `chat.send` as
+  queueable and the user submits while already offline, iOS stores the command
+  locally and replays it with the same `commandId`. After a live `chat.send` was
+  attempted, however, a timeout or transport loss does not prove that the host
+  failed to start the turn. iOS therefore does not queue or resend that message:
+  it restores the draft and asks the user to check the transcript before a
+  manual retry. Do not assume synchronous semantics from the phone side.
+
+### Machine inventory
+
+The Accounts page shows a token-free provider inventory summary on each machine
+row. The 30-second account-directory heartbeat carries provider account and
+model counts plus the number of saved harness presets. Expanding a row fetches
+the live account labels, optional email and plan, and preset bindings through
+`account.getMachineInventory`.
+
+Live detail is requested only for an online machine that is already paired and
+connected; expanding a row never creates a pairing. Reads are capped at twelve
+machines and rate-limited to one attempt per machine every 30 seconds. Offline
+rows keep their heartbeat counts and say “Details unavailable while offline.”
+Older runtimes that do not implement the command are reported as an update
+compatibility issue, while authorization failures remain ordinary access
+errors. Inventory payloads exclude config-home paths, executable paths, and
+credentials.
+
+## Overview
+
+This README covers the sync model, the runtime/controller role split, what
+does and does not travel, and the layers that implement it. Deep-dives:
+
+- `crdt-model.md` — cr-sqlite CRR retrofit, schema implications, merge
+  semantics, and the iOS pure-SQL emulation layer.
+- `ios-companion.md` — the iPhone controller path: SwiftUI app, native
+  SQLite, pairing, tab structure, command routing from phone to runtime.
+- `../web-client/README.md` — the hosted browser controller path: static
+  Cloudflare Pages SPA, account sign-in and directory adoption, WebCrypto DPoP,
+  browser-safe sync transports, no local DB, and the `window.ade` adapter over
+  remote commands.
+- `remote-commands.md` — the `syncRemoteCommandService` registry that
+  turns client actions into runtime-executed mutations.
+- [`devices-and-machines.md`](./devices-and-machines.md) — the one model
+  agents learn for using a device on any machine: the words (machine, device,
+  source, lane, "your code there"), `daex devices`, `devices use|current`,
+  `--machine`, `--code synced|as-is|fresh`, `--clone`,
+  `--no-code`, `--to` on `chat handoff|move`, MCP, and the DAEX Cloud iPhone.
+- `cross-machine-agents.md` — agents and the CLI on other machines:
+  `--machine`, `--all-machines`, children that wake parents across machines and
+  projects, remote device drive with proof filed back (the implementation
+  under `devices-and-machines.md`).
+- `cross-machine-session-handoff.md` — moving a Work chat to another
+  machine: the brain-owned move record and its states, agent and CLI control,
+  approval, the source banner and send routing, the Git contract (clean and
+  published, or uncommitted work carried as a bundle), the bounded context
+  capsule, destination setup, and idempotent recovery.
+- `push-notifications.md` — Activity's account-wide source of truth and
+  its APNs + Live Activity pipeline: machine publishers, the Cloudflare
+  consolidation relay, desktop/web/iOS reads, native Mac presentation,
+  per-device policy, exact routing, acknowledgments, and ownership fences.
+
+Web client: the browser client is another controller of the same machine
+runtime. New hosted connections are account-only: the browser signs in, chooses
+a same-account machine from the directory, and receives DPoP-bound paired
+credentials through Relay. It does not keep a local SQLite replica; it uses
+changeset batches as invalidation signals and refreshes state through remote
+commands, file requests, and chat/terminal streams. For DAEX Cloud it reads
+the account server and GitHub (see *DAEX Cloud and the account server*).
+
+Fresh controller launches require a DAEX account. A device paired earlier
+may use its explicitly labeled direct/local recovery path while signed out, but
+that path is not a guest account and never becomes an account-wide view.
+
+Account Activity deliberately does **not** follow that selected machine or
+project binding. Every signed-in brain publishes all of its active projects to
+the account relay, while signed-in desktop, hosted web, and iOS read
+the consolidated account stream through an account-scoped path. Navigation and
+actions still carry the owning machine/project/session so the client can adopt
+or select the correct destination. Without an account, a client may show only a
+truthfully labeled local or explicitly connected-machine snapshot; it must
+never present that subset as the account view.
+
+The brain rejects iOS builds older than `MIN_SUPPORTED_MOBILE_APP_BUILD` with `protocol_version_mismatch` and `updateTarget: client`, then closes the connection. The phone asks the user to update DAEX.
+
+## Where the sync authority runs
+
+The sync authority is the machine-owned `daex serve` runtime in
+`apps/ade-cli/`. The desktop renderer is a client of that runtime through the
+local runtime connection pool, as the iOS app is. A desktop window bound to a
+remote runtime is not the authority either; the remote `daex serve` is.
+
+The legacy in-process desktop sync host is off. It runs only with
+`ADE_ENABLE_DESKTOP_SYNC_HOST=1` (and without `ADE_DISABLE_SYNC_HOST=1`).
+
+Windows x64 can host sync like macOS and Linux: a per-user, per-channel named
+pipe for local RPC and `vendor/crsqlite/win32-x64/crsqlite.dll` for CRR.
+Linux x64 and arm64 ship `crsqlite.so` in the standalone tarball. The typed
+`crdtSyncAvailable` status blocks pairing when the extension is missing, and
+Connections shows reinstall guidance. macOS computer use and the iOS
+Simulator do not gate Windows pairing.
+
+### The machine-wide sync host lease
+
+Hosting phone sync is exclusive per machine. `syncHostSingleton.ts` owns an
+advisory lock file at `$TMPDIR/ade-sync-host-<uid>.json` (override
+`ADE_SYNC_HOST_LOCK_PATH`) with the owner's pid, channel, home, project root
+and port. A project scope takes it when its sync service starts. A projectless
+brain with the shared listener takes a `projectRoot: null` lease and drops it
+when a scope takes over.
+
+The brain also takes that lease beside a scope that stays a viewer (a project
+saved to follow another machine): the project follows, the machine still
+hosts and publishes. Without it, a machine whose newest project followed
+another one published nothing and left the account. While the brain holds it
+beside a viewer, machine-wide sync calls (status, PIN, devices, relay status)
+answer for the machine even when the caller names the project; the runtime
+name stays per project (`machineWideSyncService` in
+`multiProjectRpcServer.ts`). When the scope later takes its own lease, the
+brain hands its lease back (`onSyncHostSingletonLeaseAcquired`). One process
+can hold two leases for a moment; releasing the one the lock file names
+rewrites the file for the other instead of deleting it. A failed switch no
+longer reads as one in progress: `hasSyncHostOrSwitchInFlight`.
+
+Two subsystems gate on the lease, not on a bound listener:
+
+- the relay tunnel (`syncTunnelClientService`), because the relay keeps one
+  host socket per `machineKey` and evicts the previous one with close code
+  `4505`;
+- the account-directory publisher (`accountMachinePublisherService`), because
+  a runtime that does not host sync must not advertise endpoints.
+
+`holdsSyncHostSingleton()` reports authority, and
+`onSyncHostSingletonAuthorityChanged()` reports changes. A loss is debounced
+by `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` (5 s), because
+`ProjectScopeRegistry.performSyncHostSwitch` stops the old host before it
+starts the new one. Without the grace, each project switch would restart the
+relay tunnel and the publisher.
+
+#### Two DAEX apps on one computer
+
+One machine has one sync host. A second DAEX app (for example the release
+build and an Alpha build, each with its own `ADE_HOME`) takes no lease, binds
+no listener and publishes nothing. It does not retry into ownership and does
+not stop the other app.
+
+- `getStatus` reports `no_active_sync_scope` with the owner app and pid in
+  `skipReason`. Connections says "another DAEX app on this computer owns sync
+  for this machine (DAEX Alpha, pid 9253)" and "Quit that DAEX to let this one
+  host sync." `daex doctor` shows the same sentence.
+- A brain that loses the lease does not stay a viewer.
+  `watchSyncHostAuthorityForRehost` runs the startup loop again when a loss
+  outlives the grace, so the other owner's exit hands sync back.
+- The `sync_not_started` state shows **Start sync** on the This-machine card
+  (`thisComputerAction` → `account.startSyncHost`, the same
+  `recoverSyncHostConnection` as the phone's "Fix connection"). The card then
+  says "No DAEX on this computer is hosting sync right now".
+  `repairMachinePairing` on a non-host says to start sync first.
+- To test the second app over the relay, quit the owner first.
+- A startup conflict logs its quit instructions once, then one line with a
+  count at most every ten minutes.
+
+#### A brain started by hand
+
+An `daex serve` that a person, an agent or a test starts beside the installed
+brain does not host sync. `runServe` asks
+`serviceBrainPidBesideHandRunBrain()` (`apps/ade-cli/src/serviceManager/index.ts`)
+for the channel's service brain (launchd on macOS; the systemd unit or the
+detached supervisor on Linux; the supervisor's pid record on Windows). If that
+brain is alive and is another process, this brain starts with sync off, prints
+"DAEX: sync disabled because the installed DAEX brain (pid …) hosts phone sync
+on this computer", and logs `sync.host_left_to_service_brain`. `--no-sync`
+silences the line.
+
+The service brain always keeps sync:
+
+- Windows: its parent is the supervisor the pid record names.
+- macOS: launchd's pid for the job must be this brain. A parent of pid 1
+  proves nothing, because launchd adopts every orphan.
+- Linux: the unit's MainPID is this brain or its parent (a wrapper).
+- Each `systemctl` or `launchctl` lookup has a 2 s limit; no answer leaves
+  sync on. A dead service brain does not count.
+- A dev test machine (`npm run dev:machine`) has its own home and lease and
+  keeps sync.
+
+### Hosting sync, and publishing, with no project
+
+A brain that holds the lease and has the shared listener bound hosts phone
+sync, publishes itself and dials the relay with an empty
+`~/.ade/projects.json`. That is the normal state of a headless box and of a
+new install.
+
+- `projectlessSyncSnapshot.ts` builds the `SyncRoleSnapshot`. Hosting means
+  the lease **and** a bound port; a listener without the lease reports
+  `buildDegradedProjectlessSyncSnapshot`. A hosting snapshot has the real
+  port, the identity from `~/.ade/secrets/sync-device-id` and `sync-site-id`,
+  `pairingConnectInfo` and relay health.
+- The publisher gates on `listenerBound` and `pairingConnectInfo`, so
+  `runServe`'s `getSnapshot` uses the projectless builder whenever this brain
+  holds the lease, and null only when it does not.
+- **"Open a project" is never the fix for an unpublished machine.**
+  `no_active_sync_scope` means another DAEX process holds the lease. The
+  per-state advice is in `describeUnpublishedAccountDirectory`
+  (`apps/desktop/src/shared/types/sync.ts`).
+- The runtime name and Tailscale Serve belong to a project scope, so the
+  snapshot reports them absent ("Open a project to publish this machine on
+  your tailnet."). The pairing PIN is machine-level: the snapshot reports its
+  real state, and exposes the PIN and bootstrap token under the same
+  `hosting` gate. Publishing does not need a PIN; account membership is the
+  auth path.
+- `machineRelayTunnel.ts` builds the relay tunnel for both paths; `runServe`
+  builds it on the event that takes the projectless lease. Relay is never a
+  precondition: a failure logs `sync.projectless_relay_start_failed` and
+  startup goes on.
+
+#### One ingress implementation, two ingress paths
+
+- `syncHelloProtocol.ts` — the one parser for `hello` and `pairing_request`
+  (`bootstrap`, `paired`, `account`, `account_sealed`, `connectionAttempt`).
+- `syncAccountHelloAuth.ts` — the account-hello gates (attestation, same
+  account, device key, pairing mint or rotate, commit lock) and the
+  rejection messages. The brain leaves the connection-arbitration and
+  sealed-adoption options unset; the gate order, strings and codes are
+  shared.
+- `brainMachineSyncStores.ts` — the machine-level PIN, pairing and security
+  stores, one set per secrets directory (key `pathKey(resolvedDir)`, so
+  `C:\Users\…` and `\\?\C:\Users\…` share one set). The ingress handler and RPC
+  must share the instances, so a PIN set over RPC works at once.
+
+#### `sync.*` on a machine with no project
+
+`multiProjectRpcServer.ts` routes `sync.*` through `withSyncService`: the
+project-scoped service when one owns sync, else the `ProjectlessSyncControls`
+(`createProjectlessSyncControls`, on `brainMachineSyncStores`). Without
+controls (tests, embedded runtimes) a call fails with "Sync service is not
+available. Register a project first."
+
+- With a fallback: `sync.getPin`, `setPin`, `generatePin`, `clearPin`,
+  `sync.forgetDevice`, `sync.getRequireDpop`, `setRequireDpop`,
+  `sync.getCloudRelayStatus`.
+- Empty answers: `sync.refreshDiscovery` (the machine snapshot),
+  `sync.listDevices` (`[]`), `sync.getRuntimeName` (`null`).
+- Still the register-a-project error: `sync.setRuntimeName`,
+  `sync.updateLocalDevice`, transfer readiness.
+- Lane presence is accepted and waits for the sync host.
+- `machineSyncStatusWithPin` echoes a just-written PIN on the snapshot,
+  because the store reports only a code it set itself.
+
+`buildSyncCloudRelayStatus` (`syncCloudRelayStatus.ts`) is the one relay
+status for both paths. Its `accountSignedIn` gate is ownership, not
+usability; see
+[remote runtime → Account state and reachability](../remote-runtime/README.md#account-state-and-reachability).
+
+## Who participates
+
+- **Machine runtime** — the per-channel, per-machine `daex serve`. It owns
+  agents, PTYs, worktrees and the sync WebSocket server. It holds several
+  open projects behind one listener on a stable port. A phone picks a
+  project from the machine catalog; when the hosted project changes, the new
+  host **adopts** the open sockets.
+- **Desktop renderer** — a client of the local runtime, or of a remote
+  runtime (then sync state lives on that machine).
+- **iOS app** — always a client, over the same `SyncEnvelope` protocol.
+- **Browser web client** — always a client (`device_type: "browser"`). It
+  adopts a same-account machine through the directory and Relay, then
+  reconnects with a per-device secret and WebCrypto DPoP. It keeps **no**
+  SQLite replica: changesets are invalidation signals. A four-client pool
+  bounds live sockets. For DAEX Cloud it reads the account server and GitHub.
+  See `../web-client/README.md`.
+- **Cloud computers** — `daex serve` brains on DAEX Cloud, one for each cloud
+  lane, sync authorities while awake. While one sleeps, the account server
+  answers reads for it.
+- **Lane share guest** — another account that the owner shared one lane
+  with. It connects over Relay only with
+  `auth: { kind: "guest", deviceId, ticket, dpop }` (a one-use ticket the host
+  redeems with its owner's token, and a DPoP proof). It gets no changesets,
+  catalog, roster or runtime RPC, only a default-refuse list for the granted
+  lane, and no pairing record. See
+  [lane sharing](../lanes/lane-sharing.md#the-guest-connection).
+- **Cluster state** — the singleton `sync_cluster_state` row
+  (`brain_device_id`, `brain_epoch`) names the device that owns execution.
+
+"Brain" and "host" in code, schema and protocol types mean the **sync
+authority**.
+
+## Connection route policy
+
+Every native paired controller ranks routes the same way:
+
+1. current LAN endpoints;
+2. current Tailscale endpoints;
+3. DAEX Relay, only with a fresh matching account proof.
+
+- Current discovery beats stale saved metadata; recent successes break ties.
+- The desktop pool walks the ranking in phases
+  (`buildPairedEndpointCandidates`). iOS races the plan: Relay joins a few
+  hundred milliseconds behind the leading direct candidate, or first when it
+  is the proven route for the current network (see *Route ranking, route
+  memory, and roaming* in `ios-companion.md`).
+- First-time adoption also uses LAN → tailnet → Relay when the directory row
+  has a verifiable host signing key, because `ade-adopt-v1` seals the account
+  credential. An unsigned legacy host is Relay-only; DAEX never sends a
+  plaintext account bearer to an unverified direct peer.
+- The hosted web client applies the same ranking to routes a browser may
+  dial, which in production is normally Relay only.
+
+Each native connect keeps one random correlation id and at most eight
+attempts (route kind, host and port, start, duration, outcome, coarse failure
+class; no paths, tokens or error text). The id goes on Relay dials and tunnel
+logs. Directory requests send `X-ADE-Correlation-ID`; the Worker validates or
+replaces it, returns it, and logs route, method, status class and duration.
+
+## Mobile compatibility contract
+
+Phones must reach older and newer brains long enough to show update state and
+run supported commands. The hello is additive: a missing host feature puts the
+phone in a limited mode, and the socket stays up.
+
+`apps/desktop/src/shared/syncMobileCompatibility.ts` holds the contract. The
+brain advertises `features.mobileCompatibility` (version, required actions,
+missing actions). iOS treats an omitted feature as a limited legacy host,
+gates unsupported actions before it sends them, and shows update guidance.
+When a phone release needs new host behavior, update the contract and the iOS
+compatibility tests in the same branch.
+
+The **optional** list (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`) holds
+additive commands that newer phones feature-detect, so a host without them is
+not `limited`. Each entry has a comment with what the phone does without it
+(for example: the Linear connection commands, `cto.getAttention`, the
+session lifecycle commands, the new-lane launch commands).
+`machine.updateImpact` and `machine.updateAndRestart` ("Update & restart" for
+a computer from a phone or DAEX Web) are optional too: only a brain started by
+`daex serve` that can update itself registers them, and a client that does not
+see them keeps its "update DAEX there" fallback.
+See `remote-commands.md` and `../linear-integration/README.md`.
+
+## What syncs, what does not
+
+| Data category | Sync mechanism | Devices |
+|---|---|---|
+| Replicated DAEX runtime tables in `.ade/ade.db` | cr-sqlite CRRs over WebSocket | All connected devices |
+| Source code files | `git push`/`git pull` | Desktop peers only |
+| Shared DAEX scaffold/config (`.ade/.gitignore`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
+| Account settings: launch defaults, quick slots, new-lane defaults, lane templates, CTO home, automation rules (filed under `repo:<origin>`) | Account settings store through the relay, last writer wins per key; automation rules are a rule key and a home key per rule, and only a rule's home computer runs it | Every computer and phone signed in to the account; the web reads and writes them too |
+| Passwords and provider API keys (`provider_api_key`) | Account vault through the push relay; never readable from a browser | Every computer, DAEX Cloud too; the iPhone through its own routes |
+| Cloud lanes' chats, CLI/shell copies, Git summaries, lane index | Account server (see *DAEX Cloud and the account server*) | Every client, with no computer awake |
+| Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`), including automation rules scoped to one chat or in a project with no remote | **Never syncs** | Machine-specific |
+| Worktrees, PTY processes, caches, transcripts, artifacts and proof, sockets, machine-only secrets, connection drafts | **Never syncs** | Machine-specific |
+| Product-analytics installation IDs, consent, budgets/deduplication state, and the local `usage_events` export ledger | **Never syncs** | Machine/browser/iOS-client specific; paired-client consent is socket-scoped |
+| PR detail bodies (`pull_request_snapshots`: `files_json`, `comments_json`, `reviews_json`) | Desktop peers replicate them; phones fetch them on demand via `prs.refresh` instead | Desktop peers only |
+| Cross-machine Work chat continuation | Explicit Git publication + bounded handoff capsule over a connected machine runtime; not CRDT replication | Connected DAEX desktops |
+| Personal chat summaries/transcripts/attachments | Runtime commands + `chatScope: "personal"` transcript stream; not active-project CRR changesets | Controllers connected to the owning machine brain |
+
+Two devices in one cluster do **not** have identical `.ade/` folders: Git
+gives them the tracked scaffold, sync gives them the replicated DB, and each
+keeps its own local directories. Two disconnected desktops share no live
+session; live state converges only through one running sync authority.
+
+### Host-authoritative columns are peer-scoped
+
+A few columns on replicated tables are host decisions:
+`terminal_sessions.settled_at`, `settle_override`, `settle_source`,
+`activity_status_json` and `activity_status_changed_at`
+(`HOST_AUTHORITATIVE_COLUMNS_BY_TABLE` in `syncHostService.ts`).
+`sessionService` decides settlement against live work and stamps activity
+reports. cr-sqlite merges last-writer-wins per column, so a controller's
+optimistic `settled_at` would merge in even when the host refused the settle.
+
+The host drops those columns from inbound changesets **from phone peers
+only**:
+
+- **It is peer-scoped on purpose.** A paired desktop runs the same
+  `sessionService` gate, so its writes must keep replicating. They are not
+  applied blind: `applyChanges` reports settle columns that moved, and the
+  receiving host re-asserts them through its own gate, so they get its
+  lifecycle revision (see
+  [settle-teardown-design.md](../terminals-and-sessions/settle-teardown-design.md) §6d).
+- **A paired phone cannot opt out.** `isMobilePeer` reads the **pairing
+  record** for record-backed peers, so `deviceType: "desktop"` in the hello
+  does not help. A bootstrap-token peer is still classified from its hello,
+  so this is a compatibility guard; the host-local lifecycle revision is the
+  real closure. Current iOS never writes these columns
+  (`PendingSessionSettleStates.swift` is a local overlay).
+- The drop is silent and per column. The rest of the batch applies, including
+  the phone's own snooze fields (`snoozed_until`, `snoozed_at`, `woke_*`). The
+  batch still acks `ok`, because a rejecting ack would stall the peer's
+  cursor. The phone's value heals when `refreshWorkSessions` replaces the
+  rows from `work.listSessions`.
+
+See [terminals and sessions](../terminals-and-sessions/README.md#gotchas).
+
+### The host never exports from an uncorroborated peer cursor
+
+A replica peer names its resume point in `hello.peer.dbVersionBySite`. The
+host exports `db_version > cursor`, so an inflated claim would lose rows for
+good.
+
+- The host records what it delivered in
+  `sync_peer_changeset_watermarks(peer_device_id, host_site_id, db_version,
+  updated_at)`. It is host-local (`LOCAL_ONLY_CRR_EXCLUDED_TABLES`), keyed by
+  peer and host site. `syncHostService` writes it on an `ok` ack, on the
+  immediate advance for a peer without `changesetAck`, and on an empty-window
+  advance, at most once a second per peer, and flushes it on socket close. A
+  database with the older single-column table recreates it.
+- `resolveInitialPeerCursor` (`syncPeerCursorResolution.ts`) seeds
+  `lastKnownServerDbVersion` on the first hello, on handoff adoption and on
+  every reconnect:
+  - with a watermark for this peer and host site: `min(claimed, watermark)`.
+    The watermark is a **ceiling, never a floor**, so a reset phone's lower
+    claim replays;
+  - with no watermark: `0`, whatever the claim says. A poisoned claim usually
+    sits below `hostDbVersion`, so there is no "looks plausible" branch.
+    `claimExceededHostDbVersion` is log detail only.
+- A device with no watermark gets a full replay once per host site (CRR apply
+  is idempotent). The row is written on resolve and raised on each ack.
+- A rewind logs `sync_host.peer_cursor_rewound` (`claimed`, `resolved`, the
+  reason, `claimExceededHostDbVersion`). Handoff adoption clamps the deposited
+  cursor by the watermark too.
+- On the peer, `HostConnectionProfile.cursorSchemaVersion` clears an older
+  profile's cursors once, and the merge takes the host's batch boundary, not
+  the `max`. iOS `advanceRemoteDbCursor` advances only from the batch's
+  `toDbVersion`, never from its own write clock.
+
+## DAEX Cloud and the account server
+
+DAEX works with no computer of your own. DAEX Cloud is one machine that every
+signed-in account has, and it shows in every machine list and every "Run on"
+menu on web, iPhone and desktop. Behind it, each cloud lane has its own cloud
+computer. A cloud computer runs the same `daex serve` brain as an own
+computer, and it sleeps when it is idle. Clients never show a cloud computer
+by its own name.
+
+The account server (`apps/account-directory`) is the second source of truth
+next to sync. It keeps what a person can read while a cloud computer sleeps:
+
+| Data | Written by | Read by |
+|---|---|---|
+| Saved chats (encrypted, after each turn; subagent chats too) | Cloud computers only | Work on every client |
+| CLI session and shell copies (shells keep the last 5,000 lines) | Cloud computers only | Work |
+| Git summary at rest (branch, ahead/behind, changed files with line counts) | Cloud computers, before sleep | Files, Git panel, History |
+| Project overview (lanes and computers of one repository) | The server, from the rows above | Lanes, Work |
+| Fork capsules for chats whose computer is deleted | Idle cleanup, before the delete | The next computer of that chat |
+| Account lane index (name, branch, machine, PR number; one row for each lane on each machine) | Every brain, own computers too | Lane mentions only (PR rows, notifications, CTO, search) |
+| CTO account copy | The CTO home | The CTO page |
+
+Own computers never upload chats, sessions or Git summaries. The lane index
+does not fill the Lanes tab.
+
+**Reading never wakes a computer.** Files and History read GitHub at the
+lane's branch. PRs, issues, branches and checks read GitHub through the
+account. Linear and Jira go through the account server with the account's
+own sign-in. Usage, account settings and automations come from the account.
+A client reads these with the existing triggers (open, focus, a send); none
+of them polls.
+
+**Doing wakes the computer, and the UI does not wait.** A send, a terminal,
+an edit, opening a changed file or its diff, and a Git action wake the
+lane's computer. A message to an asleep or deleted cloud chat or CLI goes to
+the account's queue (`POST /cloud/chats/:machineKey/:chatId/messages`). The
+server keeps it, wakes the computer, and the computer claims it and reports
+it once (`clientSendId`). A chat whose computer was deleted continues on a
+new computer in the same chat row (fork-continue): Claude, Codex and OpenCode
+restore a native capsule; the other ten providers replay the saved
+transcript.
+
+**Refusals.** A wake that the server refuses (out of hours, too many awake,
+blocked, deleting, over the plan's disk) shows the server's sentence on every
+client. Reading still works. A blocked account can read and export its saved
+chats, read-only. A cloud computer that idle cleanup will delete shows a
+"Deleting soon" notice in its lane's chats, with **Keep it**. A Linear event
+or a webhook for a sleeping computer wakes it.
+
+**Account sync.** These follow the account to every computer:
+
+- Passwords (the account vault), including provider API keys in one store
+  (`provider_api_key`) and the Qwen DashScope key. A browser can never read
+  the vault: the push relay answers a browser only on the routes in
+  `BROWSER_ACCOUNT_ROUTES` (`apps/push-relay/src/relay.ts`), and no vault
+  route is on that list.
+- Provider sign-ins carry to cloud computers. DAEX proxy logins carry as
+  access-only copies (no refresh token), and only to cloud computers.
+- Account settings through the push relay: launch defaults
+  (`chat.launchDefaults.v1`), quick slots (`quickSlots.v1`), new-lane
+  defaults, lane templates, the CTO home and automation rules.
+
+Personal (no-project) chats stay on their machine and do not show while it
+is offline. Moving a lane or chat onto DAEX Cloud is not built.
+
+**Git identity on cloud computers.** At join, a cloud computer sets Git's
+`user.name` and `user.email` from the account's GitHub noreply identity, else
+`ADE Cloud <cloud@users.noreply.ade-app.dev>`. It never replaces a value that
+a person set.
+
+See [DAEX Cloud](../ade-cloud/README.md) for the server routes and the
+[web client](../web-client/README.md#ade-cloud-reads) for the client side.
+
+## Architecture layers
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Renderer (Electron) / iOS SwiftUI                                │
+│   - reads local SQLite (instant, offline)                        │
+│   - writes: state-only → local; execution → remote command       │
+└──────────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Desktop runtime IPC bridge (renderer → main → runtime)           │
+│   - sync.* preload calls route through                           │
+│     callProjectRuntimeSyncOr(method, params, fallback)           │
+│   - prefers the remote runtime if the window is bound,           │
+│     otherwise the local runtime                                  │
+└──────────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ ade-cli machine runtime (`ade serve`)                            │
+│   - syncService — orchestrator, draft persistence, pin store     │
+│   - syncHostService — WebSocket server, peers, project catalog   │
+│   - syncRemoteCommandService — registry of executable actions    │
+│   - deviceRegistryService — devices + cluster_state singleton    │
+│   - hosts MULTIPLE projects per machine                          │
+│   - one brain-level shared listener (sharedSyncListener);        │
+│     per-project host services adopt peers across switches        │
+└──────────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Sync transport (ws)                                              │
+│   - SyncEnvelope: hello, pairing, changeset_batch,               │
+│     changeset_ack, heartbeat, file_request/response,             │
+│     terminal_*, chat_*, brain_status (legacy name),              │
+│     project_catalog/project_switch/project actions,              │
+│     command / command_ack / command_result,                      │
+│     envelope_chunk                                               │
+│   - negotiated deflate above 512 B; no offer keeps the exact     │
+│     legacy encoder (gzip at 4 KB, or web JSON)                   │
+│   - compressed payloads ride a binary frame ("ADE1" magic, u32   │
+│     header length, header JSON, raw bytes) for peers declaring   │
+│     "binaryEnvelopes"; everyone else keeps base64-in-JSON        │
+│   - permessage-deflate on both listeners; when a peer negotiates │
+│     it the application codec is skipped (stacking measures worse │
+│     than either layer alone)                                     │
+│   - decode capped at 25 MB; reassembly capped and expires at 30 s│
+│   - encoded envelopes >720 KB sliced bidirectionally after the   │
+│     host confirms the peer's "chunkedEnvelopes" capability;      │
+│     binary peers slice into binary chunks (no base64 re-tax)     │
+└──────────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ cr-sqlite CRDT layer                                             │
+│   - desktop/runtime: loadable .dylib extension, crsql_as_crr()   │
+│   - iOS: pure-SQL emulation in Database.swift                    │
+│   - AdeDb.sync: getSiteId, getDbVersion,                         │
+│     exportChangesSince, applyChanges                             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
 ## Multi-project runtimes and project switching
 
 The machine runtime knows **every** project the user has opened on that machine
@@ -2277,16 +2516,6 @@ Project catalog snapshots are also chunked
 `maxProjectCatalogChunkBytes = 192 KB`) so a runtime with many projects
 streams the catalog in `project_catalog_chunk` envelopes.
 
-To make the next switch land faster, `ProjectScopeRegistry.prewarmRecentScopes`
-does a one-shot background warm-up of at most two most-recently-used project
-scopes after startup. Prewarming calls `get(projectId, { touch: false })` so it
-never rewrites registry recency, excludes the already-warm active host, and is
-suppressed while a sync-host switch is in flight (`syncHostTransitionDepth > 0`)
-or after disposal; a failed prewarm is swallowed so a later real open retries
-`get()` normally and surfaces its own error. The sync-host switch itself is now
-wrapped in a `syncHostTransitionDepth` guard so overlapping prepares/switches
-don't race the prewarm or each other.
-
 ## Scope enforcement
 
 `syncRemoteCommandService.register(action, policy, handler, scope)`
@@ -2303,7 +2532,7 @@ At dispatch time:
   keeps older mobile caches and DB-scoped command payloads from being
   misrouted as `project_not_open`.
 - If the command is `project`-scoped and the runtime has no project open,
-  the runtime rejects it with `"requires an open project on this ADE
+  the runtime rejects it with `"requires an open project on this DAEX
   machine"` (`code: project_not_open`).
 
 A phone bound to a runtime-hosted catalog therefore must complete the
@@ -2324,7 +2553,7 @@ metadata. Fields (see `SyncDeviceRecord`):
 | `created_at` / `updated_at` / `last_seen_at` | Timestamps |
 | `last_host` / `last_port` | Last manual-connect address |
 | `tailscale_ip` | Tailscale IP if available |
-| `ip_addresses` (JSON array) | LAN IPs |
+| `ip_addresses_json` (JSON array) | LAN IPs |
 | `metadata_json` | Future-safe extension bag; holds `dbVersion` plus peer app provenance (`appVersion`, `appBuild`, `bundleIdentifier`) when the peer advertised them in `hello` |
 
 Sync authority is separate: `sync_cluster_state` is a singleton row
@@ -2348,7 +2577,7 @@ Transfer:
 4. New authority runtime starts its sync lifecycle. Old authority runtime demotes.
 
 A second desktop that simply pulls the repo without joining a sync
-cluster is its own local ADE machine for execution — that is not the
+cluster is its own local DAEX machine for execution — that is not the
 same as being part of the cluster. Multi-runtime active-active execution
 is not supported.
 
@@ -2416,7 +2645,7 @@ that computer (`withCloudTruth` in `apps/account-directory/src/directory.ts`):
   `waking`, `updating`, `asleep`, `stopped` or `deleting`.
 
 So every client and the awake-computer cap read the same state. Clients show
-these rows as ADE Cloud, never as separate machines.
+these rows as DAEX Cloud, never as separate machines.
 
 ### One computer, one row
 
@@ -2447,7 +2676,7 @@ install. Three mechanisms, each in a different layer, keep that from happening:
 - **Rotations are budgeted and the budget is persisted.** Two per rolling 24
   hours, counted in the identity file itself so a crash loop cannot mint one row
   per boot. A machine that spends the budget stops minting and says so — "This
-  computer needs to be reconnected to your ADE account" — instead of retrying.
+  computer needs to be reconnected to your DAEX account" — instead of retrying.
 - **The directory dedups what still gets through.** A register call that carries
   proof of a fresh interactive sign-in (or spends a pairing grant) and whose
   `deviceId` or `hardwareId` matches other rows on the account retires those
@@ -2456,7 +2685,7 @@ install. Three mechanisms, each in a different layer, keep that from happening:
   cannot: both the machine key and the device id live under `~/.ade`, so a full
   wipe mints both afresh and matches nothing, while a per-account hash of an
   OS-level machine identifier survives it. It is salted with the account id and
-  folded with the ADE home path, so it can neither correlate two accounts nor
+  folded with the DAEX home path, so it can neither correlate two accounts nor
   merge an Alpha install into Stable's row, and a host that cannot read one simply
   omits it.
 
@@ -2487,11 +2716,11 @@ computer was removed from your account on 14 August", with **Reconnect this
 computer**, or **Confirm it's you** when the directory wants a fresh sign-in).
 When the loop gives up, the banner says so, rather than only a diagnostic
 toast. The browser page of that confirmation names the computer that asked
-("A computer named MacBook Pro · Alpha asked to sign in to ADE") when the
+("A computer named MacBook Pro · Alpha asked to sign in to DAEX") when the
 client sent its name.
 
 Removal itself asks twice. Every Remove confirmation (desktop sheet and web
-client) names the install ("MacBook Pro · ADE Alpha") and warns when the
+client) names the install ("MacBook Pro · DAEX Alpha") and warns when the
 machine reported in during the last five minutes. The `account.deleteMachine`
 action is for people only. It refuses a caller whose identity names a chat, run,
 step or attempt (`callerIdentityIsAgent` in `apps/ade-cli/src/runtimeRoles.ts`),
@@ -2503,7 +2732,7 @@ environment. The desktop Account page and the web client remove through the
 directory directly, behind their own dialogs.
 
 **Removing a computer from a chat.** A caller that names a chat
-(`ade machines remove <name|key|id>` from an agent's shell) does not get the
+(`daex machines remove <name|key|id>` from an agent's shell) does not get the
 refusal. The brain that holds the chat raises a card in it
 (`apps/ade-cli/src/services/account/machineRemovalRequest.ts`) and the command
 waits for the answer:
@@ -2534,14 +2763,14 @@ answers a `403` with a machine-readable code — `machine_revoked` or
 `lastHttpReason`. The Connections popover decodes it with
 `readAccountRefusalCode` (in `shared/accountMachineRefusal.ts`) instead of
 showing an outage line: the This-machine line and the
-publish-failing banner say "this computer was removed from your ADE account" or
+publish-failing banner say "this computer was removed from your DAEX account" or
 "sign in again to reconnect this computer", and the banner offers a
 **Reconnect this computer** or **Sign in again** button that presses the same
 brain repair the Account page does. The shared copy table
 (`describeUnpublishedAccountDirectory` in `shared/types/sync.ts`) and the shared
-reconnect orchestration (`runMachinePairingReconnect`, which escalates to the
-device-flow sign-in only when the refusal demands it) keep the pane, the banner,
-and `ade setup` from drifting. Any other HTTP failure (a `5xx`) says "ADE's
+reconnect flow (which escalates to the device-flow sign-in only when the
+refusal demands it) keep the pane, the banner,
+and `daex setup` from drifting. Any other HTTP failure (a `5xx`) says "DAEX's
 account service is having trouble right now", and a request that gets no reply
 at all (a timeout or transport error) says "no internet connection": the
 directory sits on Cloudflare's edge, which answers even when the service behind
@@ -2562,7 +2791,7 @@ Signing into a different account cannot use the previous account's directory
 or Relay lease.
 
 Hosted web exposes both trust scopes without conflating them. Removing a
-machine from the ADE account deletes the owner-scoped directory row. Forgetting
+machine from the DAEX account deletes the owner-scoped directory row. Forgetting
 it on this browser deletes only the local environment, paired secret, and DPoP
 material; an account machine can appear again from the directory and be
 adopted later. Account rename updates `customName` and leaves browser trust
@@ -2698,7 +2927,7 @@ successful adoption logs `sync_host.account_legacy_pairing_upgraded`.
   cannot display or copy those digits until the user generates or sets a
   new PIN. The **This computer** card in Connections exposes the
   generate-new-PIN recovery path; the phone enters the same digits shown there
-  after scanning the QR or choosing the machine from Nearby. ADE account
+  after scanning the QR or choosing the machine from Nearby. DAEX account
   sign-in is the primary PIN-less phone path through the directory and Relay.
   Failed PIN attempts increment a per-IP counter; after 5 failures
   the runtime rejects further attempts from that IP for 10 minutes
@@ -2724,7 +2953,7 @@ successful adoption logs `sync_host.account_legacy_pairing_upgraded`.
   `pinConfigured` as absent.
 - **Address candidates**: the runtime advertises LAN IPs, the saved
   `lastHost`, the Tailscale IP,
-  `127.0.0.1`, and — while the host has a current ADE account lease — a
+  `127.0.0.1`, and — while the host has a current DAEX account lease — a
   `relay`-kind candidate carrying a full
   `wss://…/connect/<machineKey>` URL. `SyncAddressCandidateKind` is
   `lan | saved | tailscale | loopback | relay`, but the saved `lastHost` is now
@@ -2755,10 +2984,10 @@ successful adoption logs `sync_host.account_legacy_pairing_upgraded`.
   is throttled. The native child is killed on shutdown
   (`stopNativeLanDiscovery`). On startup the runtime also runs
   `parseNativeLanDiscoveryProcessList` to detect orphaned `dns-sd -R`
-  processes from a previous ADE session that crashed without cleanup,
+  processes from a previous DAEX session that crashed without cleanup,
   and kills them before starting its own advertisement.
 - **Machine-scoped pairing state**: phone pairing files live under the
-  machine ADE home (`~/.ade/secrets/`): `sync-device-id`,
+  machine DAEX home (`~/.ade/secrets/`): `sync-device-id`,
   `sync-bootstrap-token`, `sync-pin.json`, and
   `sync-paired-devices.json`. On upgrade, legacy per-project copies
   under `<project>/.ade/secrets/` are copied or merged into the machine
@@ -2778,11 +3007,11 @@ successful adoption logs `sync_host.account_legacy_pairing_upgraded`.
   `serve --bg` outlives the process that registered it, each successful publish
   is followed by a best-effort reclaim (`staleAdeTailnetServePorts` +
   `reclaimStaleTailnetServes`, logged as `sync_host.tailnet_serve_reclaimed`):
-  `tailscale serve status --json` is scanned for ADE's exact signature — a port
+  `tailscale serve status --json` is scanned for DAEX's exact signature — a port
   in the sync range forwarding to `127.0.0.1` on the **same** port — and every
   match other than the live one is turned off. Without it, a restart or
   force-kill strands an entry that Tailscale keeps bound on the tailnet address,
-  ADE's next wildcard bind fails `EADDRINUSE` against its own leftover and walks
+  DAEX's next wildcard bind fails `EADDRINUSE` against its own leftover and walks
   one port higher, and the port ratchets upward on every start. A hand-rolled
   `tailscale serve` forwarding anywhere else is never touched, and the live port
   is re-checked inside the loop because reclaiming frees exactly the low ports a
@@ -2889,9 +3118,9 @@ pattern-matching it is a defect. `SyncHelloErrorPayload` (in
 | --- | --- | --- |
 | `repair_required` | The host has no usable pairing record for this device. | Pair again. This is the one rejection the user can act on directly. |
 | `auth_failed` | The older, generic form of the same thing. | Treat exactly as `repair_required`. |
-| `account_not_signed_in` | The target computer is not signed in to an ADE account. | Sign in to the same ADE account on that computer. Never destroy a saved pairing. |
-| `account_verification_failed` | The target computer could not verify its ADE account session. | Check ADE's account state on that computer, then retry. Never destroy a saved pairing. |
-| `host_update_required` | The host cannot verify ADE accounts yet. | Update ADE **on that machine**. Never destroy a saved pairing. |
+| `account_not_signed_in` | The target computer is not signed in to a DAEX account. | Sign in to the same DAEX account on that computer. Never destroy a saved pairing. |
+| `account_verification_failed` | The target computer could not verify its DAEX account session. | Check DAEX's account state on that computer, then retry. Never destroy a saved pairing. |
+| `host_update_required` | The host cannot verify DAEX accounts yet. | Update DAEX **on that machine**. Never destroy a saved pairing. |
 | `account_session_changed` | The host's account session moved under the handshake, or the ingress cannot finish this sign-in shape. | Sign in / retry. Never destroy a saved pairing. |
 | `relay_account_required` | The route needs an account-authenticated hello. | Sign in on this device. |
 | `connection_attempt_superseded` | Another route won the same attempt. | Nothing is wrong; drop this attempt quietly. |
@@ -3032,12 +3261,12 @@ already constrained the path to the project root.
 
 ### Transport readiness and path truth
 
-Relay controllers negotiate bridge readiness before sending an ADE envelope.
+Relay controllers negotiate bridge readiness before sending a DAEX envelope.
 They first open `wss://…/connect/<machineKey>?ready=2`. A current Worker sends
 `{"t":"accepted","v":2}` immediately, then sends
 `{"t":"ready","v":2}` only after the runtime control pipe is open and the
 sync host owns it (handed over in process, in the same tick as the pipe's
-`open`). ADE `hello` is forbidden before `ready`.
+`open`). DAEX `hello` is forbidden before `ready`.
 If no `accepted` arrives within the short negotiation window, the controller
 abandons that socket and retries the same route on a **fresh** URL without the
 `ready` parameter for an old Worker. It never sends a legacy hello on the
@@ -3048,7 +3277,7 @@ waits for `ready` within the overall authenticated-hello budget or fails.
 The Worker and brain bind control, pipe, ready, and reject messages to a random
 connection epoch. A replacement control supersedes the old epoch, so a stale
 pipe cannot attach to a new controller. Legacy Workers retain only a bounded
-pre-ready buffer; ready-v2 paths buffer no ADE data before the bridge exists.
+pre-ready buffer; ready-v2 paths buffer no DAEX data before the bridge exists.
 In the other direction the Worker holds host bytes that reach a pipe before
 its pair is ready (in memory: 64 frames / 4 MiB per pipe, 16 MiB per machine,
 sized for a stream's config + keyframe) and flushes them to the client after
@@ -3145,7 +3374,7 @@ payload.
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, `work.listExternalSessions`, `work.getExternalSessionDetail`, `work.importExternalSession`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project hub |
 | Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project hub |
-| Paired desktop runtime | Full newline-delimited runtime JSON-RPC over `rpc_open` / `rpc_data` / `rpc_close`, plus host-loopback TCP previews over `fwd_open` / `fwd_data` / `fwd_close`, with `fwd_pause` / `fwd_resume` flow control. Same-account adoption or a Nearby PIN pairing obtains the required host grant internally; there is no user-facing Share link. Client-claimed device metadata never authorizes either channel | ADE desktop remote machines |
+| Paired desktop runtime | Full newline-delimited runtime JSON-RPC over `rpc_open` / `rpc_data` / `rpc_close`, plus host-loopback TCP previews over `fwd_open` / `fwd_data` / `fwd_close`, with `fwd_pause` / `fwd_resume` flow control. Same-account adoption or a Nearby PIN pairing obtains the required host grant internally; there is no user-facing Share link. Client-claimed device metadata never authorizes either channel | DAEX desktop remote machines |
 | Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
 | Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the runtime decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop runtime presence heartbeat |
 
@@ -3258,7 +3487,7 @@ feature is merged or because a deliberately isolated-port host is running.
   device backups — a restored phone re-pairs with the PIN.
 - **Account bearer transport (plaintext `account`)**: every
   `hello.auth.kind = "account"` is
-  accepted only when the socket came from ADE's in-process cloud-relay
+  accepted only when the socket came from DAEX's in-process cloud-relay
   bridge. The tunnel client hands each relay pipe to the listener through
   `acceptRelayPipe`, which only code in the brain process can call, so the
   `relay-bridge` provenance cannot be claimed from the network. (The legacy
@@ -3271,9 +3500,9 @@ feature is merged or because a deliberately isolated-port host is running.
   direct route before verifying the bearer, even when that device already has
   a pairing record. Existing devices use `auth.kind = "paired"` with their
   durable per-device secret and pinned DPoP key on direct routes; PIN pairing
-  remains available on LAN. This guarantees ADE does not send or accept the
+  remains available on LAN. This guarantees DAEX does not send or accept the
   Clerk account bearer over plaintext direct sync. It does not sender-bind a
-  bearer stolen outside ADE: generic bearer replay through a TLS relay remains
+  bearer stolen outside DAEX: generic bearer replay through a TLS relay remains
   possible until the account session/token is sender-constrained to a device
   key or equivalent platform attestation.
 - **Sealed account adoption (`ade-adopt-v1`)**: the account credential can also
@@ -3357,12 +3586,12 @@ feature is merged or because a deliberately isolated-port host is running.
   Phones rank authenticated direct routes LAN → Tailscale ahead of Relay but
   race all of them together, so a stale saved LAN/Tailscale endpoint cannot hold
   Relay off; the whole race is bounded by one 10-second budget. The relay
-  pipes WebSocket bytes after terminating TLS. The normal ADE hello / PIN /
+  pipes WebSocket bytes after terminating TLS. The normal DAEX hello / PIN /
   paired-secret / DPoP handshake still runs inside that pipe, but it is not
   end-to-end encrypted: the relay can read paired secrets and runtime/sync
   payloads. Treat the relay operator as trusted for confidentiality. Adding
   end-to-end payload encryption to the relay path is planned security work.
-  The host opens and advertises Relay only while its ADE account lease is
+  The host opens and advertises Relay only while its DAEX account lease is
   current **and** it holds the machine-wide sync host lease. The relay Durable
   Object keeps one host control socket per `machineKey`, so relay ownership is
   a machine-level singleton, not a per-process capability; a runtime without
@@ -3411,7 +3640,7 @@ feature is merged or because a deliberately isolated-port host is running.
   DPoP identities, pairing PINs, projects, SSH files, analytics choices, and
   unrelated browser state are preserved. New pairings created after each
   marker follow the normal local/account ownership lifetime.
-- **Execution isolation**: the ADE runtime runs agents; controllers do not.
+- **Execution isolation**: the DAEX runtime runs agents; controllers do not.
 - **External local files stay desktop-local.** Files opened in the desktop
   from Finder / OS open-file events or local drag-and-drop are registered as
   `external` workspaces on that desktop process. The sync host filters those
@@ -3421,7 +3650,7 @@ feature is merged or because a deliberately isolated-port host is running.
 
 ## Per-computer relay switch
 
-Each computer's owner can turn ADE Relay off for that computer from Settings ›
+Each computer's owner can turn DAEX Relay off for that computer from Settings ›
 Account (the row's details, behind a warning that names what stops working).
 The setting is `sync-relay-preference.json` beside the relay identity file;
 absent or unreadable means on, so a damaged file never cuts a computer off.
@@ -3434,7 +3663,7 @@ Turning it on dials at once. The tunnel learns of the change, and of account
 sign-in and sign-out, from events (`subscribeEligibilityChanges`), and checks
 about 300 ms later so that an answer sent over the relay leaves first. The
 account-lease poll is a 5 s backstop for what has no event, such as a lease a
-token refresh lost. ADE MCP rides the same control socket, so it is off for
+token refresh lost. DAEX MCP rides the same control socket, so it is off for
 that computer too.
 
 The switch is read and changed on the computer it belongs to:
@@ -3444,234 +3673,3 @@ any other computer, reached by account machine key over its live paired
 connection (`accountConnectionRoutes.ts` in desktop main). A computer that is
 not connected from here shows what the account directory last published and
 cannot be changed until it is.
-
-## Gotchas
-
-### Another program on the sync port's loopback address
-
-macOS and Windows let a second program bind `127.0.0.1:<port>` while ADE holds
-`*:<port>`, and that program then gets all local traffic for the port. The
-usual offender is `wrangler dev`, whose default port is ADE's 8787. What each
-route needs from loopback:
-
-- **Relay:** nothing. Pipes are handed to the host in process.
-- **LAN:** nothing. Peers reach the wildcard bind, so the account directory
-  publishes LAN whenever the listener is bound (`listenerBound`), not only
-  when loopback validates.
-- **Tailscale:** everything. Serve forwards to 127.0.0.1, so Tailscale
-  publishes only while some local route answers as this listener.
-
-**The public port does not move for a loopback shadow.** A phone that sees its
-machine's port change redials (seen on a real iPhone: a Wi-Fi socket dropped
-110 ms after a move), so the listener keeps its port and opens a **side door**:
-a second server bound on exactly `127.0.0.1:<free port>` (one of the 24 ports
-above; never an OS-assigned one, so a stale Tailscale entry left by a crash is
-still recognized by its shape, `adeLoopbackForwardPort`), wired like the main
-one (`createServerPair`) and validated
-with the same identity probe. `getLoopbackPort()` returns it, the validation
-status records it as `loopbackPort` (with `shadowedBy`, program name only), and
-Tailscale Serve (`--tcp` and the HTTPS route) forwards there while the
-tailnet-facing port stays the sync port. The listener re-checks every
-`SYNC_LISTENER_SELF_HEAL_INTERVAL_MS` (30 s; one local HTTP request per
-address) and on `healNow()`; it records only the final verdict, so a working
-side door never flaps Tailscale. When loopback answers as ADE again the side
-door closes (its sockets kept until they close). Logs:
-`sync_listener.loopback_side_door_opened` / `_closed`. A startup bind on a
-wildcard accepts a loopback-shadowed candidate for the same reason.
-
-The port **does** move (`sync_listener.loopback_shadowed_at_runtime`, then
-`sync_listener.moved_off_shadowed_port` and `onPortChanged`) only when it has
-to: another program answers on one of this machine's own LAN addresses (the
-self-check probes each external IPv4 address; only a foreign answer counts,
-never a timeout or refusal), a loopback-only bind is shadowed, or the side door
-cannot open. Already-connected sockets stay up through any move: the old
-server stops accepting but its upgraded sockets are kept. The scope's sync
-service (or the projectless brain) updates the lease port, the device row,
-Bonjour, Tailscale Serve and the directory. The move back to the preferred
-port (normally 8787) once it frees is the hosting scope's sync service's job
-(every 15 s while it hosts); with no project host attached, the listener's own
-30 s self-check does it. The move back validates its
-candidate without touching the live port's status, so it cannot flap the route.
-A project host never refuses to start over a shadow
-(`sync_host.loopback_shadowed_hosting_degraded`). A loopback-only bind
-(`ADE_SYNC_BIND_HOST=127.0.0.1`) has nothing else to serve, so one whose every
-candidate is shadowed fails to bind and the startup loop retries.
-
-- **Phone-sync port 8787 is canonical.** Bind order always tries 8787 first,
-  even when device-registry `lastPort` is 8788. Zombie reap may terminate a
-  same-channel wedged predecessor still holding 8787 (excluding only this
-  process pid). A live listener that landed on a fallback keeps probing
-  `tryMigrateToPort(8787)` so phones that saved 8787 reconnect without a
-  restart. The "ADE is already running with phone sync" dialog is the
-  cross-channel case (ADE vs ADE Alpha) and is intentional.
-
-- **Cross-machine session handoff is not database sync or provider-session
-  migration.** It publishes the exact Git commit and sends a bounded,
-  sanitized capsule to a compatible destination runtime. Provider-native
-  thread ids, full transcripts, terminals, artifacts, caches, secrets, and
-  dirty worktree data remain on the source. See
-  [the handoff contract](./cross-machine-session-handoff.md).
-
-- **The release trust reset is deliberate and non-recurring.** Do not broaden
-  it into a general cache/account wipe or rerun it on dev launches. Desktop's
-  pending marker exists so a failed service restart is retried without deleting
-  newly created pairings again; iOS writes its marker only after connection
-  tokens clear; web scopes its version marker to the environment store.
-
-- **A table only leaves `MOBILE_CHANGESET_EXCLUDED_TABLES` territory if the
-  phone has another way to get it.** The diet is not "drop what looks big" — it
-  is "drop what the phone re-fetches anyway." `pull_request_snapshots` is the
-  clearest case: 11.2 MB of a 28.1 MB synced project DB (39.7%), and iOS reads it in
-  exactly one query (the per-PR detail behind `fetchPullRequestSnapshot(prId:)`)
-  which it populates on demand through `prs.refresh` →
-  `replacePullRequestHydration` (the argument-less form carries only open PRs
-  and PRs on live lanes, capped at 6 MiB; see `remote-commands.md`). That works for every paired build, however old,
-  because `prs.refresh` and `prs.getMobileSnapshot` are both in the **required**
-  remote-command set. Lists and badges are unaffected — the slim `pull_requests`
-  rows still replicate. Devices paired before an exclusion keep the rows they
-  already have (nothing deletes them); they simply stop receiving updates
-  through the changeset pump. Excluding a table the phone reads with no
-  on-demand path would silently blank a surface, so check the iOS queries and
-  the required-command set before adding one. The seven event-log tables added
-  alongside the PR cache clear that bar the other way: they have *no* iOS read
-  path at all (the only reference anywhere under `apps/ios/` is the
-  `DatabaseBootstrap.sql` `create table`), so nothing on the phone can render
-  them and there is nothing to re-fetch.
-
-- **The mobile diet is an outbound filter; a local-only conversion is not.**
-  They look similar and their failure modes are opposite. Excluding a table
-  from `MOBILE_CHANGESET_EXCLUDED_TABLES` only drops rows on the way out to a
-  phone — CRR metadata is untouched, existing rows on paired devices are left
-  alone, and the peer's ack watermark still advances through the filtered
-  versions, so there is no apply hazard for a peer on any build. Moving a table
-  into `LOCAL_ONLY_CRR_EXCLUDED_TABLES` changes what cr-sqlite knows about the
-  table and *does* have an apply hazard, which is why `applyChanges` skips
-  inbound rows for those tables (see
-  [the CRDT model](./crdt-model.md#apply)). Do not reason about one from the
-  other. Related but independent: whether the host prunes a table is a third,
-  orthogonal question — `linear_ingress_events` and `worker_agent_runs` are on
-  the mobile-exclusion list yet deliberately never age-pruned on the host.
-
-- **A host-side check does not guard a replicated column.** If the host decides
-  a value, a controller writing that same column into its own replica can win
-  the merge and undo the decision — the check was never reached. The fix is to
-  stop the controller writing it (a local, non-persisted overlay is what buys
-  the optimistic feel) and to drop the column from that peer's inbound
-  changesets, not to add another host-side check. Both halves are needed: the
-  client change fixes new builds, the host filter covers every paired device
-  still on an old one. See
-  [Host-authoritative columns](#host-authoritative-columns-are-peer-scoped).
-
-- **The wire and the stored transcript share one chat-event compaction policy,
-  and the wire runs storage compaction first.** `compactChatEventEnvelopeForSync`
-  is an adapter; the policy is `shared/chatEventCompaction.ts`. Two
-  implementations with two cap tables is what this replaced, and they drifted:
-  the wire only redacted inline images, so a multi-megabyte event went out live
-  and came back small after reconnect hydration. Compaction is applied to events
-  that are already compacted (hydration, the replay ring), so it must be
-  idempotent. Dropping a field from the wire (`tool_result.structured`,
-  `toolResultMeta`) is safe without a capability gate only because no client
-  decodes it; anything that *adds* or reshapes a wire field still needs one.
-
-- **The runtime owns sync. Desktop is a client.** A desktop window bound
-  to a remote runtime is *not* the sync authority for that project; the remote
-  runtime is. Code that wants the sync service must reach into the
-  runtime IPC bridge, not into the renderer or the Electron main
-  process.
-- **Relay ownership is machine-wide, so "has a listener" is never the test.**
-  Any runtime can bind an ephemeral sync listener — a dev `ade serve`, a
-  headless one-shot, an embedded fallback. Only one may dial the relay or
-  publish to the account directory, because the relay Durable Object keeps one
-  host control socket per `machineKey` and evicts the previous holder with
-  close code `4505`. New machine-exclusive subsystems must gate on
-  `holdsSyncHostSingleton()` (through `relayTunnelAuthorityGate` or the same
-  authority subscription), and must tolerate the momentary `false` that a
-  project switch produces by riding it out for
-  `SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS` rather than reacting on the edge.
-- **A project is not a precondition for anything machine-level.** Hosting phone
-  sync, publishing to the account directory, and dialing the relay all gate on
-  the sync-host lease plus a bound shared listener — never on an open or
-  registered project. Copy that tells a user to open a project in order to link
-  or publish a machine is wrong, and per-state advice belongs in
-  `describeUnpublishedAccountDirectory` rather than in each surface.
-- **`ADE_ENABLE_DESKTOP_SYNC_HOST` is a diagnostics escape hatch.** If
-  you turn it on, both an in-process host and the standing runtime can be
-  alive simultaneously on the same machine — that's intentional for
-  comparing behaviors, but production builds should never run with
-  that flag set. A packaged build drops the in-process project runtime from
-  main, so the flag only works from a dev build; set it there.
-- **Project-scoped commands need `projectId`.** A runtime hosting
-  multiple projects has no implicit "current project". Forward the
-  active `projectId` on every project-scoped command or the runtime
-  rejects with `code: missing_project`. The host accepts the runtime
-  catalog id and the DB-local project id as aliases for the same open
-  project when both are known.
-- **CRR retrofit strips non-PK UNIQUE constraints.** Upserts on
-  synced tables must target the primary key only. Use explicit
-  select-then-update for non-PK merge cases.
-- **Bootstrap token must match on every connection.** A changed token
-  invalidates all existing connections until paired devices are
-  re-provisioned.
-- **The runtime listens on all interfaces.** Treat the current posture as
-  trusted-LAN/tailnet only; TLS is not enforced for localhost/LAN.
-  Revocation works per paired device from the appropriate **Connections** tab.
-- **The pairing PIN is user-managed, not ADE-managed.** There is no
-  expiry and no rotation. A machine that leaves the PIN set is
-  perpetually pairable by anyone on the network who knows the digits
-  (subject to the per-IP rate limiter). Clearing the PIN from the **This computer**
-  card in Connections is how you stop accepting new direct pairings;
-  already-paired
-  devices keep their per-device secret and remain connected. Because
-  only the hash persists, a restarted runtime can report that a PIN is
-  configured but cannot reveal it.
-- **`brain_*` is legacy naming.** In new docs and code comments prefer
-  "sync authority" or "machine runtime"; existing database column names
-  are kept for compatibility.
-- **iOS and desktop do not share the cr-sqlite binary.** iOS uses a
-  pure-SQL emulation because Apple platforms reject
-  `sqlite3_load_extension()` and `sqlite3_auto_extension()`. Changeset
-  wire format is identical; cr-sqlite feature parity is **not**
-  guaranteed — any desktop-only cr-sqlite feature that ADE grows to
-  depend on must also be implementable in SQL triggers on iOS.
-- **iOS sends unpacked primary keys; the desktop/runtime path repacks
-  them.** The iOS emulation captures `crsql_changes.pk` as the raw
-  scalar (a string, integer, or already-bytes value) instead of the
-  cr-sqlite packed type-tagged byte string desktop emits. On the
-  receive side, `apps/desktop/src/main/services/state/kvDb.ts`
-  applies `normalizeIncomingCrsqlChange` to every inbound row before
-  the `crsql_changes` insert: bytes that already look packed are
-  passed through, while raw strings / ints / `0` / `1` are wrapped
-  into the matching `packedCrsqlPrimaryKey` byte layout the native
-  cr-sqlite extension expects. Skipping this step is how phone-side
-  edits silently fail to apply on the desktop.
-- **Rolling schema removals are filtered before apply.** Peers on older
-  builds may still export changes for dropped local tables such as
-  `unified_memories` and its FTS side tables. `kvDb.ts` filters those
-  rows, plus rows for tables that no longer exist locally, before
-  opening the apply transaction. A batch that contains only ignored
-  tables is a no-op and preserves the local database version.
-- **Controller command queues replay on reconnect, but an attempted live chat
-  send is ambiguity-sensitive.** If the runtime advertises `chat.send` as
-  queueable and the user submits while already offline, iOS stores the command
-  locally and replays it with the same `commandId`. After a live `chat.send` was
-  attempted, however, a timeout or transport loss does not prove that the host
-  failed to start the turn. iOS therefore does not queue or resend that message:
-  it restores the draft and asks the user to check the transcript before a
-  manual retry. Do not assume synchronous semantics from the phone side.
-
-### Machine inventory
-
-The Accounts page shows a token-free provider inventory summary on each machine
-row. The 30-second account-directory heartbeat carries provider account and
-model counts plus the number of saved harness presets. Expanding a row fetches
-the live account labels, optional email and plan, and preset bindings through
-`account.getMachineInventory`.
-
-Live detail is requested only for an online machine that is already paired and
-connected; expanding a row never creates a pairing. Reads are capped at twelve
-machines and rate-limited to one attempt per machine every 30 seconds. Offline
-rows keep their heartbeat counts and say “Details unavailable while offline.”
-Older runtimes that do not implement the command are reported as an update
-compatibility issue, while authorization failures remain ordinary access
-errors. Inventory payloads exclude config-home paths, executable paths, and
-credentials.

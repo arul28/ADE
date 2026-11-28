@@ -1,6 +1,6 @@
 # Activity, notifications, and Live Activities
 
-ADE uses one account-wide Activity stream for agent work and pull requests
+DAEX uses one account-wide Activity stream for agent work and pull requests
 across every signed-in machine and project. Desktop Activity, the
 iOS Activity drawer, APNs notifications, Lock Screen widgets, and Live
 Activities all render the same items and route to the same destination.
@@ -25,11 +25,11 @@ channels, persistence fields, and analytics/log identifiers.
   it is. Agent text never goes in a push, with one exception: a message an
   agent sent because the user asked to be told (see "Agent messages").
 - Completed and merged work remains visible until it is seen or dismissed.
-- Every row owns an exact ADE destination. A PR can target Overview, Checks, or
+- Every row owns an exact DAEX destination. A PR can target Overview, Checks, or
   Review; an agent item can target a session, question, approval, or event.
 - Account views group work by machine and project. They never assume the
   currently open project or the current machine is the whole account.
-- Opening an item from another machine is expected to just work: ADE pairs,
+- Opening an item from another machine is expected to just work: DAEX pairs,
   connects, and opens, and reports which of those three steps failed in the
   user's own words when it cannot.
 - Remote actions are conservative. Account items from another machine open the
@@ -316,7 +316,7 @@ preferences and account settings (`BROWSER_ACCOUNT_ROUTES` in
 `apps/push-relay/src/relay.ts`). A request with an `Origin` header to any
 other account route gets a 403 before authentication. So the vault, the
 Passwords key and items, provider sign-ins, and machine and device changes stay
-native-only, and a script on the ADE Web origin can never read a secret. The
+native-only, and a script on the DAEX Web origin can never read a secret. The
 web and the iPhone read account data that holds no secret through the account
 server instead (for example `GET /cloud/sign-ins`, which returns status only).
 
@@ -400,7 +400,7 @@ just signed in interactively on that machine. Two proofs are accepted:
 
 This is why the repair path runs the **device** login flow rather than the
 loopback PKCE flow the ordinary sign-in card uses: only the device flow passes
-through ADE's own account directory, so only it can end with a grant.
+through DAEX's own account directory, so only it can end with a grant.
 
 On success the directory calls the relay's pairing restore first — which requires
 directory provenance, a constant-time comparison against the shared
@@ -425,7 +425,7 @@ name a refusal an older desktop has never heard of, and anything unrecognized
 
 Four entry points reach it:
 
-- `ade machines reconnect` (alias `repair`), which takes no machine selector
+- `daex machines reconnect` (alias `repair`), which takes no machine selector
   because a brain can only lift its own machine's revocation. With `--text` it
   prints one sentence from `shared/reconnectOutcome.ts`, the same words the
   desktop button shows. When the directory
@@ -679,14 +679,14 @@ replaces it.
 When desktop-first delivery is enabled (the default) and the user is at a
 computer, the relay waits for the configured bounded delay
 (`desktopFirstDelaySeconds`, 2 minutes by default) before notifying the phone.
-ADE cannot tell whether someone is looking at an open window, so the delay is
+DAEX cannot tell whether someone is looking at an open window, so the delay is
 the test: at the computer, the user opens the item (from Activity or the
 desktop notification, which marks it seen) and the phone never buzzes; away,
 nothing is opened and the phone gets it. Policy-defaults version 3 raised the
 default from 30 s, and a 30 saved under an older version reads as the new
 default, the same way version 2 moved event policies. "At
 a computer" means any client that is not a phone reported presence in the last
-45 s with a foreground ADE window, or a visible Activity surface showing that
+45 s with a foreground DAEX window, or a visible Activity surface showing that
 exact item. Desktops on Windows and Linux report platform `unknown` and the
 hosted web client `web`; both count. The next
 machine heartbeat escalates an item that is still unseen after the delay.
@@ -699,7 +699,7 @@ quiet for as long as that holds, not just for the delay: that computer shows
 its own system notification. Locking the screen, sleeping, quitting or two
 idle minutes release it, and the next machine heartbeat sends the alert (the
 15-minute staleness gate still applies). A computer that reports itself idle,
-locked or asleep does not count as attended at all, even with ADE in front.
+locked or asleep does not count as attended at all, even with DAEX in front.
 The main process stamps the field on every report, so a window cannot claim
 "in use" (it may only say it is leaving); lock and suspend resend the last
 report as away at once, and unlock and resume refresh it. While the computer
@@ -764,7 +764,7 @@ run waiting past its parent's turn end, because the subagent still runs: the
 turn end is kept as the deferred phase and lands when the last card closes. A
 main-agent card does not hold the run past turn end.
 
-The `needs_you` privacy preview reads **"An ADE agent needs you."** — the same
+The `needs_you` privacy preview reads **"A DAEX agent needs you."** — the same
 two words the status label and the title suffix use. "needs your input" was a third phrasing for one state, on the
 surface with the least room to explain itself. Where a specific line is
 available instead, chat surfaces supply `waitingOnYouDescription()` from
@@ -795,8 +795,8 @@ toasts for that chat. The chat keeps its row and state in Activity.
 
 ## Agent messages
 
-`ade notify` run by an agent inside a chat sends that chat's message (see the
-`ade-cli-control-plane` skill for when an agent may). The chat comes from the
+`daex notify` run by an agent inside a chat sends that chat's message (see the
+`daex-cli-control-plane` skill for when an agent may). The chat comes from the
 caller's identity, so an agent cannot post as another chat; `--session` lets a
 person's terminal name one.
 
@@ -825,12 +825,12 @@ person's terminal name one.
   muted chat, and desktop-first. Alerts about one chat share the APNs
   `thread-id` `session:<sessionId>`, so they stack together.
 
-Run outside a chat, `ade notify` keeps the plain account push described next.
+Run outside a chat, `daex notify` keeps the plain account push described next.
 
 ## Desktop notifications
 
 A fresh, unseen Activity event set to Notify can raise a desktop notification
-when ADE is in the background. The local brain reports questions, failures,
+when DAEX is in the background. The local brain reports questions, failures,
 goals and messages immediately. Account snapshots carry events from all
 machines, including pull requests. The same event only alerts once when both
 sources report it. Clicking opens the associated chat or pull request.
@@ -838,11 +838,11 @@ sources report it. Clicking opens the associated chat or pull request.
 Desktop alerts respect the event's project and computer settings, chat mutes,
 quiet hours and Hide previews. The phone delivery switch applies to phones.
 Goal and background service outcomes are desktop notices. A message received
-while ADE is focused appears as an in-app toast.
+while DAEX is focused appears as an in-app toast.
 
 ## Custom notifications
 
-Outside a chat, `ade notify --title "<t>" [--body "<b>"] [--open <ade link>]`
+Outside a chat, `daex notify --title "<t>" [--body "<b>"] [--open <ade link>]`
 sends a push the caller wrote to every phone on the account. Agents use it when the user asked to
 be told ("tell me when the deploy is done"), and automations use it through the
 **Send notification to mobile app** step (an ADE-action step for
@@ -856,7 +856,7 @@ phone that muted this machine stays quiet. An automation calls
 `notify.send` RPC (agent role or higher), so it works from any folder and with
 sync off, and it never registers the folder it runs in as a project. A chat or
 pull request link is stamped with the caller's project only when that folder is
-a registered ADE project.
+a registered DAEX project.
 
 | Field | Limit |
 | --- | --- |
@@ -867,10 +867,10 @@ a registered ADE project.
 
 A link is only worth sending if the phone can open it, so
 `normalizeCustomNotificationLink` (`shared/customNotificationLink.ts`) accepts
-what ADE opens — a chat, a pull request (`ade://pr/<number>` included),
-Activity with an optional `state=<column>`, `ade://workspace`, a Linear issue,
+what DAEX opens — a chat, a pull request (`daex://pr/<number>` included),
+Activity with an optional `state=<column>`, `daex://workspace`, a Linear issue,
 and the lane, file, commit, branch and proof links the phone hands to the
-computer — and refuses the rest, such as `ade://pr/` or `ade://prs`. `ade
+computer — and refuses the rest, such as `daex://pr/` or `daex://prs`. `ade
 notify` refuses a bad link; an automation whose link resolves badly at run time
 sends without it and reports `linkSkipped`. Before sending, the sender stamps
 its account machine key and the canonical project id onto a chat or pull
@@ -889,7 +889,7 @@ An account may send **60 per hour window**. The relay counts them in
 `rate_counters` (bucket `notify:<account>`) before the fan-out, so parallel
 calls cannot slip past the cap, and keeps those rows past the 15-minute rate
 prune so a quiet spell cannot reopen the hour early. Past the cap it answers
-`429` with `retryAfterSeconds` and a `Retry-After` header; `ade notify` exits
+`429` with `retryAfterSeconds` and a `Retry-After` header; `daex notify` exits
 non-zero and says when to try again. It also exits non-zero when this machine
 is signed out. Every call still counts against the daily request budget.
 
@@ -996,7 +996,7 @@ Presence reports include foreground state, whether an ambient Activity surface
 is visible, the currently visible item ids, and (desktop app only) `userActive`.
 The relay stores `ambientSurfaceVisible` too; before it did, the "this exact
 item is on screen" hold could never apply. They are posted every 30 s while
-the ADE window is visible and every 120 s while it is hidden, plus promptly on
+the DAEX window is visible and every 120 s while it is hidden, plus promptly on
 focus, on blur, on becoming visible again, and when the visible items change: a
 hidden window still has to hold its claim, but it does not need to hold it at
 foreground rates, and a 120 s-stale "hidden" claim right as the user returns is
@@ -1131,13 +1131,13 @@ group; PR rows never count) and `moreCount` (the roster overflow). It omits
 - Account-wide starts and content carry the installation's non-PII monotonic
   `ownershipEpoch`. The app ends activities whose attribute/content epochs do
   not match the current account owner. The widget extension applies the same
-  check before rendering and shows only a neutral Updating ADE state during the
+  check before rendering and shows only a neutral Updating DAEX state during the
   brief interval before the app can end a delayed old-account activity.
 
 **iOS rendering.** The Lock Screen is four equal tiles in one row — Needs you,
 Working, Waiting, Done — each an SF Symbol, a big number and a label in the
 column colour; a zero tile dims, and each tile links to
-`ade://activity?state=<column>`. The Dynamic Island's compact leading is the
+`daex://activity?state=<column>`. The Dynamic Island's compact leading is the
 Needs-you count (amber) when it is above zero, else the Working count (blue);
 the compact trailing is Working when the leading shows Needs you; the expanded
 island is the four tiles. A frame without `columns` (an older relay) is counted
@@ -1164,7 +1164,7 @@ working flip back and forth several times within one turn; the distinction rides
 along on the next transition that was already earned.
 
 Account Live Activity `Run` and `PullRequest` rows carry the source
-`accountMachineKey` as an additive optional wire field. Their exact ADE links
+`accountMachineKey` as an additive optional wire field. Their exact DAEX links
 preserve that key together with the session item/event or PR tab anchor. Older
 payloads without the field remain decodable, but account-wide payloads include
 it so the app can adopt/select the owning machine before opening the row.

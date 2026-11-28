@@ -1,6 +1,6 @@
 # Cross-machine session handoff
 
-Cross-machine handoff lets a user stop work in one ADE Work chat and continue the same task on another connected ADE machine. The source lane and chat remain intact; the destination receives a compatible lane (created or safely reused) and a deterministic handoff chat recreated from portable state.
+Cross-machine handoff lets a user stop work in one DAEX Work chat and continue the same task on another connected DAEX machine. The source lane and chat remain intact; the destination receives a compatible lane (created or safely reused) and a deterministic handoff chat recreated from portable state.
 
 This document defines the v1 product, transport, recovery, and security contract.
 
@@ -13,14 +13,14 @@ entry point calls the same `chat` action, `startCrossMachineHandoff`:
 - the desktop modal and the session menu's **Hand off › Another machine ▸**
   (including **Quick brief to <machine>**, which uses the chat's current model
   and settings);
-- `ade chat handoff <session> --to <name> …` (`--machine` is a hidden alias), so an agent can move its own
+- `daex chat handoff <session> --to <name> …` (`--machine` is a hidden alias), so an agent can move its own
   chat ("wrap up and continue this on the Mac mini");
 - the phone, through the sync remote command `chat.startCrossMachineHandoff`.
 
 The pickers on desktop, web and iOS offer the account's own computers only.
-`getCrossMachineHandoffOptions` still lists ADE Cloud computers (clients that
+`getCrossMachineHandoffOptions` still lists DAEX Cloud computers (clients that
 read the full list keep it); the UI drops them and shows one disabled
-**ADE Cloud** row: "ADE Cloud can't take a moved lane yet. Pick one of your
+**DAEX Cloud** row: "DAEX Cloud can't take a moved lane yet. Pick one of your
 computers."
 
 The brain reaches the destination over its agents' paired connection (the same
@@ -61,8 +61,8 @@ session summary as `crossMachineHandoff`. Live clients also get a live-only
 | `sending` | In flight. `checkpoint` names the last step passed: `prepared`, `destination_ready`, `accepted`, `marked`. |
 | `continued` | The destination chat started. The source locks turns and automatic work until the person chooses Work here instead (see below). |
 | `returned` | A chat that arrived here came back to its original chat. The original chat keeps its ID, accepts the returned history, and unlocks. |
-| `failed` | A step failed, or the destination refused the capsule. `reason` says which. A destination that fails after it already created the lane can leave that lane behind; ADE does not delete it, and a later move to that machine reports it as a blocker there rather than silently making a second chat. |
-| `unknown` | The destination may have accepted but ADE can't tell: the answer was lost, the answer came back without the new lane and chat, or a restart couldn't check the chat before resending. Never replayed automatically. It blocks new moves until it is retried or dismissed (see below). |
+| `failed` | A step failed, or the destination refused the capsule. `reason` says which. A destination that fails after it already created the lane can leave that lane behind; DAEX does not delete it, and a later move to that machine reports it as a blocker there rather than silently making a second chat. |
+| `unknown` | The destination may have accepted but DAEX can't tell: the answer was lost, the answer came back without the new lane and chat, or a restart couldn't check the chat before resending. Never replayed automatically. It blocks new moves until it is retried or dismissed (see below). |
 | `cancelled` | The person kept it here, denied the agent, sent a new message, or dismissed an `unknown` move. |
 
 The record is written before each step runs. The moment acceptance is about
@@ -84,7 +84,7 @@ stale (`CrossMachineSourceStaleError`, code `source_stale`). When the check
 itself fails (git unreachable, a source blocker, a corrupt capsule), nothing
 is known about the capsule, so nothing changes: a retry answers "Couldn't
 check the chat before retrying: <reason>" and leaves the record and outbox as
-they were, and a restart ends a `sending` move `unknown` ("ADE couldn't check
+they were, and a restart ends a `sending` move `unknown` ("DAEX couldn't check
 this chat after a restart: <reason>. Retry when it's reachable.") with its
 outbox kept. When the capsule is stale:
 
@@ -105,7 +105,7 @@ second chat there). `startCrossMachineHandoff` refuses ("A move
 to <machine> may have landed. Retry it, or open <machine> to check, or dismiss
 it."), and the options list it as the `move_unknown` blocker. The person (or the
 chat's own agent) clears it with **Retry**, or dismisses it with
-`cancelCrossMachineHandoff` (`ade chat handoff <session> --cancel`), which ends
+`cancelCrossMachineHandoff` (`daex chat handoff <session> --cancel`), which ends
 it `cancelled` ("You dismissed the move."), deletes its outbox and keeps
 `continuedOn`. The outbox file is removed when the
 move continues, is cancelled, fails before acceptance, or the chat is deleted;
@@ -160,7 +160,7 @@ link, destination lane, approval) comes only from the batch runner, and
 - **Agent scope follows persisted lineage.** A chat-bound agent may move its own
   chat or a descendant whose `orchestrationParentSessionId` chain reaches the
   caller (at most 32 links; cycles stop the walk) without approval, regardless
-  of permission level. ADE chats keep that parent in their own lineage (the
+  of permission level. DAEX chats keep that parent in their own lineage (the
   chat service's live session or persisted state, `getChatParentSessionId`);
   the session row is the fallback, for tracked agent CLIs. A single start against an unrelated chat waits for the
   person's approval even when that chat is full-auto. Batch starts compute the
@@ -238,17 +238,17 @@ expansion skip it.
 
 ### Coming back
 
-When an arrived chat is moved to the machine in its saved origin, ADE continues
+When an arrived chat is moved to the machine in its saved origin, DAEX continues
 the original chat with the same chat ID. A fork returns the provider session
-and only the ADE transcript events written while the chat was away: the
+and only the DAEX transcript events written while the chat was away: the
 imported prefix, the arrived copy's own **Arrived from** notice and the
-continuation prompt ADE sent on arrival (brief or fork) are left out, so the
+continuation prompt DAEX sent on arrival (brief or fork) are left out, so the
 original chat never gets them twice. A brief return appends the brief and the
 continuation instruction without replacing the provider session. Its summary
 contains only activity after the destination arrival boundary; it excludes the
 arrival notice and the first continuation prompt, as a fork return does.
 
-The original lane is reused. ADE fast-forwards it only when it is clean and
+The original lane is reused. DAEX fast-forwards it only when it is clean and
 strictly behind, accepts it when it is already at the returned commit, and
 refuses dirty or diverged lanes. A returned Git bundle lands through the same
 per-branch queue and safeguards as an initial handoff. Returned work never
@@ -261,7 +261,7 @@ machine it left.
 
 Batch returns keep parent-first chat order and map imported lanes back to their
 origin lane IDs. Each lane returns before its chats, so a refusal blocks its
-dependent chats while the failed lane item remains retryable. If ADE cannot
+dependent chats while the failed lane item remains retryable. If DAEX cannot
 prove the original chat, lane, provider or move record still matches, it
 refuses the return with a reason. That refusal is definitive (nothing was
 committed): it carries `cross_machine_return_refused` across the RPC envelope
@@ -290,16 +290,16 @@ The destination model, reasoning-effort, and permission pickers are unaffected b
 
 The action lives on any chat row's right-click **Hand off…** submenu (Local handoff, Another machine, Auto handoff). Local and remote route through `lib/chatHandoffIntent.ts`; Auto handoff opens the rule editor directly.
 
-1. ADE checks the source chat and Git lane.
+1. DAEX checks the source chat and Git lane.
 2. The user selects an eligible connected machine and may add a continuation note. The picker reports each machine's repository presence while it is open, resolved from the same `listProjects` call the prepare step consumes, so the hint costs no extra round trip.
 3. In the same setup step the user sets the destination chat's model, reasoning effort, fast mode, and permission mode. These are the composer's own control pills — the shared `PermissionModePicker` and `ReasoningEffortPicker`, not lookalikes — and each hides itself when the chosen model cannot honor it. Fast mode's Codex Ultrafast tier rides the capsule as `fastTier` when the destination model offers it, and the modal names it either way so a move never inherits a tier the modal hid. The capsule carries these fields and the destination applies them, so this picker is the only place they are decided; nothing is inherited from the local handoff drawer. In fork mode the model picker stays constrained to the source provider.
-4. ADE finds the same repository in the destination project registry.
-5. If the repository is missing, ADE shows the destination path, free-space result, route warning, and an explicit clone confirmation.
-6. ADE checks destination provider/model access, the published branch commit, and any existing destination lane.
+4. DAEX finds the same repository in the destination project registry.
+5. If the repository is missing, DAEX shows the destination path, free-space result, route warning, and an explicit clone confirmation.
+6. DAEX checks destination provider/model access, the published branch commit, and any existing destination lane.
 7. The user reviews the bounded-context and transport disclosures, then confirms.
-8. ADE rechecks the source chat, clean worktree, upstream, remote branch, and exact commit (the move's own `includeChanges` choice decides which rules apply).
+8. DAEX rechecks the source chat, clean worktree, upstream, remote branch, and exact commit (the move's own `includeChanges` choice decides which rules apply).
 9. The destination recreates or reuses the lane, starts the chat, and either dispatches the first continuation turn or completes a fork whose default continuation needs no new turn.
-10. Only after the destination runtime acknowledges a requested turn, or the no-turn fork reaches its durable dispatched checkpoint, does ADE mark the source chat as handed off.
+10. Only after the destination runtime acknowledges a requested turn, or the no-turn fork reaches its durable dispatched checkpoint, does DAEX mark the source chat as handed off.
 
 The modal closes as soon as the brain accepts the request. From then on the source chat's banner (above the composer, on desktop and iOS) reports the real durable checkpoints the move has passed rather than an indeterminate spinner, whoever started it. The destination chat gets a durable `cross_machine_handoff_arrived` notice and an **Arrived from <machine>** banner. The machine is named as the account lists it ("p1 test vm"), not by its host name, which on a cloud machine is only the instance id; the host name is the fallback when the account list can't be read.
 
@@ -309,14 +309,14 @@ The setup modal can be opened while a turn is active. It offers **Move when this
 
 Once destination acceptance has been dispatched, a requester timeout or
 connection loss does not prove that destination work stopped. The source chat's
-banner reports that ADE lost confirmation, that the destination chat may still appear, and
+banner reports that DAEX lost confirmation, that the destination chat may still appear, and
 that the user should check the other machine before retrying. Preflight and
 source-validation failures that happen before destination acceptance starts
 remain ordinary hard failures.
 
 ## Batch moves
 
-`ade chat move --to <name> <session> [<session>…]` (`--machine` is a hidden alias) moves a set of active
+`daex chat move --to <name> <session> [<session>…]` (`--machine` is a hidden alias) moves a set of active
 Work chats to one destination. `--all` selects every non-archived, non-settled
 Work chat owned by this project brain. Selected chats include their descendants
 by default; `--no-descendants` limits the batch to the named chats. The source
@@ -338,8 +338,8 @@ handoff record and outbox, so retries keep the same handoff ids and prepared
 capsules. A lane import also has an idempotent destination record. On restart,
 the source brain resumes remaining items in dependency order. A failed,
 unknown, or cancelled parent blocks its descendants, while unrelated lane and
-chat trees can continue. `ade chat move --status <batch-id>` shows each lane and chat state;
-`ade chat move --retry <batch-id>` resumes failed, unknown, and blocked items.
+chat trees can continue. `daex chat move --status <batch-id>` shows each lane and chat state;
+`daex chat move --retry <batch-id>` resumes failed, unknown, and blocked items.
 Only that retry retries a chat move that failed or lost its answer; a batch run
 woken by a finished move or by the startup sweep maps the move's state onto
 its item and never replays it. A batch item whose chat has since moved, or is
@@ -392,7 +392,7 @@ or scheduled work.
 
 ## Source contract
 
-By default ADE requires a clean, published Git branch (the opt-in below relaxes this):
+By default DAEX requires a clean, published Git branch (the opt-in below relaxes this):
 
 - no tracked, staged, or untracked working-tree changes;
 - no rebase or merge in progress;
@@ -400,19 +400,19 @@ By default ADE requires a clean, published Git branch (the opt-in below relaxes 
 - local `HEAD`, the upstream ref, and `git ls-remote origin refs/heads/<branch>` must resolve to the same commit; and
 - an origin remote must exist.
 
-The renderer provides a **Publish branch** action when a normal push is sufficient, and an **Update branch** action when the branch is strictly behind. Diverged branches still block: ADE does not pick a reconciliation strategy for the user.
+The renderer provides a **Publish branch** action when a normal push is sufficient, and an **Update branch** action when the branch is strictly behind. Diverged branches still block: DAEX does not pick a reconciliation strategy for the user.
 
-Every one of these source blockers must render. They are modeled as `BlockedActionReason` values from `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` — a title, a detail, and the action that clears it — rendered by `BlockedReasons`, and the primary button is a `BlockedActionButton` that takes those reasons instead of a `disabled` flag, so a surface cannot disable the action without also surfacing why. This is a deliberate guard against a bug ADE keeps regrowing: a blocking-error list that only ever feeds a `disabled` prop turns "update the source branch" into three green checks above a dead control. If a surface computes a blocker, that blocker must reach the user; a disabled control may never be the only signal.
+Every one of these source blockers must render. They are modeled as `BlockedActionReason` values from `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` — a title, a detail, and the action that clears it — rendered by `BlockedReasons`, and the primary button is a `BlockedActionButton` that takes those reasons instead of a `disabled` flag, so a surface cannot disable the action without also surfacing why. This is a deliberate guard against a bug DAEX keeps regrowing: a blocking-error list that only ever feeds a `disabled` prop turns "update the source branch" into three green checks above a dead control. If a surface computes a blocker, that blocker must reach the user; a disabled control may never be the only signal.
 
 ### Moving uncommitted and unpushed work (opt-in)
 
-With `includeChanges` (`AgentChatPrepareCrossMachineHandoffArgs`), the clean/published requirement is relaxed: the lane may be dirty, ahead of its upstream, or never pushed. A rebase or merge in progress still blocks, and so does a **diverged** branch — when the upstream or `origin/<branch>` (read with `ls-remote`) has commits HEAD lacks, ADE refuses rather than pick a reconciliation. The work travels as `capsule.gitBundle`, built by `packHandoffGitBundle` in `apps/desktop/src/main/services/chat/handoffGitBundle.ts`:
+With `includeChanges` (`AgentChatPrepareCrossMachineHandoffArgs`), the clean/published requirement is relaxed: the lane may be dirty, ahead of its upstream, or never pushed. A rebase or merge in progress still blocks, and so does a **diverged** branch — when the upstream or `origin/<branch>` (read with `ls-remote`) has commits HEAD lacks, DAEX refuses rather than pick a reconciliation. The work travels as `capsule.gitBundle`, built by `packHandoffGitBundle` in `apps/desktop/src/main/services/chat/handoffGitBundle.ts`:
 
 - **What travels.** A snapshot commit on top of HEAD holding the working tree — tracked edits, deletions, and untracked files — made in a private copy of the index (`GIT_INDEX_FILE` in a temp dir), so the user's staging and refs are untouched. The bundle holds only what origin does not have (`git bundle create … --not --remotes=origin`; the destination fetches the base from origin, so another remote does not count): unpushed commits plus the snapshot. A clean, fully pushed branch yields no bundle and takes the normal path.
 - **What does not.** Ignored files (`.env`, build output), stashes, hooks, Git config, and the staged/unstaged split: on arrival every change is unstaged.
 - **Refused, not half-moved.** A changed submodule pointer ("Submodule changes can't travel; commit and push them first.") and a changed Git LFS file ("Git LFS files can't travel; push them first."): a bundle carries neither the submodule's commits nor LFS content. Both are checked in the uncommitted snapshot and in every unpushed commit the bundle carries (`git log --raw -z --no-renames <tip> --not --remotes=origin`, then `check-attr filter` on those paths), with the same messages. Untracked files far past the cap are refused before anything is hashed.
 - **Cap.** Over 50 MiB raw, or when its base64 would push the whole capsule past the ~20 MiB transport budget (it counts against the same budget as fork history), the handoff is refused with "Push the branch, then hand off again."
-- **Source validation.** Before sending, ADE re-checks HEAD, recomputes the working tree's tree id and compares it with the prepared snapshot (or the tip when it was clean), and re-checks origin for divergence. Any change means preparing again.
+- **Source validation.** Before sending, DAEX re-checks HEAD, recomputes the working tree's tree id and compares it with the prepared snapshot (or the tip when it was clean), and re-checks origin for divergence. Any change means preparing again.
 
 The destination advertises `gitBundleSupport: true` in its preflight result; an older destination omits it and would silently drop the changes, so the source must refuse a bundle handoff to it. The source sends `hasGitBundle: true` in preflight args, which lifts the "remote branch is at the source commit" requirement (origin must still be readable, because it supplies the bundle's base commits). `applyHandoffGitBundle` then:
 
@@ -421,11 +421,11 @@ The destination advertises `gitBundleSupport: true` in its preflight result; an 
 - creates the branch, or moves an existing one **only forward** with a compare-and-swap `update-ref <ref> <new> <old>`; a branch with commits the handoff lacks is refused as diverged, and one checked out in a non-lane worktree is refused;
 - imports a new lane for it (or reuses an existing lane only when it is clean and at or behind the tip, fast-forwarding it), never the machine's primary checkout: a branch checked out there is refused in preflight. It then checks out the snapshot and resets the index to the tip, so the commits are history and the edits are uncommitted. A snapshot file that would overwrite an existing file in the lane is refused.
 
-Any failing step undoes the earlier ones in reverse: the lane is deleted, the branch ref restored (or removed), the fast-forwarded lane reset, and temp refs and files removed. Nothing is written into a path ADE did not create.
+Any failing step undoes the earlier ones in reverse: the lane is deleted, the branch ref restored (or removed), the fast-forwarded lane reset, and temp refs and files removed. Nothing is written into a path DAEX did not create.
 
 ## Portable capsule
 
-Brief mode does not treat provider-native thread or session identifiers as portable. Those identifiers can depend on machine-local provider storage, CLI state, credentials, or an auth account. A brief handoff therefore creates a bounded ADE capsule containing:
+Brief mode does not treat provider-native thread or session identifiers as portable. Those identifiers can depend on machine-local provider storage, CLI state, credentials, or an auth account. A brief handoff therefore creates a bounded DAEX capsule containing:
 
 - source machine label, chat identifier, provider/model label, and chat title;
 - repository origin, branch, and exact commit;
@@ -433,35 +433,35 @@ Brief mode does not treat provider-native thread or session identifiers as porta
 - a compact handoff brief (maximum 16,000 characters);
 - bounded recent file-change, command, and error references;
 - up to 12 referenced Linear issues; and
-- an optional user continuation note (maximum 4,000 characters), or ADE's default continuation instruction.
+- an optional user continuation note (maximum 4,000 characters), or DAEX's default continuation instruction.
 
 The brief capsule excludes:
 
 - provider-native thread/session IDs and full provider history;
-- full ADE transcripts;
+- full DAEX transcripts;
 - secrets and secret stores;
 - PTYs and terminal scrollback;
 - caches, dependency directories, and runtime processes;
 - uncommitted file contents, unless the user opts into moving changes (above); and
 - local artifact bytes.
 
-ADE redacts common secret-shaped values and replaces source-only absolute repository/home paths before hashing the capsule. It also removes Git/issue URL credentials, query strings, and fragments, and applies the same sanitizer to user-controlled titles and lane names. The destination verifies the capsule fingerprint and all size/type bounds before using it.
+DAEX redacts common secret-shaped values and replaces source-only absolute repository/home paths before hashing the capsule. It also removes Git/issue URL credentials, query strings, and fragments, and applies the same sanitizer to user-controlled titles and lane names. The destination verifies the capsule fingerprint and all size/type bounds before using it.
 
 ## Fork mode
 
-Fork mode transports the provider-native session data needed to continue full history, plus ADE transcript envelopes so the destination UI can render the conversation before any optional continuation note. Native files and ADE envelopes are gzip-compressed and base64-encoded inside the fingerprinted capsule. The uncompressed limits are 18 MiB for the provider's main session file, 4 MiB total for Claude sidecars, and 3 MiB for ADE transcript envelopes. Encoded payloads also have independent base64 bounds so validation can reject oversized input before decoding.
+Fork mode transports the provider-native session data needed to continue full history, plus DAEX transcript envelopes so the destination UI can render the conversation before any optional continuation note. Native files and DAEX envelopes are gzip-compressed and base64-encoded inside the fingerprinted capsule. The uncompressed limits are 18 MiB for the provider's main session file, 4 MiB total for Claude sidecars, and 3 MiB for DAEX transcript envelopes. Encoded payloads also have independent base64 bounds so validation can reject oversized input before decoding.
 
-Beyond the per-part limits, the whole fork capsule's base64 payload is held under a single ~20 MiB transport budget so it fits inside the sync envelope and WebSocket payload caps (both 25 MiB). When the main history plus transcript already fit but the Claude sidecars would push the total over budget, the sidecar group is dropped and the main conversation still travels. When the main history plus transcript alone exceed the budget, ADE returns the same "too large" failure the 18 MiB main-file cap produces, so the source can offer a brief instead.
+Beyond the per-part limits, the whole fork capsule's base64 payload is held under a single ~20 MiB transport budget so it fits inside the sync envelope and WebSocket payload caps (both 25 MiB). When the main history plus transcript already fit but the Claude sidecars would push the total over budget, the sidecar group is dropped and the main conversation still travels. When the main history plus transcript alone exceed the budget, DAEX returns the same "too large" failure the 18 MiB main-file cap produces, so the source can offer a brief instead.
 
 Provider handling is explicit:
 
-- **Claude:** ADE sends the session JSONL and, when they fit, its sibling `subagents/` and `tool-results/` sidecars. The destination assigns a new UUID and rewrites JSONL `sessionId` and `cwd` fields in both the main transcript and JSONL sidecars before wiring the Claude resume pointer.
-- **Codex:** ADE sends the discovered rollout JSONL. The destination installs it under its own `CODEX_HOME/sessions/YYYY/MM/DD/` store, then calls app-server `thread/fork` with `excludeTurns: true` and persists the returned thread as the chat resume target. `.jsonl.zst` rollouts are not relocated in this phase and fall back to brief mode.
+- **Claude:** DAEX sends the session JSONL and, when they fit, its sibling `subagents/` and `tool-results/` sidecars. The destination assigns a new UUID and rewrites JSONL `sessionId` and `cwd` fields in both the main transcript and JSONL sidecars before wiring the Claude resume pointer.
+- **Codex:** DAEX sends the discovered rollout JSONL. The destination installs it under its own `CODEX_HOME/sessions/YYYY/MM/DD/` store, then calls app-server `thread/fork` with `excludeTurns: true` and persists the returned thread as the chat resume target. `.jsonl.zst` rollouts are not relocated in this phase and fall back to brief mode.
 - **OpenCode:** the source calls `session.export({ sessionID, sanitize: true })`. The destination calls `session.import` with the exported payload, then `session.fork` on the imported session and `session.move` to the destination lane, and persists the forked session ID.
 
-ADE transcript envelopes keep their existing provenance and gain `providerOrigin: "handoff_fork"` plus the source ADE session ID. If the transcript exceeds 3 MiB, ADE drops the oldest envelopes and keeps the newest JSONL tail in order. Provider-native blobs are not secret-redacted because full provider history is the feature being requested; the review UI discloses that scope before transport.
+DAEX transcript envelopes keep their existing provenance and gain `providerOrigin: "handoff_fork"` plus the source DAEX session ID. If the transcript exceeds 3 MiB, DAEX drops the oldest envelopes and keeps the newest JSONL tail in order. Provider-native blobs are not secret-redacted because full provider history is the feature being requested; the review UI discloses that scope before transport.
 
-If the 18 MiB main-history limit is exceeded, ADE returns a typed “too large” failure so the source can offer a brief handoff instead. Claude sidecars that exceed their separate 4 MiB allowance are omitted as a group while the main conversation still travels.
+If the 18 MiB main-history limit is exceeded, DAEX returns a typed “too large” failure so the source can offer a brief handoff instead. Claude sidecars that exceed their separate 4 MiB allowance are omitted as a group while the main conversation still travels.
 
 Cross-machine fork requires the same provider and a usable destination runtime or CLI. Claude, Codex, and OpenCode support it. Cursor and Droid are brief-only across machines, for different reasons. Local Droid fork works, but its machine-local session index and relocated-file resume behavior are not yet proven portable. Local Cursor fork also works, but it is ADE-side context seeding rather than a provider fork — there is no provider session file, thread id, or artifact of any kind to package — so a Cursor fork has nothing to transport.
 
@@ -509,18 +509,18 @@ The source-side decoder correspondingly rejects a `behindBy` that is not a
 positive integer, so a zero-distance offer the destination would refuse can
 never render.
 
-## Continue on a new ADE Cloud computer
+## Continue on a new DAEX Cloud computer
 
-A chat or CLI whose ADE Cloud computer was deleted continues on a new computer
+A chat or CLI whose DAEX Cloud computer was deleted continues on a new computer
 in the same row (fork-continue). There is no source brain: the old computer
 saved a fork capsule to the account server at each rest save (the idle step,
-`prepare-stop`, `ade cloud save-for-rest`), and the new computer reads it from
+`prepare-stop`, `daex cloud save-for-rest`), and the new computer reads it from
 there. This capsule holds only the provider's history
 (`prepareCloudRestCapsule`): no Git check, no `gitBundle`, and empty
 `source.headSha` and `source.originUrl`. The lane's code comes from the lane
 backup, and the restore reads no Git facts from the capsule. It is refused
 while a turn runs, and it leaves a CLI running. The server side is in
-[ADE Cloud](../ade-cloud/README.md#continue-a-chat-whose-computer-is-gone-fork-continue).
+[DAEX Cloud](../ade-cloud/README.md#continue-a-chat-whose-computer-is-gone-fork-continue).
 
 The new brain (`apps/ade-cli/src/services/cloudChats/cloudChatRestore.ts`)
 makes the lane, then:
@@ -567,7 +567,7 @@ The chat session ID is deterministically derived from the handoff replay key. A 
 
 A bundle handoff binds the imported lane to the record before the changes land, so a crash mid-apply retries into that lane: if it already holds exactly this handoff (tip and working tree match the snapshot) the apply is a no-op, and once the record reaches `lane_ready` the apply is skipped entirely.
 
-Fork re-materialization is guarded by the same durable state. Installing the provider-native session files, calling the provider fork (`thread/fork`, `session.fork`, or the Claude resume rewrite), and seeding the ADE transcript envelopes run only when the record is not already `dispatched` or `complete`. A retry that finds the record past that point re-marks `dispatched` without importing again, so a resumed or reconnected fork never creates a duplicate forked thread or session. A fork whose continuation note is ADE's default sends no first turn — materializing the history and transcript is the continuation — and reaches `dispatched` directly; only a non-default note is dispatched as an acknowledged first user turn.
+Fork re-materialization is guarded by the same durable state. Installing the provider-native session files, calling the provider fork (`thread/fork`, `session.fork`, or the Claude resume rewrite), and seeding the DAEX transcript envelopes run only when the record is not already `dispatched` or `complete`. A retry that finds the record past that point re-marks `dispatched` without importing again, so a resumed or reconnected fork never creates a duplicate forked thread or session. A fork whose continuation note is DAEX's default sends no first turn — materializing the history and transcript is the continuation — and reaches `dispatched` directly; only a non-default note is dispatched as an acknowledged first user turn.
 
 This covers process restarts and mid-transfer disconnects at each boundary:
 
@@ -580,20 +580,20 @@ Partial destination resources are never anonymous: they remain associated with t
 
 The destination acceptance call is not cancellable through the paired runtime
 transport. A request-local timeout or interrupted connection therefore leaves
-the caller with an unknown outcome rather than a truthful cancellation. ADE
+the caller with an unknown outcome rather than a truthful cancellation. DAEX
 does not convert that state into a hard failure: the source UI uses the
 still-completing notice above, and a user retry reconciles through the durable
 handoff record instead of creating a second lane or chat.
 
 ## Transport and security
 
-The handoff uses the existing authenticated remote runtime connection selected by ADE:
+The handoff uses the existing authenticated remote runtime connection selected by DAEX:
 
 - SSH and Tailscale routes are shown as encrypted;
-- direct LAN paired WebSocket and ADE relay routes are shown as authenticated but not end-to-end encrypted by ADE; and
+- direct LAN paired WebSocket and DAEX relay routes are shown as authenticated but not end-to-end encrypted by DAEX; and
 - that LAN/relay disclosure renders as an informational notice on the review step, whose Send button is the confirmation, rather than as a separate checkbox.
 
-The renderer follows live connection snapshots while setup is open. No move binds final acceptance to a route kind: the brain rides the account's paired agent connection, and the modal only states which kind of route that is. ADE never replays this sensitive action automatically after a disconnect.
+The renderer follows live connection snapshots while setup is open. No move binds final acceptance to a route kind: the brain rides the account's paired agent connection, and the modal only states which kind of route that is. DAEX never replays this sensitive action automatically after a disconnect.
 
 The source side is not desktop-only either. The `chat` action-domain actions
 `prepareCrossMachineHandoff`, `validateCrossMachineSource`, and
@@ -609,15 +609,15 @@ For a paired desktop destination, the action is multi-project runtime JSON-RPC
 carried through the sync WebSocket's `rpc_data` channel. The sync host forwards
 those channel frames; its remote-command responder timeout does not wrap the
 full `chat.acceptCrossMachineHandoff` execution. SSH destinations use the same
-runtime RPC contract over `ade rpc --stdio`. In both cases the desktop applies
+runtime RPC contract over `daex rpc --stdio`. In both cases the desktop applies
 the request-local handoff timeout and preserves the unknown-outcome contract
 when confirmation is lost.
 
-The UI names what is included and excluded before final confirmation. Handoff clone authentication is always resolved on the destination: the main process strips renderer-supplied auth headers and disables ADE's normal one-shot source-token forwarding for this path. ADE does not put GitHub tokens in the capsule or the machine RPC. Artifact references are contextual text only and do not grant cross-machine file access.
+The UI names what is included and excluded before final confirmation. Handoff clone authentication is always resolved on the destination: the main process strips renderer-supplied auth headers and disables DAEX's normal one-shot source-token forwarding for this path. DAEX does not put GitHub tokens in the capsule or the machine RPC. Artifact references are contextual text only and do not grant cross-machine file access.
 
 ## Source state after success
 
-The source lane and chat are preserved. ADE emits a durable system notice containing the handoff ID and destination machine/lane/chat identifiers. The notice states that work stopped on the source after the destination chat started. The source is not deleted or silently archived.
+The source lane and chat are preserved. DAEX emits a durable system notice containing the handoff ID and destination machine/lane/chat identifiers. The notice states that work stopped on the source after the destination chat started. The source is not deleted or silently archived.
 
 ## Required coverage
 

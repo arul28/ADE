@@ -1,16 +1,16 @@
 # iOS Companion
 
-The ADE iOS app is a native SwiftUI client. It works in two ways, and the
+The DAEX iOS app is a native SwiftUI client. It works in two ways, and the
 person sees the same tabs in both:
 
-- **With a computer.** The phone is a controller for an ADE runtime
-  (`ade serve`) on one of the person's computers. It reads synced state from a
+- **With a computer.** The phone is a controller for a DAEX runtime
+  (`daex serve`) on one of the person's computers. It reads synced state from a
   local SQLite database and sends commands to the runtime over WebSocket. The
   desktop renderer is another client of the same runtime.
-- **With no computer.** ADE Cloud is one machine that every signed-in account
+- **With no computer.** DAEX Cloud is one machine that every signed-in account
   has. The phone reads saved chats, copies, Git summaries, files and history
   from the account server and GitHub. It wakes a cloud computer only to do
-  work. See [ADE Cloud on the phone](#ade-cloud-on-the-phone).
+  work. See [DAEX Cloud on the phone](#ade-cloud-on-the-phone).
 
 The phone never runs agents.
 
@@ -25,7 +25,7 @@ The phone connects to a **machine**, not to a desktop window. It shows the
 machine's account-wide custom name, else the computer name from its publisher.
 LAN, Tailscale and Relay are connection details, never part of the name.
 
-1. Sign in to the same ADE account on the phone and the computer. This is the
+1. Sign in to the same DAEX account on the phone and the computer. This is the
    main path: the computer shows through the account directory, and the phone
    adopts it through Relay with no PIN.
 2. For a direct recovery connection, open **Connections** on the computer. The
@@ -77,17 +77,17 @@ not a guest mode.
   picks the first mutual one, echoes it in `account_challenge_ok` and signs it
   with the challenge, so a peer cannot downgrade it. A host with no `aead` uses
   ChaCha20-Poly1305. With no mutual cipher, the phone releases nothing and asks
-  to update ADE on both devices.
+  to update DAEX on both devices.
 
 ### Pair with SSH
 
-SSH pairing is a one-time bootstrap for a Mac that has ADE. The phone takes a
+SSH pairing is a one-time bootstrap for a Mac that has DAEX. The phone takes a
 Nearby machine or a host or Tailscale address, port and macOS username, then:
 
 1. signs in with a private key;
 2. shows the Mac's `SHA256:` host-key fingerprint for trust on first use, and
    refuses a changed one later;
-3. runs `ade sync pair-device --json-stdin`, with the phone's public DPoP
+3. runs `daex sync pair-device --json-stdin`, with the phone's public DPoP
    identity in JSON stdin;
 4. saves the result as a normal pairing. Sync never uses SSH after that.
 
@@ -100,21 +100,21 @@ sync to the account.
 One machine token works over LAN and Tailscale and for all the machine's
 projects. `siteId` is a per-project detail, never a machine's visible identity.
 
-## ADE and ADE Beta
+## DAEX and DAEX Beta
 
 Two apps build from this project:
 
-- **ADE** (`com.ade.ios`, `Debug` and `Release`) gets stable releases.
-- **ADE Beta** (`com.ade.ios.beta`, `Beta`) gets every beta from
+- **DAEX** (`com.ade.ios`, `Debug` and `Release`) gets stable releases.
+- **DAEX Beta** (`com.ade.ios.beta`, `Beta`) gets every beta from
   `ios-testflight.yml`. `ADE_BETA_APP` selects its App Group
   (`group.com.ade.ios.beta`, in `ADESharedContainer`), `release_channel: beta`,
-  the name "ADE Beta", the orange `AppIconBeta` and `ade-beta://`
-  (`DeepLinkRouter` routes it like `ade://`). It has no App Clip.
+  the name "DAEX Beta", the orange `AppIconBeta`, and the `daex-beta://` and
+  `ade-beta://` schemes (`DeepLinkRouter` routes them like `daex://`). It has
+  no App Clip.
 
 The two apps share no data, keychain items or pairings, and both connect to
 Stable and Beta machines. They share one build-number sequence, so
-`MIN_SUPPORTED_MOBILE_APP_BUILD` means the same for both. See
-[the plan](../../plans/ios-beta-app.md).
+`MIN_SUPPORTED_MOBILE_APP_BUILD` means the same for both.
 
 ## Host version compatibility
 
@@ -131,9 +131,9 @@ because the connection is how the person learns the host needs an update.
   actions gated on the phone). A host that omits it is treated as limited, not
   as a failure. Settings shows "Machine update recommended" for a limited host
   (`SettingsConnectionHeader`).
-- **Missing actions** fail before they are queued or sent, with an "update ADE
+- **Missing actions** fail before they are queued or sent, with an "update DAEX
   on the machine" message.
-- **Update another machine.** A machine whose ADE is behind on its own
+- **Update another machine.** A machine whose DAEX is behind on its own
   update track gets **Update** / **Update & restart** on its Settings row
   (Settings › General's "Every machine" list and Settings › Machines read one
   store, `MachineUpdateStore.swift`), with **Update all** when several are
@@ -142,14 +142,14 @@ because the connection is how the person learns the host needs an update.
   - The phone asks `machine.updateImpact` first and names what the restart
     stops (chats mid-turn by name, the open CLI sessions and terminals), then
     sends `machine.updateAndRestart`. A host that does not advertise both keeps
-    its "update ADE on that computer" state.
+    its "update DAEX on that computer" state.
   - A machine that answers `updateInstallMode: "manual_download"` (a Linux
     AppImage, or an install that cannot replace itself) shows **Download the
     update** instead.
   - The newest build per track comes from the account directory's
     `GET /releases/latest` (the release manifests when signed out). A machine
     only gets a build of its own track. The version it comes back on settles
-    an answer lost to the restart. An ADE Cloud computer updates itself, so it
+    an answer lost to the restart. A DAEX Cloud computer updates itself, so it
     is never offered.
 - **App Store check.** `AppUpdateAdvisor` checks the public listing at most
   once in 6 h, also on foreground. A newer version shows a low-priority banner
@@ -257,8 +257,8 @@ own machine (`Views/Work/WorkFreeModels.swift`).
   refresh after it all go to that one machine (`workModelCatalog(on:)`).
   The page shows also when the machine lists no other model.
 - **New chat.** With nothing signed in there, a new chat starts on the free
-  default. It is ADE's pick: it is not saved as the remembered model, an
-  access-mode change keeps it ADE's pick, and nothing changes while a launch
+  default. It is DAEX's pick: it is not saved as the remembered model, an
+  access-mode change keeps it DAEX's pick, and nothing changes while a launch
   runs. A sign-in, or a machine with no free model, puts back the model the
   screen opened on. The default tries again after a download
   and after a sign-in on that machine (`WorkFreeModelsStatusStore.generation(for:)`).
@@ -291,7 +291,7 @@ apps/ios/
 │   │   ├── RemoteProjectAddSheet.swift, RemoteProjectAddSteps.swift # Add project
 │   │   └── DeepLinkRouter.swift     # ade://, ade-beta:// and https://ade-app.dev/open:
 │   │                                #   PR, session (WorkSessionNavigationRequest),
-│   │                                #   device sign-in, `ade://activity[?state=]`,
+│   │                                #   device sign-in, `daex://activity[?state=]`,
 │   │                                #   Linear; other links go to SendToMacCard
 │   ├── Models/
 │   │   ├── RemoteModels.swift       # Codable mirrors of shared types, lenient
@@ -361,8 +361,8 @@ apps/ios/
 │   │   ├── Activity/                # ActivityDrawerSheet, ActivityDrawerModel,
 │   │   │                            #   ActivityRow, ActivityBellButton
 │   │   ├── Account/                 # sign-in, access gate, connections
-│   │   ├── Components/              # ADEDesignSystem (ADEConnectionDot,
-│   │   │                            #   ADERootTabBarHiddenPreferenceKey), ADEUsageDesign,
+│   │   ├── Components/              # ADEDesignSystem (ADERootTabBarHiddenPreferenceKey),
+│   │   │                            #   ADEUsageDesign,
 │   │   │                            #   MachineRowView, ADEMobilePrimitives,
 │   │   │                            #   ADEInstructionErrorCard, ADETechnicalDetailsFold,
 │   │   │                            #   ADEStaleContentMarker, StartOnPicker, dictation
@@ -480,7 +480,7 @@ Rules that live in these files:
   when it arrives at cold launch. A lane, file, commit, artifact, repo-branch,
   full PR or projectless Linear link posts `.adeSendToMacRequested`, and
   `SendToMacCard` sends it to a paired host with `deeplinks.open`. An unknown
-  `ade://activity?state=` value is ignored.
+  `daex://activity?state=` value is ignored.
 - **Add project** shows on the Hub only when the runtime advertises
   `projectActions`.
 - **Slash commands** in the composer come from the host's registry
@@ -584,9 +584,9 @@ Three mechanisms keep the transcript feeling native. They are easy to regress,
 because each one trades a simpler implementation for a property the eye notices.
 
 **The user's own bubble paints on the tap frame.** Every other timeline change
-goes through the 90 ms coalescing rebuild in `scheduleTimelineSnapshotRebuild`,
+goes through the 90 ms coalescing rebuild of the `WorkChatTimelineSnapshot`,
 which is right for host deltas arriving 6-7×/s and wrong for the one change the
-user just caused. `applyLocalEchoTailImmediatelyIfPossible` appends the echo to
+user just caused. The local echo (`WorkLocalEchoMessage`) is appended to
 the existing snapshot synchronously and retires any in-flight rebuild
 generation, so a coalesced fold cannot overwrite the bubble it was built
 without. Image sends echo *before* the upload: the composer's downscaled
@@ -761,7 +761,7 @@ iPhones are `compact` and use the same views stacked.
   (`ADESettingsPageIntro`). Machines comes first and the split opens on it.
   General shows "You" and "Primary machine" as panels whose rows open Account,
   Providers, Usage or Machines. Account shows who you are, "Your computers"
-  (one ADE Cloud row, never a row per lane computer, and Manage connections),
+  (one DAEX Cloud row, never a row per lane computer, and Manage connections),
   Email, Account ID, a GitHub hint and "Sign out of this iPhone".
 - **Lists and details.** Lanes, PRs and Files use `DuoSplitScaffold`: side by
   side when wide, list then detail on a phone.
@@ -776,7 +776,7 @@ iPhones are `compact` and use the same views stacked.
 - **Crash context.** `CrashReporting.setDisplayLayout` tags Sentry events with
   the display family, edge bar and fold, with one breadcrumb per change.
 - **Fixtures.** `-adePreviewScreen duo-*` opens a fixture on any simulator
-  (`DuoPreviews.swift`, `DuoSplitPreviews.swift`). The ADE Cloud fixtures are in
+  (`DuoPreviews.swift`, `DuoSplitPreviews.swift`). The DAEX Cloud fixtures are in
   `Views/Cloud/CloudNoComputerPreviews.swift`,
   `Views/Cloud/CloudAtRestPreviews.swift` and `Views/Cloud/CloudPreviews.swift`:
   - chats: `duo-cloud-chat-asleep`, `duo-cloud-chat-waking`,
@@ -821,12 +821,12 @@ exposed as `SyncService.connectionHealth`), never the raw
 | `unreachable` | | red |
 | `disconnected` | | muted |
 
-`SettingsConnectionPresentation.statusTint`, `ADEConnectionDot`,
-`ADERootToolbarControls` and `SettingsStatusDot` share this mapping.
+`SettingsConnectionPresentation.statusTint` and `ADERootToolbarControls`
+share this mapping.
 
-- **`ADEConnectionDot`** (`ADEDesignSystem.swift`) is a 44 pt button with the
-  dot, the state and the machine name. It sits top-leading on every tab root and
-  deep screen, and opens Settings. Screens show no offline or reconnect cards
+- **The connection control** (`ADERootToolbarControls`) shows the dot, the
+  state and the machine name on every tab root and deep screen, and opens
+  Settings. Screens show no offline or reconnect cards
   of their own. The Work top bar also has a Settings gear beside the bell,
   hidden in multi-select.
 - **Hub.** With no bar, the Hub shows `HubNoMachineState`: "Cannot reach
@@ -838,10 +838,10 @@ exposed as `SyncService.connectionHealth`), never the raw
   current attempt targets while connecting or unreachable, and the attached
   host otherwise. Settings gets it as `connectAttemptHostName`, separate from
   `hostDisplayName`.
-- **Route badge.** `HubConnectionPill` and `SettingsConnectionHeader` show
-  `via LAN`, `via Tailscale` or `via ADE Relay` only after an authenticated
-  connection, from `lastConnectedRouteKind`, which roaming updates. Other states
-  show no badge. The pill has layout priority after the ADE mark.
+- **Route badge.** `SettingsConnectionHeader` shows `via LAN`,
+  `via Tailscale` or `via DAEX Relay` only after an authenticated connection,
+  from `lastConnectedRouteKind`, which roaming updates. Other states show no
+  badge.
 
 ### Machine naming and reachability
 
@@ -852,7 +852,7 @@ exposed as `SyncService.connectionHealth`), never the raw
   without a reconnect.
 - **Install label.** `AccountMachine` decodes optional `channel` (stable, beta,
   alpha) and `adeHome` (at most 120 characters); a bad value drops only the
-  label. `rowLabel` follows desktop `accountMachineRowLabel` ("MacBook Pro · ADE
+  label. `rowLabel` follows desktop `accountMachineRowLabel` ("MacBook Pro · DAEX
   Alpha", with the host's own " · Alpha" removed). Connection lists, Hub
   quick-connect and Settings show `rowLabel`; rename and matching use
   `displayName`. `MachineRowView` truncates in the middle.
@@ -921,7 +921,7 @@ Tailscale on is the one fix. `syncShouldShowTailscaleOffHint(...)`
 The scan reruns on `NWPathMonitor` changes, on foreground and before
 `enterUnreachableTerminalState` (whose error adds the Tailscale sentence). The
 card shows in `HubNoMachineState`, `HubConnectingCard` and
-`SettingsConnectionHeader` (`SettingsConnectionSnapshot.showTailscaleOffHint`).
+`SettingsConnectionHeader`.
 Its action opens `tailscale://`, else the App Store page.
 
 ### Connection words and failure cards
@@ -933,8 +933,7 @@ Its action opens `tailscale://`, else the App Store page.
   slow". There is no "Syncing" label.
 - **Accessibility.** The dot's label is "Connected to <machine>", with "Machine
   is responding slowly" when strained and the trimmed `lastFailureMessage` when
-  unreachable. `ConnectionHealthPresentation` takes only the health value and
-  the host name. The hint is "Opens settings to pair or reconnect", with
+  unreachable. The hint is "Opens settings to pair or reconnect", with
   `accessibilityShowsLargeContentViewer()`.
 - **Domain failure.** The one inline banner per tab is
   `SyncDomainStatus.inlineHydrationFailureNotice(for:)`, shown only for a
@@ -952,13 +951,11 @@ Its action opens `tailscale://`, else the App Store page.
   **Fix connection** calls `sync.recoverHost` (stop the blocking runtime,
   restart the brain) and lists the steps. Retry stays live during a repair.
   **Switch Mac** is always there. When no repair is offered, the card says
-  whether this iPhone may not stop the other runtime or ADE cannot identify it
+  whether this iPhone may not stop the other runtime or DAEX cannot identify it
   safely.
 - **Failed turns** show an instruction card (title, sentence, next step,
   folded details with Copy) from `errorInfo.presentation`, else from the error
   category. A turn is never titled "Error" or "Unknown".
-- **Files header.** `FilesHeaderStrip` adds "Syncing" (the Files domain is
-  hydrating), "Connecting" or "Offline".
 
 ## Account projects on the phone
 
@@ -973,7 +970,7 @@ project is one GitHub repository; each computer can hold copies.
 - **Join.** Each machine card joins its account project by the brain's id,
   then the account copy table, then GitHub `owner/name`. A removed project's
   card hides. A project no reachable machine shows gets its own card, which
-  opens in account scope (see [ADE Cloud on the phone](#ade-cloud-on-the-phone)).
+  opens in account scope (see [DAEX Cloud on the phone](#ade-cloud-on-the-phone)).
   The saved order uses account project ids.
 - **One card per project.** Other folders of the project are under the tile's
   "Other folders". A folder that is no account project shows under "Only on
@@ -998,19 +995,19 @@ project is one GitHub repository; each computer can hold copies.
 - **Use for new lanes** sends `projects.setMainCheckout` (runtime scope,
   controller only) to the folder's computer. `published: false` means saved on
   the computer but not yet uploaded, and the phone says so. A brain without the
-  action shows "Update ADE on <computer> to change this from your phone."
+  action shows "Update DAEX on <computer> to change this from your phone."
 - **Publish to GitHub** (on by default at create) sends
   `github.publishCurrentProject` with the computer's own GitHub sign-in. A
   computer without the action shows the switch off with a reason.
 
 ### GitHub on the phone
 
-The account's GitHub sign-in (the ADE GitHub App) lets the phone read PRs and
+The account's GitHub sign-in (the DAEX GitHub App) lets the phone read PRs and
 repositories from GitHub with no computer on.
 
 - **Token.** `GitHubAccountConnection` (`Services/GitHubAccountCredential.swift`)
   reads `/github/app/status`, signs in in a web sheet (`/github/app/sign-in`,
-  back on `ade://github/connected`) and gets a token from `/github/app/token`.
+  back on `daex://github/connected`) and gets a token from `/github/app/token`.
   The token is in the keychain (this device, no backup) for one account, until
   `useForSec` ends. An account switch, a disconnect or a new sign-in drops it
   and any answer in flight. If the keychain refuses the delete (locked),
@@ -1026,19 +1023,19 @@ repositories from GitHub with no computer on.
   GitHub"). Add project → From GitHub lists repositories directly when GitHub
   is connected or no computer is online.
 
-## ADE Cloud on the phone
+## DAEX Cloud on the phone
 
-ADE Cloud is one machine that every signed-in account has. The phone shows it
+DAEX Cloud is one machine that every signed-in account has. The phone shows it
 next to the person's own computers. Each cloud lane has its own computer
 behind it, but the phone never shows one cloud computer by name: every cloud
-computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
+computer is "DAEX Cloud" (`CloudLaneComputerLabels.label`,
 `Views/Cloud/CloudPhoneFormat.swift`).
 
 ### The rule: reading never wakes, doing wakes
 
 - **Reading** comes from the account server or GitHub, with no wake: saved
   chats, CLI and shell copies, Git summaries, files, history, the CTO copy,
-  Linear, and Settings › ADE Cloud.
+  Linear, and Settings › DAEX Cloud.
 - **Doing** wakes the computer: a send, "Wake and open" on a changed file,
   "Wake to use it" on a copy, "Wake and move", and the Wake button. The wake
   never blocks the screen. The person can leave the screen or the app.
@@ -1060,18 +1057,18 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   scope is saved in `ade.sync.activeAccountProjectId`. `activeProject` is then
   a synthetic summary with the id `account:<id>`.
 - In account scope, a command for a computer throws "Pick a lane on a computer
-  or on ADE Cloud." (`refuseAccountProjectScopeCommand`). The phone never
+  or on DAEX Cloud." (`refuseAccountProjectScopeCommand`). The phone never
   queues it.
 - Picking a project on a computer (`setActiveProjectId`) ends the scope.
 
 ### Work: new chats, saved chats and the queue
 
-- **New chat.** The machine picker always lists "ADE Cloud"
+- **New chat.** The machine picker always lists "DAEX Cloud"
   (`workNewChatCloudOption`, `Views/Work/WorkNewChatMachinePicker.swift`),
   also before the server answers. When the account is refused (out of hours,
-  blocked), the option shows the server's reason and is disabled. ADE Cloud is
+  blocked), the option shows the server's reason and is disabled. DAEX Cloud is
   preselected in account scope and when the account has no computer of its
-  own. With ADE Cloud picked, the lane list shows the project's cloud lanes,
+  own. With DAEX Cloud picked, the lane list shows the project's cloud lanes,
   and "new lane" is the default. The model chip opens the same
   `WorkModelPickerSheet` as every machine, fed by the server's catalog
   (`GET /cloud/models`, `cloudCatalog:`; `workModelCatalogGroups(cloudCatalog:)`),
@@ -1201,7 +1198,7 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
     changed file offers "Wake and open" or "Open the GitHub copy".
   - **History:** the pushed commits from GitHub, and a line for the commits
     that are on the lane only.
-- The Lanes machine filter has one "ADE Cloud" chip for every cloud lane.
+- The Lanes machine filter has one "DAEX Cloud" chip for every cloud lane.
 - **Move a lane.** The lane detail's ⋯ menu has "Move to…" when the lane has
   an open Work chat (`LaneMoveSheet`, `Views/Lanes/LaneMoveSheet.swift`). The
   move sends `chat.startCrossMachineBatchMove` to the lane's own computer
@@ -1209,11 +1206,11 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   commits, its uncommitted work and its open chats move together.
   - The places are the person's own computers. An offline computer, or one
     without the project, shows disabled with the reason.
-  - ADE Cloud shows as one disabled place: "ADE Cloud can't take a moved lane
+  - DAEX Cloud shows as one disabled place: "DAEX Cloud can't take a moved lane
     yet. Pick one of your computers." No action moves a lane onto a new cloud
     computer.
   - A resting cloud lane moves from its saved copy with no wake, as on the
-    desktop (see [ADE Cloud › Move this lane to](../ade-cloud/README.md#the-life-of-a-lanes-computer)).
+    desktop (see [DAEX Cloud › Move this lane to](../ade-cloud/README.md#the-life-of-a-lanes-computer)).
     When the saved copy is not complete, or the server refuses the delete,
     the sheet offers "Wake and move".
   - A lane whose computer was deleted moves from the kept lane
@@ -1231,14 +1228,14 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   A pane load reads at most 2 pages, because the server allows 30 Linear and
   Jira requests a minute. Linear writes still need a computer. iOS has no
   Jira pane.
-- **Settings › ADE Cloud.** With no computer, `CloudPaneStore.reloadDirect`
+- **Settings › DAEX Cloud.** With no computer, `CloudPaneStore.reloadDirect`
   (`Views/Cloud/CloudPaneSheet.swift`) reads `/cloud/account`,
   `/cloud/instances` and `/cloud/limits` directly. Limits are written with
   `PUT /cloud/limits` and `ifRevision`. Sign-ins come from `/cloud/sign-ins`,
-  which returns status only, never a secret. A provider that signs in on ADE
-  desktop (Antigravity) shows "Signed in from ADE desktop" when its login
+  which returns status only, never a secret. A provider that signs in on DAEX
+  desktop (Antigravity) shows "Signed in from DAEX desktop" when its login
   carried to the account. Qwen takes an API key.
-- **Settings › Machines** shows one ADE Cloud row ("N lane computers, M
+- **Settings › Machines** shows one DAEX Cloud row ("N lane computers, M
   awake"), not one row per cloud computer.
 
 ### Old servers and old computers
@@ -1247,7 +1244,7 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   state. A failed read keeps the last answer.
 - A computer without `chat.getCrossMachineHandoffOptions` and
   `chat.startCrossMachineBatchMove` shows "The computer this lane is on needs
-  an ADE update to move a lane from the phone."
+  a DAEX update to move a lane from the phone."
 
 ## Architectural pattern
 
@@ -1383,7 +1380,7 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    chunk reassembly, changeset apply, chat decodes; SQLite is FULLMUTEX), and
    frames apply in order. Chat payloads are gated on the raw dictionary
    (session id, subscription) before a `Task.detached` decoder
-   (`syncDecodeChatEventEnvelope`, `syncDecodeChatSubscribeSnapshot`); after
+   (`syncDecodeChatEventEnvelope`); after
    the decode the generation and subscription are checked again. Phone
    changesets are one durable pending batch; the cursor moves only on ack. A
    NACK or timeout retries it; after the budget the phone re-exports smaller
@@ -1673,7 +1670,7 @@ CLI row must never take the chat quick look.
 
 - **Default:** 30 s (`SyncRequestTimeout.defaultTimeoutNanoseconds`), "The
   machine took too long to respond. Try again."
-- **`chat.send`:** 120 s (`chatSendTimeoutNanoseconds`), "ADE couldn't confirm
+- **`chat.send`:** 120 s (`chatSendTimeoutNanoseconds`), "DAEX couldn't confirm
   whether this message started. Your draft was restored; check the transcript
   before sending again."
 - **A timeout does not drop the connection.**
@@ -1812,7 +1809,7 @@ The pipeline and the content-state contract are in
   drawer feed with `refreshLocalContent` (hash-deduped, at most once a second).
   It ends the activity when the account settles, Live Activities are off, or
   the user signs out, and ends one whose `ownershipEpoch` does not match the
-  current owner; the extension shows only **Updating ADE** until then. Rows keep
+  current owner; the extension shows only **Updating DAEX** until then. Rows keep
   `accountMachineKey` in their element links. `NSSupportsLiveActivities` and
   `FrequentUpdates` are in `Info.plist`; `aps-environment` and
   `remote-notification` are in `ADE.entitlements`.
@@ -1909,8 +1906,8 @@ derivation, acknowledgments) are in
   CTO shows a string badge when `SyncService.ctoAttention.awaitingInput` is
   true, because the CTO chat is in no roster (see
   [CTO › Hidden from rosters, but never silent](../cto/README.md#hidden-from-rosters-but-never-silent)).
-  On the Hub, `HubTopBar` badges the Chats button for personal chats awaiting
-  input (zero when the host lacks `personalChats.*`).
+  On the Hub, the Chats button is badged for personal chats awaiting input
+  (zero when the host lacks `personalChats.*`).
 - **Hiding the tab bar.** A screen sends `.adeRootTabBarHidden()`
   (`ADERootTabBarHiddenPreferenceKey`). `ADERootTabBarVisibilityModifier` on
   each root is the one reader and applies `.toolbar(.hidden, for: .tabBar)`.
@@ -1918,7 +1915,7 @@ derivation, acknowledgments) are in
   survives a push and would sit under the composer. On a display whose tabs run
   down an edge rail (the Duo's outer display) nothing hides it. On the inner
   display (`duo.isWide`) the tab bar is always hidden and the bottom bar holds
-  the tabs. `ADEUIKitAppearance.configureTabBar()` matches UIKit tab bars.
+  the tabs.
 
 ### Hub and machines
 
@@ -1946,10 +1943,10 @@ derivation, acknowledgments) are in
   "Show only" menu and the Start-on menu. A dropped machine's rows stay 20 s
   (`fleetMachineListsWork`, `MachineFleet.workListReconnectWindow`, restarted
   on foreground). A parked, unconnected or user-disconnected machine lists no
-  rows, and counts follow the list. ADE Cloud rows always list, from the last
+  rows, and counts follow the list. DAEX Cloud rows always list, from the last
   roster or, for a computer this phone never paired, from the account's saved
   chats (`restingCloudMachineRows`); opening them never wakes (see
-  [ADE Cloud on the phone](#ade-cloud-on-the-phone)). Machine filters only
+  [DAEX Cloud on the phone](#ade-cloud-on-the-phone)). Machine filters only
   narrow; a machine is chosen only where work starts. The focused machine is
   the internal home for calls that name no lane or session.
 - **Adding a machine.** With no primary, the next machine connected becomes
@@ -1960,7 +1957,7 @@ derivation, acknowledgments) are in
   from the Hub keeps the previous primary (`switchFocusKeepingPrevious`). A
   project the machine refuses shows its reason as a toast.
 - **Settings rows** show each link's real route and track their own action. The
-  title is the computer, with the install on its own line ("ADE Beta" or a dev
+  title is the computer, with the install on its own line ("DAEX Beta" or a dev
   home). A failed connect shows "Couldn't connect" and Retry; the machine page
   has the full reason. Relay close 4507 (the bridge refused the tunnel) gets
   `syncRelayHostDidNotAnswerMessage`; 4501 and 4509 keep the route-neutral
@@ -1972,7 +1969,7 @@ derivation, acknowledgments) are in
   computer that advertises its live port does not sweep default ports and ranks
   routes only by that machine's history.
 - **Drop reports.** A live connection that drops with 1006 or no code sends one
-  Sentry report (`SyncLiveDropReport`, area `sync_live_drop`: kind, route,
+  Sentry report (`SyncLiveDropReport`: kind, route,
   code, age bucket, the receive error's domain and code), at most once per kind
   in 10 minutes. A drop on a connection that went to the background, or that
   ends in the background, leaves a `sync.live_drop` breadcrumb instead (iOS
@@ -2036,7 +2033,7 @@ draft is a new message.
 
 ### Personal chats
 
-`HubPersonalChatsCard` is the only phone entry to projectless chats. It shows
+The Hub's personal chats card is the only phone entry to projectless chats. It shows
 counts when the focused host supports personal chats and opens
 `PersonalChatsScreen` with no project. The screen merges the summaries of each
 live machine that advertises `personalChats.list` (5 s timeout each), searches
@@ -2103,8 +2100,7 @@ actions and personal action names.
 - **Catalog.** The Hub merges the runtime catalog (local to that machine, no SSH
   recents) with cached projects, marks unavailable rows, and switches with
   `project_switch_request`. "Remove from list" hides the project and sends
-  `project_forget_request`. Tiles and the Projects button
-  (`ADEProjectHubButton`) show `MobileProjectSummary.iconDataUrl` (a 64×64 PNG)
+  `project_forget_request`. Tiles and the Projects button show `MobileProjectSummary.iconDataUrl` (a 64×64 PNG)
   through `projectIconImage(from:)` (one `NSCache`) and
   `Image.projectIconStyle(size:cornerRadius:)`. The brain makes that PNG
   (`projectIconThumbnail.ts`) with Electron's `nativeImage`, macOS `sips`, or,
@@ -2112,8 +2108,8 @@ actions and personal action names.
   (`resizeRgbaToLongEdgeSync`): non-interlaced PNGs up to 1024×1024 and 4 MB,
   size read from the header before decoding. A card whose computer sends no
   icon keeps the one the phone saved (`hubAccountCardPass`).
-- **Identity.** `SyncService.mergeCachedProjects` keeps the remote `projectId`
-  on the active project. `Database.upsertMobileProjectCache` saves summaries
+- **Identity.** The remote `projectId` is kept on the active project.
+  `Database.upsertMobileProjectCache` saves summaries
   without CRR capture and normalizes `rootPath`;
   `deduplicateProjectListByRoot` dedupes by that root. A removal stores the
   root key and id under the host profile; opening the project clears them.
@@ -2191,7 +2187,7 @@ actions and personal action names.
     any type, up to 50 MB (`workChatFileAttachmentMaxBytes` mirrors
     `MAX_CHAT_ATTACHMENT_BYTES`; change both). The begin action gates the whole
     ladder. A personal chat is images-only, whatever the host. An old host
-    shows "Update ADE on your computer to attach files and videos"; the
+    shows "Update DAEX on your computer to attach files and videos"; the
     images-only case shows nothing. Empty and oversize files fail on the phone.
   - `WorkChatAttachmentPreviewSheets.swift` previews non-images from
     `chat.getAttachmentChunk` in QuickLook or a player. Chips show `photo`,
@@ -2276,7 +2272,7 @@ iOS ports the desktop chip model to Swift (it cannot import
 
 - **Composer.** `WorkComposerTypedTriggers.swift` finds `@`, `/` and `#` at the
   cursor, and `WorkSmartLink` turns URLs and `ade://` links into the desktop
-  labels (`ade://pr/owner/repo/1237` → `#1237`; an unknown `ade://` shape keeps
+  labels (`daex://pr/owner/repo/1237` → `#1237`; an unknown `ade://` shape keeps
   its path). `permission` and `skill` chips match the desktop.
 - **`@` menu.** Models, chats, lanes, files, terminals, PRs, machines and MCP
   servers, three rows each with "Show N more"; a kind word (`@pr`, `@model`)
@@ -2317,7 +2313,7 @@ iOS ports the desktop chip model to Swift (it cannot import
   (`WorkMessageLinkMenuItems`, built only when drawn). Skill chips use
   `ade-skill://`: `WorkSkillInstructionsSheet` reads SKILL.md from the chat's
   machine with `chat.getSkillInstructions` (viewer-allowed, optional; resolved
-  by `readAgentSkill` from the lane's worktree, then the user and ADE roots,
+  by `readAgentSkill` from the lane's worktree, then the user and DAEX roots,
   capped at 128 KB). Without the sheet or the action, the chip is a label and
   the menu offers Copy only. Fixtures: `-adePreviewScreen chat-links`,
   `skill-instructions`.
@@ -2329,7 +2325,7 @@ iOS ports the desktop chip model to Swift (it cannot import
 `WorkSpawnNesting.swift` mirrors `sessionSpawnNesting.ts`. They are mirrors, not
 variants: the canonical-state and grouping tests catch drift.
 
-- **Derivation.** An approval, question or `ade chat ask` is `Needs you`; an
+- **Derivation.** An approval, question or `daex chat ask` is `Needs you`; an
   explicit settle applies only at rest; failed and stopped stay distinct; a
   clean exit is ended; a running row whose real activity is 3 h or more old is
   `Stale`. `AgentRunPhase` mirrors `shared/sessionStatusPresentation.ts`: blue
@@ -2406,9 +2402,8 @@ variants: the canonical-state and grouping tests catch drift.
   together (`prunePendingSessionOverlays`) and sweep on one timer per
   `SessionOverlayKind`.
 - **Row vocabulary.** `workSessionRowPresentation(session:summary:now:)`
-  derives phase, capsule, dot and status slot once, from one clock;
-  `workSessionStatusBadge`, `workSessionRowTone` and
-  `workSessionStatusPresentation` read it. Labels and hues come from
+  derives phase, capsule, dot and status slot once, from one clock; every
+  row element reads it. Labels and hues come from
   `ActivityPhaseVocabulary`.
 - **Status chips** are the board's columns: `WorkSessionStatusFilter` cases
   `needsYou`, `working`, `waiting`, `done` (mirroring `WorkBoardColumn`), with
@@ -2510,7 +2505,7 @@ tint, because amber means "your move".
 - **Context menu** matches desktop: destructive items last, a `Lane ▸` submenu,
   Settle hidden while starting, running or stale, **Keep active** only for a
   declared settle, **Dismiss & settle** for a needs-you row, and a disabled
-  **Resolve input to settle** for a prompt ADE cannot answer. Non-chat sessions
+  **Resolve input to settle** for a prompt DAEX cannot answer. Non-chat sessions
   delete through `work.deleteSession` (`SyncService.deleteWorkSession`, gated by
   `supportsWorkSessionDeletion`; the host stops a live runtime first, so "Stop &
   delete" and "Delete session" are one command). Chats use `chat.delete`.
@@ -2661,7 +2656,7 @@ display that is off.
 - **Inline citations.** `WorkMarkdownParsing.swift` turns a line of only
   `![caption](ade-proof://<id>)` into a `proofCitation` block and a
   `proof-compare` fence into `proofCompare`. `WorkProofCitation.swift` finds the
-  item (asking the host once more before showing "ADE has no proof with the id
+  item (asking the host once more before showing "DAEX has no proof with the id
   …"). Another project's or machine's chat reads its list and bytes from that
   host (`fetchRemoteChatComputerUseArtifacts`, `computerUse.listArtifacts`,
   `loadThisChatArtifact`). A failed load shows its reason and Retry
@@ -2737,7 +2732,7 @@ Release builds leave the branch out. `WorkToolsSheet` takes `previewState` and
     Claude's Main chat cache, Subagent cache, Extra usage, and per-account
     **Auto-compact** with more than one account). Each change goes through
     `providerAccounts.setSettings` with the `instanceId` and is read back, so an
-    older ADE that drops it shows an error.
+    older DAEX that drops it shows an error.
   - **Add account** makes a nameless account and opens
     `ProviderAccountSignInSheet`: it starts the host's login, polls
     `loginStatus`, and relays the pasted Claude code or shows the Codex device
@@ -2782,7 +2777,7 @@ after it ends, as on desktop. `workSessionShouldAppearInWorkList`
 
 - A nav-bar pill switches between **Chat** and **CLI**. In CLI mode,
   `workResolveCliProvider` takes the provider from the picked model.
-  `workNormalizedNewChatProvider` keeps Droid models on the `droid` provider.
+  `workNormalizedChatProvider` keeps Droid models on the `droid` provider.
 - The lane picker (`WorkLanePickerDropdown`, searchable, with an
   auto-create-lane row) is pinned above the composer and opens its list as a
   sheet. The screen parks the composer's focus while the sheet is up and
@@ -2838,15 +2833,15 @@ after it ends, as on desktop. `workSessionShouldAppearInWorkList`
 - `WorkComposerSuggestionController` shows the suggestion strip from the
   active trigger only: a per-provider slash catalog, and `@file` quick-open
   through `SyncService.quickOpen` (40 ms debounce). Confirmed tokens draw as
-  chips (`WorkComposerChipLayoutManager`), and `draftState.text` stays the
+  chips, and `draftState.text` stays the
   plain text that is sent.
-- `WorkSmartLinkDetector` draws GitHub, Linear, ADE and web URLs as chips.
+- `WorkSmartLinkDetector` draws GitHub, Linear, DAEX and web URLs as chips.
   Delete removes a whole URL, and a long press offers Copy link and Remove
   link.
 - Attachments draw in `WorkChatAttachmentTray`, with placeholder tiles until
   the image bytes sync.
 - The chat header's PR menu opens the lane's PR on GitHub, copies its link,
-  or starts the create-PR wizard (`singleModeOnly`). `WorkChatLanePrPolicy`
+  or starts the create-PR wizard. `WorkChatLanePrPolicy`
   decides whether a chat looks up a lane PR at all. The CTO chat and
   subagents do not, so they show no badge and send no request.
 - A row with a lane PR (`LanePrTag`) offers "Open in PRs tab" in its
@@ -2874,7 +2869,7 @@ after it ends, as on desktop. `workSessionShouldAppearInWorkList`
 - **Create.** The creation sheet can copy uncommitted changes into the new lane.
   Template-backed environment setup shows its progress.
 - **Options menu.** It copies deeplinks (`LaneDeeplinkHelpers`:
-  `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens
+  `daex://lane/<id>`, `daex://repo/<owner>/<repo>/branch/<branch>`) and opens
   `LaneManageSheet` (delete, appearance, archive), the mirror of desktop
   `ManageLaneDialog`. The sheet title has a pencil rename, hidden for the main
   checkout and for hosts without `lanes.rename`. Every lane is managed the same
@@ -2912,7 +2907,7 @@ after it ends, as on desktop. `workSessionShouldAppearInWorkList`
   transport failure or an `unknown` status keeps the last value. A brain
   without the action clears it, and the phone falls back to `awaitingInput`.
 - **Home asleep.** "Read where <name> left off" opens the CTO account copy (see
-  [ADE Cloud on the phone](#ade-cloud-on-the-phone)).
+  [DAEX Cloud on the phone](#ade-cloud-on-the-phone)).
 
 ## Lane data projection
 
@@ -2941,8 +2936,7 @@ after it ends, as on desktop. `workSessionShouldAppearInWorkList`
 - **Fast path.** The race leads with the network's remembered route, then
   `lastSuccessfulAddress`. `hello_ok` is the barrier: lane presence and catalog
   refresh run later in `schedulePostHelloWork`. `logProjectSwitchPhase` traces
-  phases (`ADE_SYNC_TRACE project_switch`). The runtime prewarms the two most
-  recent scopes (`prewarmRecentScopes` in the sync README).
+  phases (`ADE_SYNC_TRACE project_switch`).
 - **Stable id.** When the cached id and the machine's id differ for one root,
   the catalog reconcile adopts the machine's id once (`refreshProjectCatalog`).
   If it still changes while connected, `setActiveProjectId` restarts the first
@@ -3019,7 +3013,7 @@ cache again if a local revision landed meanwhile.
 - **Reconcile.** The list joins the bounded GitHub projection with the
   replicated mapped-PR cache, so linked rows work offline and a replicated
   merged or closed state beats a stale Open. All scope reads exact totals from
-  one cached GraphQL count; ADE and External count locally. Terminal history
+  one cached GraphQL count; DAEX and External count locally. Terminal history
   pages two at a time, up to ten. `prs_updated` invalidates the list; the view
   coalesces 300 ms and reads once with row revalidation off (no timer, no
   per-PR request). Manual refresh runs PRs and lanes in parallel.
@@ -3046,66 +3040,42 @@ cache again if a local revision landed meanwhile.
 
 ### PR detail screen
 
-Sources: `PrDetailScreen.swift` (`PrDetailView`), `PrConversationDigest.swift`
-(pushes, bot groups, story events), `PrDetailHeaderComponents.swift`,
-`PrGitHubDescriptionParser.swift`, `PrDetailOverviewTab.swift`,
-`PrHelpers.swift`, `PrDetailRedesign.swift`.
+Sources: `PrDetailScreen.swift` (`PrDetailView`), `PrDetailRedesign.swift`
+(the flat header, next-step bar, description and Duo cards),
+`PrConversationDigest.swift` (pushes, bot digests, story rows),
+`PrDetailHeaderComponents.swift`, `PrGitHubDescriptionParser.swift`,
+`PrDetailOverviewTab.swift`, `PrDetailChecksTab.swift`, `PrHelpers.swift`.
+The layout changes often; read the files for it. The contracts:
 
-- **Layout.** A single-column version of the desktop view. Overview is sibling
-  `List` rows (`overviewThreadRows`), so it virtualizes. The bar has a back
-  chevron, the number, author and state (`PrFlatDetailNavTitle`) and `⋯`.
-- **Reading order:**
-  1. `PrDetailHeaderCard`: number, author, age, state, title, `base ← head`,
-     lane.
-  2. `PrLocalLaneOfferBanner`, closed by default, when no local lane tracks the
-     branch: Create lane from branch (`prs.createLaneFromPrBranch`), Link an
-     existing lane (`prs.linkToLane`) or Open in GitHub. It is an offer;
-     nothing is gated on it.
-  3. `PrThreadDescriptionCard`: GitHub HTML becomes safe Markdown,
-     `<details>` becomes a `DisclosureGroup`. `prDescriptionPieces` (the twin of
-     desktop `prBodyProof.ts`) draws a picture alone on its line, a GitHub
-     attachment alone on its line as a tap-to-load video, and a Before/After
-     table as a comparison. Only GitHub-served media loads
-     (`prIsGitHubMediaURL`), because a remote picture tells its author who read
-     it. Long text folds behind "Show more".
-  4. `PrNeedsAttentionHeader`: open review threads with reply and resolve.
-  5. History from `buildPullRequestTimeline`, folded by
-     `buildPrDigestDisplayItems`: `PrPushDividerRow` per push and one
-     `PrBotGroupRow` per bot per push (`reviewerIsBot` / `authorIsBot` also
-     fold a bot login without `[bot]`).
-  6. Resolved threads, folded.
-  7. The comment composer (every PR).
-  8. People, the ADE stack and the post-merge cleanup banner.
-- **Merged facts.** `PrShippedFacts` gives up to three lines (`by arul · squash
-  · 3 Jan`, `12 commits · 9 files · open 2d 4h`, `was: auto-naming · 3 chats ·
-  2 proof`), each omitted without inputs.
-- **Next step bar** (`PrNextStepBar`, opaque, on every tab): the headline from
-  `PrNextStep.resolve` (the port of `resolvePrNextStep`) and one action. Merge
-  state comes only from the snapshot: "Checking merge status…" while loading,
-  "Merge status unavailable" when none came; never the list row's data. A tap
-  opens `PrNextStepSheet` (detail, chips, the second action, "Merge anyway"
-  for an admin bypass). Overview has no merge rail or checks, commits and files
-  cards.
-- **Tabs** Overview, Files, Checks; Checks has `PrChecksTabNote`. A saved
-  `.activity` selection opens Overview. `⋯` adds draft toggle
-  (`prs.setDraft`), auto-merge (`prs.setAutoMerge`, shown by
-  `autoMergeAllowed`) and Copy number, branch and checkout command.
+- **Description.** GitHub HTML becomes safe Markdown; `<details>` becomes a
+  `DisclosureGroup`. `prDescriptionPieces` (the twin of desktop
+  `prBodyProof.ts`) draws pictures, tap-to-load videos and Before/After
+  tables. Only GitHub-served media loads (`prIsGitHubMediaURL`), because a
+  remote picture tells its author who read it.
+- **Bots fold.** History groups one digest per bot per push
+  (`reviewerIsBot` / `authorIsBot` also fold a bot login without `[bot]`).
+- **Next step** (`PrNextStep.resolve`, the port of desktop
+  `resolvePrNextStep`). Merge state comes only from the PR snapshot ("Checking
+  merge status…" while loading, "Merge status unavailable" when none came),
+  never from the list row's data.
+- **No local lane.** The screen offers Create lane from branch
+  (`prs.createLaneFromPrBranch`), Link an existing lane (`prs.linkToLane`) or
+  Open in GitHub. Nothing is gated on it.
+- **PRs with no row** open the same screen as `gh:owner/repo#number`, seeded
+  from the warm cache, then `prs.getMobileGithubDetail` in one command.
+  `unavailableParts` keeps the last good fields and shows a partial notice;
+  retry waits the 25 s window unless explicit.
 - **Derived models** (timeline, digest, thread split, fallback PR) are built in
   `recomputeDerivedModels()`, never in `body`.
-- **PRs with no row** open the same screen as `gh:owner/repo#number`, seeded
-  from the warm cache, then `prs.getMobileGithubDetail` in one command. Reads
-  and actions are the same as with a lane; `hasLocalLane` only shows the
-  banner. `unavailableParts` keeps the last good fields and shows a partial
-  notice; retry waits the 25 s window unless explicit.
-- **CI checks.** The phone never decides CI. Every surface (`PrRowCard`, the
-  next-step chips, `PrMergeChecklist`, `prComputeMergeGate`, Work-chat PR views,
-  `PrDetailChecksTab`) reads the host's `checksStatus` (`passing | failing |
-  pending | none | not_run`), `checksReason` and `checksMissingRequired`.
-  `not_run` is a dashed ring and "No CI ran on this commit" over `checksReason`;
-  `none` stays quiet. `prChecksSummaryStats` (`PrChecksStatStrip`) gives
-  neutral and skipped their own muted bucket, and under `not_run` marks
-  passing rows unverified. Missing required contexts show as ghost rows. See
-  [pull-requests](../pull-requests/README.md#checks-rollup-what-counts-as-a-pass).
+- **The phone never decides CI.** Every surface (`PrRowCard`, the next-step
+  chips, Work-chat PR views, the Checks tab) reads the host's `checksStatus`
+  (`passing | failing | pending | none | not_run`), `checksReason` and
+  `checksMissingRequired`. `not_run` is a dashed ring and "No CI ran on this
+  commit"; `none` stays quiet. Missing required contexts show as ghost rows.
+  See [pull-requests](../pull-requests/README.md#checks-rollup-what-counts-as-a-pass).
+- **`⋯`** adds the draft toggle (`prs.setDraft`), auto-merge
+  (`prs.setAutoMerge`, shown by `autoMergeAllowed`) and Copy number, branch
+  and checkout command.
 - **Palette.** The iOS kit (`ADEKit.swift`; see
   [visual language](../../design/visual-language.md#ios)) with no blur or glow.
   GitHub state colors (open `#3fb950`, merged `#a371f7`, closed `#f85149`)
@@ -3199,10 +3169,10 @@ The sections above describe each area. This table gives only its state.
 | Sync: native SQLite with pure-SQL CRR, deflate, chunked envelopes, protocol version floor | Implemented |
 | Hub, account projects, personal chats, several machines at once | Implemented |
 | Lanes, Files, Work, PRs and CTO tabs | Implemented |
-| ADE Cloud with no computer | Implemented ([ADE Cloud on the phone](#ade-cloud-on-the-phone)) |
+| DAEX Cloud with no computer | Implemented ([DAEX Cloud on the phone](#ade-cloud-on-the-phone)) |
 | Push notifications, Live Activity, Lock Screen and Home Screen widgets | Implemented (push and Live Activity starts need a physical iPhone to verify) |
 | iPad and iPhone Duo layouts | Implemented (`Views/Duo/`) |
-| Settings | Implemented for pairing, account, providers, usage, machines and ADE Cloud; not all desktop settings |
+| Settings | Implemented for pairing, account, providers, usage, machines and DAEX Cloud; not all desktop settings |
 | Automations and History tabs, Control Center widgets, Spotlight | Not built |
 
 ## Gotchas
@@ -3270,7 +3240,7 @@ The sections above describe each area. This table gives only its state.
   `listChatSessions` fails) omits the open chat and a nil summary disables the
   composer's model controls (`summary.isAvailable`). A project switch or
   disconnect clears it all (`resetChatEventState(clearHistory: true)`).
-- **`ADE_PROJECT_ROOT`.** `ade serve` pre-registers that project
+- **`ADE_PROJECT_ROOT`.** `daex serve` pre-registers that project
   (`ProjectRegistry.add`, `scopeRegistry.ensureSyncHost(preferredSyncProjectId)`).
   Without it, the phone waits for the desktop to pick a project.
 - **Lane presence** is best effort: a 30 s announce, a 60 s runtime TTL. A
@@ -3374,7 +3344,7 @@ The sections above describe each area. This table gives only its state.
   first body; "Session unavailable" waits for the session-row load. Rows use the
   render signature, not `body`, for preview and time. The timeline snapshot has
   no previews; cached previews attach only to visible rows. Bubble width is
-  measured once at the viewport. `WorkRootTranscriptCache` is a reference
+  measured once at the viewport. The root transcript cache is a reference
   cache, not `@State`. Root polling ignores terminal-buffer changes when chat
   events exist. Preview classification uses the full message (wireframe glyphs
   and aligned columns get fixed width; fenced code and tables keep Markdown); a
@@ -3540,7 +3510,7 @@ The sections above describe each area. This table gives only its state.
 - **Usage limits.** `WorkUsageLimitResumePill` reads
   `AgentChatSessionSummary.usageLimitResume`, else `usageLimitParkedUntil` from
   an older host, and opens `WorkUsageLimitResumeSheet` ("<Provider> usage
-  limit", when ADE sends `"continue"`, **Nothing is lost. Subagents restart with
+  limit", when DAEX sends `"continue"`, **Nothing is lost. Subagents restart with
   it.**, raw detail, and **Resume now**, **Try again** / **Turn on**, **Fork in
   this lane**, **Don't continue**). A refusal (`no_live_usage_limit`,
   `resume_in_flight`) is an `ok: false` answer: the phone shows the host's
@@ -3602,7 +3572,7 @@ The sections above describe each area. This table gives only its state.
   `subscribedTerminalSessionIds` from its last offset. A host with no offsets
   gets snapshots of up to 240 KB.
 
-### ADE Cloud
+### DAEX Cloud
 
 - **A cloud open must not wake.** Opening a cloud chat, lane or copy calls
   `MachineFleet.connect(…, wake: false)` or reads the account. Only a doing
@@ -3612,7 +3582,7 @@ The sections above describe each area. This table gives only its state.
   wake path first. In account scope, `refuseAccountProjectScopeCommand` throws
   before the queue.
 - **Never show one cloud computer.** Name it with
-  `CloudLaneComputerLabels.label` ("ADE Cloud"); pickers and filters show one
-  ADE Cloud entry.
+  `CloudLaneComputerLabels.label` ("DAEX Cloud"); pickers and filters show one
+  DAEX Cloud entry.
 - **A cloud send keeps its message id.** A retry after a network failure sends
   the same `messageId`; a refusal clears it.

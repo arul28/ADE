@@ -5,30 +5,30 @@ account's other machines, drive their devices, and hear back when a child they
 started there finishes. The person's surfaces (the cross-machine Work list,
 drafts on another machine, handoff) are described elsewhere; this is the agent
 half. The words and commands agents see (machine, device, "your code there",
-`ade devices`, `--device`, `--code`, `--to`) are specified in
+`daex devices`, `--device`, `--code`, `--to`) are specified in
 [devices and machines](./devices-and-machines.md); this page is how they work.
 
 ## What an agent can do
 
 ```bash
-ade machines list --text                          # roster: name, online, platform, projects
-ade machines list --projects --text               # …with each machine's projects
-ade chat list --machine "Mac mini" --text         # that machine's checkout of this repo
-ade chat list --all-machines --text               # every machine, one table with a MACHINE column
-ade lanes list --machine "Mac mini" --project Versic --text
-ade chat read <id> --machine "Mac mini" --text
-ade chat create --machine "Mac mini" --lane <lane there> --type subagent \
+daex machines list --text                          # roster: name, online, platform, projects
+daex machines list --projects --text               # …with each machine's projects
+daex chat list --machine "Mac mini" --text         # that machine's checkout of this repo
+daex chat list --all-machines --text               # every machine, one table with a MACHINE column
+daex lanes list --machine "Mac mini" --project Versic --text
+daex chat read <id> --machine "Mac mini" --text
+daex chat create --machine "Mac mini" --lane <lane there> --type subagent \
   --provider claude --model anthropic/claude-opus-5 --prompt "build and test the iOS app"
                                                   # no --lane: the project's primary lane there
-ade chat create --machine "Mac mini" --clone …    # set the repo up there first (GitHub only)
-ade chat create --machine "Mac mini,Linux box" …  # one child per machine
-ade chat launch "fix the flaky test" --machine "Mac mini"   # new lane there
-ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
-ade chat message <id> --machine "Mac mini" --kind auto --text "also run the UI tests"
-ade apple screenshot --machine "Mac mini" --lane <lane there>
-ade apple proof --machine "Mac mini" --lane <lane there> --caption "Login works"
-ade usage limits --machine "Mac mini" --text      # that machine's accounts and what is left
-ade usage limits --all-machines --text            # every machine's accounts in one table
+daex chat create --machine "Mac mini" --clone …    # set the repo up there first (GitHub only)
+daex chat create --machine "Mac mini,Linux box" …  # one child per machine
+daex chat launch "fix the flaky test" --machine "Mac mini"   # new lane there
+daex chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
+daex chat message <id> --machine "Mac mini" --kind auto --text "also run the UI tests"
+daex apple screenshot --machine "Mac mini" --lane <lane there>
+daex apple proof --machine "Mac mini" --lane <lane there> --caption "Login works"
+daex usage limits --machine "Mac mini" --text      # that machine's accounts and what is left
+daex usage limits --all-machines --text            # every machine's accounts in one table
 ```
 
 `--machine` takes a machine key or an unambiguous display name. A name that
@@ -41,10 +41,10 @@ quoted into one word with its value (`"--machine X --lane Y"`, built in one
 shell variable) is refused before anything runs, since it would otherwise be
 ignored and the command would run here. On the other
 machine the project is, in order: `--project <name|path|id>` (`--machine-project`
-for commands that already use `--project`, such as `ade apple`), else the
+for commands that already use `--project`, such as `daex apple`), else the
 checkout of this repository matched by normalized git origin. `--personal`
 commands target that machine's projectless chats. This shell's lane is never
-sent: name a lane there with `--lane` (from `ade lanes list --machine …`), or let
+sent: name a lane there with `--lane` (from `daex lanes list --machine …`), or let
 `chat launch` create one.
 
 An offline machine fails at once with when it was last seen; nothing is queued.
@@ -54,7 +54,7 @@ one row saying so.
 Provider quota belongs to the machine, not a project, so `usage limits` and
 `usage snapshot` run in this repository's checkout there when it has one and
 otherwise in the project that machine opened most recently (the `anyProject`
-scope). A machine with no project open in ADE says so. A host older than
+scope). A machine with no project open in DAEX says so. A host older than
 `usage.getUsageLimits` answers with its full snapshot, and the CLI cuts it down
 to the same report.
 
@@ -77,16 +77,16 @@ stderr. No match: the command runs here and fails as before, naming the
 machines that were offline or did not answer. Two matches fail and list both.
 
 The match is kept in `<ADE_HOME>/cache/chat-machines.json` (24 hours, 200
-entries), so the next command asks only that machine. `ade chat locate <id>`
+entries), so the next command asks only that machine. `daex chat locate <id>`
 prints the answer. `chats.locate` is read-only and reachable by other
 machines' agents; it names only the project, which `projects.list` already
 shows them. A machine older than it answers "isn't available", reported as
-"no answer". Through ADE MCP the CLI does not look anywhere else; ADE MCP
+"no answer". Through DAEX MCP the CLI does not look anywhere else; DAEX MCP
 finds the computer and forwards the call itself (docs/features/ade-mcp).
 
 ## Running a command in a work copy there
 
-`ade shell start --machine <name> [--wait] -- <command>` runs one command on
+`daex shell start --machine <name> [--wait] -- <command>` runs one command on
 another machine for this chat, without a lane or a chat there. The other
 machine keeps a **work copy** for the chat
 (`apps/desktop/src/main/services/remoteWork/remoteWorkCopyService.ts`): a plain
@@ -124,7 +124,7 @@ error only when it is for the same commit.
   `--code fresh` resets anyway.
 - **Files made there stay.** A file that is untracked, not ignored, and not
   written by the last sync (a `.xcodeproj` from `xcodegen generate`, a file
-  `ade files push` put there) does not refuse a sync: it is kept in place
+  `daex files push` put there) does not refuse a sync: it is kept in place
   (`filesMadeHere` in the copy service; left out of `git clean` with an
   anchored `-e` pattern each, and out of the tree recorded as synced, so the
   next sync keeps it again). The answer lists them (`workCopy.keptFiles`). A
@@ -144,8 +144,8 @@ error only when it is for the same commit.
   that the host's git ignores (global excludes, `.git/info/exclude`) is left
   by `git clean -fd`, so the sync deletes the patch's new paths inside the copy
   before it applies.
-- **Files.** `ade files push --machine <name> <local> <remote>` and
-  `ade files pull --machine <name> <remote> <local>` move one file to or from
+- **Files.** `daex files push --machine <name> <local> <remote>` and
+  `daex files pull --machine <name> <remote> <local>` move one file to or from
   the chat's work copy there (`remoteWorkFiles.ts`, hidden tool
   `work_copy_file`; limits in `shared/types/remoteWork.ts`): 4 MiB chunks,
   256 MiB per file, checked by size and sha256, written to a temp file beside
@@ -166,7 +166,7 @@ error only when it is for the same commit.
   its shell, leading `NAME=value` words included; a `-c "<line>"` command goes
   to the shell as written. The shell ends with the command's exit code. `--wait` streams the output
   and exits with that code. The shell is owned by the caller's foreign id, so
-  only that chat reads, writes or stops it (`ade terminal … --machine`). On
+  only that chat reads, writes or stops it (`daex terminal … --machine`). On
   Windows a command whose command line would pass 32,767 characters (the
   `-EncodedCommand` form more than doubles a script) is refused before the
   copy syncs (`command_too_long`); put the script in a file in the copy.
@@ -175,18 +175,18 @@ error only when it is for the same commit.
   no lane ports or host name, and none of the host's orchestration ids;
   `ADE_CHAT_SESSION_ID` stays the caller's `remote:` id so `ade` calls from it
   act as that chat. Lane commands there without `--lane` say the shell has no
-  ADE lane (`envLaneIdForLaneCommand`). A terminal whose terminal host process
+  DAEX lane (`envLaneIdForLaneCommand`). A terminal whose terminal host process
   dies prints why, and each stop of such a shell logs
   `pty.remote_work_shell_disposed`.
 - **No repository.** `ade shell start --machine <name> --no-code [--wait] --
   <cmd>` (old name `--scratch`) runs a command that needs no code
   (`nvidia-smi`, a disk check) in an empty folder under `<ADE_HOME>/remote-work/scratch/` there: no work copy,
-  no git, no commit to push. It runs in any project open in ADE there (the
+  no git, no commit to push. It runs in any project open in DAEX there (the
   `anyProject` scope; this repository's checkout when there is one). The
   folder goes when the shell ends; the hourly sweep removes any older than a
   week. While it runs it counts as a shell of this chat there, so a synced
   command waits for it as for any other.
-- **Cleanup.** `ade shell clean --machine <name>`; a week unused; the source
+- **Cleanup.** `daex shell clean --machine <name>`; a week unused; the source
   chat deleted or archived on its own machine; a low disk deletes other idle
   copies, oldest first, before a new copy is refused. The brain sweeps every
   project in `<ADE_HOME>/remote-work/projects.json` a minute after it starts
@@ -199,14 +199,14 @@ error only when it is for the same commit.
   emulator is in use (`registerRemoteWorkDeviceCheck`); a gone or archived
   chat still releases it under the rules above. An unreadable
   `copies.json` stops every change rather than being read as empty.
-- **The simulator.** `ade apple … --machine <name>` with no `--lane` uses the
+- **The simulator.** `daex apple … --machine <name>` with no `--lane` uses the
   work copy as its lane there: the lane id is `remote-work-<hash>`
   (`remoteWorkLaneIdFor`), its build root is the copy, and the device registry
   treats it as live while the copy exists. Its first device is one of the
   user's own simulators on that machine that no lane holds (shut-down ones
-  first; never an ADE device, which a lane's end would delete), attached so
-  ADE never deletes it; only when none is free does ADE make one (`start` and
-  `launch` both go through `ensure`). A device ADE made for a copy is held
+  first; never a DAEX device, which a lane's end would delete), attached so
+  DAEX never deletes it; only when none is free does DAEX make one (`start` and
+  `launch` both go through `ensure`). A device DAEX made for a copy is held
   while the copy exists, for this project's cleanup pass and for every other
   project's on that machine (`appleMarkerProjectHolds` reads the copy list,
   since a work copy has no `lanes` row); a copy list that cannot be read
@@ -243,7 +243,7 @@ approves) starts new work. Running work stays where it is.
   their config files, never a token), Xcode and simulators, the OS name and
   the work copies it keeps. One reader per brain, answers cached 5 s; nothing
   runs unless someone asks. Preload: `window.ade.machineStats.get(pin)`; CLI:
-  `ade actions run machine_stats.get [--machine <name>]`.
+  `daex actions run machine_stats.get [--machine <name>]`.
 - **Each machine has a preference.** Prefer, Normal, Less often or Manual only,
   set on its page in Settings › Machines. It lives in the account settings
   store (scope `all`, key `machine.placement.<machineKey>`, one key per machine
@@ -253,7 +253,7 @@ approves) starts new work. Running work stays where it is.
 - **"Least loaded"** (`autoLaneMachine` in `renderer/components/lanes/laneMachines.ts`)
   scores each machine's headroom from its stats (idle CPU, free memory, a
   little for more cores, less per running build, much less on battery or for
-  a laptop ADE does not keep awake), scales it by the preference (×1.5, ×1,
+  a laptop DAEX does not keep awake), scales it by the preference (×1.5, ×1,
   ×0.5) and picks the best; low disk still loses first, and close scores fall
   back to running lanes and then the machine the tab is on. A machine with no
   stats counts as moderately busy. **Manual only is never picked
@@ -263,7 +263,7 @@ approves) starts new work. Running work stays where it is.
 
 ## Moving a chat to another machine
 
-`ade chat handoff <session> --to <name>` moves a chat FROM this machine TO
+`daex chat handoff <session> --to <name>` moves a chat FROM this machine TO
 that one: `--to` names the destination (`--machine` is a hidden alias), and the
 command runs on this machine's brain. The move form is never forwarded, so you
 cannot move a chat that lives on another machine from here; and `--to` with `--cancel`,
@@ -273,19 +273,19 @@ the desktop modal, the session menu and the phone start; see
 [cross-machine session handoff](./cross-machine-session-handoff.md).
 
 ```bash
-ade chat handoff <session> --options --json        # machines, blockers with fixes, what would travel
-ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 \
+daex chat handoff <session> --options --json        # machines, blockers with fixes, what would travel
+daex chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 \
   --prompt "run the UI tests next"                 # brief (default); --fork carries full history
-ade chat handoff <session> --to "Mac mini" --model … --include-changes        # bring uncommitted/unpushed work
-ade chat handoff <session> --to "Mac mini" --model … --clone                  # set the repo up there first
-ade chat handoff <session> --to "Mac mini" --model … --when-turn-ends         # queue it from inside a turn
-ade chat handoff <session> --cancel                # keep a queued or awaiting move here, or dismiss an unknown one
-ade chat handoff <session> --retry                 # retry a failed or unknown move with the same choices
+daex chat handoff <session> --to "Mac mini" --model … --include-changes        # bring uncommitted/unpushed work
+daex chat handoff <session> --to "Mac mini" --model … --clone                  # set the repo up there first
+daex chat handoff <session> --to "Mac mini" --model … --when-turn-ends         # queue it from inside a turn
+daex chat handoff <session> --cancel                # keep a queued or awaiting move here, or dismiss an unknown one
+daex chat handoff <session> --retry                 # retry a failed or unknown move with the same choices
 ```
 
 - The call returns the move record at once; the move continues in the brain
   and the chat's banner shows it. Read the record later with
-  `ade chat handoff <session> --options --json` (`current`).
+  `daex chat handoff <session> --options --json` (`current`).
 - An agent moving its own chat mid-turn needs `--when-turn-ends`. Any newer
   message from the person cancels a queued move (a scheduled wake or another
   agent's message does not).
@@ -313,7 +313,7 @@ ade chat handoff <session> --retry                 # retry a failed or unknown m
   work stays pending until the person chooses **Work here instead**. Desktop
   sends still route to the destination; the person's explicit work-here choice
   unlocks the source.
-- Blockers come back as one line each with a fix ("run `ade git push --lane …`,
+- Blockers come back as one line each with a fix ("run `daex git push --lane …`,
   or pass --include-changes"); nothing is sent while any remain.
 
 ## Policy
@@ -371,9 +371,9 @@ the trust boundary, as it is for the person's own desktop.
   ids (any machine on the account can list them) is not enough to inject a turn.
   A refused report is not retried. The parent transcript dedupes a repeat by the
   child's turn id. The parent sees the usual completion row with
-  "· on <machine>", and its wake text names the `ade chat read … --machine`
+  "· on <machine>", and its wake text names the `daex chat read … --machine`
   command.
-- **Devices and proof.** `ade apple`, `ade mac-desktop` and `ade app-control`
+- **Devices and proof.** `daex apple`, `daex mac-desktop` and `daex app-control`
   run on the other machine under the foreign owner, so the existing single-owner
   checks arbitrate between agents. Paths that name this machine's checkout are
   stripped before sending. A proof command's capture runs there; its bytes are
@@ -423,14 +423,14 @@ the trust boundary, as it is for the person's own desktop.
 - **Which callers get it.** The end-of-turn release covers chats: every
   provider on the chat surface (Claude, Codex, Cursor, Droid, OpenCode, Pi,
   Muse, Qwen, Kimi, Grok, Copilot, Devin, Antigravity), since the chat
-  service sees their turns end. A provider's CLI in an ADE terminal using
+  service sees their turns end. A provider's CLI in a DAEX terminal using
   `--machine` gets no release: it relies on the device lease timeouts, the
   20-minute Android idle stop, the screen's idle stop and the work-copy
   sweep.
 
 ## Limits
 
-- `ade machines list` from an agent's shell shows the agent-safe roster (name,
+- `daex machines list` from an agent's shell shows the agent-safe roster (name,
   key, status, platform, last seen, projects with `--projects`), not the
   account directory a person's terminal gets.
 - A person's terminal on another machine (no chat) starts children there at
@@ -443,15 +443,15 @@ the trust boundary, as it is for the person's own desktop.
 - A child that has not reported for a month is forgotten on both machines; a
   later report is refused the same way.
 
-- Both machines need this ADE version; an older target is reported as
-  "update ADE there" (capability `agentRemoteCallers`).
+- Both machines need this DAEX version; an older target is reported as
+  "update DAEX there" (capability `agentRemoteCallers`).
 - A recording started with `--machine` and stopped with a caption (`record
   stop`) is read back and filed here, like stills (`proof`). One that stops by
   itself there (its cap, idle, the app closed) is filed on that machine.
 - An App Control session started from another machine is not stopped when the
   calling turn ends; the agent stops it, or the work copy's removal does.
 - Builds run where the lane is. To build an iOS app from a Linux box, start a
-  subagent on the Mac (`ade chat create --machine …`) and let it build and drive.
+  subagent on the Mac (`daex chat create --machine …`) and let it build and drive.
 
 ## Windows
 

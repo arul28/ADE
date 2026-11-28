@@ -9,7 +9,7 @@ Source: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`. The
 desktop file `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts`
 is a one-line re-export.
 
-**Brain** is the always-on ADE process of a machine. Wire and code names
+**Brain** is the always-on DAEX process of a machine. Wire and code names
 that say `host` or `syncHost` mean the brain, unless this doc says otherwise.
 
 ## Shape
@@ -117,7 +117,7 @@ and gate UI on them; the brain is the authority.
 holds `MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS`. The brain checks its
 registry against it and advertises `features.mobileCompatibility`. A missing
 action gives `mode: "limited"` and `missingActions`, never a refused
-connection. When you add, rename or remove a command that ADE Mobile uses,
+connection. When you add, rename or remove a command that DAEX Mobile uses,
 update that list and the iOS tests in the same change.
 
 `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS` in the same file holds
@@ -140,7 +140,7 @@ Examples:
   `chat.switchAccount`, `prs.setDraft`, `prs.setAutoMerge`: the phone hides
   that control;
 - `machine.updateImpact` and `machine.updateAndRestart`: the phone and the web
-  keep "Update ADE on that computer".
+  keep "Update DAEX on that computer".
 
 `machine.updateImpact` and `machine.updateAndRestart` are the sync-command twins
 of the runtime RPC's `runtime.updateImpact` and `machine.updateAndRestart`.
@@ -155,10 +155,10 @@ call and a phone's call into one run.
   guest is refused.
 - The requester's name comes from the pairing record when there is one, not
   from the client's claim (`SyncRemoteCommandExecutionContext.requester`).
-- Only a brain started by `ade serve` that owns its machine installs them
+- Only a brain started by `daex serve` that owns its machine installs them
   (`setMachineUpdateRemoteCommands`). An embedded runtime installs and
   advertises nothing.
-- ADE Web sends the same two commands from its
+- DAEX Web sends the same two commands from its
   `remoteRuntime.updateAndRestart` / `getUpdateImpact`
   (`webclient/adapter/federated.ts`).
 - The phone and the web read the newest build from the account directory's
@@ -196,7 +196,7 @@ controller calls only actions in `hello_ok.features.commandRouting.actions`.
 `providerAccountRemoteCommands.ts` forwards each payload to the same method
 on the `provider_instances` action domain, so remote callers and the desktop
 share one implementation. A method the domain lacks throws at host start.
-They are optional mobile actions, so an older host gives "update ADE". iOS
+They are optional mobile actions, so an older host gives "update DAEX". iOS
 and the web client use them.
 
 **Usage** (`usage.*`)
@@ -495,7 +495,7 @@ text.
   `getLinearIssuePickerData`, `searchLinearIssues`, `getLinearIssueComments`
   — Linear reads.
 - `startLinearMobileOAuth` (desktop PKCE session; redirect through
-  `ade-github-webhook-relay` to `ade://linear-oauth`),
+  `ade-github-webhook-relay` to `daex://linear-oauth`),
   `completeLinearMobileOAuth` (desktop token exchange), `setLinearToken`
   (API key), `clearLinearToken` — Linear connection from the phone.
   Viewer-allowed, optional. See
@@ -851,7 +851,7 @@ fallback (an empty list, a null summary) is the right offline shape. For a
 **write** it is not — resolving a fallback reports a mutation that was never
 sent. `CommandCaller` therefore throws `UnsupportedRemoteCommandError` for any
 `idempotent: false` call whose action has no descriptor, instead of returning
-the fallback. Surfaces render that as "unavailable on the connected ADE host".
+the fallback. Surfaces render that as "unavailable on the connected DAEX host".
 
 Two rules follow:
 
@@ -860,10 +860,10 @@ Two rules follow:
 - Some actions are deliberately absent. `ai.storeApiKey` is the canonical
   example: the web adapter redacts the key before sending, so a handler here
   would persist the placeholder rather than the credential. On the web, an
-  ADE Cloud provider key goes to the account vault through the account server
+  DAEX Cloud provider key goes to the account vault through the account server
   (`PUT /cloud/sign-ins/:id`), never through a brain.
 
-ADE Cloud pins (the ADE Cloud binding and `cloud-saved:` copies of resting
+DAEX Cloud pins (the DAEX Cloud binding and `cloud-saved:` copies of resting
 cloud computers) never reach `CommandCaller`. The account adapter answers their
 reads from the account server and GitHub, and refuses other calls with one
 sentence. A call that does something goes to the lane's own computer after
@@ -894,7 +894,7 @@ registry — a reader auditing coverage has to count those too.
   retries come from the destination's durable handoff id and capsule
   fingerprint. See [the handoff contract](./cross-machine-session-handoff.md).
 - **`prs.createFromLane` needs GitHub auth on the brain.** Order: an env
-  token (`ADE_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`), the ADE GitHub App
+  token (`ADE_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`), the DAEX GitHub App
   user token, a stored PAT, the `gh` CLI from known absolute paths (launchd's
   PATH has no Homebrew), then `gh`'s `hosts.yml` token (host-level and
   `users:<login>:` layouts). With none, it fails before it calls GitHub.

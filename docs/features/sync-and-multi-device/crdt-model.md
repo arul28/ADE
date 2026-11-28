@@ -1,6 +1,6 @@
 # CRDT Model (cr-sqlite)
 
-ADE's replicated state is a CRDT: every row of every eligible table
+DAEX's replicated state is a CRDT: every row of every eligible table
 carries per-column Lamport timestamps, and merges use last-writer-wins
 per column. This document describes how cr-sqlite is wired up on desktop,
 how iOS emulates the same contract without the loadable extension, and
@@ -11,7 +11,7 @@ the schema implications that fall out of the CRR retrofit.
 The entire CRDT layer lives inside the shared DB adapter:
 `apps/desktop/src/main/services/state/kvDb.ts` exposes an `AdeDb` with
 an `AdeDb.sync` object. The same module is consumed both by the
-Electron main process and by the **ADE runtime** (`ade serve`);
+Electron main process and by the **DAEX runtime** (`daex serve`);
 both open the same `.ade/ade.db` and use the same `AdeDb.sync`
 surface, so a change in either place is wire-compatible with the other.
 
@@ -56,7 +56,7 @@ ade-cli modules — there is no second implementation to keep in sync.
 
 ## Desktop / daemon: native loadable extension
 
-Both the Electron main process and the `ade serve` daemon open SQLite
+Both the Electron main process and the `daex serve` daemon open SQLite
 through `node:sqlite` and load a vendored `crsqlite.dylib` (macOS),
 `crsqlite.dll` (Windows x64), or `crsqlite.so` (Linux x64 and arm64) as a
 loadable extension. A fresh connection runs
@@ -241,7 +241,7 @@ disposable iOS cache DB with the new replicated DB path
 
 ### What iOS does **not** support
 
-The pure-SQL emulation covers the CRR contract that ADE actually uses.
+The pure-SQL emulation covers the CRR contract that DAEX actually uses.
 It does not implement:
 
 - cr-sqlite's higher-level schema helpers beyond `crsql_as_crr`
@@ -249,7 +249,7 @@ It does not implement:
 - Any cr-sqlite feature that relies on extension-exclusive C hooks
   not mirrored by the custom functions above.
 
-In practice ADE has been careful to use only CRR-marked tables plus
+In practice DAEX has been careful to use only CRR-marked tables plus
 standard SQL on the host side, so iOS stays in parity.
 
 ## Merge semantics
@@ -524,10 +524,10 @@ returns `appliedCount: 0`, preserves the local database version, and
 emits no touched tables. Mixed batches remain transactional for the
 actionable rows.
 
-After apply, ADE runs post-hooks:
+After apply, DAEX runs post-hooks:
 
-- Emit relevant IPC events (`laneChanged`, `prsChanged`, etc.) so the
-  renderer re-queries the affected projections.
+- Emit the sync change events so the renderer re-queries the affected
+  projections.
 - On iOS, post `Notification.Name.adeDatabaseDidChange` so SwiftUI
   views re-read.
 
@@ -572,13 +572,10 @@ After apply, ADE runs post-hooks:
 
 ## Gotchas
 
-- **The vendored `crsqlite.xcframework` has been removed.** It was a
-  dynamic framework binary whose entrypoint could not be loaded on
-  iOS due to platform restrictions. The pure-SQL emulation replaces
-  it completely.
-- **Static-link cr-sqlite on iOS is a dead end.** The wrapper
-  approach was evaluated and abandoned; do not revive it without a
-  plan for the SQLite thunk pointer issue.
+- **iOS does not load cr-sqlite.** A dynamic framework cannot load its
+  entrypoint on iOS, and static linking hits the SQLite thunk pointer
+  issue. The pure-SQL emulation is the iOS implementation; keep it
+  wire-compatible with the extension.
 - **A local-only table is not an unknown table.** It exists in
   `sqlite_master`, so existence checks pass, while cr-sqlite has no
   schema record for it and `insert into crsql_changes` throws. Inbound
