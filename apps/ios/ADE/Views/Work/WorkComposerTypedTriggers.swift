@@ -1739,8 +1739,11 @@ enum WorkComposerTriggerDetector {
     suggestion: WorkComposerSuggestion
   ) -> WorkComposerTriggerMatch {
     guard match.kind == .at else { return match }
-    // A model row's token is not what the user typed; its name is.
-    let rawLabel = suggestion.modelId == nil && suggestion.insertText.hasPrefix("@")
+    // A file row's label is its path, which is what the user typed toward. Any
+    // other row's token (`@lane:<id>`, a model's) is not typed; its name is,
+    // as on desktop (`composerTriggerForSelection`).
+    let isFileRow = suggestion.mentionKind == nil && suggestion.modelId == nil
+    let rawLabel = isFileRow && suggestion.insertText.hasPrefix("@")
       ? String(suggestion.insertText.dropFirst())
       : suggestion.title
     let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1759,7 +1762,10 @@ enum WorkComposerTriggerDetector {
        !candidateLabels.contains(where: { $0.lowercased() == searchableQuery.lowercased() }) {
       candidateLabels.append(searchableQuery)
     }
-    let pathPrefix = pathPrefixForSelection(query: match.query, selectedLabel: label)
+    // Only a file's path may continue past the words typed before prose. For a
+    // chat or a lane it would match the filter word (`@lane up` against
+    // `lane:<id>`) and leave the typed word behind the chip.
+    let pathPrefix = isFileRow ? pathPrefixForSelection(query: match.query, selectedLabel: label) : ""
     if !pathPrefix.isEmpty,
        !candidateLabels.contains(where: { $0.lowercased() == pathPrefix.lowercased() }) {
       candidateLabels.append(pathPrefix)

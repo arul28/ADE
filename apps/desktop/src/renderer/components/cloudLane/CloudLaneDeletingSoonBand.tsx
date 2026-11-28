@@ -59,7 +59,8 @@ export function CloudLaneDeletingSoonBand({ laneId, style }: { laneId: string | 
       style={style}
       model={{
         id: "cloud-lane-deleting-soon",
-        tone: due.held ? "info" : "warning",
+        // Held is at risk too (the work is saved nowhere else), as Settings and the iPhone say it.
+        tone: "warning",
         icon: <Clock size={13} weight="bold" />,
         title: words.title,
         detail: words.detail,

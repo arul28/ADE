@@ -2384,7 +2384,17 @@ directory wakes it (routes in `apps/account-directory/README.md`):
 - **Timed wakes.** Before it sleeps, the computer sends its next time
   (`PUT /cloud/wake`, `cloud_wakes`). The minute cron requests its public
   address 2 minutes early, and its row reads `waking` at once. The power log
-  shows the wake as `wake` `seen_by_tick` once the tick reads it awake.
+  shows the wake as `wake` `seen_by_tick` once the tick reads it awake, and
+  each timed wake the tick settles as one `timed_wake` row: `woke` (it was
+  asleep), `awake` (already up), `gave_up_capped` (the account stayed at
+  its awake cap) or `gave_up_unreachable` (its address never answered). The
+  daily count reads only wake, sleep, stop and start, so this row adds none.
+  - Woken, the computer arms its chats' scheduled work and scheduled sends
+    again from the wall clock (`rearmMachineTimersAfterWake`, at the
+    keep-awake's first check after the wake, within a minute). A timer counts
+    the monotonic clock, which stops while the computer is frozen, so a check
+    due after the wake otherwise fired late by the whole time asleep (seen
+    live: 7 minutes).
   - The next time is the soonest scheduled wake-up or automation cron in an
     open project or in the personal chats (`readMachineNextScheduledWakeAt`).
     A timer due in under 5 minutes keeps the computer awake (`schedule`); one
