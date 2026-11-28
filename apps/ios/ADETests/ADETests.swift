@@ -986,6 +986,14 @@ final class ADETests: XCTestCase {
     XCTAssertNil(machineConnectionBackoffNanoseconds(failures: 5, jitter: 1))
     XCTAssertNil(machineConnectionBackoffNanoseconds(failures: 9, jitter: 1))
     XCTAssertEqual(machineConnectionBackoffNanoseconds(failures: 0, jitter: 1), 5_000_000_000)
+    // Past the backoff, the account's presence reading dials the machine
+    // again. One the account cannot report on keeps a slow dial, or it would
+    // stay offline until a foreground or a network change.
+    XCTAssertNil(machineConnectionUnwatchedRetryNanoseconds(accountReportsPresence: true, jitter: 1))
+    XCTAssertEqual(
+      machineConnectionUnwatchedRetryNanoseconds(accountReportsPresence: false, jitter: 1),
+      600_000_000_000
+    )
   }
 
   @MainActor

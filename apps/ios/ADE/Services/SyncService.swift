@@ -1030,9 +1030,12 @@ enum SyncSocketTiming {
   static let openTimeoutNanoseconds: UInt64 = 5_000_000_000
   static let lanePresenceHeartbeatNanoseconds: UInt64 = 30_000_000_000
   static let requestTimeoutReconnectSilenceSeconds: TimeInterval = 12
-  static let transportProbeTimeoutNanoseconds: UInt64 = 5_000_000_000
-  static let expensiveTransportProbeTimeoutNanoseconds: UInt64 = 8_000_000_000
-  static let constrainedTransportProbeTimeoutNanoseconds: UInt64 = 12_000_000_000
+  /// How long a liveness probe waits for any answer. Ten seconds or more on
+  /// every path, so a host whose event loop stalls for ten seconds is never
+  /// taken for a dead link.
+  static let transportProbeTimeoutNanoseconds: UInt64 = 10_000_000_000
+  static let expensiveTransportProbeTimeoutNanoseconds: UInt64 = 12_000_000_000
+  static let constrainedTransportProbeTimeoutNanoseconds: UInt64 = 15_000_000_000
   static let reconnectStabilityNanoseconds: UInt64 = 10_000_000_000
 }
 
@@ -4345,6 +4348,8 @@ final class SyncService: ObservableObject {
       // A deleted ADE Cloud computer's link just dropped: leave it.
       if oldValue == .connected { leaveDeletedFocusedCloudComputer() }
       if connectionState == .connected {
+        // The link is back: the banner's cause for the last drop is over.
+        focusedLastDropWasHostBusy = false
         helloSentWithProvisionalDeviceId = deviceIdIsProvisional
         // The focused computer answered: a failed wake of it is over.
         if let key = focusedMachineKey, cloudWakeFailures[key] != nil { cloudWakeFailures[key] = nil }
@@ -4446,6 +4451,17 @@ final class SyncService: ObservableObject {
   private var domainHydrationBaselines: [SyncDomain: SyncDomainStatus] = [:]
   private var domainHydrationPendingCompletions: [SyncDomain: SyncDomainStatus] = [:]
   @Published private(set) var lastSyncAt: Date?
+  /// An automatic reconnect began from a connected state less than
+  /// `syncAutomaticRecoveryGraceSeconds` ago, while the app was in front.
+  /// Surfaces read `presentedConnectionState` / `presentedStatus(for:)`, which
+  /// keep showing the connection being replaced; request gating reads the real
+  /// `connectionState`. Flips twice per recovery at most.
+  @Published private(set) var automaticRecoveryGraceActive = false
+  /// The live link went quiet past its silence threshold and a probe is out.
+  /// Set when the probe is sent, cleared by any inbound frame or a teardown.
+  @Published private(set) var linkSilenceSuspected = false
+  /// The phone has a usable network path. Published only when it changes.
+  @Published private(set) var phoneHasNetworkPath = true
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastConnectDurationMs: Int?
   @Published private(set) var lastConnectedRouteKind: SyncConnectionRouteKind?
@@ -4804,11 +4820,111 @@ final class SyncService: ObservableObject {
   @Published private var githubWriteLoginByScope: [String: String] = [:]
   private var laneGithubPrItemsFetchedAt: Date?
 
+  /// What surfaces show. Built from the presented state, so an automatic
+  /// reconnect that lands inside its grace never flashes "Connecting…".
   var connectionHealth: SyncConnectionHealth {
     syncConnectionHealth(
-      connectionState: connectionState,
+      connectionState: presentedConnectionState,
       prefersReducedSyncLoad: prefersReducedSyncLoad,
       lastError: lastError
+    )
+  }
+
+  /// The connection state every surface shows (`syncPresentedConnectionState`).
+  /// Never gate a request on it: `connectionState` and `canSendLiveRequests()`
+  /// are the truth.
+  var presentedConnectionState: RemoteConnectionState {
+    syncPresentedConnectionState(connectionState, recoveryGraceActive: automaticRecoveryGraceActive)
+  }
+
+  /// A domain's status as surfaces show it (`syncPresentedDomainStatus`).
+  func presentedStatus(for domain: SyncDomain) -> SyncDomainStatus {
+    syncPresentedDomainStatus(
+      status(for: domain),
+      graceSnapshot: automaticRecoveryGraceActive ? automaticRecoveryGraceStatuses[domain] : nil
+    )
+  }
+
+  /// Starts the grace for an automatic reconnect: only from a state that
+  /// shows connected, and never extended by a second recovery that overlaps
+  /// the first (a path change during a foreground resume shares one window).
+  private func beginAutomaticRecoveryGrace() {
+    // A silence probe that failed was already on screen ("Checking the
+    // connection…"): hiding the reconnect behind it would blink the banner.
+    guard presentedConnectionState == .connected, !automaticRecoveryGraceActive, !linkSilenceSuspected else { return }
+    automaticRecoveryGraceStatuses = SyncDomain.allCases.reduce(into: [SyncDomain: SyncDomainStatus]()) { statuses, domain in
+      let current = status(for: domain)
+      if current.phase == .ready { statuses[domain] = current }
+    }
+    automaticRecoveryGraceActive = true
+    armAutomaticRecoveryGraceWindow()
+  }
+
+  /// The window counts only while the app can be seen: one that runs out in
+  /// the background waits there (a suspended app runs no timer) and ends at
+  /// most a second after the app is back, unless the foreground hook first
+  /// gives the return its own two seconds.
+  private func armAutomaticRecoveryGraceWindow() {
+    automaticRecoveryGraceTask?.cancel()
+    automaticRecoveryGraceTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(syncAutomaticRecoveryGraceSeconds * 1_000_000_000))
+      while !Task.isCancelled, UIApplication.shared.applicationState == .background {
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+      }
+      guard let self, !Task.isCancelled else { return }
+      self.automaticRecoveryGraceTask = nil
+      self.endAutomaticRecoveryGrace()
+    }
+  }
+
+  /// Shows the real state now. Every connect the person asks for calls this.
+  private func endAutomaticRecoveryGrace() {
+    automaticRecoveryGraceTask?.cancel()
+    automaticRecoveryGraceTask = nil
+    automaticRecoveryGraceStatuses = [:]
+    if automaticRecoveryGraceActive { automaticRecoveryGraceActive = false }
+  }
+
+  /// The banner over the project tabs (`syncFocusedConnectionNoticeKind`).
+  /// Read on render; every input is published or changes with something that is.
+  var focusedConnectionNotice: SyncFocusedConnectionNotice? {
+    // The root reads this on every render: the healthy case returns before
+    // any lookup.
+    let presented = presentedConnectionState
+    if presented == .disconnected || (presented == .connected && !linkSilenceSuspected) { return nil }
+    let focusedKey = focusedMachineKey
+    let isCloud = isCloudFleetKey(focusedKey)
+    let accountMachine = isCloud ? nil : AccountService.shared.machine(forFleetKey: focusedKey)
+    let macAsleep = accountMachine.map { machine -> Bool in
+      syncMachinePresence(
+        connected: false,
+        online: machine.online,
+        sleepState: machine.sleepState,
+        sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt),
+        lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+      ) == .asleep
+    } ?? false
+    let inputs = SyncFocusedConnectionNoticeInputs(
+      presentedState: presented,
+      linkSilenceSuspected: linkSilenceSuspected,
+      autoReconnectActive: activeHostProfile != nil && allowAutoReconnect && !autoReconnectPausedByUser,
+      isProjectSwitching: isProjectSwitching,
+      isAccountProjectScope: isAccountProjectScope,
+      phoneHasNetworkPath: phoneHasNetworkPath,
+      focusedCloudComputerResting: isCloud && (cloudServerInstance(fleetKey: focusedKey)?.isResting == true),
+      focusedMachineAsleep: macAsleep,
+      attemptIsWakingMachine: connectAttemptIsWakingMachine,
+      lastDropWasHostBusy: focusedLastDropWasHostBusy
+    )
+    guard let kind = syncFocusedConnectionNoticeKind(inputs) else { return nil }
+    // Only this machine's last frame ages the banner, never another's.
+    let updatedAt = lastHeardFromFocusedMachine.flatMap { heard -> Date? in
+      (heard.machineKey == nil || heard.machineKey == focusedKey) ? heard.at : nil
+    }
+    return SyncFocusedConnectionNotice(
+      kind: kind,
+      machineName: focusedMachineAccountName ?? (isCloud ? ADECloudMachine.name : machineDisplayName),
+      updatedAt: updatedAt
     )
   }
 
@@ -5215,6 +5331,24 @@ final class SyncService: ObservableObject {
   private var projectSwitchTimingStartedAt: TimeInterval?
   private var projectSwitchTimingLastPhaseAt: TimeInterval?
   private var lastInboundMessageAt: TimeInterval?
+  /// Domain statuses that read `.ready` when the grace began.
+  private var automaticRecoveryGraceStatuses: [SyncDomain: SyncDomainStatus] = [:]
+  private var automaticRecoveryGraceTask: Task<Void, Never>?
+  /// `brain_status` spacing on the current socket (reset per connection).
+  private var inboundStatusCadence = SyncInboundCadenceTracker()
+  /// When this phone's last ping went out, until its pong arrives.
+  private var pendingRoundTripPingUptime: TimeInterval?
+  private var lastHeardStampUptime: TimeInterval = 0
+  /// When a frame last arrived from the focused machine, and which machine.
+  /// Kept across a teardown (it is what "updated Xs ago" reads); throttled to
+  /// one `Date()` a second.
+  private(set) var lastHeardFromFocusedMachine: (machineKey: String?, at: Date)?
+  /// The last live drop of the focused link was a 4002 close (the computer
+  /// was busy). Cleared when the link is back.
+  private(set) var focusedLastDropWasHostBusy = false
+  /// Round trips by route and network (`syncRouteRoundTripKey`), for diagnosis.
+  private(set) var routeRoundTrips: [String: SyncRouteRoundTrip] = [:]
+  private var lastHostLatencyLog: (key: String, ms: Int, uptime: TimeInterval)?
   private var allowAutoReconnect = true
   /// User-initiated disconnects should stay disconnected until the user explicitly reconnects or pairs again.
   private var autoReconnectPausedByUser = false
@@ -5998,6 +6132,9 @@ final class SyncService: ObservableObject {
   /// different machine than the active project belongs to.
   func prepareForUserConnectionChange() {
     userConnectionChoiceGeneration &+= 1
+    // A connect the person asked for shows at once.
+    endAutomaticRecoveryGrace()
+    focusedLastDropWasHostBusy = false
     accountConnectSuccessClearTask?.cancel()
     accountConnectSuccessClearTask = nil
     accountConnectSuccessLabel = nil
@@ -10466,6 +10603,12 @@ final class SyncService: ObservableObject {
     let forcesFreshSession = userInitiated || replaceSuspendedSession
     if userInitiated {
       setAutoReconnectPausedByUser(false)
+      // A connect the person asked for shows at once, never behind the grace.
+      endAutomaticRecoveryGrace()
+    } else if replaceSuspendedSession {
+      // Replacing a session that read connected: keep showing it while the
+      // new one comes up.
+      beginAutomaticRecoveryGrace()
     }
     if forcesFreshSession {
       autoReconnectAwaitingLiveDiscovery = false
@@ -10727,6 +10870,7 @@ final class SyncService: ObservableObject {
   private func handleNetworkPathChange(_ snapshot: SyncNetworkPathSnapshot) {
     let previous = lastNetworkPathSnapshot
     lastNetworkPathSnapshot = snapshot
+    if phoneHasNetworkPath != snapshot.isSatisfied { phoneHasNetworkPath = snapshot.isSatisfied }
     refreshPhoneTailnetInterfaceState()
     refreshReducedSyncLoad()
     guard let previous else { return }
@@ -10781,6 +10925,19 @@ final class SyncService: ObservableObject {
       networkPathReconnectTask?.cancel()
       networkPathReconnectTask = nil
     case .scheduleReconnect:
+      if interfacesChanged {
+        // A new network is new information, as a foreground is: reopen the
+        // fast ladder, or a phone that just got Wi-Fi back would sit in the
+        // 30-40 s slow retry after this one attempt.
+        reconnectState.reset()
+        // The pending slow retry would re-exhaust the ladder it fires into.
+        // Kept while the phone waits for any route: that retry is then the
+        // only thing that dials again.
+        if !autoReconnectAwaitingLiveDiscovery {
+          reconnectTask?.cancel()
+          reconnectTask = nil
+        }
+      }
       scheduleNetworkPathReconnect(forceSocketReset: false)
     case .none:
       break
@@ -10904,6 +11061,7 @@ final class SyncService: ObservableObject {
         syncChatLog.notice(
           "network_path_reconnect_forcing_reset state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
         )
+        self.beginAutomaticRecoveryGrace()
         self.teardownSocket(reason: "Network route changed.")
       }
       await self.reconnectIfPossible()
@@ -10942,6 +11100,9 @@ final class SyncService: ObservableObject {
   }
 
   func handleForegroundTransition() async {
+    // A grace that began (or ran out) while the app was away gets its own
+    // window now that someone can see it.
+    if automaticRecoveryGraceActive { armAutomaticRecoveryGraceWindow() }
     refreshPhoneTailnetInterfaceState()
     let resumeAction = syncForegroundResumeAction(
       backgroundGapSeconds: backgroundedAtUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
@@ -11367,6 +11528,7 @@ final class SyncService: ObservableObject {
   func disconnect(clearCredentials: Bool = false, suspendAutoReconnect: Bool = true) {
     beginConnectAttempt()
     clearConnectTimingMetrics()
+    endAutomaticRecoveryGrace()
     // The attempt is over. Leaving its target set would let a later background
     // reconnect to a DIFFERENT machine be labelled with this one's name — and
     // leaving its wake set would give that reconnect this attempt's copy and
@@ -24616,8 +24778,13 @@ final class SyncService: ObservableObject {
       pendingOutboundChangeset = nil
       clearPendingOutboundChangesetForActiveProject()
     }
+    let clientHeartbeatIntervalNanoseconds = syncClientHeartbeatIntervalNanoseconds(
+      serverIntervalMs: payload["heartbeatIntervalMs"]
+    )
     startClientHeartbeatTask(
-      intervalNanoseconds: syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: payload["heartbeatIntervalMs"]),
+      intervalNanoseconds: clientHeartbeatIntervalNanoseconds,
+      // The client interval is twice the host's (already clamped) heartbeat.
+      hostHeartbeatSeconds: TimeInterval(clientHeartbeatIntervalNanoseconds) / 2_000_000_000,
       for: connectionGeneration
     )
     startRelayLoop()
@@ -24795,7 +24962,15 @@ final class SyncService: ObservableObject {
     // frame can't advance the NEW connection's cursors (applyHelloPayload may
     // have re-keyed activeRemoteDbSiteId to a different project DB).
     let generation = connectionGeneration
-    lastInboundMessageAt = ProcessInfo.processInfo.systemUptime
+    let receivedUptime = ProcessInfo.processInfo.systemUptime
+    lastInboundMessageAt = receivedUptime
+    // The machine answered: whatever the silence check suspected is over.
+    if linkSilenceSuspected { linkSilenceSuspected = false }
+    let heardSameMachine = lastHeardFromFocusedMachine.map { $0.machineKey == focusedSocketMachineKey } ?? false
+    if !heardSameMachine || receivedUptime - lastHeardStampUptime >= 1 {
+      lastHeardStampUptime = receivedUptime
+      lastHeardFromFocusedMachine = (machineKey: focusedSocketMachineKey, at: Date())
+    }
 
     switch type {
     case "envelope_chunk":
@@ -25001,10 +25176,15 @@ final class SyncService: ObservableObject {
           profile.lastHostDeviceId = brain["deviceId"] as? String
         }
 
+        // The host's status cadence on this socket: what the silence check
+        // expects (`syncLinkSilenceThresholdSeconds`).
+        if generation == connectionGeneration { inboundStatusCadence.noteStatus(at: receivedUptime) }
         if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
           let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
           let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
           recordConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag)
+          // The host times its own heartbeat ping to this phone.
+          if let latencyMs, latencyMs >= 0 { recordRouteRoundTrip(milliseconds: latencyMs, source: .hostHeartbeat) }
         }
         // Relay reachability can flip live. `brain_status` always carries
         // `cloudRelayWssUrl` on new hosts: a wss route when the relay is up,
@@ -25080,6 +25260,14 @@ final class SyncService: ObservableObject {
           "sentAt": dict["sentAt"] as? String ?? ISO8601DateFormatter().string(from: Date()),
           "dbVersion": database.currentDbVersion(),
         ])
+      } else if let dict = payload as? [String: Any], (dict["kind"] as? String) == "pong",
+                generation == connectionGeneration,
+                let sentUptime = pendingRoundTripPingUptime {
+        // The answer to a ping this phone already sent (a probe or the silence
+        // fallback): its round trip, at no extra traffic.
+        pendingRoundTripPingUptime = nil
+        let milliseconds = Int(((receivedUptime - sentUptime) * 1_000).rounded())
+        if milliseconds >= 0 { recordRouteRoundTrip(milliseconds: milliseconds, source: .phoneProbe) }
       }
     case "command_ack":
       if let dict = payload as? [String: Any], let accepted = dict["accepted"] as? Bool, !accepted {
@@ -25283,45 +25471,137 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func startClientHeartbeatTask(intervalNanoseconds: UInt64, for connectionGeneration: UInt64) {
+  /// The silence check of the live link. Every `SyncLinkSilenceTiming` tick
+  /// (15 s) while the app is in front it compares the silence since the last
+  /// inbound frame with the threshold the host's real cadence calls for
+  /// (`syncLinkSilenceThresholdSeconds`); a link that heard anything recently
+  /// sends nothing. `intervalNanoseconds` is the old fallback interval (twice
+  /// the host's heartbeat): it still spaces the fallback ping, and with no
+  /// status cadence it sets today's heartbeat-only threshold.
+  private func startClientHeartbeatTask(
+    intervalNanoseconds: UInt64,
+    hostHeartbeatSeconds: TimeInterval,
+    for connectionGeneration: UInt64
+  ) {
     clientHeartbeatTask?.cancel()
+    inboundStatusCadence = SyncInboundCadenceTracker()
     clientHeartbeatTask = Task { @MainActor [weak self] in
+      let fallbackIntervalSeconds = TimeInterval(intervalNanoseconds) / 1_000_000_000
+      var lastFallbackPingAt: TimeInterval?
       while !Task.isCancelled {
-        try? await Task.sleep(nanoseconds: intervalNanoseconds)
+        try? await Task.sleep(nanoseconds: SyncLinkSilenceTiming.checkIntervalNanoseconds)
         guard let self, !Task.isCancelled else { return }
         guard self.isCurrentConnectionGeneration(connectionGeneration), self.canSendLiveRequests() else { return }
+        // Nothing of this runs in the background: iOS suspends the socket
+        // there, and the foreground resume decides what it is worth.
+        guard UIApplication.shared.applicationState != .background else { continue }
         let now = ProcessInfo.processInfo.systemUptime
-        if !syncShouldSendClientHeartbeatFallback(
-          now: now,
-          lastInboundMessageAt: self.lastInboundMessageAt,
-          intervalNanoseconds: intervalNanoseconds
-        ) {
-          // The host heartbeat (or useful application traffic) already proved
-          // the relay path. Coalesce this client fallback instead of waking the
-          // tunnel Durable Object for another ping/pong pair.
-          continue
-        }
         let path = self.lastNetworkPathSnapshot
-        if syncShouldProbeTransportAfterHeartbeatSilence(
+        let isExpensive = path?.isExpensive == true
+        let isConstrained = path?.isConstrained == true
+        let threshold = syncLinkSilenceThresholdSeconds(
+          statusCadenceSeconds: self.inboundStatusCadence.statusCadenceSeconds,
+          hostHeartbeatSeconds: hostHeartbeatSeconds,
+          routeKind: self.liveRouteKindForSilence,
+          isExpensive: isExpensive,
+          isConstrained: isConstrained,
+          fallbackThresholdSeconds: syncHeartbeatSilenceThresholdSeconds(
+            heartbeatIntervalNanoseconds: intervalNanoseconds,
+            isExpensive: isExpensive,
+            isConstrained: isConstrained
+          )
+        )
+        switch syncLinkSilenceAction(
           now: now,
-          lastInboundMessageAt: self.lastInboundMessageAt,
-          heartbeatIntervalNanoseconds: intervalNanoseconds,
-          isExpensive: path?.isExpensive == true,
-          isConstrained: path?.isConstrained == true
+          lastInboundAt: self.lastInboundMessageAt,
+          silenceThresholdSeconds: threshold,
+          fallbackPingIntervalSeconds: fallbackIntervalSeconds,
+          lastFallbackPingAt: lastFallbackPingAt
         ) {
+        case .quiet:
+          // The host heartbeat (or useful application traffic) already proved
+          // the path. No client ping, so the tunnel Durable Object is not
+          // woken for another ping/pong pair.
+          continue
+        case .probe:
           self.verifyTransportAliveAfterSilence(
             syncTransportSilenceRecoveryError(),
             trigger: "heartbeat_silence"
           )
-          continue
+        case .ping:
+          lastFallbackPingAt = now
+          self.pendingRoundTripPingUptime = now
+          self.sendEnvelope(type: "heartbeat", requestId: nil, payload: [
+            "kind": "ping",
+            "sentAt": ISO8601DateFormatter().string(from: Date()),
+            "dbVersion": self.database.currentDbVersion(),
+          ])
         }
-        self.sendEnvelope(type: "heartbeat", requestId: nil, payload: [
-          "kind": "ping",
-          "sentAt": ISO8601DateFormatter().string(from: Date()),
-          "dbVersion": self.database.currentDbVersion(),
-        ])
       }
     }
+  }
+
+  /// The route the live socket took, for the silence floor and round trips.
+  private var liveRouteKindForSilence: SyncConnectionRouteKind? {
+    guard canSendLiveRequests() else { return nil }
+    return lastConnectedRouteKind ?? currentAddress.map(syncConnectionRouteKind)
+  }
+
+  /// The last round trip measured on `routeKind` from the network the phone is on.
+  func lastRoundTripMs(routeKind: SyncConnectionRouteKind) -> Int? {
+    routeRoundTrips[syncRouteRoundTripKey(routeKind: routeKind, networkFingerprint: currentNetworkFingerprint())]?.lastMs
+  }
+
+  /// The live route's last round trip, for Settings.
+  var liveRouteRoundTrip: SyncRouteRoundTrip? {
+    guard let routeKind = liveRouteKindForSilence else { return nil }
+    return routeRoundTrips[syncRouteRoundTripKey(routeKind: routeKind, networkFingerprint: currentNetworkFingerprint())]
+  }
+
+  /// Files one round trip under the live route and this network, and logs it:
+  /// every phone-timed one, and the host's when it moves by half or a minute
+  /// passed (it arrives with every status).
+  private func recordRouteRoundTrip(milliseconds: Int, source: SyncRouteRoundTrip.Source) {
+    guard let routeKind = liveRouteKindForSilence else { return }
+    let fingerprint = currentNetworkFingerprint()
+    let key = syncRouteRoundTripKey(routeKind: routeKind, networkFingerprint: fingerprint)
+    let now = ProcessInfo.processInfo.systemUptime
+    var entry = routeRoundTrips[key] ?? SyncRouteRoundTrip(
+      routeKind: routeKind,
+      networkFingerprint: fingerprint,
+      lastMs: milliseconds,
+      lastSource: source,
+      measuredAtUptime: now
+    )
+    switch source {
+    case .phoneProbe: entry.phoneProbeMs = milliseconds
+    case .hostHeartbeat: entry.hostHeartbeatMs = milliseconds
+    }
+    entry.lastMs = milliseconds
+    entry.lastSource = source
+    entry.measuredAtUptime = now
+    routeRoundTrips[key] = entry
+    if routeRoundTrips.count > syncRouteRoundTripMemoryCapacity,
+       let oldest = routeRoundTrips.min(by: { $0.value.measuredAtUptime < $1.value.measuredAtUptime })?.key {
+      routeRoundTrips.removeValue(forKey: oldest)
+    }
+    let logs: Bool
+    switch source {
+    case .phoneProbe:
+      logs = true
+    case .hostHeartbeat:
+      if let last = lastHostLatencyLog, last.key == key {
+        let moved = abs(milliseconds - last.ms) * 2 >= max(last.ms, 1)
+        logs = moved || now - last.uptime >= 60
+      } else {
+        logs = true
+      }
+      if logs { lastHostLatencyLog = (key: key, ms: milliseconds, uptime: now) }
+    }
+    guard logs else { return }
+    syncConnectLog.info(
+      "route_rtt route=\(String(describing: routeKind), privacy: .public) network=\(fingerprint ?? "unknown", privacy: .public) source=\(source.rawValue, privacy: .public) ms=\(milliseconds, privacy: .public)"
+    )
   }
 
   private func startInitialHydrationTask(for connectionGeneration: UInt64) {
@@ -25894,13 +26174,16 @@ final class SyncService: ObservableObject {
       return
     case .recoverTransport(let closeCodeRawValue):
       // Before teardown, which clears the connection's age.
+      let droppedRouteKind = currentAddress.map(syncConnectionRouteKind)
       SyncLiveDropReport.report(
         connection: "focused",
-        routeKind: currentAddress.map(syncConnectionRouteKind),
+        routeKind: droppedRouteKind,
         closeCode: closeCodeRawValue.map { $0 == 0 ? nil : $0 } ?? syncWebSocketCloseCode(task),
         connectionAgeSeconds: connectionEstablishedUptime.map { ProcessInfo.processInfo.systemUptime - $0 },
-        error: error
+        error: error,
+        roundTripMs: droppedRouteKind.flatMap { lastRoundTripMs(routeKind: $0) }
       )
+      focusedLastDropWasHostBusy = (closeCodeRawValue ?? syncWebSocketCloseCode(task)) == syncHostBusyCloseCode
       let closeReason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
       let flapBackoff = noteLiveConnectionClosed(
         closeCodeRawValue: closeCodeRawValue ?? task.closeCode.rawValue,
@@ -26025,6 +26308,11 @@ final class SyncService: ObservableObject {
     socket = nil
     currentAddress = nil
     lastInboundMessageAt = nil
+    // The silence check, its suspicion and an unanswered ping belong to this
+    // socket. `lastHeardFromFocusedMachine` stays: it is what the banner ages.
+    if linkSilenceSuspected { linkSilenceSuspected = false }
+    pendingRoundTripPingUptime = nil
+    inboundStatusCadence = SyncInboundCadenceTracker()
     refreshReducedSyncLoad()
     pendingProjectCatalogChunks.removeAll()
     envelopeChunkAssembler.reset()
@@ -26059,6 +26347,9 @@ final class SyncService: ObservableObject {
     reconnectDelayNanoseconds: UInt64? = nil
   ) {
     let friendlyError = SyncUserFacingError.error(from: error)
+    // Before the state leaves `.connected`: a reconnect that lands within the
+    // grace is never shown.
+    beginAutomaticRecoveryGrace()
     // Tear down before marking load strained — see handleIncomingFailure.
     teardownSocket(reason: friendlyError.localizedDescription)
     markConnectionLoadStrained()
@@ -26137,6 +26428,11 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// The phone's path is metered / in Low Data Mode (the fleet's silence check
+  /// reads these the way the focused one does).
+  var networkPathIsExpensive: Bool { lastNetworkPathSnapshot?.isExpensive == true }
+  var networkPathIsConstrained: Bool { lastNetworkPathSnapshot?.isConstrained == true }
+
   /// How long a liveness ping may go unanswered on this network.
   var transportProbeTimeoutNanoseconds: UInt64 {
     syncTransportProbeTimeoutNanoseconds(
@@ -26163,7 +26459,7 @@ final class SyncService: ObservableObject {
   /// traffic (the pong, a changeset, a status ping) proves the transport works;
   /// total silence enters the single automatic recovery owner. One probe at a
   /// time, guarded by the connection generation.
-  private func verifyTransportAliveAfterSilence(_ recoveryError: NSError, trigger: String) {
+  private func verifyTransportAliveAfterSilence(_ recoveryError: NSError, trigger: String, attempt: Int = 0) {
     guard transportProbeTask == nil, canSendLiveRequests() else {
       syncChatLog.notice(
         "transport_probe_skipped trigger=\(trigger, privacy: .public) probeInFlight=\((self.transportProbeTask != nil), privacy: .public) liveRequests=\(self.canSendLiveRequests(), privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public)"
@@ -26173,8 +26469,12 @@ final class SyncService: ObservableObject {
     let generation = connectionGeneration
     let probeStartedAt = ProcessInfo.processInfo.systemUptime
     syncChatLog.notice(
-      "transport_probe_sent trigger=\(trigger, privacy: .public) generation=\(generation, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
+      "transport_probe_sent trigger=\(trigger, privacy: .public) attempt=\(attempt, privacy: .public) generation=\(generation, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
     )
+    // The banner may say "Checking the connection…" while a silence probe is
+    // out; any inbound frame clears it.
+    if trigger == "heartbeat_silence", !linkSilenceSuspected { linkSilenceSuspected = true }
+    pendingRoundTripPingUptime = probeStartedAt
     sendEnvelope(type: "heartbeat", requestId: nil, payload: [
       "kind": "ping",
       "sentAt": ISO8601DateFormatter().string(from: Date()),
@@ -26193,7 +26493,8 @@ final class SyncService: ObservableObject {
         recoveryError: recoveryError,
         trigger: trigger,
         generation: generation,
-        probeStartedAt: probeStartedAt
+        probeStartedAt: probeStartedAt,
+        attempt: attempt
       )
     }
   }
@@ -26202,13 +26503,27 @@ final class SyncService: ObservableObject {
     recoveryError: NSError,
     trigger: String,
     generation: UInt64,
-    probeStartedAt: TimeInterval
+    probeStartedAt: TimeInterval,
+    attempt: Int = 0
   ) {
     guard connectionGeneration == generation else { return }
     if let lastInbound = lastInboundMessageAt, lastInbound > probeStartedAt {
       syncChatLog.notice(
         "transport_probe_succeeded trigger=\(trigger, privacy: .public) generation=\(generation, privacy: .public) lastInbound=\(lastInbound, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
       )
+      if linkSilenceSuspected { linkSilenceSuspected = false }
+      return
+    }
+    // A metered or Low Data path gets one more probe before the link counts
+    // as dropped: its replies are slower and can queue behind a large frame.
+    if attempt < syncTransportProbeRetryCount(
+      isExpensive: lastNetworkPathSnapshot?.isExpensive == true,
+      isConstrained: lastNetworkPathSnapshot?.isConstrained == true
+    ), canSendLiveRequests() {
+      syncChatLog.notice(
+        "transport_probe_retry trigger=\(trigger, privacy: .public) attempt=\(attempt + 1, privacy: .public) generation=\(generation, privacy: .public)"
+      )
+      verifyTransportAliveAfterSilence(recoveryError, trigger: trigger, attempt: attempt + 1)
       return
     }
     syncChatLog.notice(

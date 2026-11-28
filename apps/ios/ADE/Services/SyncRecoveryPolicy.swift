@@ -41,6 +41,310 @@ func syncShouldProbeTransportAfterHeartbeatSilence(
   )
 }
 
+// MARK: - Link silence
+
+enum SyncLinkSilenceTiming {
+  /// How often a live connection in the foreground looks at its silence. The
+  /// check compares two numbers and sends nothing; a healthy link costs one
+  /// timer wake per tick and no traffic.
+  static let checkIntervalNanoseconds: UInt64 = 15_000_000_000
+  /// Silence is suspect at this many expected inbound intervals.
+  static let cadenceMultiplier: Double = 3
+  /// The statuses whose spacing gives the expected cadence.
+  static let cadenceSampleCount = 4
+}
+
+/// The spacing of the `brain_status` frames one connection has received
+/// lately. The host sends one on a fixed cadence while a phone is connected
+/// (every few seconds direct, less often through the relay), so the widest
+/// recent gap is how long a quiet but healthy link stays silent. Nothing about
+/// a host version is assumed: an older host that sends no periodic status never
+/// produces two statuses and keeps the heartbeat-based rule; one that sends
+/// them only on changes produces wide gaps and so a gentle threshold.
+struct SyncInboundCadenceTracker: Equatable {
+  private(set) var lastStatusUptime: TimeInterval?
+  private(set) var recentIntervals: [TimeInterval] = []
+
+  mutating func noteStatus(at uptime: TimeInterval) {
+    if let lastStatusUptime, uptime > lastStatusUptime {
+      recentIntervals.append(uptime - lastStatusUptime)
+      let overflow = recentIntervals.count - SyncLinkSilenceTiming.cadenceSampleCount
+      if overflow > 0 { recentIntervals.removeFirst(overflow) }
+    }
+    lastStatusUptime = uptime
+  }
+
+  /// Nil until two statuses arrived on this connection.
+  var statusCadenceSeconds: TimeInterval? {
+    recentIntervals.max()
+  }
+}
+
+/// The least silence ever treated as suspect, by route and path. The relay
+/// batches a quiet peer's statuses, so it waits longer; metered and Low Data
+/// paths wait longer again, but never minutes.
+func syncLinkSilenceFloorSeconds(
+  routeKind: SyncConnectionRouteKind?,
+  isExpensive: Bool,
+  isConstrained: Bool
+) -> TimeInterval {
+  // An unknown route is treated as the relay: the gentler of the two.
+  let relay = routeKind == nil || routeKind == .relay
+  if isConstrained { return relay ? 105 : 40 }
+  if isExpensive { return relay ? 90 : 30 }
+  return relay ? 75 : 20
+}
+
+/// Silence after which a live link is probed: three times the inbound cadence
+/// the host really keeps (its status spacing, capped by its heartbeat), never
+/// under the route's floor, and never later than the heartbeat-only rule
+/// (`fallbackThresholdSeconds`), which is also what a host that sends no
+/// status gets.
+func syncLinkSilenceThresholdSeconds(
+  statusCadenceSeconds: TimeInterval?,
+  hostHeartbeatSeconds: TimeInterval,
+  routeKind: SyncConnectionRouteKind?,
+  isExpensive: Bool,
+  isConstrained: Bool,
+  fallbackThresholdSeconds: TimeInterval
+) -> TimeInterval {
+  guard let statusCadenceSeconds, statusCadenceSeconds > 0 else { return fallbackThresholdSeconds }
+  let expected = hostHeartbeatSeconds > 0 ? min(statusCadenceSeconds, hostHeartbeatSeconds) : statusCadenceSeconds
+  let floor = syncLinkSilenceFloorSeconds(
+    routeKind: routeKind,
+    isExpensive: isExpensive,
+    isConstrained: isConstrained
+  )
+  return min(fallbackThresholdSeconds, max(expected * SyncLinkSilenceTiming.cadenceMultiplier, floor))
+}
+
+enum SyncLinkSilenceAction: Equatable {
+  /// Heard from recently enough: send nothing.
+  case quiet
+  /// Today's silence fallback: one ping after a whole fallback interval of quiet.
+  case ping
+  /// Silence passed the threshold: ping and tear down if nothing answers.
+  case probe
+}
+
+/// What one silence check does. Recent inbound traffic does nothing, so a
+/// healthy link sends no frame.
+func syncLinkSilenceAction(
+  now: TimeInterval,
+  lastInboundAt: TimeInterval?,
+  silenceThresholdSeconds: TimeInterval,
+  fallbackPingIntervalSeconds: TimeInterval,
+  lastFallbackPingAt: TimeInterval?
+) -> SyncLinkSilenceAction {
+  let silence = lastInboundAt.map { now - $0 } ?? .infinity
+  if silence >= silenceThresholdSeconds { return .probe }
+  guard silence >= fallbackPingIntervalSeconds else { return .quiet }
+  if let lastFallbackPingAt, now - lastFallbackPingAt < fallbackPingIntervalSeconds { return .quiet }
+  return .ping
+}
+
+/// Unanswered probes tolerated before the link counts as dropped. A metered
+/// or Low Data path gets one retry: its round trips are slower and a reply can
+/// queue behind a large frame.
+func syncTransportProbeRetryCount(isExpensive: Bool, isConstrained: Bool) -> Int {
+  isExpensive || isConstrained ? 1 : 0
+}
+
+// MARK: - Route round trips
+
+/// The round trips measured on one route from one network, for diagnosis.
+/// Only pings that already go out are timed: this phone's own probe and
+/// silence pings, and the host's heartbeat (its `latencyMs` in `brain_status`).
+struct SyncRouteRoundTrip: Equatable {
+  enum Source: String {
+    case phoneProbe = "phone_probe"
+    case hostHeartbeat = "host_heartbeat"
+  }
+
+  let routeKind: SyncConnectionRouteKind
+  let networkFingerprint: String?
+  var phoneProbeMs: Int?
+  var hostHeartbeatMs: Int?
+  var lastMs: Int
+  var lastSource: Source
+  var measuredAtUptime: TimeInterval
+}
+
+let syncRouteRoundTripMemoryCapacity = 8
+
+func syncRouteRoundTripKey(routeKind: SyncConnectionRouteKind, networkFingerprint: String?) -> String {
+  "\(routeKind.rawValue)|\(networkFingerprint ?? "unknown")"
+}
+
+/// "ADE relay · 84 ms": the Settings diagnostics line.
+func syncRouteRoundTripLine(_ roundTrip: SyncRouteRoundTrip) -> String {
+  "\(roundTrip.routeKind.label) · \(roundTrip.lastMs) ms"
+}
+
+// MARK: - Automatic recovery grace
+
+/// How long an automatic reconnect keeps showing the connected state it is
+/// replacing. A reconnect that finishes inside it is never seen.
+let syncAutomaticRecoveryGraceSeconds: TimeInterval = 2
+
+/// The connection state surfaces show. Inside the grace only `.connecting` is
+/// hidden; a terminal state (`.error`, `.disconnected`) always shows at once.
+/// Request gating never reads this: it reads the real state.
+func syncPresentedConnectionState(
+  _ real: RemoteConnectionState,
+  recoveryGraceActive: Bool
+) -> RemoteConnectionState {
+  recoveryGraceActive && real == .connecting ? .connected : real
+}
+
+/// A domain's status as surfaces show it. Inside the grace a domain that was
+/// ready keeps reading ready while the reconnect re-hydrates it; a failure
+/// always shows.
+func syncPresentedDomainStatus(
+  _ real: SyncDomainStatus,
+  graceSnapshot: SyncDomainStatus?
+) -> SyncDomainStatus {
+  guard let graceSnapshot, graceSnapshot.phase == .ready else { return real }
+  switch real.phase {
+  case .disconnected, .hydrating, .syncingInitialData:
+    return graceSnapshot
+  case .ready, .failed:
+    return real
+  }
+}
+
+// MARK: - Focused connection notice
+
+/// What the banner over the project tabs says about the focused machine.
+enum SyncFocusedConnectionNoticeKind: Equatable {
+  /// The link went quiet and a probe is out; it may still be fine.
+  case checking
+  case reconnecting
+  /// The computer closed the link because a request ran too long (4002).
+  case hostBusy
+  case waking
+  case unreachable
+  /// The account says the Mac announced a sleep.
+  case asleep
+  /// An ADE Cloud computer the account says is asleep or stopped. Its saved
+  /// work stays readable; nothing here wakes it.
+  case cloudResting
+  /// The phone itself has no network path.
+  case noNetwork
+}
+
+struct SyncFocusedConnectionNoticeInputs: Equatable {
+  var presentedState: RemoteConnectionState
+  var linkSilenceSuspected: Bool
+  /// A machine is paired and automatic reconnect is on (not paused by the user).
+  var autoReconnectActive: Bool
+  var isProjectSwitching: Bool
+  /// The tabs show an account project no computer serves.
+  var isAccountProjectScope: Bool
+  var phoneHasNetworkPath: Bool
+  var focusedCloudComputerResting: Bool
+  var focusedMachineAsleep: Bool
+  var attemptIsWakingMachine: Bool
+  var lastDropWasHostBusy: Bool
+}
+
+/// Nil when nothing should show: connected and answering, deliberately
+/// disconnected, or nothing paired.
+func syncFocusedConnectionNoticeKind(_ inputs: SyncFocusedConnectionNoticeInputs) -> SyncFocusedConnectionNoticeKind? {
+  guard inputs.autoReconnectActive, !inputs.isProjectSwitching, !inputs.isAccountProjectScope else { return nil }
+  let troubled: Bool
+  switch inputs.presentedState {
+  case .connected: troubled = inputs.linkSilenceSuspected
+  case .connecting, .error: troubled = true
+  case .disconnected: troubled = false
+  }
+  guard troubled else { return nil }
+  if inputs.attemptIsWakingMachine, inputs.presentedState == .connecting { return .waking }
+  if inputs.focusedCloudComputerResting { return .cloudResting }
+  if !inputs.phoneHasNetworkPath { return .noNetwork }
+  if inputs.focusedMachineAsleep { return .asleep }
+  if inputs.presentedState == .connected { return .checking }
+  if inputs.presentedState == .error { return .unreachable }
+  return inputs.lastDropWasHostBusy ? .hostBusy : .reconnecting
+}
+
+/// The focused machine's banner: what it says and what it offers.
+struct SyncFocusedConnectionNotice: Equatable {
+  let kind: SyncFocusedConnectionNoticeKind
+  let machineName: String
+  /// When a frame last arrived from this machine; nil when unknown.
+  let updatedAt: Date?
+
+  var title: String {
+    switch kind {
+    case .checking: return "Checking the connection to \(machineName)…"
+    case .reconnecting: return "Reconnecting to \(machineName)…"
+    case .hostBusy: return "\(machineName) was busy · reconnecting…"
+    case .waking: return "Waking \(machineName)…"
+    case .unreachable: return "Can’t reach \(machineName)"
+    case .asleep: return "\(machineName) is asleep"
+    case .cloudResting: return "\(machineName) is asleep · showing saved work"
+    case .noNetwork: return "No connection"
+    }
+  }
+
+  /// The title and, when known, how old the shown data is. A resting ADE
+  /// Cloud computer's line already says what is shown.
+  func line(now: Date) -> String {
+    guard kind != .cloudResting, let updatedAt else { return title }
+    return "\(title) · updated \(syncShortAgeText(seconds: now.timeIntervalSince(updatedAt))) ago"
+  }
+
+  func accessibilityLabel(now: Date) -> String {
+    let spokenTitle = title.replacingOccurrences(of: " · ", with: ", ").replacingOccurrences(of: "…", with: "")
+    guard kind != .cloudResting, let updatedAt else { return spokenTitle }
+    return "\(spokenTitle). Updated \(syncSpokenAgeText(seconds: now.timeIntervalSince(updatedAt))) ago."
+  }
+
+  /// A spinner while the phone is working on it; a still glyph otherwise.
+  var showsProgress: Bool {
+    switch kind {
+    case .checking, .reconnecting, .hostBusy, .waking: return true
+    case .unreachable, .asleep, .cloudResting, .noNetwork: return false
+    }
+  }
+
+  var symbol: String {
+    switch kind {
+    case .noNetwork: return "wifi.slash"
+    case .asleep, .cloudResting: return "moon.zzz"
+    default: return "exclamationmark.triangle"
+    }
+  }
+
+  /// A probe that has not answered yet says nothing about the rows.
+  var marksContentStale: Bool { kind != .checking }
+
+  /// Retry only where the phone has stopped trying on its fast schedule. An
+  /// asleep Mac or ADE Cloud computer is never dialed from here: reading its
+  /// saved work must not wake it.
+  var offersRetry: Bool { kind == .unreachable }
+}
+
+/// "12s", "4m", "2h": the age in the banner.
+func syncShortAgeText(seconds: TimeInterval) -> String {
+  let whole = max(0, Int(seconds.rounded(.down)))
+  if whole < 60 { return "\(whole)s" }
+  if whole < 3_600 { return "\(whole / 60)m" }
+  if whole < 86_400 { return "\(whole / 3_600)h" }
+  return "\(whole / 86_400)d"
+}
+
+/// The same age for VoiceOver: "12 seconds", "4 minutes".
+func syncSpokenAgeText(seconds: TimeInterval) -> String {
+  let whole = max(0, Int(seconds.rounded(.down)))
+  func unit(_ value: Int, _ name: String) -> String { "\(value) \(name)\(value == 1 ? "" : "s")" }
+  if whole < 60 { return unit(whole, "second") }
+  if whole < 3_600 { return unit(whole / 60, "minute") }
+  if whole < 86_400 { return unit(whole / 3_600, "hour") }
+  return unit(whole / 86_400, "day")
+}
+
 func syncJitteredReconnectDelayNanoseconds(base: UInt64, sample: Double) -> UInt64 {
   let clampedSample = min(1, max(0, sample))
   let factor = 0.8 + (0.4 * clampedSample)
@@ -357,9 +661,19 @@ func syncErrorIsRelayHostDidNotAnswer(_ error: Error?) -> Bool {
   return code.map(syncRelayHostDidNotAnswerCloseCodes.contains) ?? false
 }
 
+/// The close code a host sends when the computer was too busy to finish a
+/// request in time.
+let syncHostBusyCloseCode = 4002
+
+let syncHostBusyCloseMessage = "This computer was busy and closed the connection. Reconnecting now."
+
 func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
   let message: String
   switch closeCodeRawValue {
+  case 4002:
+    // The host closes a connection whose request ran past its time limit (and
+    // a project handoff it could not complete): the computer was busy.
+    message = syncHostBusyCloseMessage
   case 4003:
     message = "This saved connection needs attention. Open Settings and reconnect."
   case 4004:
@@ -606,7 +920,8 @@ enum SyncLiveDropReport {
     routeKind: SyncConnectionRouteKind?,
     closeCode: Int?,
     connectionAgeSeconds: TimeInterval?,
-    error: Error? = nil
+    error: Error? = nil,
+    roundTripMs: Int? = nil
   ) {
     guard isUnexplainedDrop(closeCode: closeCode) else { return }
     let route = routeKind.map { String(describing: $0) } ?? "unknown"
@@ -624,6 +939,9 @@ enum SyncLiveDropReport {
       "close_code": String(closeCode ?? 0),
       "age": ageBucket,
     ]
+    // The last round trip measured on this route: a slow route that then
+    // drops reads differently from a fast one.
+    if let roundTripMs { data["rtt_ms"] = String(roundTripMs) }
     if let error {
       let nsError = error as NSError
       data["error_domain"] = nsError.domain

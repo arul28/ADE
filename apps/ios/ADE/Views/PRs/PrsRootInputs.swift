@@ -48,8 +48,10 @@ struct PrsRootInputs: Equatable {
     focusedRunningCount = sync.activeProject.flatMap { sync.rosterProject(for: $0) }?.runningCount ?? 0
     liveMachineKeys = fleet.liveMachineKeys
     // Not connected covers a computer the phone is still trying to reach: an
-    // offline computer stays "connecting" while the phone retries.
-    if sync.connectionState != .connected,
+    // offline computer stays "connecting" while the phone retries. The
+    // presented state, so an automatic reconnect inside its grace keeps the
+    // computer's own list instead of flipping to GitHub and back.
+    if sync.presentedConnectionState != .connected,
        AccountService.shared.phase == .signedIn,
        GitHubAccountConnection.shared.state != .unsupported,
        let project = sync.activeProject {

@@ -55,8 +55,9 @@ func hubAccountStatusInputs(
     governedByAccount: list.governsHub,
     listPhase: list.phase,
     listHasSavedCopy: list.hasList,
-    // A project switch can re-dial; it is not a lost computer.
-    focusedState: sync.isProjectSwitching ? .connected : sync.connectionState,
+    // A project switch can re-dial; it is not a lost computer. Nor is an
+    // automatic reconnect still inside its grace (`presentedConnectionState`).
+    focusedState: sync.isProjectSwitching ? .connected : sync.presentedConnectionState,
     focusedDisconnectedByUser: sync.primaryDisconnectedByUser,
     // The machine attached, or the one a connect in flight or just failed
     // targeted (the header pill names the same one).

@@ -94,6 +94,8 @@ final class MachineConnection {
   private var rosterPersistTask: Task<Void, Never>?
   private var heartbeatTask: Task<Void, Never>?
   private var lastInboundUptime: TimeInterval = 0
+  /// `brain_status` spacing on the live socket: what the silence check expects.
+  private var statusCadence = SyncInboundCadenceTracker()
   private var consecutiveFailures = 0
   /// The backoff ran out: no more dials until the user retries, the app opens,
   /// the network changes, or the account shows the machine online.
@@ -219,7 +221,7 @@ final class MachineConnection {
   /// answer in a few seconds, close the link the way heartbeat silence
   /// does. The run loop dials again with backoff, and an asleep computer
   /// lists its saved work meanwhile. A machine that answers keeps its link.
-  func probeLink(trigger: String) {
+  func probeLink(trigger: String, attempt: Int = 0) {
     guard phase == .live, socket != nil, linkProbeTask == nil else { return }
     let probeGeneration = generation
     let sentAt = ProcessInfo.processInfo.systemUptime
@@ -236,6 +238,15 @@ final class MachineConnection {
       guard !Task.isCancelled, self.generation == probeGeneration, let socket = self.socket,
             self.lastInboundUptime < sentAt
       else { return }
+      // A metered or Low Data path gets one more probe, as the focused link does.
+      let retries = syncTransportProbeRetryCount(
+        isExpensive: self.syncService?.networkPathIsExpensive == true,
+        isConstrained: self.syncService?.networkPathIsConstrained == true
+      )
+      if attempt < retries {
+        self.probeLink(trigger: trigger, attempt: attempt + 1)
+        return
+      }
       machineConnectionLog.notice("fleet probe unanswered machine=\(self.machineKey, privacy: .public) trigger=\(trigger, privacy: .public)")
       self.heartbeatClosedSocket = socket
       socket.cancel(with: .goingAway, reason: nil)
@@ -327,7 +338,15 @@ final class MachineConnection {
         setPhase(.offline(message: SyncUserFacingError.message(for: error)))
       }
       consecutiveFailures += 1
-      guard let delay = machineConnectionBackoffNanoseconds(failures: consecutiveFailures) else {
+      // Past the backoff the account's presence reading is what dials again
+      // (`MachineFleet.machinesCameOnline`). A machine it cannot speak for
+      // (signed out, or not in the account) keeps one quiet dial every ten
+      // minutes instead, or it would stay dead until a foreground or a
+      // network change.
+      let accountReportsPresence = AccountService.shared.isSignedIn
+        && AccountService.shared.machine(forFleetKey: machineKey) != nil
+      guard let delay = machineConnectionBackoffNanoseconds(failures: consecutiveFailures)
+        ?? machineConnectionUnwatchedRetryNanoseconds(accountReportsPresence: accountReportsPresence) else {
         machineConnectionLog.notice("fleet gives up machine=\(self.machineKey, privacy: .public) failures=\(self.consecutiveFailures)")
         gaveUp = true
         runTask = nil
@@ -394,10 +413,15 @@ final class MachineConnection {
     liveAddress = result.address
     liveSinceUptime = ProcessInfo.processInfo.systemUptime
     lastInboundUptime = ProcessInfo.processInfo.systemUptime
+    statusCadence = SyncInboundCadenceTracker()
     lastUpdateAt = Date()
     setPhase(.live)
+    let clientHeartbeatIntervalNanoseconds = syncClientHeartbeatIntervalNanoseconds(
+      serverIntervalMs: payload["heartbeatIntervalMs"]
+    )
     startHeartbeat(
-      intervalNanoseconds: syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: payload["heartbeatIntervalMs"]),
+      intervalNanoseconds: clientHeartbeatIntervalNanoseconds,
+      hostHeartbeatSeconds: TimeInterval(clientHeartbeatIntervalNanoseconds) / 2_000_000_000,
       generation: generation
     )
     subscribeRoster()
@@ -609,6 +633,9 @@ final class MachineConnection {
     case "provider_logins_changed":
       // The account's sign-ins are account-wide: a change seen on any machine reads them again.
       syncService?.noteProviderLoginsChanged()
+    case "brain_status":
+      // Only its cadence matters to a roster peer (the silence check).
+      if generation == frameGeneration { statusCadence.noteStatus(at: ProcessInfo.processInfo.systemUptime) }
     default:
       // Changesets, catalogs and anything else are not for a roster peer.
       // Hosts that know `syncRole: "roster"` never send them.
@@ -808,23 +835,49 @@ final class MachineConnection {
 
   // MARK: - Heartbeat
 
-  private func startHeartbeat(intervalNanoseconds: UInt64, generation heartbeatGeneration: UInt64) {
+  /// The same silence rule as the focused link (`syncLinkSilenceThresholdSeconds`),
+  /// checked every 15 s while the socket is live. The fleet closes every
+  /// roster socket in the background, so this never runs there. With no
+  /// status cadence the threshold stays three fallback intervals, as before.
+  private func startHeartbeat(
+    intervalNanoseconds: UInt64,
+    hostHeartbeatSeconds: TimeInterval,
+    generation heartbeatGeneration: UInt64
+  ) {
     heartbeatTask?.cancel()
     heartbeatTask = Task { @MainActor [weak self] in
+      let interval = TimeInterval(intervalNanoseconds) / 1_000_000_000
+      var lastFallbackPingAt: TimeInterval?
       while !Task.isCancelled {
-        try? await Task.sleep(nanoseconds: intervalNanoseconds)
+        try? await Task.sleep(nanoseconds: SyncLinkSilenceTiming.checkIntervalNanoseconds)
         guard let self, !Task.isCancelled, self.generation == heartbeatGeneration, self.socket != nil else { return }
-        let silence = ProcessInfo.processInfo.systemUptime - self.lastInboundUptime
-        let interval = TimeInterval(intervalNanoseconds) / 1_000_000_000
-        if silence > interval * 3 {
-          // Nothing (not even a host ping) for three intervals: the path is
-          // dead. Close; the run loop reconnects with backoff.
+        let now = ProcessInfo.processInfo.systemUptime
+        let isExpensive = self.syncService?.networkPathIsExpensive == true
+        let isConstrained = self.syncService?.networkPathIsConstrained == true
+        let threshold = syncLinkSilenceThresholdSeconds(
+          statusCadenceSeconds: self.statusCadence.statusCadenceSeconds,
+          hostHeartbeatSeconds: hostHeartbeatSeconds,
+          routeKind: self.liveRouteKind,
+          isExpensive: isExpensive,
+          isConstrained: isConstrained,
+          fallbackThresholdSeconds: interval * 3
+        )
+        switch syncLinkSilenceAction(
+          now: now,
+          lastInboundAt: self.lastInboundUptime,
+          silenceThresholdSeconds: threshold,
+          fallbackPingIntervalSeconds: interval,
+          lastFallbackPingAt: lastFallbackPingAt
+        ) {
+        case .quiet:
+          continue
+        case .probe:
+          // Quiet past what this host's cadence allows: ping it, and close
+          // (the run loop redials with backoff) only if nothing answers.
           machineConnectionLog.notice("fleet heartbeat silence machine=\(self.machineKey, privacy: .public)")
-          self.heartbeatClosedSocket = self.socket
-          self.socket?.cancel(with: .goingAway, reason: nil)
-          return
-        }
-        if silence >= interval {
+          self.probeLink(trigger: "heartbeat_silence")
+        case .ping:
+          lastFallbackPingAt = now
           self.send(type: "heartbeat", requestId: nil, payload: [
             "kind": "ping",
             "sentAt": ISO8601DateFormatter().string(from: Date()),
@@ -1412,6 +1465,20 @@ func machineConnectionBackoffNanoseconds(failures: Int, jitter: Double = Double.
   let index = max(failures, 1) - 1
   guard index < machineConnectionRetryDelaysSeconds.count else { return nil }
   return UInt64(machineConnectionRetryDelaysSeconds[index] * jitter * 1_000_000_000)
+}
+
+/// The wait between dials once the backoff ran out, for a machine the account
+/// cannot report on. Nil when it can: the fleet then waits for its presence
+/// reading, a foreground or a network change. Fleet connections close in the
+/// background, so this only ever runs with the app in front.
+private let machineConnectionUnwatchedRetrySeconds: Double = 600
+
+func machineConnectionUnwatchedRetryNanoseconds(
+  accountReportsPresence: Bool,
+  jitter: Double = Double.random(in: 0.8...1.2)
+) -> UInt64? {
+  guard !accountReportsPresence else { return nil }
+  return UInt64(machineConnectionUnwatchedRetrySeconds * jitter * 1_000_000_000)
 }
 
 /// The error text when a computer cannot take a request right now.

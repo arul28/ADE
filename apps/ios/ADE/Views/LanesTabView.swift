@@ -12,6 +12,11 @@ struct LanesRootInputs: Equatable {
   // Tracked only while the tab is visible.
   var connectionState: RemoteConnectionState = .disconnected
   var laneStatus = SyncDomainStatus.disconnected
+  /// What the notices show: the grace of an automatic reconnect hides it here
+  /// (`SyncService.presentedConnectionState`). Tracked so the tab redraws
+  /// when the grace ends.
+  var presentedConnectionState: RemoteConnectionState = .disconnected
+  var presentedLaneStatus = SyncDomainStatus.disconnected
   var suppressHydrationNotices = false
   var activeLaneDeletionError: String?
   var laneDeletionsKeptIds: [String] = []
@@ -43,6 +48,8 @@ struct LanesRootInputs: Equatable {
     guard isActive else { return }
     connectionState = sync.connectionState
     laneStatus = sync.status(for: .lanes)
+    presentedConnectionState = sync.presentedConnectionState
+    presentedLaneStatus = sync.presentedStatus(for: .lanes)
     suppressHydrationNotices = sync.shouldSuppressDomainHydrationNotices
     activeLaneDeletionError = sync.activeLaneDeletionError
     laneDeletionsKeptIds = sync.activeLaneDeletionsKept.map(\.id)

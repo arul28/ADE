@@ -1,10 +1,14 @@
 import SwiftUI
 
 extension LanesTabView {
+  // The notices read the presented state: an automatic reconnect inside its
+  // grace says nothing here. Whether an action runs still reads the real one
+  // (`canRunLiveActions`). Read from `inputs`, which track them, so the tab
+  // redraws when the grace ends.
   var emptyStatePresentation: LaneEmptyStatePresentation? {
     laneRootEmptyState(
-      connectionState: syncService.connectionState,
-      laneStatus: laneStatus,
+      connectionState: inputs.presentedConnectionState,
+      laneStatus: inputs.presentedLaneStatus,
       hasHostProfile: syncService.activeHostProfile != nil
     )
   }
@@ -12,8 +16,8 @@ extension LanesTabView {
   var liveActionNoticePresentation: LaneEmptyStatePresentation? {
     guard !laneSnapshots.isEmpty else { return nil }
     guard let notice = laneLiveActionNotice(
-      connectionState: syncService.connectionState,
-      laneStatus: laneStatus,
+      connectionState: inputs.presentedConnectionState,
+      laneStatus: inputs.presentedLaneStatus,
       hasHostProfile: syncService.activeHostProfile != nil
     ) else { return nil }
     // Every visit re-syncs the lanes for a moment, and the cached list is
@@ -28,7 +32,10 @@ extension LanesTabView {
   /// or the lane sync: the state the delayed notice above times.
   var laneLiveActionsWaiting: Bool {
     !laneSnapshots.isEmpty
-      && !laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: laneStatus)
+      && !laneAllowsLiveActions(
+        connectionState: inputs.presentedConnectionState,
+        laneStatus: inputs.presentedLaneStatus
+      )
   }
 
   var showsLaneLoadingSkeletons: Bool {

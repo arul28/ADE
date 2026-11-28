@@ -30,6 +30,9 @@ struct SettingsDiagnosticsSection: View {
             if let performance = snapshot.connectionPerformance {
               ADESettingsValueRow(title: "Last connection", value: performance, mono: true)
             }
+            if let roundTrip = snapshot.roundTrip {
+              ADESettingsValueRow(title: "Round trip", value: roundTrip, mono: true)
+            }
           }
         }
       }

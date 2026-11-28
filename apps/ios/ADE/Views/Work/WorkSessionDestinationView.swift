@@ -2669,7 +2669,11 @@ struct WorkSessionDestinationView: View {
       canComposeMessages: canComposeChatMessages,
       canSendMessages: canSendChatMessages,
       sendWillQueue: sendWillQueueChatMessage || shouldSteer,
-      sendWillQueueIsReconnect: sendWillQueueChatMessage,
+      // Copy only: a send still queues exactly as it does while connecting.
+      // Inside the grace of the focused machine's automatic reconnect the
+      // composer says nothing about it.
+      sendWillQueueIsReconnect: sendWillQueueChatMessage
+        && !(!isRemoteMachineChat && registeredRemoteMachineKey == nil && syncService.automaticRecoveryGraceActive),
       activeSendModesAvailable: activeSendModesAvailable,
       queueAwareStopAvailable: queueAwareStopAvailable,
       transportHealth: syncService.connectionHealth.transport,

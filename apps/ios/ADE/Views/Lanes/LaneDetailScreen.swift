@@ -632,9 +632,10 @@ struct LaneDetailScreen: View {
   }
 
   private var detailEmptyStatePresentation: LaneEmptyStatePresentation? {
+    // Presented state: an automatic reconnect inside its grace shows nothing.
     laneDetailEmptyState(
-      connectionState: syncService.connectionState,
-      laneStatus: syncService.status(for: .lanes),
+      connectionState: syncService.presentedConnectionState,
+      laneStatus: syncService.presentedStatus(for: .lanes),
       hasHostProfile: syncService.activeHostProfile != nil
     )
   }

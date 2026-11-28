@@ -352,7 +352,17 @@ struct ContentView: View {
       ctoTab
     }
     .safeAreaInset(edge: .top, spacing: 0) {
-      if syncService.projectHostContentMayBeStale {
+      // One banner at a time: a lost link outranks services still starting,
+      // which cannot be reached through it anyway.
+      if let notice = syncService.focusedConnectionNotice {
+        FocusedConnectionBanner(
+          notice: notice,
+          staleContentNoun: selectedTab.syncDomain?.contentNoun,
+          onRetry: notice.offersRetry
+            ? { Task { await syncService.reconnectIfPossible(userInitiated: true) } }
+            : nil
+        )
+      } else if syncService.projectHostContentMayBeStale {
         ProjectHostStartingBanner(
           syncService: syncService,
           staleContentNoun: selectedTab.syncDomain?.contentNoun
@@ -477,6 +487,60 @@ private struct ProjectHostStartingBanner: View {
     .frame(maxWidth: .infinity)
     .background(.ultraThinMaterial)
     .accessibilityElement(children: .contain)
+  }
+}
+
+/// The focused machine's link is down, quiet, or asleep
+/// (`SyncService.focusedConnectionNotice`). Same place and look as
+/// `ProjectHostStartingBanner`; the cached rows stay readable under it. It
+/// shows only past the automatic-reconnect grace, so a short blip never draws
+/// it. The age ticks in a local `TimelineView` while it is up; nothing
+/// publishes per second.
+private struct FocusedConnectionBanner: View {
+  let notice: SyncFocusedConnectionNotice
+  /// What the rows under this banner are, so the stale marker names them.
+  let staleContentNoun: String?
+  let onRetry: (() -> Void)?
+
+  var body: some View {
+    VStack(spacing: 6) {
+      HStack(spacing: 10) {
+        if notice.showsProgress {
+          ProgressView()
+            .controlSize(.small)
+        } else {
+          Image(systemName: notice.symbol)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .accessibilityHidden(true)
+        }
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+          Text(notice.line(now: context.date))
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(notice.accessibilityLabel(now: context.date))
+            .accessibilityAddTraits(.updatesFrequently)
+        }
+        Spacer(minLength: 8)
+        if let onRetry {
+          Button("Retry", action: onRetry)
+            .buttonStyle(.plain)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .accessibilityHint("Tries to reach \(notice.machineName) again now")
+        }
+      }
+      if let staleContentNoun, notice.marksContentStale {
+        ADEStaleContentMarker(noun: staleContentNoun)
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity)
+    .background(.ultraThinMaterial)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("focused-connection-banner")
   }
 }
 

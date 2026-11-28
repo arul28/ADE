@@ -531,6 +531,8 @@ struct SettingsPairingSnapshot: Equatable {
 struct SettingsDiagnosticsSnapshot: Equatable {
   var connectionRoute: String?
   var connectionPerformance: String?
+  /// "ADE relay · 84 ms": the live route's last measured round trip.
+  var roundTrip: String?
   var pairedMachineIdentity: String?
   var lastSyncDescription: String?
   var deviceIdentity: String?
@@ -690,6 +692,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
           durationMs: syncService.lastConnectDurationMs,
           routeKind: syncService.lastConnectedRouteKind
         ),
+        roundTrip: syncService.liveRouteRoundTrip.map(syncRouteRoundTripLine),
         pairedMachineIdentity: activeProfile?.hostIdentity.map(Self.shortIdentity),
         lastSyncDescription: syncService.lastSyncAt.map(Self.relativeSyncDescription),
         deviceIdentity: activeProfile?.pairedDeviceId.map(Self.shortIdentity)

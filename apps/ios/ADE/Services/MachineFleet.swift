@@ -360,8 +360,13 @@ final class MachineFleet: ObservableObject {
   }
 
   /// The phone's network changed: machines that ran out of retries may be
-  /// reachable now.
+  /// reachable now, and a link that reads live may have died with the old
+  /// interface (Wi-Fi to cellular) without a close. One ping each finds out in
+  /// seconds instead of waiting for the silence check.
   func networkChanged() {
+    for connection in connections.values where connection.isLive {
+      connection.probeLink(trigger: "path_change")
+    }
     resumeGivenUpConnections()
     reconcile()
   }

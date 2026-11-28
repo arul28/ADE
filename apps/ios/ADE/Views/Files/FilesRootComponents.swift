@@ -20,7 +20,9 @@ struct FilesTreeHeaderRow: View {
         workspaces: workspaces,
         lanes: lanes,
         selectedWorkspaceId: $selectedWorkspaceId,
-        isLive: isLive
+        // Its only use is the "Offline" subtitle: an automatic reconnect
+        // inside its grace does not say it. Search below keeps the real gate.
+        isLive: isLive || syncService.automaticRecoveryGraceActive
       )
       if showsSearch {
         Button(action: onSearch) {

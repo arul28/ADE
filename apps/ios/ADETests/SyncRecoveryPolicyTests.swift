@@ -110,9 +110,127 @@ final class SyncRecoveryPolicyTests: XCTestCase {
   }
 
   func testTransportProbeAllowsMoreTimeOnExpensiveAndConstrainedPaths() {
-    XCTAssertEqual(syncTransportProbeTimeoutNanoseconds(isExpensive: false, isConstrained: false), 5_000_000_000)
-    XCTAssertEqual(syncTransportProbeTimeoutNanoseconds(isExpensive: true, isConstrained: false), 8_000_000_000)
-    XCTAssertEqual(syncTransportProbeTimeoutNanoseconds(isExpensive: true, isConstrained: true), 12_000_000_000)
+    // Ten seconds or more everywhere: a host whose event loop stalls for ten
+    // seconds must not read as a dead link.
+    XCTAssertEqual(syncTransportProbeTimeoutNanoseconds(isExpensive: false, isConstrained: false), 10_000_000_000)
+    XCTAssertEqual(syncTransportProbeTimeoutNanoseconds(isExpensive: true, isConstrained: false), 12_000_000_000)
+    XCTAssertEqual(syncTransportProbeTimeoutNanoseconds(isExpensive: true, isConstrained: true), 15_000_000_000)
+    // One unanswered probe drops a Wi-Fi link; a metered or Low Data one gets a second.
+    XCTAssertEqual(syncTransportProbeRetryCount(isExpensive: false, isConstrained: false), 0)
+    XCTAssertEqual(syncTransportProbeRetryCount(isExpensive: true, isConstrained: false), 1)
+    XCTAssertEqual(syncTransportProbeRetryCount(isExpensive: false, isConstrained: true), 1)
+  }
+
+  /// The silence threshold follows the cadence the host really keeps. It must
+  /// not drift back to minutes, must not undercut a route's floor (a stalled
+  /// host or a relay that batches statuses), and must never probe a host that
+  /// sends no status more eagerly than the heartbeat-only rule.
+  func testLinkSilenceThresholdFollowsTheHostCadenceWithinFloorsAndFallback() {
+    let fallback: TimeInterval = 240
+    let cases: [(cadence: TimeInterval?, heartbeat: TimeInterval, route: SyncConnectionRouteKind?, expensive: Bool, constrained: Bool, expected: TimeInterval, why: String)] = [
+      (nil, 60, .lan, false, false, 240, "no status cadence keeps the heartbeat-only rule"),
+      (5, 60, .lan, false, false, 20, "direct status every 5 s: the 20 s floor"),
+      (5, 60, .tailnet, false, false, 20, "a tailnet route is direct"),
+      (30, 60, .relay, false, false, 90, "relay status every 30 s: three of them"),
+      (2, 60, .relay, false, false, 75, "a burst of statuses never undercuts the relay floor"),
+      (5, 60, .lan, true, false, 30, "metered direct waits longer"),
+      (5, 60, .lan, false, true, 40, "Low Data direct waits longer still"),
+      (30, 60, .relay, false, true, 105, "Low Data relay: its floor"),
+      (300, 60, .lan, false, false, 180, "sparse statuses are capped by the host heartbeat"),
+      (100, 120, .lan, false, false, 240, "never later than the heartbeat-only rule"),
+      (5, 60, nil, false, false, 75, "an unknown route gets the gentler relay floor"),
+    ]
+    for entry in cases {
+      XCTAssertEqual(
+        syncLinkSilenceThresholdSeconds(
+          statusCadenceSeconds: entry.cadence,
+          hostHeartbeatSeconds: entry.heartbeat,
+          routeKind: entry.route,
+          isExpensive: entry.expensive,
+          isConstrained: entry.constrained,
+          fallbackThresholdSeconds: fallback
+        ),
+        entry.expected,
+        entry.why
+      )
+    }
+  }
+
+  /// A healthy link sends nothing; silence past the threshold probes; the old
+  /// fallback ping still goes out once per fallback interval below it.
+  func testLinkSilenceCheckSendsNothingWhileTrafficArrives() {
+    func action(now: TimeInterval, lastInbound: TimeInterval?, lastPing: TimeInterval? = nil) -> SyncLinkSilenceAction {
+      syncLinkSilenceAction(
+        now: now,
+        lastInboundAt: lastInbound,
+        silenceThresholdSeconds: 20,
+        fallbackPingIntervalSeconds: 120,
+        lastFallbackPingAt: lastPing
+      )
+    }
+    XCTAssertEqual(action(now: 100, lastInbound: 95), .quiet)
+    XCTAssertEqual(action(now: 100, lastInbound: 81), .quiet)
+    XCTAssertEqual(action(now: 100, lastInbound: 80), .probe)
+    XCTAssertEqual(action(now: 100, lastInbound: nil), .probe)
+
+    // With the heartbeat-only threshold (no status cadence), today's spacing.
+    func fallbackAction(now: TimeInterval, lastInbound: TimeInterval, lastPing: TimeInterval?) -> SyncLinkSilenceAction {
+      syncLinkSilenceAction(
+        now: now,
+        lastInboundAt: lastInbound,
+        silenceThresholdSeconds: 240,
+        fallbackPingIntervalSeconds: 120,
+        lastFallbackPingAt: lastPing
+      )
+    }
+    XCTAssertEqual(fallbackAction(now: 219, lastInbound: 100, lastPing: nil), .quiet)
+    XCTAssertEqual(fallbackAction(now: 220, lastInbound: 100, lastPing: nil), .ping)
+    XCTAssertEqual(fallbackAction(now: 235, lastInbound: 100, lastPing: 220), .quiet)
+    XCTAssertEqual(fallbackAction(now: 340, lastInbound: 100, lastPing: 220), .probe)
+  }
+
+  func testInboundCadenceIsTheWidestRecentStatusGap() {
+    var cadence = SyncInboundCadenceTracker()
+    XCTAssertNil(cadence.statusCadenceSeconds)
+    cadence.noteStatus(at: 0)
+    XCTAssertNil(cadence.statusCadenceSeconds, "one status proves no cadence")
+    cadence.noteStatus(at: 5)
+    cadence.noteStatus(at: 35)
+    cadence.noteStatus(at: 36)
+    XCTAssertEqual(cadence.statusCadenceSeconds, 30)
+    // The wide gap ages out after the sample window.
+    for uptime in stride(from: 41.0, through: 61.0, by: 5) { cadence.noteStatus(at: uptime) }
+    XCTAssertEqual(cadence.statusCadenceSeconds, 5)
+    // A clock that did not move adds nothing.
+    cadence.noteStatus(at: 61)
+    XCTAssertEqual(cadence.statusCadenceSeconds, 5)
+  }
+
+  /// Inside the grace only `.connecting` reads as connected, and only domains
+  /// that were ready keep reading ready. A terminal state or a failure always
+  /// shows; outside the grace everything is the real state.
+  func testAutomaticRecoveryGraceHidesOnlyAReconnectInProgress() {
+    let states: [RemoteConnectionState] = [.connected, .connecting, .error, .disconnected]
+    for state in states {
+      XCTAssertEqual(syncPresentedConnectionState(state, recoveryGraceActive: false), state)
+    }
+    XCTAssertEqual(syncPresentedConnectionState(.connecting, recoveryGraceActive: true), .connected)
+    XCTAssertEqual(syncPresentedConnectionState(.error, recoveryGraceActive: true), .error)
+    XCTAssertEqual(syncPresentedConnectionState(.disconnected, recoveryGraceActive: true), .disconnected)
+
+    let ready = SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: Date(timeIntervalSince1970: 1_000))
+    let failed = SyncDomainStatus(phase: .failed, lastError: "Couldn't load", lastHydratedAt: nil)
+    for phase: SyncDomainPhase in [.disconnected, .hydrating, .syncingInitialData] {
+      let real = SyncDomainStatus(phase: phase)
+      XCTAssertEqual(syncPresentedDomainStatus(real, graceSnapshot: ready), ready, "\(phase)")
+      XCTAssertEqual(syncPresentedDomainStatus(real, graceSnapshot: nil), real, "\(phase)")
+      XCTAssertEqual(
+        syncPresentedDomainStatus(real, graceSnapshot: SyncDomainStatus(phase: .hydrating)),
+        real,
+        "a domain that was not ready is not hidden"
+      )
+    }
+    XCTAssertEqual(syncPresentedDomainStatus(failed, graceSnapshot: ready), failed)
   }
 
   func testHeartbeatSilenceProbeIsTolerantOfExpensiveAndConstrainedPaths() {
@@ -398,7 +516,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     let cases: [(code: Int, reason: String, expected: String)] = [
       (4000, "partner closed", interrupted),
       (4001, "heartbeat timed out", interrupted),
-      (4002, "sync host handoff buffer exceeded", interrupted),
+      (4002, "Sync message timed out", "This computer was busy and closed the connection. Reconnecting now."),
       (4003, "ADE Relay account proof expired", "This saved connection needs attention. Open Settings and reconnect."),
       (4004, "pairing cooldown", "Connection attempts are paused briefly. Try again shortly."),
       (4008, "inbound connection stale", interrupted),

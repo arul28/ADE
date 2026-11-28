@@ -928,6 +928,44 @@ Its action opens `tailscale://`, else the App Store page.
 
 ### Connection words and failure cards
 
+- **Grace before an automatic reconnect shows.** An automatic reconnect
+  (a drop, a failed silence probe, a foreground replace, a forced reset on a
+  network change) keeps showing the connected state for 2 s
+  (`syncAutomaticRecoveryGraceSeconds`). Surfaces read
+  `SyncService.presentedConnectionState` and `presentedStatus(for:)`
+  (`syncPresentedConnectionState`, `syncPresentedDomainStatus`): inside the
+  grace only `.connecting` reads `.connected`, and only domains that were
+  `.ready` keep reading ready. `.error`, `.disconnected` and `.failed` always
+  show. `connectionHealth` (the Hub dot, Duo, Settings, the composer), the
+  Hub's status inputs, the Lanes notices, the lane detail empty state, the PRs
+  tab's GitHub fallback, the Files "Offline" subtitle and the composer's
+  "Machine is reconnecting" line read it. Request gating never does: sends,
+  lane actions and file search read the real `connectionState`, so a send
+  pressed inside the grace queues exactly as it does while connecting. The
+  window counts only while the app is in front (one that runs out in the
+  background restarts on the next foreground); a second recovery inside it
+  does not extend it; a connect the person asks for (`reconnectIfPossible`
+  with `userInitiated`, a machine switch through
+  `prepareForUserConnectionChange`, `disconnect`) ends it at once. A failed
+  silence probe starts no grace: its banner was already up.
+- **Focused connection banner.** `FocusedConnectionBanner` (`ContentView`)
+  sits in the project tabs' top inset in place of `ProjectHostStartingBanner`
+  (one banner at a time) with `ADEStaleContentMarker` for the tab's rows; the
+  cached rows stay readable under it. `SyncService.focusedConnectionNotice`
+  decides it (`syncFocusedConnectionNoticeKind`): nothing while connected
+  and answering, deliberately disconnected, nothing paired, during a project
+  switch or on an account project. Otherwise, past the grace: "Checking the
+  connection to X…" (a silence probe is out), "Reconnecting to X…", "X was
+  busy · reconnecting…" (the last drop was a 4002), "Waking X…", "Can't reach
+  X" (with Retry, the only state that offers one), "X is asleep" (the account
+  reads its announced sleep, `syncMachinePresence`), "X is asleep · showing
+  saved work" (a resting ADE Cloud computer: nothing here dials it), and "No
+  connection" (no network path, `phoneHasNetworkPath`). Each adds "· updated
+  Xs ago" from the last frame the focused machine sent
+  (`lastHeardFromFocusedMachine`, one `Date()` a second at most), ticked by a
+  local `TimelineView` only while the banner shows. VoiceOver reads the line
+  with spelled units ("Updated 12 seconds ago"). The banner is about the
+  focused machine; other machines keep their row states.
 - **Settings header.** "Live · ready to sync", "Live · machine responding
   slowly", "Connecting to saved machine", "Can't reach your machine" (with the
   `lastFailureMessage` banner), or a reconnect / pair-another-machine action.
@@ -1398,7 +1436,12 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
 7. **Disconnect.**
    - Seven fast attempts (1 s → 16 s with jitter) while health stays
      `connecting`, cached chats stay, and the composer says the draft is safe.
-     Then `unreachable`, with a quiet 30–40 s retry that never stops.
+     Then `unreachable`, with a quiet 30–40 s retry that never stops. A change
+     of network interfaces while there is no socket reopens the fast ladder
+     (as a foreground does) before its reconnect.
+   - A 4002 close (the computer was busy: a request ran past the host's time
+     limit, or a project handoff) reads "This computer was busy and closed the
+     connection. Reconnecting now." (`syncHostBusyCloseMessage`).
    - `SyncReconnectFlapTracker`: three closes within 30 s of hello with one
      code and reason in two minutes back off 15 s → 5 min, with "<machine>
      keeps closing the connection right after connecting (<reason>). Retrying
@@ -1437,7 +1480,7 @@ iOS suspends a background socket without a close event, so
 
 | Background gap | Action | Behavior |
 |---|---|---|
-| ≥ 10 s (`syncSuspendedSessionBackgroundGapSeconds`) | `replaceSession` | Rebuild the session without a probe. |
+| ≥ 10 s (`syncSuspendedSessionBackgroundGapSeconds`) | `replaceSession` | Rebuild the session without a probe, behind the 2 s grace (it shows only if the new hello takes longer). |
 | < 10 s | `probeSession` | Refresh, and run `verifyTransportAliveAfterSilence(trigger: "foreground_resume")` in parallel; no answer tears the session down. |
 | none (cold start) | `refreshOnly` | Refresh only. |
 
@@ -1688,9 +1731,32 @@ CLI row must never take the chat quick look.
   keeps it when any envelope arrived in the last 12 s
   (`SyncSocketTiming.requestTimeoutReconnectSilenceSeconds`). Otherwise the
   phone fails the request, marks load strained and runs
-  `verifyTransportAliveAfterSilence` (ping, then wait 5 s, 8 s on an expensive
-  path, 12 s on a constrained one). Heartbeat silence uses the same probe. Only
-  a silent probe tears down.
+  `verifyTransportAliveAfterSilence` (ping, then wait 10 s, 12 s on an
+  expensive path, 15 s on a constrained one: ten seconds or more so a host
+  stall is never a dead link). An expensive or constrained path retries the
+  probe once (`syncTransportProbeRetryCount`). Heartbeat silence uses the same
+  probe. Only a silent probe tears down.
+- **Silence check.** A live link in the foreground looks at its silence every
+  15 s (`SyncLinkSilenceTiming`) and sends nothing while frames arrive. It
+  probes after `syncLinkSilenceThresholdSeconds`: three times the host's real
+  inbound cadence (the widest of the last four `brain_status` gaps on this
+  socket, `SyncInboundCadenceTracker`, capped by the host heartbeat), never
+  under the route floor (`syncLinkSilenceFloorSeconds`: 20 / 30 / 40 s direct,
+  75 / 90 / 105 s relay or unknown, for Wi-Fi / expensive / constrained), and
+  never later than the heartbeat-only rule a host with no status keeps
+  (`syncHeartbeatSilenceThresholdSeconds`). On today's host that is about 20 s
+  direct and 90 s through the relay, then the probe wait. The old fallback
+  ping (one per two host heartbeats of quiet) still goes out below the
+  threshold. `MachineConnection` runs the same rule (its fallback is three
+  fallback intervals) and probes through `probeLink`. A network change probes
+  every live roster link once (`MachineFleet.networkChanged`).
+- **Round trips.** The phone times its own probe and fallback pings (the pong)
+  and keeps the host's `latencyMs` from `brain_status`, by route and network
+  fingerprint (`SyncRouteRoundTrip`, at most 8 entries). No ping is added for
+  it. Phone-timed samples log through `syncConnectLog` (`route_rtt`), host
+  samples when they move by half or once a minute. The `sync.live_drop`
+  breadcrumb carries `rtt_ms`, and Settings › diagnostics shows "Round trip:
+  <route> · N ms".
 - **Terminal input** has its own budget (see Terminals above).
 - **`InitialHydrationGate`** polls for the project row every 200 ms for up to
   15 s after pairing.
@@ -2029,7 +2095,12 @@ same `TerminalStreamTransport` as `SyncService`:
 - Roster connections renew relay proof (`relayReauthorizeV1`;
   `MachineConnection` refreshes the lease), or the host closes them about a
   minute in. A connection in backoff (5 s, 15 s, 1 min, 5 min) dials at once on
-  Connect, a directory "online", a network change or foreground.
+  Connect, a directory "online", a network change or foreground. Past the
+  backoff it waits for those triggers when the account reports on the machine
+  (the fleet reads the account's machine list every 30 s while one is away);
+  a machine the account cannot report on (signed out, not in the account)
+  keeps one dial every 10 minutes while the app is in front
+  (`machineConnectionUnwatchedRetryNanoseconds`).
 
 **Message bar for an agent CLI.** A text-bubble button swaps the key bar for a
 message bar (`@AppStorage("ade.work.cliMessageBar")`, off by default). A message
