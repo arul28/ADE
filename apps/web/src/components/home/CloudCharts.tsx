@@ -339,7 +339,7 @@ function PerHourChart({ className, view }: { className?: string; view: PricingVi
   const rates = adeRates(view);
   const smallPlans = !view.v3 || view.withAds ? "Every plan" : "Paid plans";
   const bars = sortBars([
-    { id: "ade-small", name: `${BRAND.NAME} ${ADE_SMALL.label}`, sub: `${smallPlans} · ${ADE_SMALL.machine}`, logo: ADE_LOGO, value: 0, label: cents(0), ade: true },
+    { id: "ade-small", name: `${BRAND.NAME} ${ADE_SMALL.label}`, sub: `${smallPlans}${withAdsTag(view)} · ${ADE_SMALL.machine}`, logo: ADE_LOGO, value: 0, label: cents(0), ade: true },
     ...PRICING_PLANS.filter((plan) => plan.priceUsd > 0).map((plan): Bar => {
       // The plan's price over the Medium hours its credits buy, at the price now.
       const value = (plan.priceUsd * 100 * rates.medium) / plan.hours;
