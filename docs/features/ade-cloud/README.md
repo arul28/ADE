@@ -146,7 +146,11 @@ NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
   a hidden Mac doesn't count toward the computer limit or as awake. Going
   back stops a running Mac at the next tick (within a minute; billed by the
   minute until NoMac shuts it down) and keeps its drive under the idle
-  cleanup clock; no hidden Mac starts again.
+  cleanup clock; no hidden Mac starts again. The person still sees the lane
+  and its chats, with a plain stopped computer (`hiddenMacInstance`): a wake,
+  start or send answers `CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`. When the
+  switch reaches the account again, the lane is a Mac again and its next
+  start continues from its drive.
 - **Launch.** Only through the server launcher (`os: "mac"`): the bare machine
   launch and `POST /cloud/instances` refuse a Mac (`mac_unsupported`).
 - **Lifecycle.** A start asks NoMac for the label `adem:<id>` with its drive
@@ -154,7 +158,10 @@ NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
   for a first start). A full NoMac queue holds the start (`mac_state =
   'queued'`, an hour at most, retried by the tick). A ready Mac is booted once
   per session by a NoMac job running `~/drive/.daex/boot.sh` with the join
-  code worked out again from the launch. The tick also extends a session near
+  code worked out again from the launch; three failed boots stop the Mac and
+  fail its launch with what to do. A client's read never waits on a boot: it
+  answers at once and starts a due boot after the answer (`waitUntil`, 20 s),
+  and the tick or the webhook finishes it. The tick also extends a session near
   its time limit, and stops NoMac sessions no row holds. Webhooks (`mac.*`,
   `drive.*`) re-read the Mac rather than trust the delivery. A channel with
   no template drive uses stable's; with none at all, no Mac is made or
