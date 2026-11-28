@@ -1,44 +1,50 @@
-# ADE SDK
+# DAEX SDK
 
 Embeddable chat sidecar for third-party apps. A host process owns an isolated
-ADE runtime as a child, talks to it over NDJSON JSON-RPC, and presents chat as
+DAEX runtime as a child, talks to it over NDJSON JSON-RPC, and presents chat as
 durable named threads. The runtime is a guest: sync is off, it has no machine
 brain authority, and it dies with the host.
 
-This is not ADE desktop or personal chats in the product UI. Those
-surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
+This is not DAEX desktop or personal chats in the product UI. Those
+surfaces stay first-party. The SDK is how a *different* app embeds DAEX chat.
+
+Packages are `@daex-dev/sdk` and `@daex-dev/chat-ui` from 0.7.1. The old
+`@ade-dev/*` names and every `Ade*` export (`createAdeChat`, `AdeError`, …)
+remain as deprecated aliases of the `Daex*` names; the runtime platform
+packages keep their `@ade-dev/runtime*` names (the SDK resolves them by that
+name). See `packages/MIGRATING-TO-DAEX-DEV.md`.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `packages/sdk/src/client.ts` | `createAdeChat()` — public client: accounts, credentials, presets, provider capabilities, usage-limit events, threads, models, doctor, export, runtime events, `autoRestart`, dispose. Owns resume / recreate and runtime-lost handling. |
+| `packages/sdk/src/client.ts` | `createDaexChat()` — public client: accounts, credentials, presets, provider capabilities, usage-limit events, threads, models, doctor, export, runtime events, `autoRestart`, dispose. Owns resume / recreate and runtime-lost handling. |
 | `packages/sdk/src/accounts.ts` | Provider accounts, sign-in handles, secret-safe credential summaries, and harness presets over feature-detected runtime actions. |
-| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer, queue controls, stop task, slash commands, recovery, usage-limit actions, account switching, retry/edit, interrupt, update, history, model selection and approvals. |
+| `packages/sdk/src/thread.ts` | `DaexThread` — send, steer, queue controls, stop task, slash commands, recovery, usage-limit actions, account switching, retry/edit, interrupt, update, history, model selection and approvals. |
 | `packages/sdk/src/run.ts` | `client.run(prompt, options)` — temporary one-shot thread, supported JSON Schema subset validation and one repair attempt; `InvalidOutputError` preserves the raw response. |
 | `packages/sdk/src/usage.ts` | Per-thread token/cost aggregation, durable-history seeding, budget validation and crossing detection. Cost is present only when the provider reports it. |
-| `packages/sdk/src/server.ts` | `@ade-dev/sdk/server` — host-owned WebSocket bridge with authorization and thread-key gates, custom host methods, and `createAdeRemoteClient(urlOrTransport)`. |
+| `packages/sdk/src/server.ts` | `@daex-dev/sdk/server` — host-owned WebSocket bridge with authorization and thread-key gates, custom host methods, and `createDaexRemoteClient(urlOrTransport)`. |
 | `packages/sdk/src/remoteClient.ts` | Browser-safe remote proxy with RPC timeouts, reconnect-ready transport queues, push handling, and event/history deduplication. |
-| `packages/sdk/src/testing.ts` | `@ade-dev/sdk/testing` — scripted mock client with queued replies, tools, approvals, usage, errors and transcript replay. |
+| `packages/sdk/src/testing.ts` | `@daex-dev/sdk/testing` — scripted mock client with queued replies, tools, approvals, usage, errors and transcript replay. |
 | `packages/sdk/scripts/check-wire-types.mjs` | Compiler-API drift check for the SDK's curated wire subset against desktop chat and personal-chat contracts; runs in SDK CI. |
 | `packages/sdk/src/threadStore.ts` | `<home>/threads.json`: key → session record. Stores MCP header names only, and migrates a pre-0.3 file that held header values on first read. |
 | `packages/sdk/src/attachments.ts` | `inferAttachmentType` / `completeAttachments` — fills `AgentChatFileRef.type` (`"image"` for an `image/*` MIME type or an image extension — a copy of the runtime's `inferAttachmentType` in `apps/desktop/src/shared/types/chat.ts`) before a send or steer. |
-| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0`) and `checkRuntimeCompatibility`. Feature detection handles the new SDK 0.7 actions; pre-release suffixes are ignored and `0.0.0` / missing passes with a note. |
+| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.82 <2.0.0`) and `checkRuntimeCompatibility`. Feature detection handles newer actions; pre-release suffixes are ignored and `0.0.0` / missing passes with a note. |
 | `packages/sdk/src/mcpHeaders.ts` | MCP header persistence: `toStoredMcpServers` (names only, tool filters kept), `readStoredMcpServers` (migration), `withResolvedHeaders` (async: explicit headers, then the `mcpHeaders` callback, which may return a Promise), and the missing-headers warning. |
 | `packages/sdk/src/packagedRuntime.ts` | `resolvePackagedRuntime(resourcesPath, { dir, platform, arch })` — the runtime inside a host's app bundle, with a Mach-O arch check; `source: "packaged"`. |
 | `packages/sdk/src/toolIdentity.ts` | `parseToolIdentity(name)` → `{ server, tool }` for `mcp__srv__tool`, `mcp:srv:tool`, `srv:tool` and a bare `tool`. chat-ui keeps a copy of the rule. |
-| `packages/sdk/src/sidecar.ts` | Spawns `ade runtime run --socket <path> --profile embedded`, scrubs host `ADE_*` env, sets `ADE_EMBEDDED_PARENT_PID`, defaults provider logins to isolated. |
+| `packages/sdk/src/sidecar.ts` | Spawns `daex runtime run --socket <path> --profile embedded`, scrubs host `ADE_*` env, sets `ADE_EMBEDDED_PARENT_PID`, defaults provider logins to isolated. |
 | `packages/sdk/src/jsonRpc.ts` | NDJSON JSON-RPC 2.0 over a Unix socket or Windows named pipe. |
 | `packages/sdk/src/personalChats.ts` | Typed `personalChats.call` / push subscribe / cursor drain. |
 | `packages/sdk/src/download.ts` | Fail-closed GitHub release fetch: binary + `.native.tar.gz` + `SHA256SUMS`. |
 | `packages/sdk/src/binary.ts` | Resolves a local `ade` binary: explicit path, bundled platform package, home cache, PATH, else download. |
 | `packages/sdk/src/bundledRuntime.ts` | `resolveBundledRuntime()` — finds an installed `@ade-dev/runtime-<target>` package and its `bin/` + `native/` halves. |
 | `packages/sdk/src/runtimeSignature.ts` | `probeRuntimeSignature()` — `codesign` + `spctl` on macOS, `Get-AuthenticodeSignature` on Windows. Never throws; null means "not known". |
-| `packages/sdk/src/electron/main.ts` | `registerAdeIpc()` — one `ipcMain.handle`, per-renderer registry, `authorize` / `allowThreadKey` / `allowModel` / `allowAccountManagement` gates, sign-in handle bridge, `openOptions`, lifecycle callbacks and teardown. |
-| `packages/sdk/src/electron/preload.ts` | `exposeAdeBridge()` — single-file, zero-import preload module safe under `sandbox: true`. It exports the function and does not call it. |
-| `packages/sdk/src/electron/preload-auto.ts` | `@ade-dev/sdk/electron/preload-auto` — calls `exposeAdeBridge` with the default key and prefix. One CJS file whose only `require` is `"electron"`, for `webPreferences.preload` directly. |
-| `packages/sdk/src/electron/global.ts` | `@ade-dev/sdk/electron/global` — types only: `declare global { interface Window { ade: AdeBridge } }`. |
-| `packages/sdk/src/electron/renderer.ts` | `createAdeIpcClient()` — the renderer-side client that structurally satisfies chat-ui's `SdkLikeChatClient`. |
+| `packages/sdk/src/electron/main.ts` | `registerDaexIpc()` — one `ipcMain.handle`, per-renderer registry, `authorize` / `allowThreadKey` / `allowModel` / `allowAccountManagement` gates, sign-in handle bridge, `openOptions`, lifecycle callbacks and teardown. |
+| `packages/sdk/src/electron/preload.ts` | `exposeDaexBridge()` — single-file, zero-import preload module safe under `sandbox: true`. It exports the function and does not call it. |
+| `packages/sdk/src/electron/preload-auto.ts` | `@daex-dev/sdk/electron/preload-auto` — calls `exposeDaexBridge` with the default key and prefix. One CJS file whose only `require` is `"electron"`, for `webPreferences.preload` directly. |
+| `packages/sdk/src/electron/global.ts` | `@daex-dev/sdk/electron/global` — types only: `declare global { interface Window { ade: DaexBridge } }`. |
+| `packages/sdk/src/electron/renderer.ts` | `createDaexIpcClient()` — the renderer-side client that structurally satisfies chat-ui's `SdkLikeChatClient`. |
 | `packages/sdk/src/electron/protocol.ts` | Channel names, error serialization, `envelopeDedupeKey`, and the history/live merge. |
 | `packages/sdk/examples/electron/` | Runnable reference app: `sandbox: true`, `contextIsolation: true`, strict CSP. Not installed by CI. |
 | `apps/ade-cli/scripts/build-runtime-npm-packages.mjs` | Builds the six `@ade-dev/runtime*` packages from a release's artifacts. |
@@ -55,7 +61,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/src/approvals.ts` | `ApprovalDecision` → engine decision, and `PendingInputRequest` → `ApprovalRequest`. |
 | `packages/sdk/src/providers.ts` | Catalog derivation, `pickDefaultModel` (with the 0.5 `prefer` ranking), the `providers.status` merge rule, and the `onChange` fingerprint. |
 | `packages/sdk/src/providerStatusPublisher.ts` | The `client.providers` surface: probe, merge, cache, listener set, poll timer. The poll never asks to refresh. |
-| `packages/sdk/src/clientOptions.ts` | The public option types for `createAdeChat` and `threads.open`, kept apart from the lifecycle file because they are mostly prose an embedder must read. |
+| `packages/sdk/src/clientOptions.ts` | The public option types for `createDaexChat` and `threads.open`, kept apart from the lifecycle file because they are mostly prose an embedder must read. |
 | `packages/sdk/src/threadWarnings.ts` | Every line a newly opened or resumed thread earns: unreported capabilities, the two deny-policy holes, and one line per option a resume ignored. Pure, so the honesty rules are testable without a runtime. |
 | `packages/sdk/src/doctorReport.ts` | Assembles `doctor()` from values the client already holds, including the `ok` judgement. Pure. |
 | `packages/sdk/src/fsProbe.ts` | One copy of "does this path exist and is it the kind I expect". Missing, unreadable, and wrong-kind are all "no", so a resolution step falls through instead of throwing. |
@@ -67,8 +73,8 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `apps/desktop/src/shared/pathContainment.ts` | `pathIsWithinRoot` / `samePathOnPlatform` — the one containment rule and the base a relative target resolves against. Used by the permission policy and by the CLI's personal-chat cwd guard. Its case rule, `foldsCase`, lives in the node-free `shared/pathCase.ts`, which the renderer's proof URLs share. |
 | `apps/desktop/src/shared/providers.ts` | `ShippedProvider` — the one closed provider union the three per-provider tables are keyed by. |
 | `apps/desktop/src/main/services/chat/personalSession.ts` | What a personal chat is (`isPersonalSession`), where it runs (`resolvePersonalHostCwd`), and what its provider is told (`PERSONAL_CHAT_SYSTEM_PROMPT`, `resolvePersonalSystemPrompt`). |
-| `apps/desktop/src/main/services/chat/claudeToolGate.ts` | What ADE knows about one Claude tool call before deciding: name normalization, the read-only built-in set, the paths a call names, the pre-policy prompting heuristic, and `claudeToolAllowedInPlanMode` / `CLAUDE_PLAN_MODE_ALLOWED_TOOLS` — the literal plan-mode allowlist the `canUseTool` fence reads. |
-| `apps/desktop/src/main/services/chat/codexApprovalContainment.ts` | Which Codex approvals ADE answers itself, and the containment root each is checked against. The only place a host `sandboxRoot` takes effect on Codex. |
+| `apps/desktop/src/main/services/chat/claudeToolGate.ts` | What DAEX knows about one Claude tool call before deciding: name normalization, the read-only built-in set, the paths a call names, the pre-policy prompting heuristic, and `claudeToolAllowedInPlanMode` / `CLAUDE_PLAN_MODE_ALLOWED_TOOLS` — the literal plan-mode allowlist the `canUseTool` fence reads. |
+| `apps/desktop/src/main/services/chat/codexApprovalContainment.ts` | Which Codex approvals DAEX answers itself, and the containment root each is checked against. The only place a host `sandboxRoot` takes effect on Codex. |
 | `apps/desktop/src/main/services/chat/codexMcpElicitation.ts` | Codex `mcpServer/elicitation/request` helpers: JSON Schema → pending-input questions, answer coercion, the MCP tool-approval parse (`Allow the <server> MCP server to run tool "<tool>"?`, `_meta.tool_name` first), and the `_meta.persist` scope for a session-wide accept (`"session"` when offered). |
 | `apps/desktop/src/shared/providerRemediation.ts` | `PROVIDER_REMEDIATION` — one table of install command, login command, docs URL and display name per provider, with win32 spellings. Read by the Settings CLI cards, the model picker's empty states, the CLI agent registry, and `providers.status`; none of the four keeps its own copy. |
 | `apps/desktop/src/main/services/ai/providerStatusProbe.ts` | The `providers.status` probe: per-provider orchestration, 60 s cache, shared in-flight probe, 8 s overall budget. |
@@ -77,29 +83,78 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `apps/desktop/src/main/services/ai/providerProbeSeams.ts` | The injectable edges of the probe — env, platform, filesystem, PATH lookup, spawn, file read, process termination — so the probe is testable without a real CLI on the machine. The clock is not a seam; `now` is a probe option. |
 | `apps/desktop/src/main/services/ai/providerStatusDetails.ts` | The probe's shared numbers and its generic `detail` builders. Zero imports, so anything may depend on it. Per-provider detail copy lives with the resolver that emits it — Cursor's in `providerBinaryResolvers.ts`, OpenCode's in `providerAuthResolvers.ts`. |
 | `packages/chat-ui/src/` | Embeddable React chat: Composer, Transcript, ModelPicker, retry/edit/update state, safe links, activity labels, CSS-token theme. |
-| `packages/chat-ui/src/adapters/sdkClient.ts` | `adaptSdkClient` — maps `@ade-dev/sdk` (or any SDK-shaped client) onto chat-ui props. |
+| `packages/chat-ui/src/adapters/sdkClient.ts` | `adaptSdkClient` — maps `@daex-dev/sdk` (or any SDK-shaped client) onto chat-ui props. |
 | `packages/chat-ui/src/transcript/ApprovalCard.tsx` | The inline approval row: Allow once / Always allow / Reject, settled in place, read-only without `approve`. |
 | `packages/demo/` | DataDesk reference app (Vite renderer + WS bridge host) and live e2e. |
+
+## Gotchas / fragile areas
+
+- Never point a sidecar `home` at the developer's `~/.ade` or the default machine socket.
+- Never treat `mcpCapability` truthiness as "strict was enforced".
+- Never treat any capability report's presence as a guarantee. Read `level` —
+  and for MCP, read `strictRequested` first. A null report means "never asked"
+  OR "asked, and an older runtime said nothing", and the second is not a pass.
+- Never read `ProviderStatus.installed` without reading `source`. On a
+  `"derived"` record it means "DAEX knows models for this provider", which is a
+  different question from "a binary is on this disk".
+- Never read `doctor().runtime.signature === null` as "not signed". It is "not
+  known": Linux, attach mode, and any probe that could not run all report null.
+- Never add a `canUseTool` to the Claude personal path without a policy. A
+  personal chat that suddenly starts emitting `approval_request` parks turns for
+  every 0.1.x embedder that renders no card.
+- Never infer a tool's risk from its name. That substring heuristic is the bug
+  `permissionPolicy.ts` exists to replace, and the read-only exemption in the
+  Claude gate is a literal name-set membership test for the same reason.
+- Never rely on `canUseTool` alone to enforce a Claude policy. On Agent SDK
+  0.3.280 it fires for MCP tools and mutating commands, but not for a command
+  Claude Code classifies as read-only, and a setting layer loaded through
+  `settingSources` can pre-approve a tool before it is asked (on 0.3.258 it did
+  not fire at all). Enforcement that matters goes in `allowedTools` /
+  `disallowedTools` and `allowManagedMcpServersOnly`, which the CLI applies
+  itself; the gate stays wired as a second line.
+- Never persist MCP header values, on either side of the wire. Store
+  `headerNames` and resolve values at session start.
+- Never assign over `opts.managedSettings.allowedMcpServers`. DAEX's own managed
+  servers are already in that object on the paths that build one, and replacing
+  it takes the CTO tools away with no diagnostic. Merge.
+- Never re-derive a capability report at a second site. The persisted-state
+  loader already re-derives all three from the stored args plus the live
+  provider before it returns, so a record written before a table row changed
+  cannot keep reporting the old verdict. Deriving again at the session-rehydrate
+  site would be two copies of one rule, which is how the rule starts disagreeing
+  with itself.
+- Never resolve a personal host cwd at more than one site. A refresh that
+  disagrees with the create rebuilds the lane directive key every turn and
+  restarts the provider runtime.
+- Never add typed `--mcp-servers` / `--strict-mcp` CLI flags as a second spelling of `--arg-json`; the nested JSON is what that hatch already carries. The SDK is the intended embedder API.
+- `packages/sdk/dist` is gitignored. Anything that typechecks against `@daex-dev/sdk` from source must build it first.
+- `packages/demo` live e2e spends provider tokens. Do not add it to root `npm test`.
+- `client.run()` uses a randomly named temporary thread and deletes it in `finally` (best effort, never masking the run's own result); structured output supports only the exported `JsonSchema` subset, strips one surrounding code fence, and gets one repair attempt. Each turn has a `timeoutMs` (default 10 minutes), and a turn that asks for an approval or an answer is interrupted and rejected with `unsupported` instead of hanging.
+- Thread budgets persist with the thread key and win over different options on resume. Token snapshots use the latest event per turn; cost totals include only explicit provider costs. A cost limit cannot trip until a provider reports cost.
+- `thread.usage().complete` is false when the SDK could not read the existing transcript to seed its totals. With a configured budget the SDK then refuses new turns until it can reload usage history; without a budget the snapshot reports only events it observed.
+- `@daex-dev/sdk/server` does not create a listener or choose a WebSocket package. The host owns networking, authentication/TLS and authorization; apply `authorize` to every RPC and scope `allowThreadKey` for shared hosts.
+- `createDaexRemoteClient(url)` needs a global `WebSocket`; pass `{ WebSocket }` in runtimes without one, or pass a WebSocket-compatible transport directly.
+- `tsup.config.ts` leaves source maps off in package builds: the SDK with its new entries measured 3.38 MB unpacked / 889 kB packed with maps, and 1.095 MB / 290 kB without them (`npm pack --dry-run --json`, Node 22).
 
 ## Three packages
 
 | Package | What it is |
 |---|---|
-| `@ade-dev/sdk` | Node / Electron-main client. Spawns and owns the sidecar. Zero runtime dependencies. |
-| `@ade-dev/chat-ui` | React components. React is a peer; `@ade-dev/sdk` is an optional peer used for types only. No lanes, projects, or worktrees in any prop. |
-| `@ade-dev/demo` | Private DataDesk reference. `e2e:preflight` is the CI-safe check; `e2e:live` spends provider tokens and is **not** in root `npm test`. |
+| `@daex-dev/sdk` | Node / Electron-main client. Spawns and owns the sidecar. Zero runtime dependencies. |
+| `@daex-dev/chat-ui` | React components. React is a peer; `@daex-dev/sdk` is an optional peer used for types only. No lanes, projects, or worktrees in any prop. |
+| `@daex-dev/demo` | Private DataDesk reference. `e2e:preflight` is the CI-safe check; `e2e:live` spends provider tokens and is **not** in root `npm test`. |
 
-Published as `@ade-dev/sdk` and `@ade-dev/chat-ui` on npm (`npm install @ade-dev/sdk`). In this repo, `npm run install:apps` covers `packages/sdk` and `packages/chat-ui`. Each package builds with tsup to `dist/`, which is gitignored — CI's `packages` job builds `@ade-dev/sdk` before its chat-ui steps because chat-ui's `file:../sdk` exports point at that dist.
+Published as `@daex-dev/sdk` and `@daex-dev/chat-ui` on npm (`npm install @daex-dev/sdk`). In this repo, `npm run install:apps` covers `packages/sdk` and `packages/chat-ui`. Each package builds with tsup to `dist/`, which is gitignored — CI's `packages` job builds `@daex-dev/sdk` before its chat-ui steps because chat-ui's `file:../sdk` exports point at that dist.
 
 ## Sidecar architecture
 
 ```
 host process
-  └─ @ade-dev/sdk  createAdeChat({ home })
+  └─ @daex-dev/sdk  createDaexChat({ home })
         ├─ resolve `ade`: binaryPath → @ade-dev/runtime-<target> → home cache → PATH → download
         │    (download only; SHA256SUMS, fail closed. allowDownload:false throws runtime_unavailable)
         ├─ reclaim <home>/runtime.pid if a dead host left a live child
-        └─ spawn: ade runtime run --socket <path> --profile embedded
+        └─ spawn: daex runtime run --socket <path> --profile embedded
               ADE_HOME=<home>
               ADE_EMBEDDED_PARENT_PID=<host pid>
               ADE_DEFAULT_ROLE=agent
@@ -108,7 +163,7 @@ host process
 ```
 
 - Isolated `home`. Never the developer's `~/.ade`.
-- `--profile embedded` is the only `--profile` value `ade runtime run` accepts. Anything else is a usage error, not a silent fall back to a full brain.
+- `--profile embedded` is the only `--profile` value `daex runtime run` accepts. Anything else is a usage error, not a silent fall back to a full brain.
 - Sync is forced off. `machine.updateAndRestart` and machine power transitions are withheld, not merely role-gated.
 - The parent-death watchdog polls the host pid every 3 s. POSIX does not kill orphans on parent death; without this, a SIGKILL'd host leaks runtimes.
 - Reclaim refuses to kill a pid it cannot corroborate (endpoint + start time). A recycled pid that predates the pidfile is left alone.
@@ -123,10 +178,10 @@ An embedder shipping a signed, notarized app cannot download an executable at fi
 | `@ade-dev/runtime` | Meta package; lists the five as `optionalDependencies` pinned to the same version, so npm installs exactly one. |
 
 The npm package is for `--profile embedded`, so its native tree omits UI-only packages, `@linear/sdk`, and `vendor/crsqlite` (sync is
-off in this profile). The ADE CLI's full runtime archive keeps those files for
+off in this profile). The DAEX CLI's full runtime archive keeps those files for
 Linear and sync. Both profiles keep `node-pty` for personal-chat
 terminal mentions and tracked CLI sessions. Runtime-fetched provider CLIs come
-from ADE's pinned tools cache; the archive does not carry the duplicate
+from DAEX's pinned tools cache; the archive does not carry the duplicate
 OpenCode executable. The Droid SDK code is already in the CLI bundle, so the
 native tree retains its license notice without copying the SDK package.
 
@@ -153,10 +208,10 @@ cumulative:
 | Omit UI assets/dependencies, `@linear/sdk`, and cr-sqlite for embedded | 470,531,926 B | 436,986,971 B |
 
 - `runtimeRoot` is `<pkg>/native` (`ADE_RUNTIME_ROOT`); `nodeModulesPath` is `<pkg>/native/node_modules` (`ADE_RUNTIME_NODE_MODULES`). The binary dlopens out of the latter, so both must travel together.
-- `resolveBundledRuntime()` (`packages/sdk/src/bundledRuntime.ts`) resolves the package by `require.resolve("<name>/package.json")`. Missing package → `null`. Present but malformed → `AdeError("binary_not_found")` naming the missing path.
-- `createAdeChat` accepts `binaryPath`, `runtimeNodeModules`, `runtimeRoot` and `allowDownload`. Both directories are validated at create, not at spawn.
+- `resolveBundledRuntime()` (`packages/sdk/src/bundledRuntime.ts`) resolves the package by `require.resolve("<name>/package.json")`. Missing package → `null`. Present but malformed → `DaexError("binary_not_found")` naming the missing path.
+- `createDaexChat` accepts `binaryPath`, `runtimeNodeModules`, `runtimeRoot` and `allowDownload`. Both directories are validated at create, not at spawn.
 - The pinned and bundled routes skip `SHA256SUMS` by design: bytes signed into the embedder's bundle are verified by the OS.
-- `resolvePackagedRuntime(process.resourcesPath)` (`packages/sdk/src/packagedRuntime.ts`) resolves the copy a host put under `<resources>/ade-runtime`. It returns `null` when there is no binary, or on macOS when the Mach-O header has no slice for `process.arch`; it throws `binary_not_found` when `native/node_modules` is missing. Its result spreads into `createAdeChat` and carries `source: "packaged"`.
+- `resolvePackagedRuntime(process.resourcesPath)` (`packages/sdk/src/packagedRuntime.ts`) resolves the copy a host put under `<resources>/ade-runtime`. It returns `null` when there is no binary, or on macOS when the Mach-O header has no slice for `process.arch`; it throws `binary_not_found` when `native/node_modules` is missing. Its result spreads into `createDaexChat` and carries `source: "packaged"`.
 - `doctor().runtime` reports `source` (`packaged` | `explicit` | `bundled-package` | `cached-download` | `path` | `downloaded` | `attached`), the two runtime paths, `signature`, `downloadedThisSession`, `checksumVerified` and `compatibility`. `doctor().binary` keeps its 0.1.x four-value `source` (`packaged` maps to `option`).
 - `signature.accepted` on macOS is `spctl --assess --type execute` on the OUTERMOST enclosing `.app`, because Gatekeeper judges a nested helper as part of its app and answers "does not seem to be an app" for the bare binary. Outside a bundle that answer gives `accepted: null` (not known), never `false`.
 - Built by `apps/ade-cli/scripts/build-runtime-npm-packages.mjs` from a release's artifacts; published by `.github/workflows/publish-runtime-packages.yml` when that GitHub release is published. `/release` undrafts; the workflow then publishes. `workflow_dispatch` is recovery. Checksum-verified, skip-if-version-exists.
@@ -178,7 +233,7 @@ The SDK speaks the machine JSON-RPC surface, not desktop IPC.
 | `runtime/info` | Capabilities, including personal actions, provider capabilities, accounts, credentials and presets. |
 
 **Who may call `providerAccounts.call`, `credentials.call` and `presets.call`.**
-In ADE these are settings only the user may change, so outside the embedded
+In DAEX these are settings only the user may change, so outside the embedded
 profile they need the CTO role. In an embedded runtime they belong to the app
 that spawned it, and reaching the socket does not prove that: the runtime hands
 its own agents an `ade` CLI pointed at it, and a prompt-injected agent must not
@@ -216,25 +271,25 @@ Added for SDK 0.3 (runtime 1.2.81):
 - `send` / `steer` attachments: `AgentChatFileRef` gains `type?: "file" | "image"` (the SDK infers it) and `hydrate?: boolean` (default true; `false` = the runtime never reads the bytes and sends a path hint on every provider). Path rule: relative → resolved in the chat's working directory (the host `cwd`, else the scratch workspace); absolute → inside `projectRoot` (`<home>/personal-chats/state` for a personal chat) or inside that working directory, else the send throws. Size limits: inline images (Claude, OpenCode, ACP, Cursor/Pi/Droid) over 3.5 MB or 2000 px are downscaled to 1568 px first (PNG/JPEG; GIF/WebP and anything unfittable become a path hint), and Claude takes jpeg/png/gif/webp only; Droid, Pi, Cursor and ACP inline text 512 KB, else a hint; Codex copies the whole file to a staging directory with no cap unless `hydrate: false`; `saveTempAttachment` accepts images only, 10 MB.
 - `tool_result.resourceLinks?: { uri, name?, title?, mimeType? }[]` — MCP `resource_link` items, on Codex (`mcpToolCall` result content) and Claude (`mcp__` tools only). No other provider sets it.
 
-SDK 0.4.0 supports runtime `>=1.2.82 <2.0.0`. It adds `thread.retry()` and
-`thread.editLast(text, options)` for Claude and Codex, plus `attachmentRoots`
+The SDK supports runtime `>=1.2.82 <2.0.0`. `thread.retry()` and
+`thread.editLast(text, options)` work for Claude and Codex; `attachmentRoots` allows
 for absolute file attachments outside the working directory. The runtime
 validates those roots on every create, update, resume and rerun route. A retry
 or edit refuses while a turn is running with `turn_in_flight`; unsupported
 providers or older runtimes report `unsupported`.
 
-The Electron bridge adds `threads.get`, lifecycle notifications and `forget`,
+The Electron bridge has `threads.get`, lifecycle notifications and `forget`,
 async authorization gates, `openOptions` context, bridge compatibility
-checking, and field-by-field filtering of renderer send options. `AdeThread`
+checking, and field-by-field filtering of renderer send options. `DaexThread`
 also exposes `update` and can clear a host title with `update({ title: null })`.
-In chat-ui, `AdeChat` lets a host control its draft and decide whether a send is
+In chat-ui, `DaexChat` lets a host control its draft and decide whether a send is
 accepted, handled by the host, or declined. `ThreadState` exposes retry, edit,
 update and their capability state, and transcript links use the host's safe
 link handler.
 
 `providers.status` is a top-level machine RPC, not a `personalChats.call` action, advertised as `capabilities.providers.status`. The SDK merges its probe with the catalog derivation and stamps `source: "probed"`; with no RPC every record is `source: "derived"` with `installed: modelCount > 0` and null probe fields.
 
-### SDK 0.7 client track
+### Accounts, credentials and parity
 
 The client consumes the runtime-wire additions through `runtime/info` feature
 checks and keeps the runtime range at `>=1.2.82 <2.0.0`. Missing actions fail
@@ -263,10 +318,9 @@ with `unsupported` and a named action instead of being sent optimistically.
   notifications use the client `usageLimit` event. Automatic failover only
   proceeds when another account is signed in.
 
-SDK 0.7 keeps the `>=1.2.82 <2.0.0` runtime range; chat-ui's source is
-unchanged. The new runtime surfaces are feature-detected through
-`runtime/info`, and the SDK throws `unsupported` when the action or capability
-is absent. Its MCP additions behave on an older runtime as follows:
+New runtime surfaces are feature-detected through `runtime/info`, and the SDK
+throws `unsupported` when the action or capability is absent. The MCP
+additions on an older runtime:
 
 - Async `mcpHeaders`, the before-turn header refresh and
   `thread.refreshMcpHeaders()` need no new capability: they push through the
@@ -281,8 +335,7 @@ is absent. Its MCP additions behave on an older runtime as follows:
   it with `turn_in_flight`: `updateMcpServers()` throws that, and the
   before-turn refresh and an open-time `refresh` catch it and log a line.
 
-SDK 0.5.1 keeps the same 0.4.0 runtime range, `>=1.2.82 <2.0.0`, because nothing
-in that line needs a new wire. It adds three host-side surfaces and no protocol change:
+Host-side helpers (no wire change):
 
 - `checkAttachmentRoot(path, home)` and `filterAttachmentRoots(list, home)` — test an
   attachment root before `threads.open` sends it. The runtime refuses some roots
@@ -290,7 +343,7 @@ in that line needs a new wire. It adds three host-side surfaces and no protocol 
   refused entry fails the whole open, so a host that repeats the same roots on
   every open could lock every chat with a single bad entry. `filterAttachmentRoots`
   drops the bad entry, caps at 32, and reports each drop with its reason.
-- `registerAdeIpc({ onThreadRemoved(key, kind) })` — called once per delete and
+- `registerDaexIpc({ onThreadRemoved(key, kind) })` — called once per delete and
   archive the served client reports, whoever made it. The bridge already follows
   `threadLifecycle` internally to release renderer handles; the callback exposes
   the same event to the host, and keeps working across a client swap that a
@@ -300,24 +353,15 @@ in that line needs a new wire. It adds three host-side surfaces and no protocol 
   prefers a model; the highest score wins, and an unscored model falls back to
   `isDefault` then catalog order.
 
-An identical `refresh.attachmentRoots` list was already skipped (the same rule
-`refresh.mcpServers` follows); 0.5 only documents it.
-
-Runtime 1.2.83 silences the four lines an embedded runtime printed on every
-start. The role-ceiling sentence and its `brain.role_ceiling_below_cto` warning
-do not apply to a sidecar that serves one host at `agent`. The two "could not
-bound runtime log" lines name `launchd` files an embedded runtime never has.
-Both gates read `--profile embedded`; a full brain still prints them.
-
 Durable threads: `threads.open("support", { provider, model })` creates or resumes by key stored under the home. Reopening the same key after a restart continues the conversation.
 
 Every host-configuration arg above applies on CREATE ONLY. A resume rebuilds the thread the key was created with, reading `requestedCwd`, `instructions`, `settingSources`, `permissionPolicy`, `mcpServers` and `strictMcpConfig` off the stored record and ignoring what the call passed. Silence there was the dangerous part: an embedder that reopens with a tighter policy and a new cwd, and is told nothing, may believe an agent is confined to a directory and a rule set it is not confined to. So the SDK logs one line per differing option, naming the stored value it used instead (`threadResumeMismatchWarnings`). The rule itself is unchanged — to run under different configuration, open a different key. The one exception is `refresh.mcpServers`, which replaces the stored servers (through `updateSession` on a live session).
 
-A RECREATE (the key has a record, the runtime lost its session) follows the same rule since 0.3: the record wins for `provider`, `model`, `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers`, and the call's options only fill a field the record lacks. Before 0.3 the call's options won, so any caller that could name a key — a renderer over the Electron bridge — could rebuild a lost thread on another provider, under a looser policy, or with no MCP servers. The recreate logs one line per stored value it used (`verb: "recreated"`) and gives the key a new session id.
+A RECREATE (the key has a record, the runtime lost its session) follows the same rule: the record wins for `provider`, `model`, `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers`, and the call's options only fill a field the record lacks.  This stops any caller that can name a key (a renderer over the Electron bridge) from rebuilding a lost thread on another provider, under a looser policy, or with no MCP servers. The recreate logs one line per stored value it used (`verb: "recreated"`) and gives the key a new session id.
 
 ### MCP header persistence
 
-Header VALUES never reach durable state on either side. The SDK thread store keeps `headerNames` (and rewrites a pre-0.3 file that held values). The runtime persists the http/sse config with `headers` absent and `headerNames: string[]`, and the session summary carries names only. Values are resolved again at every create, resume, recreate and `autoRestart`: explicit headers in the call, then `refresh.mcpServers`, then the `createAdeChat({ mcpHeaders })` callback (sync or async). With a callback, `send`, `retry` and `editLast` also re-resolve a thread's remote servers from the stored record before the turn, and push them through `updateSession` when their fingerprint differs from the last push; `thread.refreshMcpHeaders()` does the same on demand. A refresh that fails, or where the callback supplies nothing for a server that needs headers, pushes nothing and is logged once; the message is still sent. A server whose record names headers that nobody supplied is still sent, without them, and the SDK logs the gap. After a runtime restart, a rehydrated server whose headers were withheld connects without them and the transcript gets one `system_notice` asking the host to resend.
+Header VALUES never reach durable state on either side. The SDK thread store keeps `headerNames`. The runtime persists the http/sse config with `headers` absent and `headerNames: string[]`, and the session summary carries names only. Values are resolved again at every create, resume, recreate and `autoRestart`: explicit headers in the call, then `refresh.mcpServers`, then the `createDaexChat({ mcpHeaders })` callback (sync or async). With a callback, `send`, `retry` and `editLast` also re-resolve a thread's remote servers from the stored record before the turn, and push them through `updateSession` when their fingerprint differs from the last push; `thread.refreshMcpHeaders()` does the same on demand. A refresh that fails, or where the callback supplies nothing for a server that needs headers, pushes nothing and is logged once; the message is still sent. A server whose record names headers that nobody supplied is still sent, without them, and the SDK logs the gap. After a runtime restart, a rehydrated server whose headers were withheld connects without them and the transcript gets one `system_notice` asking the host to resend.
 
 `redactCallerMcpText` (`callerMcpServers.ts`) scrubs URL query / fragment / userinfo, `Bearer` tokens, and exact header and stdio `env` values from MCP errors before they enter a transcript, log, or status card. This covers Codex MCP startup failures, Codex stderr lines, app-server spawn errors, and URL validation errors. Still stored in plaintext: URL query strings (needed to reconnect) and stdio `env` values; the redaction only prevents error text from echoing those values.
 
@@ -329,13 +373,13 @@ way.
 
 ## Strict MCP honesty
 
-`loadUserMcpServers: false` (the default when you supply servers) is a real guarantee **only on Claude**. Everywhere else ADE applies the strongest mechanism the provider exposes. Pi has no MCP surface and the create is refused rather than opening a tool-less thread.
+`loadUserMcpServers: false` (the default when you supply servers) is a real guarantee **only on Claude**. Everywhere else DAEX applies the strongest mechanism the provider exposes. Pi has no MCP surface and the create is refused rather than opening a tool-less thread.
 
 | Provider | Strict mode | What still loads under strict |
 |---|---|---|
 | claude | enforced | nothing MCP-wise (user rules/commands/output styles still load — they are not MCP) |
 | codex | best-effort | servers contributed by a Codex *plugin* |
-| cursor | best-effort | user-layer servers (`~/.cursor`; ADE's own preToolUse hook lives there) |
+| cursor | best-effort | user-layer servers (`~/.cursor`; DAEX's own preToolUse hook lives there) |
 | droid | best-effort | tools that appear only after the first disable pass |
 | opencode | best-effort | the global OpenCode config directory (for auth) |
 | pi | unsupported | n/a — create refuses injected servers |
@@ -368,9 +412,9 @@ Source of truth for the two capability tables: `INSTRUCTIONS_SUPPORT` and
 ### `instructions`
 
 `{ mode: "append" | "replace", text }`, or a bare string meaning
-`{ mode: "append", text }`. `append` keeps ADE's own personal-chat prompt and puts
+`{ mode: "append", text }`. `append` keeps DAEX's own personal-chat prompt and puts
 the host text after it. `replace` sends the host text alone, which is what a chat
-branded as the host's own assistant needs: ADE's text names ADE, and the model
+branded as the host's own assistant needs: DAEX's text names DAEX, and the model
 eventually repeats it.
 
 | Provider | Level | Channel |
@@ -379,11 +423,11 @@ eventually repeats it.
 | codex | applied | `developerInstructions` on `thread/start` |
 | opencode | applied | the prompt's `system` field |
 | pi | applied | `systemPromptOverride` |
-| cursor | best-effort | merged into the system text ADE already prefixes into the first user prompt |
-| droid | best-effort | merged into the harness prompt ADE already prefixes onto every turn |
+| cursor | best-effort | merged into the system text DAEX already prefixes into the first user prompt |
+| droid | best-effort | merged into the harness prompt DAEX already prefixes onto every turn |
 
 Cursor and Droid are "best-effort" because neither SDK carries an instruction field,
-so ADE joins the text to the prompt it already injects rather than inventing a new
+so DAEX joins the text to the prompt it already injects rather than inventing a new
 hidden-message trick. The text is part of the prompt the model reads, not a pinned
 system prompt.
 
@@ -406,7 +450,7 @@ open in a file browser.
 `personalChatScope.create` validates the path before any session row exists and
 throws an `Error` whose message starts with `invalid_argument:`. It refuses a
 relative path, anything starting with `~`, a filesystem root, a Windows drive root,
-a bare UNC share root, the home directory itself, and anything inside ADE's own
+a bare UNC share root, the home directory itself, and anything inside DAEX's own
 state directory. The SDK checks the same rules client-side first, so a bad path
 fails before any RPC.
 
@@ -414,9 +458,9 @@ The accepted path is then CANONICALIZED — `realpathSync.native` on the deepest
 existing ancestor, with the missing tail rejoined, so an ordinary "create this
 directory" case does not throw. The session stores and the summary echoes that
 canonical form rather than the caller's string. This is a containment rule, not
-a tidiness one: without it a symlink into ADE's own state directory, or a
+a tidiness one: without it a symlink into DAEX's own state directory, or a
 Windows path differing only in case, would pass a check the real directory would
-fail. `adeDir` and `homeDir` are canonicalized the same way, or a symlinked ADE
+fail. `adeDir` and `homeDir` are canonicalized the same way, or a symlinked DAEX
 home would not match a canonical candidate genuinely inside it.
 
 The SDK canonicalizes the same way, client-side, before it applies the refusals,
@@ -454,18 +498,18 @@ and starts it again, so the resolution lives in one helper rather than at each s
 | pi | ignored | ignored | ignored | ignored |
 
 On Claude the four values map to `[]`, `["project"]`, `["user"]`, and
-`["user", "project", "local"]`. ADE sets the Agent SDK option explicitly in all four
-cases, including the empty array, so the behavior belongs to ADE rather than to a
+`["user", "project", "local"]`. DAEX sets the Agent SDK option explicitly in all four
+cases, including the empty array, so the behavior belongs to DAEX rather than to a
 dependency default.
 
 Codex always reads `AGENTS.md` from the thread's working directory and always loads
 `~/.codex/AGENTS.md`, and the app-server exposes no switch for either. So `"project"`
-and `"all"` describe what Codex already does rather than something ADE turns on, and
+and `"all"` describe what Codex already does rather than something DAEX turns on, and
 `"none"` and `"user"` cannot be honored at all. The remaining four ignore the value for
 their own reasons, each recorded in the table's `mechanism`: Droid and Pi expose no
-configuration-layer switch, OpenCode runs against an ADE-authored server config with
+configuration-layer switch, OpenCode runs against a DAEX-authored server config with
 project config disabled, and Cursor's `settingSources` is pinned from the session
-permission policy, because dropping the user layer would also drop ADE's own tool-gate
+permission policy, because dropping the user layer would also drop DAEX's own tool-gate
 hook.
 
 The session summary carries `settingSourcesCapability`:
@@ -537,7 +581,7 @@ tool's risk is not knowable from its name, so `mcp__srv__read` asks like any
 other. Under `fallback: "deny"` there is no exemption: nothing unmatched runs.
 
 `deniedTools` outranks everything, including a tool that would otherwise let
-itself through. Claude's `AskUserQuestion` and ADE's own `ask_user` normally
+itself through. Claude's `AskUserQuestion` and DAEX's own `ask_user` normally
 skip the approval card, because each carries its own answer UI and a generic
 "Allow this tool?" card would only hide the real question behind an extra
 click. Naming either in `deniedTools` still refuses it.
@@ -620,7 +664,7 @@ the engine never disagree about what a rule means.
 | cursor | unsupported | the Cursor SDK takes a mode preset, not a rule set |
 | droid | unsupported | the Factory SDK takes an autonomy level, not a rule set |
 | opencode | unsupported | OpenCode takes an agent profile, not a rule set |
-| pi | unsupported | the Pi SDK takes a tool policy ADE derives from the session mode |
+| pi | unsupported | the Pi SDK takes a tool policy DAEX derives from the session mode |
 
 #### Codex MCP tool calls
 
@@ -849,7 +893,7 @@ last record or to an empty one, and never removes the other five from the
 report.
 
 Login strings come from one shared table,
-`apps/desktop/src/shared/providerRemediation.ts`, which ADE's own Settings
+`apps/desktop/src/shared/providerRemediation.ts`, which DAEX's own Settings
 cards, model-picker empty states and CLI agent registry read from too, so a
 vendor command that changes is corrected in one place for all four.
 `installCommand` stays in the record for compatibility and is always `null`:
@@ -869,7 +913,7 @@ Source: `apps/desktop/src/main/services/ai/providerStatusProbe.ts`; dispatch in
 
 ## Electron bridge
 
-`@ade-dev/sdk` runs in the main process: it owns a child process and a socket,
+`@daex-dev/sdk` runs in the main process: it owns a child process and a socket,
 and a sandboxed renderer has neither. Every embedder was therefore writing the
 same bridge by hand, and getting the same two things wrong — listeners that
 survive a reload, and a `history()` that races the live stream.
@@ -879,11 +923,11 @@ global, each a tsup entry and an `exports` key in `packages/sdk/package.json`:
 
 | Export | Function |
 |---|---|
-| `@ade-dev/sdk/electron` | `registerAdeIpc(ipcMain, clientOrGetter, opts?)` → dispose function |
-| `@ade-dev/sdk/electron/preload` | `exposeAdeBridge(contextBridge, ipcRenderer, opts?)` |
-| `@ade-dev/sdk/electron/preload-auto` | Calls `exposeAdeBridge` with key `ade`, prefix `ade`. Point `webPreferences.preload` here |
-| `@ade-dev/sdk/electron/renderer` | `createAdeIpcClient(bridge)` → an `SdkLikeChatClient`-shaped client |
-| `@ade-dev/sdk/electron/global` | Types only: `window.ade: AdeBridge` |
+| `@daex-dev/sdk/electron` | `registerDaexIpc(ipcMain, clientOrGetter, opts?)` → dispose function |
+| `@daex-dev/sdk/electron/preload` | `exposeDaexBridge(contextBridge, ipcRenderer, opts?)` |
+| `@daex-dev/sdk/electron/preload-auto` | Calls `exposeDaexBridge` with key `ade`, prefix `ade`. Point `webPreferences.preload` here |
+| `@daex-dev/sdk/electron/renderer` | `createDaexIpcClient(bridge)` → an `SdkLikeChatClient`-shaped client |
+| `@daex-dev/sdk/electron/global` | Types only: `window.ade: DaexBridge` |
 
 - **No dependency on `electron`, runtime or dev.** The three functions take
   minimal structural interfaces (`IpcMainLike`, `WebContentsLike`,
@@ -897,14 +941,14 @@ global, each a tsup entry and an `exports` key in `packages/sdk/package.json`:
   that ends the renderer world it disposes every subscription and forgets the
   threads. The SDK's own `liveSessions` keeps the thread; the bridge only drops
   listeners.
-- Errors serialize as `{ name: "AdeError", code, message }` and rehydrate to a
-  real `AdeError` in the renderer, so `error.code` survives the boundary.
+- Errors serialize as `{ name: "DaexError", code, message }` and rehydrate to a
+  real `DaexError` in the renderer, so `error.code` survives the boundary.
 - Ordering: the renderer client subscribes BEFORE calling `history()`, buffers
   live envelopes, and merges on `sessionId:sequence:timestamp:type` — the same
   dedupe key chat-ui uses. Each envelope is delivered exactly once, in envelope
   order. Unknown event types pass through untouched.
 - `authorize(event, method, args)` and `allowThreadKey(key)` are host gates. A
-  refusal throws `AdeError("unauthorized")` and the SDK is never called.
+  refusal throws `DaexError("unauthorized")` and the SDK is never called.
   `allowThreadKey` also filters `threads.list` over IPC, and keyless rows are
   dropped there.
 - `onThreadRemoved(key, kind)` (0.5) is the host's notification that a thread is
@@ -928,7 +972,7 @@ global, each a tsup entry and an `exports` key in `packages/sdk/package.json`:
 - `thread.updateMcpServers` is deliberately NOT in `ADE_IPC_METHODS`: MCP
   servers carry credentials and pick the tool surface, so only main changes
   them. `thread.update` forwards only `title`, `reasoningEffort` and `fastMode`.
-- `registerAdeIpc(ipcMain, clientOrGetter)` accepts `() => AdeChatClient`. On
+- `registerDaexIpc(ipcMain, clientOrGetter)` accepts `() => DaexChatClient`. On
   the first call after the getter returns a different client, the bridge
   reopens each renderer's threads on it with their original options and moves
   every subscription across under the same id. Events pushed between the swap
@@ -937,7 +981,7 @@ global, each a tsup entry and an `exports` key in `packages/sdk/package.json`:
 - `client.subscribe` carries the client's `exit` / `transport` / `restart`
   events as `{ kind: "client", subscriptionId, event, payload }`; the renderer
   client splits them for `ipcClient.on(...)`.
-- The preload module exports `exposeAdeBridge` and does not call it; the
+- The preload module exports `exposeDaexBridge` and does not call it; the
   `preload-auto` entry is the one to point `webPreferences.preload` at.
 - Attachments cross as `{ path }` refs only. A renderer needs a real path from a
   main-side dialog; bytes do not travel.
@@ -951,7 +995,7 @@ Public guide: `sdk/electron.mdx`. Reference app: `packages/sdk/examples/electron
 - CSS custom properties only (`createTheme({ accent, background })`). No Tailwind, no class overrides.
 - Tool activity is renamed through an activity-label map + optional `resolve()` callback (wildcards, phase verbs, elapsed, icons).
 - Transcript collapses streamed text and upgrades `tool_call` chips in place when `tool_result` lands on the same item id. `approval_request` → `pending_input_resolved` uses the same upgrade-in-place rule.
-- `adaptSdkClient(client)` accepts `@ade-dev/sdk` or any SDK-shaped proxy (DataDesk's renderer talks over a WebSocket and still fits).
+- `adaptSdkClient(client)` accepts `@daex-dev/sdk` or any SDK-shaped proxy (DataDesk's renderer talks over a WebSocket and still fits).
 - Approvals render inline, never as a modal, and settle in place rather than vanishing. `thread.approve` and `thread.pendingApprovals` are OPTIONAL on the view contract: a client without `approve` gets a read-only card, never a throw.
 - Questions, structured questions and plan approvals use optional `thread.respond(requestId, response)`, with `answers`, `decision` (`accept`, `accept_for_session`, `decline`, or `cancel`) and `responseText` matching `respondToInput`. Plan buttons send `accept` / `decline`; structured answers are keyed by question id, and secret answers render as password inputs.
 - Queue, slash-command, usage-limit, account and credential methods are optional. The chat UI hides unavailable controls, scopes usage-limit events by thread key, and reports failed data loads with retry instead of a false empty state.
@@ -965,58 +1009,9 @@ Parity is required. The SDK never shells out to `taskkill` / `tar` from PATH; it
 
 Native `windows-latest` CI still has to repeat the Windows-sensitive files; parameterized `win32` contract tests are the local proof.
 
-## Gotchas
-
-- Never point a sidecar `home` at the developer's `~/.ade` or the default machine socket.
-- Never treat `mcpCapability` truthiness as "strict was enforced".
-- Never treat any capability report's presence as a guarantee. Read `level` —
-  and for MCP, read `strictRequested` first. A null report means "never asked"
-  OR "asked, and an older runtime said nothing", and the second is not a pass.
-- Never read `ProviderStatus.installed` without reading `source`. On a
-  `"derived"` record it means "ADE knows models for this provider", which is a
-  different question from "a binary is on this disk".
-- Never read `doctor().runtime.signature === null` as "not signed". It is "not
-  known": Linux, attach mode, and any probe that could not run all report null.
-- Never add a `canUseTool` to the Claude personal path without a policy. A
-  personal chat that suddenly starts emitting `approval_request` parks turns for
-  every 0.1.x embedder that renders no card.
-- Never infer a tool's risk from its name. That substring heuristic is the bug
-  `permissionPolicy.ts` exists to replace, and the read-only exemption in the
-  Claude gate is a literal name-set membership test for the same reason.
-- Never rely on `canUseTool` alone to enforce a Claude policy. On Agent SDK
-  0.3.280 it fires for MCP tools and mutating commands, but not for a command
-  Claude Code classifies as read-only, and a setting layer loaded through
-  `settingSources` can pre-approve a tool before it is asked (on 0.3.258 it did
-  not fire at all). Enforcement that matters goes in `allowedTools` /
-  `disallowedTools` and `allowManagedMcpServersOnly`, which the CLI applies
-  itself; the gate stays wired as a second line.
-- Never persist MCP header values, on either side of the wire. Store
-  `headerNames` and resolve values at session start.
-- Never assign over `opts.managedSettings.allowedMcpServers`. ADE's own managed
-  servers are already in that object on the paths that build one, and replacing
-  it takes the CTO tools away with no diagnostic. Merge.
-- Never re-derive a capability report at a second site. The persisted-state
-  loader already re-derives all three from the stored args plus the live
-  provider before it returns, so a record written before a table row changed
-  cannot keep reporting the old verdict. Deriving again at the session-rehydrate
-  site would be two copies of one rule, which is how the rule starts disagreeing
-  with itself.
-- Never resolve a personal host cwd at more than one site. A refresh that
-  disagrees with the create rebuilds the lane directive key every turn and
-  restarts the provider runtime.
-- Never add typed `--mcp-servers` / `--strict-mcp` CLI flags as a second spelling of `--arg-json`; the nested JSON is what that hatch already carries. The SDK is the intended embedder API.
-- `packages/sdk/dist` is gitignored. Anything that typechecks against `@ade-dev/sdk` from source must build it first.
-- `packages/demo` live e2e spends provider tokens. Do not add it to root `npm test`.
-- `client.run()` uses a randomly named temporary thread and deletes it in `finally` (best effort, never masking the run's own result); structured output supports only the exported `JsonSchema` subset, strips one surrounding code fence, and gets one repair attempt. Each turn has a `timeoutMs` (default 10 minutes), and a turn that asks for an approval or an answer is interrupted and rejected with `unsupported` instead of hanging.
-- Thread budgets persist with the thread key and win over different options on resume. Token snapshots use the latest event per turn; cost totals include only explicit provider costs. A cost limit cannot trip until a provider reports cost.
-- `thread.usage().complete` is false when the SDK could not read the existing transcript to seed its totals. With a configured budget the SDK then refuses new turns until it can reload usage history; without a budget the snapshot reports only events it observed.
-- `@ade-dev/sdk/server` does not create a listener or choose a WebSocket package. The host owns networking, authentication/TLS and authorization; apply `authorize` to every RPC and scope `allowThreadKey` for shared hosts.
-- `createAdeRemoteClient(url)` needs a global `WebSocket`; pass `{ WebSocket }` in runtimes without one, or pass a WebSocket-compatible transport directly.
-- `tsup.config.ts` leaves source maps off in package builds: the SDK with its new entries measured 3.38 MB unpacked / 889 kB packed with maps, and 1.095 MB / 290 kB without them (`npm pack --dry-run --json`, Node 22).
-
 ## Related docs
 
-- Public Mintlify: [ADE SDK](https://ade-app.dev/docs/sdk/overview) — pages under `sdk/*.mdx`, nav in `docs.json`. Keep them in lockstep with this page when the contract changes; `node scripts/validate-docs.mjs` fails on a page missing from the nav.
+- Public Mintlify: [DAEX SDK](https://ade-app.dev/docs/sdk/overview) — pages under `sdk/*.mdx`, nav in `docs.json`. Keep them in lockstep with this page when the contract changes; `node scripts/validate-docs.mjs` fails on a page missing from the nav.
   - `overview`, `install`, `quickstart` — what it is and the first client.
   - `threads`, `mcp`, `permissions` — the per-thread contract and the three honesty tables.
   - `chat-ui`, `electron`, `server`, `testing` — the host-side surfaces and token-free development workflow.
@@ -1025,14 +1020,14 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
 - [Chat](../chat/README.md#caller-injected-mcp) — engine-side injection, tristate, capability report.
 - [Personal chats](../personal-chats/README.md) — the machine RPC the sidecar actually calls.
 - [ARCHITECTURE.md](../../ARCHITECTURE.md) §2.1 — embedded runtime profile and parent-death watchdog.
-- [ADE CLI README](../../../apps/ade-cli/README.md) — `ade runtime run --profile embedded`.
+- [DAEX CLI README](../../../apps/ade-cli/README.md) — `daex runtime run --profile embedded`.
 
 ## License
 
-`@ade-dev/sdk` and `@ade-dev/chat-ui` are MIT. The runtime binary and ADE itself are AGPL-3.0-only, with the DAEX Runtime Embedding Exception on the runtime binary (#1211).
+`@daex-dev/sdk` and `@daex-dev/chat-ui` are MIT. The runtime binary and DAEX itself are AGPL-3.0-only, with the DAEX Runtime Embedding Exception on the runtime binary (#1211).
 
 - Public page: [`sdk/license.mdx`](../../../sdk/license.mdx) states the per-artifact table and answers whether a proprietary app may ship the runtime. It is the one place a decision gets recorded, so update it first.
-- Exception: [`RUNTIME-EMBEDDING-EXCEPTION.md`](../../../RUNTIME-EMBEDDING-EXCEPTION.md) at the repository root. It permits an unmodified runtime binary inside a larger work that consumes it through the documented `@ade-dev/sdk` interface. Modifying the runtime, or linking ADE source, keeps the AGPL in force.
+- Exception: [`RUNTIME-EMBEDDING-EXCEPTION.md`](../../../RUNTIME-EMBEDDING-EXCEPTION.md) at the repository root. It permits an unmodified runtime binary inside a larger work that consumes it through the documented `@daex-dev/sdk` interface. Modifying the runtime, or linking DAEX source, keeps the AGPL in force.
 - Check: `scripts/check-package-licenses.mjs` asserts, for every non-private `packages/*`, that the SPDX field, the package `LICENSE` file, the tarball file list, and the README `## License` section all agree. The `packages` CI job runs it with `--require-pack`; `scripts/check-package-licenses.test.mjs` unit-tests it.
 - Runtime packages: `apps/ade-cli/scripts/build-runtime-npm-packages.mjs` copies both the root `LICENSE` and `RUNTIME-EMBEDDING-EXCEPTION.md` into each of the six `@ade-dev/runtime-*` packages, and its pack assertion fails a tarball missing either. That script's packages live in `runtime-packages/`, which the check script never walks.
 
