@@ -11,7 +11,7 @@ import { ADE_CLOUD_MACHINE_ID, useAdeCloudLaneTarget } from "./useAdeCloudLaneTa
 import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 
 /** ADE Cloud was picked: the lane gets a new computer of this size. */
-export type AdeCloudPick = { kind: "ade-cloud"; sizeId: CloudTierId };
+export type AdeCloudPick = { kind: "ade-cloud"; sizeId: CloudTierId; os?: "linux" | "mac" };
 
 export function isAdeCloudPick(value: LaneMachine | AdeCloudPick | null): value is AdeCloudPick {
   return value != null && "kind" in value && value.kind === "ade-cloud";
@@ -137,7 +137,7 @@ function ProjectMachinePickerDialog({
   const offerCloud = request.adeCloudOriginUrl !== undefined;
   const adeCloud = useAdeCloudLaneTarget(offerCloud, request.adeCloudOriginUrl ?? null);
   const cloudPicked = offerCloud && selectedMachineId === ADE_CLOUD_MACHINE_ID;
-  const cloudProblem = cloudPicked ? cloudLaneStartBlock(adeCloud.account, { newLane: true, sizeId: adeCloud.tierId })?.message ?? null : null;
+  const cloudProblem = cloudPicked ? cloudLaneStartBlock(adeCloud.account, { newLane: true, sizeId: adeCloud.tierId, os: adeCloud.os })?.message ?? null : null;
   // An ADE Cloud computer reads "ADE Cloud".
   const labelOf = useMachineLabelForMachine();
   const options = useMemo(
@@ -165,7 +165,7 @@ function ProjectMachinePickerDialog({
           variant: "solid",
           disabled: !canConfirm,
           onClick: () => {
-            if (cloudPicked && !cloudProblem) onSettle({ kind: "ade-cloud", sizeId: adeCloud.tierId });
+            if (cloudPicked && !cloudProblem) onSettle({ kind: "ade-cloud", sizeId: adeCloud.tierId, os: adeCloud.os });
             else if (selected) onSettle(selected);
           },
         },
@@ -194,9 +194,14 @@ function ProjectMachinePickerDialog({
             onSetDefault={adeCloud.setDefaultTier}
             words={adeCloud.words}
             priced={adeCloud.priced}
+            macOffer={adeCloud.macOffer}
+            os={adeCloud.os}
+            onChooseOs={adeCloud.chooseOs}
           />
           <span className={cloudProblem ? "text-[color:var(--kit-warn)]" : undefined}>
-            {cloudProblem ?? `A new ${adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for this lane.`}
+            {cloudProblem ?? (adeCloud.os === "mac"
+              ? "A new Mac for this lane."
+              : `A new ${adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for this lane.`)}
           </span>
         </div>
       ) : null}

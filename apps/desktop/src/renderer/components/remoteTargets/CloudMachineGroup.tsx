@@ -290,6 +290,7 @@ export function CloudBoxStrip({
       {box.failure ? (
         <div className="ade-cx-cloud-note">{ADE_CLOUD_NAME} couldn't run it: {box.failure}</div>
       ) : null}
+      {box.unavailable ? <div className="ade-cx-cloud-note">{box.unavailable}</div> : null}
       {box.diskFull ? (
         <Banner
           layout="inline"

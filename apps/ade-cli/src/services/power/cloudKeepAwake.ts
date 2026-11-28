@@ -26,7 +26,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { isAdeCloudComputer, isAdeCloudMac } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { adeActionAccess, isBackgroundAdeWrite } from "../../../../desktop/src/shared/adeActionAccess";
 
 /** One ping a minute: a 5-minute timeout (the provider's shortest) survives four missed pings. */
@@ -60,6 +60,8 @@ export const CLOUD_EARLY_GROW_QUIET_MS = 5 * 60_000;
 const SLEEP_GAP_INTERVALS = 2.5;
 /** The longest wait between boot report tries after failures. */
 const BOOT_REPORT_RETRY_MAX_MS = 30 * 60_000;
+/** A busy Mac's use report goes this often (the server runs a command at most every 10 minutes; NoMac waits an hour). */
+export const CLOUD_MAC_BUSY_REPORT_MS = 5 * 60_000;
 
 /** What the busy list reads, per runtime on this brain. */
 export type CloudBusyTerminal = {
@@ -257,10 +259,17 @@ export type CloudKeepAwakeOptions = {
   /**
    * Tells the server this brain started, which settles a waiting update.
    * `sleepWhenIdle`: the machine woke only for that update, so it sleeps at
-   * its first idle check instead of after three minutes. Rejects to be tried
-   * again at the next check.
+   * its first idle check instead of after three minutes. \`idleMinutes\`: this
+   * computer's own idle wait (a DAEX Cloud Mac's, 5 by default), in place of
+   * the three minutes. Rejects to be tried again at the next check.
    */
-  reportBooted?: () => Promise<{ sleepWhenIdle: boolean }>;
+  reportBooted?: () => Promise<{ sleepWhenIdle: boolean; idleMinutes?: number }>;
+  /**
+   * A DAEX Cloud Mac has no wake URL: while busy, the brain reports use to the
+   * server every {@link CLOUD_MAC_BUSY_REPORT_MS} instead, and the server runs
+   * a command NoMac's idle clock counts. Never awaited by a check.
+   */
+  reportBusy?: () => Promise<void>;
   /** The idle clock after each check (and after a boot report moves it). Never throws. */
   onIdleFacts?: (facts: CloudIdleFacts) => void;
   /** Each check's moment and busy reasons, for the sustained-CPU watch (`cloudSustainedCpu.ts`). Never throws. */
@@ -359,18 +368,25 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   /** After a failure the next try waits, doubling up to half an hour. */
   let bootReportFailures = 0;
   let bootReportRetryAt = 0;
+  /** Idle this long and the brain asks for the sleep: three minutes, or the computer's own wait from its boot report. */
+  let idleSleepAfterMs = CLOUD_IDLE_SLEEP_AFTER_MS;
+  /** A DAEX Cloud Mac: no wake URL, a busy report to the server instead. */
+  const onMac = isAdeCloudMac(env);
+  let lastBusyReportAt: number | null = null;
 
   /** Once per brain start, beside the checks: a slow server must not hold a busy machine's ping back. */
   const reportBoot = (): void => {
     if (bootReported || bootReporting || !options.reportBooted || now() < bootReportRetryAt) return;
     bootReporting = true;
     void options.reportBooted().then(
-      ({ sleepWhenIdle }) => {
+      ({ sleepWhenIdle, idleMinutes }) => {
         bootReported = true;
-        options.logger?.info("cloud.boot_reported", { sleepWhenIdle });
+        // A whole number of minutes from 1 to 60; anything else keeps three minutes.
+        if (typeof idleMinutes === "number" && Number.isInteger(idleMinutes) && idleMinutes >= 1 && idleMinutes <= 60) idleSleepAfterMs = idleMinutes * 60_000;
+        options.logger?.info("cloud.boot_reported", { sleepWhenIdle, idleMinutes: idleSleepAfterMs / 60_000 });
         // Woken only for an update: the next idle check may sleep it at once.
         if (sleepWhenIdle && !wasBusy) {
-          lastBusyAt = Math.min(lastBusyAt, now() - CLOUD_IDLE_SLEEP_AFTER_MS);
+          lastBusyAt = Math.min(lastBusyAt, now() - idleSleepAfterMs);
           emitIdleFacts();
         }
       },
@@ -395,14 +411,14 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   /**
    * The idle clock as `sleepIfIdleLongEnough` reads it: it asks for the sleep
    * at the first check (one every interval after the last) at least
-   * {@link CLOUD_IDLE_SLEEP_AFTER_MS} (less its 5 s slack) after the last work.
+   * {@link CLOUD_IDLE_SLEEP_AFTER_MS} (or the boot report's own wait, less its 5 s slack) after the last work.
    */
   const emitIdleFacts = (): void => {
     if (!options.onIdleFacts || lastTickAt == null) return;
     const idleSince = wasBusy ? null : lastBusyAt;
     let sleepsAt: number | null = null;
     if (idleSince != null && options.requestIdleSleep) {
-      const due = idleSince + CLOUD_IDLE_SLEEP_AFTER_MS - 5_000;
+      const due = idleSince + idleSleepAfterMs - 5_000;
       sleepsAt = lastTickAt + Math.max(0, Math.ceil((due - lastTickAt) / intervalMs)) * intervalMs;
       // Sent between checks (a boot report after one): a check that already
       // passed asks nothing more, so the next one is when it sleeps.
@@ -418,7 +434,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
 
   /** Sends the next timer when it changed; true when the server holds it. */
   const syncTimedWake = async (url: string | null, nextWakeAt: number | null): Promise<boolean> => {
-    if (!options.sendTimedWake) return false;
+    // A Mac has no wake URL and its wake is a new Mac: nothing to hold or clear (each clear was refused every tick).
+    if (!options.sendTimedWake || onMac) return false;
     const wanted = url && nextWakeAt != null ? `${url}|${nextWakeAt}` : "none";
     if (wanted === sentWake) return wanted !== "none";
     try {
@@ -478,7 +495,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
    */
   const sleepIfIdleLongEnough = async (at: number, waitingOnPerson: boolean): Promise<void> => {
     // Checks land a few milliseconds around each minute; that shouldn't cost a whole extra minute.
-    if (!options.requestIdleSleep || at - lastBusyAt < CLOUD_IDLE_SLEEP_AFTER_MS - 5_000) return;
+    if (!options.requestIdleSleep || at - lastBusyAt < idleSleepAfterMs - 5_000) return;
     askedToSleep = true;
     try {
       // An image behind its channel's goes first: the update restarts the
@@ -601,6 +618,14 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       if (state.busy && url) {
         lastPingOk = await ping(url);
         lastPingAt = now();
+      }
+      if (state.busy && onMac && options.reportBusy && (lastBusyReportAt == null || now() - lastBusyReportAt >= CLOUD_MAC_BUSY_REPORT_MS)) {
+        lastBusyReportAt = now();
+        void options.reportBusy().catch((error: unknown) => {
+          // The next check tries again.
+          lastBusyReportAt = null;
+          options.logger?.warn("cloud.mac_busy_report_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
       }
       const at = now();
       // Time spent asleep doesn't count: woken, the machine gets its full three

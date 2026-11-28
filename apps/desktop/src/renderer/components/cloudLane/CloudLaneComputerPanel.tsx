@@ -13,7 +13,8 @@ import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
 import { keepLaneComputer, sleepLaneComputer } from "./CloudLaneHeaderButton";
 import { cloudLaneChangesAvailable, cloudLaneComputerOfLane, cloudLaneMovesAvailable } from "./cloudLaneActions";
 import { CLOUD_MACHINE_STATE_TEXT } from "./CloudLaneConnectionRow";
-import { cloudLanePowerOfState } from "./cloudLaneStatus";
+import { cloudLanePower, cloudLanePowerText } from "./cloudLaneStatus";
+import { CLOUD_MAC_NAME, cloudMachineAllows, cloudMacOfferOf } from "../../../shared/cloudMac";
 import { freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import { canDeleteIdleComputerAnyway, deleteIdleComputerAnyway, heldIdleEntry, heldIdleSentences } from "./cloudIdleHeld";
 import "./cloudLane.css";
@@ -59,13 +60,15 @@ export function CloudLaneComputerPanel({
   }
   const life = cloudLaneChangesAvailable();
   const awake = computer.state === "running";
+  const mac = computer.os === "mac";
   const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
   const held = heldIdleEntry(idle);
 
   const free = async () => {
     setFreeing(true);
     try {
-      if (await freeCloudLaneWithConfirm({ instanceId: computer.instanceId, laneName, onDone: refreshCloudMachines })) onClose();
+      const mac = computer.os === "mac" ? { stopped: computer.macPhase === "stopped" || computer.macPhase === "start_failed" } : null;
+      if (await freeCloudLaneWithConfirm({ instanceId: computer.instanceId, laneName, onDone: refreshCloudMachines, mac })) onClose();
     } finally {
       setFreeing(false);
     }
@@ -85,11 +88,18 @@ export function CloudLaneComputerPanel({
     <div className="adecl-manage">
       <div className="adecl-manage-head">
         <CloudMark size={16} brand />
-        <span>{BRAND.CLOUD_NAME} computer</span>
+        <span>{mac ? CLOUD_MAC_NAME : `${BRAND.CLOUD_NAME} computer`}</span>
         {/* "Deleting" is on its way out, not in trouble: the going-to-sleep mark. */}
-        <span className="adecl-status-state" data-power={computer.state === "deleting" ? "stopping" : cloudLanePowerOfState(computer.state)}>
+        <span
+          className="adecl-status-state"
+          data-power={computer.state === "deleting"
+            ? "stopping"
+            : cloudLanePower({ state: computer.state, waking: false, resting: false, online: false, macPhase: computer.macPhase ?? null })}
+        >
           <i aria-hidden />
-          {CLOUD_MACHINE_STATE_TEXT[computer.state]}
+          {mac && computer.state !== "deleting" && computer.macPhase
+            ? cloudLanePowerText(cloudLanePower({ state: computer.state, waking: false, resting: false, online: false, macPhase: computer.macPhase }), computer.macPhase)
+            : CLOUD_MACHINE_STATE_TEXT[computer.state]}
         </span>
       </div>
       <ul className="adecl-manage-rows">
@@ -110,28 +120,35 @@ export function CloudLaneComputerPanel({
             </button>
           </ManageRow>
         ) : null}
-        {life || cloudLaneMovesAvailable() ? (
+        {(life || cloudLaneMovesAvailable()) && cloudMachineAllows(computer, "resize") ? (
           <ManageRow icon={<Cpu size={14} />} title="Size" hint="More CPU and memory use credits faster.">
             <button type="button" className="kit-btn" data-size="sm" onClick={() => setSizing(true)}>Change size</button>
           </ManageRow>
         ) : null}
-        {awake ? (
+        {mac ? (
+          <ManageRow icon={<Moon size={14} />} title="Stops on its own" hint={cloudMacOfferOf(account)?.keeps ?? "A Mac stops a few minutes after work ends. Only its drive is kept."}>
+            {awake ? <button type="button" className="kit-btn" data-size="sm" onClick={() => void sleepLaneComputer(computer.instanceId, laneName, runningChats, "chats", true)}>Stop now</button> : <span />}
+          </ManageRow>
+        ) : awake ? (
           <ManageRow icon={<Moon size={14} />} title="Sleep" hint="A sleeping computer uses no credits. A message wakes it.">
             <button type="button" className="kit-btn" data-size="sm" onClick={() => void sleepLaneComputer(computer.instanceId, laneName, runningChats)}>Put to sleep</button>
           </ManageRow>
         ) : null}
-        {life ? (
+        {/* A Mac whose drive is lost can't be freed (nothing to push from): the server refuses it. */}
+        {life && computer.macPhase !== "drive_lost" ? (
           <ManageRow
             icon={<Package size={14} />}
-            title="Keep the lane, free its computer"
-            hint={`${BRAND.NAME} pushes its work, then removes the computer. Your next message makes a new one.`}
+            title={mac ? "Keep the lane, delete the Mac and its drive" : "Keep the lane, free its computer"}
+            hint={mac
+              ? `${BRAND.NAME} pushes the lane's work to GitHub, then deletes the Mac and its drive. Your next message starts a new Mac.`
+              : `${BRAND.NAME} pushes its work, then removes the computer. Your next message makes a new one.`}
           >
             <button type="button" className="kit-btn" data-size="sm" disabled={freeing} onClick={() => void free()}>
-              {freeing ? "Freeing…" : "Free computer"}
+              {freeing ? "Freeing…" : mac ? "Delete the Mac" : "Free computer"}
             </button>
           </ManageRow>
         ) : null}
-        <ManageRow icon={<ArrowSquareOut size={14} />} title="Disk and credits" hint="What uses its disk, and the account's credits.">
+        <ManageRow icon={<ArrowSquareOut size={14} />} title={mac ? "Drive and credits" : "Disk and credits"} hint={mac ? "Its drive, and the account's credits." : "What uses its disk, and the account's credits."}>
           <button
             type="button"
             className="kit-btn kit-btn-ghost"

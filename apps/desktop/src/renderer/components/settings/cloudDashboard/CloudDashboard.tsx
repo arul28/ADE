@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { AppleLogo, ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, cloudMachineAllows, type CloudComputerAction } from "../../../../shared/cloudMac";
 import {
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
@@ -52,6 +53,8 @@ import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimit
 import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
 import { CloudAdsBand } from "./CloudAdsBand";
+import { CloudMacExplainer } from "./CloudMacExplainer";
+import { CloudMacRowNote } from "./CloudMacRowNote";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
 import { CloudFreeModelsCard } from "./CloudFreeModelsCard";
@@ -259,7 +262,12 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     if (!lane.instanceId) return;
     setBusyKey(lane.key);
     try {
-      await freeCloudLaneWithConfirm({ instanceId: lane.instanceId, laneName: lane.name, onDone: refresh });
+      await freeCloudLaneWithConfirm({
+        instanceId: lane.instanceId,
+        laneName: lane.name,
+        onDone: refresh,
+        mac: lane.mac ? { stopped: lane.mac.phase === "stopped" || lane.mac.phase === "start_failed" } : null,
+      });
     } finally {
       setBusyKey(null);
     }
@@ -336,6 +344,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
               }}
             />
           )}
+          {/* How a Mac works, once, under the table (until Got it). */}
+          {!inside ? <CloudMacExplainer account={account} hasMacLane={lanes.some((lane) => lane.isMac)} /> : null}
         </div>
       </section>
 
@@ -611,6 +621,7 @@ function LaneTable({
   /** The row's actions, behind its ⋯ button at the right end (B14-22). */
   menuActions: (lane: DashLane) => MachineAction[];
 }) {
+  // A stopped Mac's first stop says once more what a stop keeps (synced, account-wide).
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // The listbox keeps focus itself (`aria-activedescendant`): keys from a
     // row's ⋯ button or its open menu (a portal, so they bubble here) are theirs.
@@ -665,7 +676,8 @@ function LaneTable({
               onDoubleClick={() => onOpen(lane.key)}
             >
               <span className="adecd-name">
-                {lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
+                {lane.isMac ? <AppleLogo size={15} weight="fill" className="adecd-mac-mark" aria-label="Mac" />
+                  : lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
                 <span className="adecd-name-text">{lane.name}</span>
                 {/* One mark at most, so the name keeps its room: the idle cleanup's warning, no lane, then unused, then safe to delete. */}
                 {lane.idle ? <IdleTag lane={lane} now={now} />
@@ -674,17 +686,24 @@ function LaneTable({
                   : lane.safe ? <span className="kit-tag" data-tone="ok" title="Its pull request is merged and nothing is unpushed">Safe to delete</span>
                   : null}
               </span>
-              <span className="adecd-tsize">{lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}</span>
+              <span className="adecd-tsize">
+                {lane.isMac ? <>Mac{lane.rateLabel ? <em className="kit-num">{lane.rateLabel}</em> : null}</>
+                  : lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}
+              </span>
               {status ? (
                 <span className="adecd-state" data-state={status.state} title={status.title ?? undefined}><i />{status.label}</span>
               ) : (
-                <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
+                <span className="adecd-state" data-state={lane.unavailable ? "failed" : lane.state} title={lane.mac?.label}>
+                  <i />{lane.unavailable ? CLOUD_COMPUTER_UNAVAILABLE_LABEL : lane.mac?.label ?? STATE_LABEL[lane.state]}
+                </span>
               )}
               {priced ? <PriceCell lane={lane} /> : null}
               <span className="adecd-when" title={removedReasonText(lane) ?? undefined}>{lastRunText(lane, now)}</span>
               {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
               <span aria-hidden="true" />
             </div>
+            {lane.unavailable && !status ? <div className="adecd-row-note" data-tone="warn" role="presentation">{lane.unavailable}</div> : null}
+            {lane.mac && !status ? <CloudMacRowNote mac={lane.mac} now={now} /> : null}
             {actions.length ? (
               <span className="adecd-row-menu">
                 <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} />
@@ -700,10 +719,15 @@ function LaneTable({
 
 /**
  * Pricing v3: what a computer costs now, and why it has the full price while
- * ads are on. Asleep (or no computer), it costs nothing now.
+ * ads are on. Asleep (or no computer), it costs nothing now; a Mac costs
+ * something only while it is on (nothing while it waits for a free Mac).
  */
 function PriceCell({ lane }: { lane: DashLane }) {
   if (!lane.price) return <span className="adecd-price" data-quiet="">—</span>;
+  if (lane.mac && lane.mac.phase !== "running") {
+    const idle = lane.mac.phase === "queued" ? "Nothing while it waits" : lane.mac.phase === "starting" ? "Nothing until it's on" : "Nothing while stopped";
+    return <span className="adecd-price" data-quiet="" title={lane.price.text}>{idle}</span>;
+  }
   if (lane.state === "asleep" || lane.state === "none") {
     return <span className="adecd-price" data-quiet="" title={lane.price.text}>Nothing while asleep</span>;
   }
@@ -746,14 +770,19 @@ function laneMenuActions(lane: DashLane, args: {
 }): MachineAction[] {
   if (!lane.instanceId) return [];
   const life = cloudLaneChangesAvailable();
-  const actions: MachineAction[] = [
-    { key: "disk", label: "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside },
-  ];
+  // What the server refuses on this computer (`unsupported`) is not offered at all.
+  const allows = (action: CloudComputerAction) => cloudMachineAllows(lane.machine, action);
+  const actions: MachineAction[] = [];
+  // A Mac's drive is measured only when it reports one.
+  if (!lane.mac || lane.usage) {
+    actions.push({ key: "disk", label: lane.mac ? "What uses the drive" : "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside });
+  }
   if (life && !lane.noLane) {
-    actions.push(
-      { key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning },
-      { key: "free", label: "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy },
-    );
+    if (allows("resize")) actions.push({ key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning });
+    // A lost drive has nothing to push: its saved work is already in Lanes without a computer.
+    if (lane.mac?.phase !== "drive_lost") {
+      actions.push({ key: "free", label: lane.mac ? "Keep the lane, delete the Mac and its drive" : "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy });
+    }
   }
   if (life) {
     actions.push({ key: "delete", label: lane.noLane ? "Delete computer" : "Delete lane", icon: <Trash size={13} />, onSelect: args.onDelete, disabled: args.busy, danger: true });

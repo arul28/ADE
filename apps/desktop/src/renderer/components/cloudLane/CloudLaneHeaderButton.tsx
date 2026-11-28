@@ -20,7 +20,9 @@ import { CloudComputerPriceRow } from "./CloudComputerPriceRow";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
 import { cloudLaneChangesAvailable, cloudLaneMovesAvailable } from "./cloudLaneActions";
 import { cloudLaneJobFor, openCloudLaneJobBar, useCloudLaneJobs } from "./cloudLaneStores";
-import { CLOUD_LANE_POWER_TEXT, cloudLanePower, cloudLanePowerOfState, cloudLaneStatusModel, type CloudLanePower, type CloudLaneStatusLine } from "./cloudLaneStatus";
+import { cloudLanePower, cloudLanePowerOfState, cloudLanePowerText, cloudLaneStatusModel, type CloudLanePower, type CloudLaneStatusLine } from "./cloudLaneStatus";
+import { useCloudMacFirstStopLine } from "./useCloudMacFirstStopLine";
+import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, cloudMachineAllows, cloudMacPhaseOf, type CloudComputerAction } from "../../../shared/cloudMac";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
 import { canDeleteIdleComputerAnyway, deleteIdleComputerAnyway, heldIdleEntry, heldIdleSentences } from "./cloudIdleHeld";
 import { forgetCloudComputerStatus, useCloudComputerStatus } from "./useCloudComputerStatus";
@@ -65,9 +67,13 @@ export function CloudLaneHeaderButton({ laneId, turnRunning, runningKind = "chat
     waking: machine.waking,
     resting: machine.resting,
     online: scope.isRemote && scope.online,
+    macPhase: computer.macPhase ?? null,
+    unavailable: computer.unavailable === true,
   });
+  const powerText = computer.unavailable && power === "trouble" ? CLOUD_COMPUTER_UNAVAILABLE_LABEL : cloudLanePowerText(power, computer.macPhase);
+  const noun = computer.os === "mac" ? CLOUD_MAC_NAME : `${BRAND.CLOUD_NAME} computer`;
   const title = [
-    `${BRAND.CLOUD_NAME} computer · ${CLOUD_LANE_POWER_TEXT[power]}`,
+    `${noun} · ${powerText}`,
     idle ? (held ? heldIdleSentences(held, Date.now()) : `It will be ${idleCleanupWhen(idle.deletesAt, Date.now())} because it isn't used`) : null,
   ].filter(Boolean).join(". ");
 
@@ -95,7 +101,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning, runningKind = "chat
         {...menu.triggerProps}
         type="button"
         className={WORK_HEADER_ICON_BUTTON_CLASS}
-        aria-label={`${BRAND.CLOUD_NAME} computer of ${name}: ${CLOUD_LANE_POWER_TEXT[power]}`}
+        aria-label={`${noun} of ${name}: ${powerText}`}
         title={title}
       >
         <span className="adecl-power">
@@ -143,7 +149,7 @@ export function SessionCloudLaneButton({ session, runtimePin }: { session: Pick<
       <ChatMachineWakeProvider>
         <SessionWakeFailureToast name={computer.laneName || "this lane"} />
         {/* What this computer costs now, next to its cloud button; asleep it costs nothing, so the button's mark says enough. */}
-        {cloudLanePowerOfState(computer.state) === "awake" ? <CloudComputerPriceRow instanceId={computer.instanceId} compact /> : null}
+        {cloudLanePowerOfState(computer.state) === "awake" ? <CloudComputerPriceRow instanceId={computer.instanceId} compact mac={computer.macPhase != null} /> : null}
         <CloudLaneHeaderButton laneId={laneId} turnRunning={session.status === "running"} runningKind="session" />
       </ChatMachineWakeProvider>
     </ChatRuntimeScopeProvider>
@@ -209,15 +215,20 @@ function CloudLaneStatusMenu({
   // A size change or move of this lane: its step now, a way to its steps, and no sleep countdown.
   const jobs = useCloudLaneJobs();
   const job = cloudLaneJobFor(jobs, { instanceId: computer.instanceId, laneId: computer.laneId });
-  const model = cloudLaneStatusModel({ power, box, status, account, now, job });
+  const mac = computer.os === "mac" || box?.os === "mac";
+  const macPhase = box?.os === "mac" ? cloudMacPhaseOf(box.mac, box.status) : computer.macPhase ?? null;
+  const macFirstStop = useCloudMacFirstStopLine(mac && macPhase === "stopped" && box != null);
+  const model = cloudLaneStatusModel({ power, box, status, account, now, job, macFirstStop });
   const life = cloudLaneChangesAvailable();
   const held = heldIdleEntry(idle);
+  // What the server refuses on this computer (`unsupported`); a Mac shows none of it before the list read says.
+  const allows = (action: CloudComputerAction) => cloudMachineAllows(box ?? computer, action);
 
   const { run } = menu;
 
   const sleepNow = () => {
     forgetCloudComputerStatus(computer.instanceId);
-    void sleepLaneComputer(computer.instanceId, name, turnRunning ? 1 : 0, runningKind);
+    void sleepLaneComputer(computer.instanceId, name, turnRunning ? 1 : 0, runningKind, mac);
   };
 
   return (
@@ -234,7 +245,16 @@ function CloudLaneStatusMenu({
       remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}${model.job ? 1 : 0}`}
     >
       <div ref={menu.menuRef} style={{ display: "contents" }}>
-        {power === "asleep" ? (
+        {mac ? (
+          // A Mac starts again with its drive; a lost drive can't (its saved work is in Lanes without a computer).
+          // A Mac the server can't start now (`unavailable`) offers no start: its line says why.
+          (power === "asleep" || macPhase === "start_failed") && !box?.unavailable && !computer.unavailable ? (
+            <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onWake)}>
+              <span className="ade-cx-menu-icon"><SunHorizon size={13} /></span>
+              {macPhase === "start_failed" ? "Couldn't start · Try again" : "Stopped · Start the Mac"}
+            </button>
+          ) : null
+        ) : power === "asleep" ? (
           <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onWake)}>
             <span className="ade-cx-menu-icon"><SunHorizon size={13} /></span>
             Asleep · Wake now
@@ -243,7 +263,7 @@ function CloudLaneStatusMenu({
         <div className="adecl-status-head" role="presentation">
           <div className="adecl-status-title">
             <b title={name}>{name}</b>
-            {power !== "asleep" ? (
+            {power !== "asleep" || mac ? (
               <span className="adecl-status-state" data-power={power}>
                 <i aria-hidden="true" />
                 <span className="kit-num" data-face="ui">{model.stateText}</span>
@@ -272,7 +292,7 @@ function CloudLaneStatusMenu({
         {power === "waking" ? (
           <button type="button" role="menuitem" className="ade-cx-menu-item" disabled>
             <span className="ade-cx-menu-icon"><SunHorizon size={13} /></span>
-            Waking…
+            {mac ? `${cloudLanePowerText(power, macPhase)}…` : "Waking…"}
           </button>
         ) : null}
         {idle && window.ade.cloud?.keepIdleComputer ? (
@@ -315,16 +335,17 @@ function CloudLaneStatusMenu({
               {job.kind === "move" ? "Show the move's steps" : "Show the change's steps"}
             </button>
           ) : null}
-          {(life || cloudLaneMovesAvailable()) && !model.changing ? (
+          {(life || cloudLaneMovesAvailable()) && !model.changing && allows("resize") ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onSize)}>
               <span className="ade-cx-menu-icon"><Cpu size={13} /></span>
               Change size
             </button>
           ) : null}
+          {/* A Mac also stops on its own a few minutes after work ends; "Stop now" saves its drive at once. */}
           {power === "awake" && !model.changing ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(sleepNow)}>
               <span className="ade-cx-menu-icon"><Moon size={13} /></span>
-              Sleep now
+              {mac ? "Stop now" : "Sleep now"}
             </button>
           ) : null}
           <button
@@ -397,15 +418,16 @@ export async function keepLaneComputer(instanceId: string, name: string): Promis
  * Sleep (the chat header, Manage lane): the shared confirm, which asks when
  * chats run there, the IPC call, a toast either way, then the list read again.
  */
-export async function sleepLaneComputer(instanceId: string, name: string, running: number, what: CloudSleepRunning = "chats"): Promise<void> {
-  if (!(await confirmCloudSleep(`${name}'s computer`, running, what))) return;
+export async function sleepLaneComputer(instanceId: string, name: string, running: number, what: CloudSleepRunning = "chats", mac = false): Promise<void> {
+  // A Mac's sleep is its stop (the server saves its drive and lets the Mac go).
+  if (!(await confirmCloudSleep(mac ? `${name}'s Mac` : `${name}'s computer`, running, what, mac))) return;
   const result = await callCloudMachineAction({ instanceId, action: "sleep" });
   if (result?.ok) {
-    showToast({ tone: "info", title: `${name}'s computer is going to sleep.` });
+    showToast({ tone: "info", title: mac ? `${name}'s Mac is stopping. Its drive is saved.` : `${name}'s computer is going to sleep.` });
   } else {
     showToast({
       tone: "warning",
-      title: `Couldn't put ${name}'s computer to sleep`,
+      title: mac ? `Couldn't stop ${name}'s Mac` : `Couldn't put ${name}'s computer to sleep`,
       message: result?.message || `This window can't reach ${BRAND.CLOUD_NAME}. Try it from the ${BRAND.NAME} desktop app.`,
     });
   }

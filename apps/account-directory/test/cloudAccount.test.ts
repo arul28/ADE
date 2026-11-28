@@ -6,11 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { revylSpentMicros } from "../src/cloud/phoneRoute";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord, type CloudIdleHeldKind } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_MAC_SHAPE, CLOUD_PRICING_HEADER, CLOUD_PRICING_VERSION, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord, type CloudIdleHeldKind } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
-import { settlePhoneAtEnd } from "../src/cloud/adPrice";
+import { handlePublicPricing, settlePhoneAtEnd } from "../src/cloud/adPrice";
 import { phoneCreditMilliOf } from "../src/cloud/credits";
 import { smallCloudLookAlarms, syncAllSmallRates } from "../src/cloud/sponsoredSmall";
 import { expireAccountTests } from "../src/cloud/ownerAccounts";
@@ -29,7 +29,8 @@ import { createComputer, forkComputer, handleCloudRequest } from "../src/cloud/r
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import { runAccountErasureRepeats } from "../src/accountErasure";
 import { handleRequest as handleDirectoryRequest, type Env as DirectoryEnv } from "../src/directory";
-import { applyCloudPlanChange, type CloudEnv, type ComputerRow } from "../src/cloud/store";
+import { applyCloudPlanChange, liveUsedMilli, type CloudEnv, type ComputerRow } from "../src/cloud/store";
+import { MAC_MILLI_PER_MINUTE } from "../src/cloud/plans";
 import { runDailyCostReport } from "../src/cloud/costReport";
 import { grantAad, seal, tokenKey } from "../src/githubApp/seal";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
@@ -43,7 +44,8 @@ import { registerBody, request as directoryRequest } from "./helpers";
  */
 
 const NOW = Date.UTC(2026, 10, 9, 12, 0, 0);
-const HOUR = 60 * 60_000;
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const OWNER = "user_owner";
 const OTHER = "user_other";
@@ -469,6 +471,28 @@ describe("ADE Cloud account", () => {
     // The day's record and the account agree, so the daily reconcile can't correct a phantom charge.
     expect(meteredMilli(harness)).toBe(expectedMilli);
     expect(computer(harness).awake_since).toBeNull();
+  });
+
+  // A launch's computer has nothing to check in with until it signed in. A person who approved after the
+  // no-check-in limit gets a computer that is past it the moment the launch moves on: the tick that sees the
+  // launch leave `joining` before the first check-in lands must not sleep it. Linux and Mac alike.
+  it.each<[string, Row, boolean]>([
+    ["still joining in its window", { state: "needs_approval", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE }, false],
+    ["joined and moved on a minute ago", { state: "waiting_for_sign_in", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - MINUTE }, false],
+    ["joined and moved on long ago, still never checked in", { state: "waiting_for_sign_in", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - 15 * MINUTE }, true],
+    ["failed a minute ago", { state: "failed", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - MINUTE }, true],
+  ])("a launch's computer that never checked in, awake 20 minutes, its launch %s", async (_label, launch, slept) => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { awake_since: NOW - 20 * MINUTE, status_changed_at: NOW - 20 * MINUTE });
+    provide(harness);
+    harness.insert("cloud_launches", {
+      launch_id: "4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f70", user_id: OWNER, kind: "chat", instance_id: INSTANCE,
+      created_at: NOW - 20 * MINUTE, updated_at: NOW - 15 * MINUTE, expires_at: NOW + DAY, ...launch,
+    });
+
+    await harness.tick();
+
+    expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/sleep$`))).toHaveLength(slept ? 1 : 0);
   });
 
   // A sleep freezes the computer: a turn it cuts must be stopped and saved first,
@@ -7382,5 +7406,226 @@ describe("Pricing v3's ad price", () => {
     expect(await codeOf(await fromHome("PUT", "/cloud/sponsored/consent", { consent: "declined" }))).toEqual([429, "rate_limited"]);
     clock += HOUR;
     expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
+  });
+  describe("a DAEX Cloud Mac", () => {
+    const MAC = "mac0123456789abcdef0123456789abcdef";
+    const session: Row = { id: "ses_mac", state: "ready", label: `adem:${MAC}` };
+    const t0 = NOW;
+
+    beforeEach(() => {
+      Object.assign(session, { state: "ready", ready_at: new Date(t0 - MINUTE).toISOString(), created_at: new Date(t0 - 2 * MINUTE).toISOString(), shutdown_at: null });
+      Object.assign(harness.env, { NOMAC_API_KEY: "nmk_test", MAC_COMPUTERS: "all" });
+      setting("mac_computers", "all");
+      // NoMac's Mac API: the one session, read and listed. Anything else (the drive upkeep) is refused.
+      const network = globalThis.fetch;
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (!url.startsWith("https://nomac.app/")) return network(input, init);
+        const call = `${init?.method ?? "GET"} ${url.replace("https://nomac.app/api/v1", "")}`;
+        if (call === "GET /mac/sessions/ses_mac") return new Response(JSON.stringify({ session }), { status: 200 });
+        if (call.startsWith("GET /mac/sessions?")) return new Response(JSON.stringify({ sessions: [session] }), { status: 200 });
+        return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 });
+      });
+    });
+
+    const seedMac = (overrides: Row = {}) => {
+      seedComputer(harness, {
+        instance_id: MAC, provider: "nomac", os: "mac", type: "mac", cpu: CLOUD_MAC_SHAPE.cpu, memory_gb: CLOUD_MAC_SHAPE.memoryGb, disk_gb: CLOUD_MAC_SHAPE.driveGb,
+        multiplier_milli: MAC_MILLI_PER_MINUTE * 60, status: "running", status_changed_at: t0, awake_since: t0, last_awake_at: t0,
+        mac_state: "running", mac_state_at: t0, mac_session_id: "ses_mac", mac_label: `adem:${MAC}`, mac_booted_session: "ses_mac", machine_key: "mk-mac",
+        ...overrides,
+      });
+      harness.insert("machines", { user_id: OWNER, machine_key: "mk-mac", last_seen_at: clock });
+    };
+    /** A minute tick at `at`, its brain having checked in. */
+    const tickAt = async (at: number) => {
+      clock = at;
+      harness.exec("update machines set last_seen_at = ? where machine_key = 'mk-mac'", clock);
+      await harness.tick();
+    };
+    /** What the account used, settled and live (a running Mac counts its minute begun as whole, as its stop charges it). */
+    const used = () => liveUsedMilli(harness.row("select * from cloud_accounts where user_id = ?", OWNER) as never, [computer(harness, MAC) as never], clock);
+    /** NoMac ends the session at `at`; the next tick hears it. */
+    const endAt = (at: number) => Object.assign(session, { state: "ended", shutdown_at: new Date(at).toISOString() });
+
+    it.each([
+      ["no ads (the full price): 5 credits a minute", false, 500],
+      ["with ads (a person's message in its window): 4 credits a minute", true, 400],
+    ])("a Mac minute %s, through the computers' own rate and stretch code", async (_label, ads, perMinute) => {
+      seedMac();
+      const before = usedMilli(harness);
+      if (ads) {
+        saveChat("chat-mac", MAC, "mk-mac");
+        expect(await sent({ instanceId: MAC, chatId: "chat-mac", messageId: "m-mac" })).toEqual({ counted: true });
+        expect(priced(MAC)).toEqual({ rate: 400 * 60, adFull: 500 * 60 });
+      }
+      await tickAt(t0 + 5 * MINUTE);
+      expect(priced(MAC)).toEqual(ads ? { rate: 400 * 60, adFull: 500 * 60 } : { rate: 500 * 60, adFull: null });
+      // NoMac ends it 10 minutes in: ten whole minutes, settled at its stop.
+      endAt(t0 + 10 * MINUTE);
+      await tickAt(t0 + 11 * MINUTE);
+      expect(computer(harness, MAC)).toMatchObject({ status: "stopped", awake_since: null });
+      expect(usedMilli(harness) - before).toBe(10 * perMinute);
+      expect(meteredMilli(harness, MAC)).toBe(10 * perMinute);
+    });
+
+    it("a move between the prices inside a stretch charges every minute once: the minute begun goes on at the new price", async () => {
+      seedMac();
+      const before = usedMilli(harness);
+      // Two and a half minutes at the full price, then a person's message: the ad price from there.
+      clock = t0 + 2.5 * MINUTE;
+      saveChat("chat-mac", MAC, "mk-mac");
+      expect(await sent({ instanceId: MAC, chatId: "chat-mac", messageId: "m-mac" })).toEqual({ counted: true });
+      expect(priced(MAC).rate).toBe(400 * 60);
+      // The two whole minutes are charged at the full price; the third goes on at the ad price.
+      expect(usedMilli(harness) - before).toBe(2 * 500);
+      expect(computer(harness, MAC).awake_since).toBe(t0 + 2 * MINUTE);
+      await tickAt(t0 + 5 * MINUTE);
+      expect(used() - before).toBe(2 * 500 + 3 * 400);
+      // Stopped 10.5 minutes in: 11 minutes charged in all, 2 full and 9 with ads.
+      endAt(t0 + 10.5 * MINUTE);
+      await tickAt(t0 + 11 * MINUTE);
+      expect(computer(harness, MAC).status).toBe("stopped");
+      expect(usedMilli(harness) - before).toBe(2 * 500 + 9 * 400);
+    });
+
+    it("a Mac the webhook moves to running is on its price at once: with ads on and a proof in its window, minute one costs 4, not 5", async () => {
+      seedMac({ status: "starting", awake_since: null, mac_state: "starting" });
+      // A person's message already counted for it (its window open); its row still holds the full rate.
+      harness.insert("cloud_ad_targets", { target: MAC, user_id: OWNER, proof_at: clock, updated_at: clock });
+      expect(priced(MAC)).toEqual({ rate: 500 * 60, adFull: null });
+      const before = usedMilli(harness);
+      // NoMac says ready, signed as NoMac signs.
+      harness.env.NOMAC_WEBHOOK_SECRET = "whsec_test";
+      clock = t0 + 10_000;
+      const raw = JSON.stringify({ id: "evt_mac_ready", type: "mac.ready", data: { session: { ...session, ready_at: new Date(clock).toISOString() } } });
+      const t = Math.floor(clock / 1000);
+      const v1 = createHmac("sha256", "whsec_test").update(`${t}.${raw}`).digest("hex");
+      const delivered = await handleNomacWebhook(new Request("https://directory.test/cloud/nomac/webhook", { method: "POST", headers: { "nomac-signature": `t=${t},v1=${v1}` }, body: raw }), harness.env, clock);
+      expect(delivered.status).toBe(200);
+      expect(computer(harness, MAC)).toMatchObject({ status: "running", awake_since: clock });
+      expect(priced(MAC)).toEqual({ rate: 400 * 60, adFull: 500 * 60 });
+      // Stopped 50 s in, before any tick: one minute, at the price with ads.
+      endAt(clock + 50_000);
+      await tickAt(clock + 55_000);
+      expect(computer(harness, MAC).status).toBe("stopped");
+      expect(usedMilli(harness) - before).toBe(400);
+    });
+
+    it("a queued Mac charges nothing; its charge starts at the tick that sees it ready", async () => {
+      seedMac({ status: "starting", awake_since: null, mac_state: "queued" });
+      Object.assign(session, { state: "queued", ready_at: null });
+      const before = usedMilli(harness);
+      for (let minute = 1; minute <= 20; minute += 1) await tickAt(t0 + minute * MINUTE);
+      expect(computer(harness, MAC)).toMatchObject({ status: "starting", awake_since: null });
+      expect(used()).toBe(before);
+      // Ready: the tick moves it to running and starts its charge there.
+      Object.assign(session, { state: "ready", ready_at: new Date(t0 + 20.5 * MINUTE).toISOString() });
+      await tickAt(t0 + 21 * MINUTE);
+      expect(computer(harness, MAC)).toMatchObject({ status: "running", awake_since: t0 + 21 * MINUTE });
+      expect(used()).toBe(before);
+      await tickAt(t0 + 24 * MINUTE);
+      expect(used() - before).toBe(3 * 500);
+    });
+
+    it("a stopped Mac charges nothing, over days and daily runs: its drive costs no credits, and its upkeep is DAEX's", async () => {
+      seedMac({ status: "stopped", awake_since: null, mac_state: "stopped", mac_session_id: null });
+      endAt(t0 - HOUR);
+      const before = usedMilli(harness);
+      for (const at of [t0 + MINUTE, t0 + HOUR, t0 + DAY, t0 + 2 * DAY + 3 * HOUR]) await tickAt(at);
+      expect(usedMilli(harness)).toBe(before);
+      expect(meteredMilli(harness, MAC)).toBe(0);
+    });
+
+    it("the answers: the catalog's Mac carries its ad price under Pricing v3; the website hears of the Mac only at `all`; both switches off read as today", async () => {
+      const account = async () => (await harness.send(OWNER, "GET", "/cloud/account", undefined, { [CLOUD_PRICING_HEADER]: CLOUD_PRICING_VERSION })).json() as Promise<CloudAccountState>;
+      const site = async () => {
+        clock += MINUTE; // past the read's settings cache
+        return (await handlePublicPricing(new Request("https://directory.test/public/pricing"), harness.env)).json();
+      };
+      expect((await account()).catalog.mac).toMatchObject({ creditMilliPerMinute: 500, adCreditMilliPerMinute: 400 });
+      expect(await site()).toMatchObject({ pricingV3: true, mac: true });
+      // Testers only: the website shows no Mac.
+      setting("mac_computers", "testers");
+      expect(await site()).toMatchObject({ pricingV3: true, mac: false });
+      // No NoMac key: off, whatever the setting says.
+      setting("mac_computers", "all");
+      delete harness.env.NOMAC_API_KEY;
+      expect(await site()).toMatchObject({ pricingV3: true, mac: false });
+      harness.env.NOMAC_API_KEY = "nmk_test";
+      // Pricing v3 off: the Mac at one price, in today's unit.
+      setting("pricing_v3", "off");
+      const v2 = await account();
+      expect(v2.catalog.mac?.creditMilliPerMinute).toBe(500);
+      expect(v2.catalog.mac).not.toHaveProperty("adCreditMilliPerMinute");
+      // Both off: today's answers.
+      setting("mac_computers", "off");
+      const today = await account();
+      expect(today.catalog).not.toHaveProperty("mac");
+      expect(today.catalog).not.toHaveProperty("creditScale");
+      expect(today).not.toHaveProperty("pricing");
+      expect(await site()).toEqual({ pricingV3: false });
+    });
+  });
+});
+
+describe("a DAEX Cloud Mac's reads", () => {
+  const MAC = "mac0123456789abcdef0123456789abcdef";
+  const sessionReads: number[] = [];
+
+  beforeEach(() => {
+    sessionReads.length = 0;
+    Object.assign(harness.env, { NOMAC_API_KEY: "nmk_test", MAC_COMPUTERS: "all" });
+    harness.insert("cloud_settings", { key: "mac_computers", value: "all", updated_at: NOW - DAY });
+    seedAccount(harness, OWNER);
+    // A Mac DAEX last saw starting; NoMac has it ready now (its boot already done).
+    seedComputer(harness, {
+      instance_id: MAC, provider: "nomac", os: "mac", type: "mac", cpu: CLOUD_MAC_SHAPE.cpu, memory_gb: CLOUD_MAC_SHAPE.memoryGb, disk_gb: CLOUD_MAC_SHAPE.driveGb,
+      multiplier_milli: 30_000, status: "starting", awake_since: null, last_awake_at: null, mac_state: "starting", mac_state_at: NOW - MINUTE,
+      mac_session_id: "ses_mac", mac_label: `adem:${MAC}`, mac_booted_session: "ses_mac", machine_key: "mk-mac",
+    });
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk-mac", last_seen_at: NOW });
+    const session = { id: "ses_mac", state: "ready", label: `adem:${MAC}`, ready_at: new Date(NOW - 30_000).toISOString(), created_at: new Date(NOW - MINUTE).toISOString() };
+    const network = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith("https://nomac.app/")) return network(input, init);
+      const call = `${init?.method ?? "GET"} ${url.replace("https://nomac.app/api/v1", "")}`;
+      if (call === "GET /mac/sessions/ses_mac") {
+        sessionReads.push(clock);
+        return new Response(JSON.stringify({ session }), { status: 200 });
+      }
+      if (call.startsWith("GET /mac/sessions?")) return new Response(JSON.stringify({ sessions: [session] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 });
+    });
+  });
+
+  // Every app on every device polls the same Mac: a client's read must never cost a provider call per poll,
+  // and it must never be what starts the charge (only the tick and the webhook move a Mac to running).
+  it("a client's read asks NoMac at most once a Mac in 10 s and writes nothing; the tick moves it to running and starts its charge", async () => {
+    const background: Promise<unknown>[] = [];
+    const read = async () => {
+      const answer = await handleCloudRequest(new Request(`https://directory.test/cloud/instances/${MAC}`, { headers: { authorization: `Bearer ${tokens[OWNER]}` } }), harness.env, (work) => { background.push(work); });
+      await Promise.all(background);
+      expect(answer.status).toBe(200);
+      return ((await answer.json()) as { status: string }).status;
+    };
+
+    expect(await read()).toBe("starting");
+    clock += 5_000;
+    expect(await read()).toBe("starting");
+    expect(sessionReads).toEqual([NOW]);
+    expect(computer(harness, MAC)).toMatchObject({ status: "starting", awake_since: null, mac_state: "starting" });
+    // Past the hold: one more read, still no write.
+    clock += 6_000;
+    expect(await read()).toBe("starting");
+    expect(sessionReads).toEqual([NOW, NOW + 11_000]);
+    expect(computer(harness, MAC)).toMatchObject({ status: "starting", awake_since: null });
+
+    // The tick: running from its own time, the charge from there.
+    clock = NOW + MINUTE;
+    harness.exec("update machines set last_seen_at = ? where machine_key = 'mk-mac'", clock);
+    await harness.tick();
+    expect(computer(harness, MAC)).toMatchObject({ status: "running", awake_since: NOW + MINUTE, mac_state: "running" });
   });
 });

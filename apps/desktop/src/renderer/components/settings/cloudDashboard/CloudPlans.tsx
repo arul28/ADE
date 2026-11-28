@@ -35,6 +35,7 @@ import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { cloudHoursOnSizesLine, cloudTiers } from "../../../../shared/cloudTiers";
 import { cloudAdsViewOf, cloudPricingOf } from "../../../../shared/cloudAdPriceWords";
+import { cloudMacOfferOf, cloudMacPlanLine, cloudMacPlanShort } from "../../../../shared/cloudMac";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { CloudPhoneProviderPick } from "./CloudPhoneProviderPick";
 import { SettingsToggle } from "../primitives/SettingsControls";
@@ -163,6 +164,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // The ADE Cloud iPhone shows only to an account that has it (`on`); everyone else sees nothing of it.
   // It draws from the credits, so no plan lists minutes of its own.
   const phoneOn = account.phone?.access === "on";
+  // The DAEX Cloud Mac shows only while the catalog offers it.
+  const macOffer = cloudMacOfferOf(account);
   const currentExtraCents = cloudExtraHourCentsOf(current, catalog);
   // An account from before the new plans keeps its old hours until its
   // period ends; the table lists the new ones, so the plan's column says so.
@@ -348,7 +351,11 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
               until,
               moreComputers: isNext ? more : 0,
             });
-            const onSizes = cloudHoursOnSizesLine(column.facts.includedMilli, tiers, view);
+            // One time line: a Medium both ways, then the Mac short (the full Mac line is the title).
+            const onMedium = cloudHoursOnSizesLine(column.facts.includedMilli, tiers, view);
+            const onMac = macOffer ? cloudMacPlanShort(macOffer, column.facts.includedMilli, view) : null;
+            const onSizes = [onMedium, onMac].filter(Boolean).join(" · ");
+            const onSizesTitle = [onMedium, macOffer ? cloudMacPlanLine(macOffer, column.facts.includedMilli, view) : null].filter(Boolean).join(" · ");
             return (
               <article
                 key={column.id}
@@ -376,7 +383,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${words.num(column.facts.includedMilli)} ${noun} from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{words.num(oldTerms.hoursMilli)}</b> credits until {until}</span></li>
                   ) : (
-                    <li title={onSizes || undefined}><Clock size={13} /><span><b className="kit-num" data-face="ui">{words.num(column.facts.includedMilli)}</b> credits a month{onSizes ? <small className="adecd-plancard-sizes">{onSizes}</small> : null}</span></li>
+                    <li title={onSizesTitle || undefined}><Clock size={13} /><span><b className="kit-num" data-face="ui">{words.num(column.facts.includedMilli)}</b> credits a month{onSizes ? <small className="adecd-plancard-sizes">{onSizes}</small> : null}</span></li>
                   )}
                   {cents == null ? (
                     <li data-quiet="true" title={column.id === "free" && priced ? `Bigger computers and the iPhone stop until your credits reset; ${freeSmallWithAds ? "Small computers keep working in chats with ads" : "so do Small computers"}` : "Bigger computers and the iPhone stop until your credits reset; Small computers keep working"}><Lightning size={13} /><span>No {words.extra.toLowerCase()}</span></li>

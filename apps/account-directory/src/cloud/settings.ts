@@ -49,6 +49,13 @@ export const CLOUD_SETTINGS = {
   ad_discount_pct: ["20", "0", "5", "10", "15", "25", "30", "35", "40", "45", "50"],
   /** How long a message sent or a finished reply keeps a computer at the ad price, in minutes. The first value is the start (60). */
   ad_window_minutes: ["60", "5", "10", "15", "30", "45", "90", "120", "240", "480", "720", "1440"],
+  /**
+   * The DAEX Cloud Mac (`macSwitch.ts`): nobody, the owner's testers by email
+   * (`cloud_mac_testers`), or everyone. Held under the NoMac key: no key, off.
+   */
+  mac_computers: ["off", "testers", "all"],
+  /** Minutes with no work before a Mac stops (it keeps only its drive). */
+  mac_idle_stop_minutes: ["5", "3", "10", "15"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

@@ -11,6 +11,18 @@ import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudLaneJobIsLive, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
 import { cloudAdsViewOf, cloudComputerPriceOf, cloudFullPriceReasonLine, cloudPriceNowText, cloudPricingOf } from "../../../shared/cloudAdPriceWords";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import {
+  CLOUD_COMPUTER_UNAVAILABLE_LABEL,
+  CLOUD_MAC_PHASE_LABEL,
+  cloudMacDriveText,
+  cloudMacOfferOf,
+  cloudMacPhaseOf,
+  cloudMacPricePerMinute,
+  cloudMacRateText,
+  cloudMacSentence,
+  isCloudMacMachine,
+  type CloudMacPhase,
+} from "../../../shared/cloudMac";
 import { cloudTierOfMachine, cloudTierRateLabel, cloudTiers } from "../../../shared/cloudTiers";
 import { formatAgo } from "../../lib/format";
 import { usageLeftLevel } from "../usage/usageDesign";
@@ -49,9 +61,18 @@ export function cloudLanePower(input: {
   resting: boolean;
   /** The chat's connection to the computer is up. */
   online: boolean;
+  /** A DAEX Cloud Mac's phase (`LaneComputer.macPhase`): a start that failed or a lost drive needs a look. */
+  macPhase?: CloudMacPhase | null;
+  /** The server can't wake it now (`computer_unavailable`): no wake to offer. */
+  unavailable?: boolean;
 }): CloudLanePower {
   if (input.waking) return "waking";
   if (input.online) return "awake";
+  if (input.unavailable) return "trouble";
+  if (input.macPhase === "start_failed" || input.macPhase === "drive_lost") return "trouble";
+  if (input.macPhase === "queued" || input.macPhase === "starting") return "waking";
+  // A Mac saving its drive reads stopped on the server: it is still stopping, so no Start yet.
+  if (input.macPhase === "stopping") return "stopping";
   if (input.resting) return input.state === "starting" ? "waking" : input.state === "stopping" ? "stopping" : "asleep";
   return cloudLanePowerOfState(input.state);
 }
@@ -70,6 +91,26 @@ export function cloudLanePowerOfState(state: CloudMachineState): CloudLanePower 
       return "stopping";
     default:
       return "trouble";
+  }
+}
+
+/**
+ * The mark's words. A DAEX Cloud Mac never sleeps: it stops (only its drive is
+ * kept) and starts again, or waits in the queue for a free Mac.
+ */
+export function cloudLanePowerText(power: CloudLanePower, macPhase?: CloudMacPhase | null): string {
+  if (!macPhase) return CLOUD_LANE_POWER_TEXT[power];
+  switch (power) {
+    case "awake":
+      return CLOUD_MAC_PHASE_LABEL.running;
+    case "waking":
+      return macPhase === "queued" ? CLOUD_MAC_PHASE_LABEL.queued : CLOUD_MAC_PHASE_LABEL.starting;
+    case "stopping":
+      return CLOUD_MAC_PHASE_LABEL.stopping;
+    case "asleep":
+      return CLOUD_MAC_PHASE_LABEL.stopped;
+    default:
+      return macPhase === "start_failed" || macPhase === "drive_lost" ? CLOUD_MAC_PHASE_LABEL[macPhase] : CLOUD_LANE_POWER_TEXT.trouble;
   }
 }
 
@@ -123,8 +164,12 @@ export function cloudLaneStatusModel(input: {
   now: number;
   /** The lane's newest size change or move (`cloudLaneJobFor`), or null. */
   job?: CloudLaneJobSnapshot | null;
+  /** A stopped Mac's first stop: say once more what a stop keeps (`useCloudMacFirstStopLine`). */
+  macFirstStop?: boolean;
 }): CloudLaneStatusModel {
   const { power, box, status, account, now } = input;
+  const mac = isCloudMacMachine(box) ? box : null;
+  const macPhase = mac ? cloudMacPhaseOf(mac.mac, mac.status) : null;
   const words = cloudUnitWords(account);
   const priced = cloudPricingOf(account) != null;
   // A change that runs: the computer won't sleep on its idle clock (the change
@@ -136,12 +181,20 @@ export function cloudLaneStatusModel(input: {
     ? { key: "job", text: presented.title, detail: presented.stepLine, tone: failed ? "warn" : null, hint: presented.stepLine ?? undefined }
     : null;
   const awakeSince = power === "awake" ? status?.awakeSince ?? box?.awakeSinceMs ?? null : null;
+  const powerWord = box?.unavailable ? CLOUD_COMPUTER_UNAVAILABLE_LABEL : cloudLanePowerText(power, macPhase);
   const stateText = power === "awake" && awakeSince != null && awakeSince <= now
-    ? `Awake · up ${formatUptime(now - awakeSince)}`
-    : power === "waking" ? "Waking…" : CLOUD_LANE_POWER_TEXT[power];
+    ? `${powerWord} · up ${formatUptime(now - awakeSince)}`
+    : power === "waking" ? `${powerWord}…` : powerWord;
 
   let sizeText: string | null = null;
-  if (box?.resources) {
+  const macOffer = mac ? cloudMacOfferOf(account) : null;
+  if (mac) {
+    // One shape, by the minute; the rate is the catalog's while it offers a Mac.
+    const shape = mac.resources ? `${mac.resources.cpu} CPU · ${mac.resources.memoryGb} GB` : null;
+    // Under Pricing v3 the "costs now" line says the price; the size line keeps to the shape.
+    const rate = macOffer && !cloudPricingOf(account) ? capitalizeCloudPhrase(cloudMacRateText(macOffer, words)) : null;
+    sizeText = ["Mac", shape, rate].filter(Boolean).join(" · ");
+  } else if (box?.resources) {
     const tier = cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account)));
     // Under Pricing v3 the "costs now" line says the price (`price` below); the size line keeps to the size.
     const phrase = priced ? null : tier ? cloudTierRateLabel(tier, words) : box.hoursRate != null ? formatCloudHoursRate(box.hoursRate, words) : null;
@@ -153,7 +206,11 @@ export function cloudLaneStatusModel(input: {
   // The provider's own measure when it has one (minutes old), else the computer's last report.
   const limitGb = box?.resources?.diskGb ?? (status?.disk?.limitBytes != null ? status.disk.limitBytes / GB : null);
   const usedGb = status?.disk ? status.disk.usedBytes / GB : box?.diskUsage?.totalGb ?? null;
-  const disk = usedGb != null && limitGb != null && limitGb > 0
+  const macDrive = mac ? cloudMacDriveText(mac.mac) : null;
+  const disk = mac
+    // A Mac's drive, as its last stop saved it: the only part a stop keeps.
+    ? (macDrive ? { text: `Drive ${macDrive}`, tone: null } : null)
+    : usedGb != null && limitGb != null && limitGb > 0
     ? {
         text: `Disk ${gbText(Math.min(usedGb, limitGb))} / ${gbText(limitGb)} GB`,
         tone: usageLeftLevel(Math.max(0, 100 - (usedGb / limitGb) * 100)) ?? null,
@@ -172,6 +229,15 @@ export function cloudLaneStatusModel(input: {
     : null;
 
   const lines: CloudLaneStatusLine[] = [];
+  // The server's sentence for a computer it can't wake now; nothing here can start it.
+  if (box?.unavailable) lines.push({ key: "unavailable", text: box.unavailable, tone: "warn" });
+  if (mac && macPhase) {
+    // The server's sentence for where the Mac is; failures say what to do.
+    const sentence = cloudMacSentence(mac.mac);
+    const failed = macPhase === "start_failed" || macPhase === "drive_lost";
+    if (sentence && macPhase !== "running") lines.push({ key: "mac", text: sentence, tone: failed ? "warn" : null });
+    if (macPhase === "stopped" && input.macFirstStop && macOffer?.keeps) lines.push({ key: "mac-keeps", text: macOffer.keeps, tone: null });
+  }
   const work = box?.laneWork ?? null;
   if (work) {
     const checked = `Checked ${formatAgo(work.checkedAt, now)}`;
@@ -189,7 +255,9 @@ export function cloudLaneStatusModel(input: {
       const minutes = Math.round((activity.sleepsAt - now) / 60_000);
       lines.push({
         key: "activity",
-        text: minutes >= 1 ? `Idle · sleeps in ~${minutes} min if nothing starts` : "Idle · going to sleep soon",
+        text: mac
+          ? (minutes >= 1 ? `Idle · stops in ~${minutes} min if nothing starts` : "Idle · stopping soon")
+          : minutes >= 1 ? `Idle · sleeps in ~${minutes} min if nothing starts` : "Idle · going to sleep soon",
         tone: null,
       });
     }
@@ -200,25 +268,28 @@ export function cloudLaneStatusModel(input: {
     if (status.restarts != null && status.restarts > 0) {
       lines.push({
         key: "restarts",
-        text: status.restarts === 1 ? "Restarted once since it woke" : `Restarted ${status.restarts} times since it woke`,
+        text: status.restarts === 1 ? `Restarted once since it ${mac ? "started" : "woke"}` : `Restarted ${status.restarts} times since it ${mac ? "started" : "woke"}`,
         tone: "warn",
       });
     }
     if (status.outOfMemory || status.memory === "critical") {
-      lines.push({ key: "memory", text: "It ran out of memory", tone: "crit", hint: "A bigger size has more memory." });
+      lines.push({ key: "memory", text: "It ran out of memory", tone: "crit", hint: mac ? undefined : "A bigger size has more memory." });
     } else if (status.memory === "pressure") {
-      lines.push({ key: "memory", text: "Memory is running low", tone: "warn", hint: "A bigger size has more memory." });
+      lines.push({ key: "memory", text: "Memory is running low", tone: "warn", hint: mac ? undefined : "A bigger size has more memory." });
     }
   }
   // Pricing v3: what this computer costs now, first among the lines, and why it has the full price while ads are on.
-  const price = box ? cloudComputerPriceOf(account, box.instanceId) : null;
+  const listed = box ? cloudComputerPriceOf(account, box.instanceId) : null;
+  // A Mac's price comes an hour from the server; it reads a minute.
+  const price = listed && mac ? cloudMacPricePerMinute(listed) : listed;
   if (price) {
     const view = cloudAdsViewOf(account);
     const reason = cloudFullPriceReasonLine(price, view);
+    const priceText = cloudPriceNowText(price, view, words, mac ? "minute" : "hour");
     const priceLines: CloudLaneStatusLine[] = power === "asleep"
-      ? [{ key: "price", text: "Uses nothing while asleep", tone: null, hint: cloudPriceNowText(price, view, words) }]
+      ? [{ key: "price", text: mac ? "Uses nothing while stopped" : "Uses nothing while asleep", tone: null, hint: priceText }]
       : [
-          { key: "price", text: cloudPriceNowText(price, view, words), tone: null },
+          { key: "price", text: priceText, tone: null },
           ...(reason ? [{ key: "price-reason", text: reason, tone: null }] : []),
         ];
     lines.unshift(...priceLines);

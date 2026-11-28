@@ -1,4 +1,4 @@
-import { CLOUD_CREDIT_SCALE_V3, type CloudCatalog, type CloudNextPlan, type CloudPaidPlanId, type CloudPlanFacts, type CloudPlanId, type CloudTierId } from "./contract";
+import { CLOUD_CREDIT_SCALE_V3, CLOUD_MAC_SHAPE, type CloudCatalog, type CloudMacOffer, type CloudNextPlan, type CloudPaidPlanId, type CloudPlanFacts, type CloudPlanId, type CloudTierId } from "./contract";
 
 export type { CloudPaidPlanId };
 
@@ -9,7 +9,8 @@ export type { CloudPaidPlanId };
  * money is integer millionths of a dollar ("micros").
  */
 
-export type CloudComputerType = "default" | "vm";
+/** `mac`: a DAEX Cloud Mac (`macProvider.ts`), never in the catalog's `sizes`. */
+export type CloudComputerType = "default" | "vm" | "mac";
 
 export type CloudSize = {
   id: string;
@@ -125,8 +126,40 @@ export const usesHours = (multiplierMilli: number): boolean => multiplierMilli >
 /** The most disk any size grows to: what an older build's plan disk is built from (`catalogPlan`). */
 const LARGEST_DISK_MAX_GB = Math.max(...CLOUD_SIZES.map((size) => size.diskMaxGb));
 
+/** What a Mac minute costs ADE: $0.60 an hour, by the whole minute. */
+export const MAC_COST_MICROS_PER_MINUTE = 10_000;
+
+/**
+ * The Mac's one size: valid for a computer (the create path, the meter), never
+ * listed (an app learns of a Mac from the catalog's `mac`, `cloudMacOffer`).
+ */
+const MAC_CLOUD_SIZE: CloudSize = { id: "mac", type: "mac", cpu: CLOUD_MAC_SHAPE.cpu, memoryGb: CLOUD_MAC_SHAPE.memoryGb, multiplierMilli: MAC_MILLI_PER_MINUTE * 60, tier: null, label: "Mac", diskMaxGb: CLOUD_MAC_SHAPE.driveGb };
+
 export function cloudSizeFor(type: unknown, cpu: unknown, memoryGb: unknown): CloudSize | null {
+  if (type === "mac") return cpu === MAC_CLOUD_SIZE.cpu && memoryGb === MAC_CLOUD_SIZE.memoryGb ? MAC_CLOUD_SIZE : null;
   return CLOUD_SIZES.find((size) => size.type === type && size.cpu === cpu && size.memoryGb === memoryGb) ?? null;
+}
+
+
+/**
+ * `CloudCatalog.mac`: sent only while the `mac_computers` switch reaches the
+ * account (`macReaches`). `stopAfterIdleMinutes` is the server's setting.
+ * `adDiscountPct`: the account's ad discount while Pricing v3 reaches it
+ * (`V3CatalogTerms`), which adds the ad price beside the full one; null before.
+ */
+export function cloudMacOffer(stopAfterIdleMinutes: number, adDiscountPct: number | null = null): CloudMacOffer {
+  return {
+    label: "Mac",
+    cpu: CLOUD_MAC_SHAPE.cpu,
+    memoryGb: CLOUD_MAC_SHAPE.memoryGb,
+    driveGb: CLOUD_MAC_SHAPE.driveGb,
+    creditMilliPerMinute: MAC_MILLI_PER_MINUTE,
+    ...(adDiscountPct != null ? { adCreditMilliPerMinute: adRateMilli(MAC_MILLI_PER_MINUTE, adDiscountPct) } : {}),
+    stopAfterIdleMinutes,
+    startSeconds: { min: 20, max: 45 },
+    summary: `macOS with Xcode, ${CLOUD_MAC_SHAPE.cpu} CPU and ${CLOUD_MAC_SHAPE.memoryGb} GB, for Apple builds and the Simulator. Billed by the minute while it runs.`,
+    keeps: `When work stops, the Mac stops after ${stopAfterIdleMinutes} minutes and keeps its ${CLOUD_MAC_SHAPE.driveGb} GB drive: the lane, its chats, build caches and Simulator data. Programs installed outside the drive and running servers don't stay.`,
+  };
 }
 
 /** One of the four sizes of the main list by its id (`small`…`xlarge`), or null. */
@@ -254,15 +287,17 @@ export function cloudCatalog(
   { smallUsesHours = false, v3 }: { smallUsesHours?: boolean; v3?: V3CatalogTerms } = {},
 ): CloudCatalog {
   return {
-    sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => {
+    // Linux sizes only (the Mac is never in the catalog's `sizes`; it has its own `mac` entry).
+    sizes: CLOUD_SIZES.flatMap(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => {
+      if (type === "mac") return [];
       if (v3) {
         // Pricing v3 (`adPrice.ts`): the full price, and the ad price beside it. Small: 500 on Free
         // while the ad switch reaches the account, free with ads; free on paid plans.
         const full = tier === "small" ? v3.smallFullMilli : v3FullRateMilli(multiplierMilli);
-        return { type, cpu, memoryGb, tier, label, diskMaxGb, multiplierMilli: full, adMultiplierMilli: tier === "small" ? 0 : adRateMilli(full, v3.discountPct) };
+        return [{ type, cpu, memoryGb, tier, label, diskMaxGb, multiplierMilli: full, adMultiplierMilli: tier === "small" ? 0 : adRateMilli(full, v3.discountPct) }];
       }
       // Free's Small with no sponsored cards uses hours (`gravity.ts` `smallUsesNoHours`): clients show and count it so.
-      return { type, cpu, memoryGb, tier, label, diskMaxGb, multiplierMilli: tier === "small" && smallUsesHours ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli };
+      return [{ type, cpu, memoryGb, tier, label, diskMaxGb, multiplierMilli: tier === "small" && smallUsesHours ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli }];
     }),
     plans: {
       free: catalogPlan(CLOUD_PLANS.free),
@@ -296,6 +331,8 @@ export const DISK_COST_MICROS_PER_GB_DAY = Math.round(90_000 / 30);
 /** What `ms` awake at this shape costs the owner, in micros. */
 export function computeCostMicrosFor(ms: number, shape: { type: string; cpu: number; memoryGb: number }): number {
   if (ms <= 0) return 0;
+  // NoMac bills by the minute; a stretch's own rounding to whole minutes is the meter's (`settleStatements`).
+  if (shape.type === "mac") return Math.round((ms * MAC_COST_MICROS_PER_MINUTE) / 60_000);
   const perMonth = (shape.cpu * CPU_MICROS_PER_MONTH + shape.memoryGb * MEMORY_MICROS_PER_GB_MONTH) * (shape.type === "vm" ? FULL_COMPUTER_FACTOR : 1);
   return Math.round((perMonth * ms) / (HOURS_PER_MONTH * 3_600_000));
 }

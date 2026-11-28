@@ -100,6 +100,14 @@ struct LaneMoveSheet: View {
 
   private var openRun: LaneMoveRun? { runs.openRun(source: source) }
 
+  /// The server refuses a move on this lane's computer (a DAEX Cloud Mac): its sentence instead of the places.
+  private var refusedMove: String? {
+    guard source.kind == .cloud || source.kind == .cloudAsleep,
+          let instance = syncPublishes.service.cloudServerInstance(fleetKey: source.fleetKey),
+          !instance.allows("move") else { return nil }
+    return CloudMacWords.unsupportedSentence("move")
+  }
+
   var body: some View {
     NavigationStack {
       List {
@@ -134,7 +142,16 @@ struct LaneMoveSheet: View {
             .adeInspectable("Lanes.Move.Run")
           }
         }
-        content
+        if let refusedMove {
+          Section {
+            Text(refusedMove)
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        } else {
+          content
+        }
       }
       .listStyle(.insetGrouped)
       .scrollContentBackground(.hidden)

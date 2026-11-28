@@ -152,6 +152,12 @@ export function formatCloudStatus(value: unknown): string {
   const iphone = isRecord(status.iphone) && status.iphone.access === "on" ? status.iphone : null;
   const iphonePrice = pricing && isRecord(pricing.iphone) ? pricing.iphone : null;
   if (iphone) rows.push(["iPhone", iphonePrice ? `costs ${priceNowText(iphonePrice)} now` : cloudIphoneText(iphone, words, scale)]);
+  // Only while the server offers this account a Mac (`catalog.mac`); its rate and time left come in the account's words.
+  const mac = isRecord(status.mac) ? status.mac : null;
+  if (mac) {
+    const left = typeof mac.timeLeft === "string" ? ` · ${mac.timeLeft} left on a Mac` : "";
+    rows.push(["Mac", `${String(mac.shape ?? "")} · ${String(mac.rate ?? "")}${left} · starts ${String(mac.startsIn ?? "")} · daex chat create --machine cloud --os mac`]);
+  }
   const computers = isRecord(status.computers) ? status.computers : null;
   // Cloud computers asleep or not, of the plan's limit (an older ADE sends no limit: a count only).
   if (computers) {
@@ -182,11 +188,19 @@ export function formatCloudStatus(value: unknown): string {
     // A computer that never signed in to ADE (its join failed or is waiting
     // for approval) runs no ADE yet: neither "running" nor "up to date" is true.
     const notJoined = "machineKey" in box && !box.machineKey;
+    // A Mac: its own state word (never asleep or waking) and its rate by the minute.
+    const boxMac = isRecord(box.mac) ? box.mac : null;
+    const state = typeof box.unavailable === "string"
+      ? "not available"
+      : boxMac ? String(boxMac.label ?? box.state ?? "").toLowerCase() : String(box.state ?? "");
+    const rate = boxMac
+      ? typeof box.ratePerMinute === "number" ? `${words.count(box.ratePerMinute)} a minute` : "—"
+      : cloudRateText(box.hoursRate, words);
     return [
       lane ? boxName(box) : `(no lane) ${boxName(box)}`,
-      size,
-      computerPrices.has(String(box.instanceId)) ? priceNowText(computerPrices.get(String(box.instanceId))!) : cloudRateText(box.hoursRate, words),
-      notJoined ? `${String(box.state ?? "")}, not joined to ${BRAND.NAME} yet` : String(box.state ?? ""),
+      boxMac ? (size || String(box.sizeLabel ?? "Mac")) : size,
+      computerPrices.has(String(box.instanceId)) ? priceNowText(computerPrices.get(String(box.instanceId))!) : rate,
+      notJoined && !boxMac ? `${state}, not joined to ${BRAND.NAME} yet` : state,
       lane && typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
       notJoined ? "" : cloudUpdateText(box.update),
       typeof box.deletesAt === "string" ? `computer deleted ${box.deletesAt.slice(0, 10)} unless used or kept` : "",
@@ -206,6 +220,16 @@ export function formatCloudStatus(value: unknown): string {
     return cells.map((row) => `  ${row.map((cell, column) => cell.padEnd(widths[column]!)).join("  ").trimEnd()}`);
   };
   lines.push(...table(laneRows));
+  // A Mac's sentence (where it is, why a start failed) and its drive; a computer DAEX can't wake now says why.
+  for (const box of lanes) {
+    if (typeof box.unavailable === "string") lines.push(`  ${boxName(box)}: ${box.unavailable}`);
+    const boxMac = isRecord(box.mac) ? box.mac : null;
+    if (!boxMac || boxMac.phase === "running") continue;
+    const drive = typeof boxMac.drive === "string" && boxMac.phase === "stopped" ? ` Drive ${boxMac.drive}.` : "";
+    if (typeof boxMac.sentence === "string" || drive) lines.push(`  ${boxName(box)}: ${typeof boxMac.sentence === "string" ? boxMac.sentence : ""}${drive}`.trimEnd());
+  }
+  // What a Mac's stop keeps, once under the lanes while the account has one.
+  if (mac && lanes.some((box) => isRecord(box.mac)) && typeof mac.keeps === "string") lines.push(`  ${mac.keeps}`);
   // A computer whose disk is full and can't grow: the reason and the way out
   // (`cloudDiskFullMessage`), so an agent can explain why its turns stop.
   for (const box of lanes) {
@@ -234,7 +258,7 @@ export function formatCloudStatus(value: unknown): string {
       `${String(plan.label ?? plan.id)}${plan.current === true ? " (yours)" : ""}`,
       typeof plan.priceUsdMonth === "number" ? `${dollarsText(plan.priceUsdMonth * 100)}` : "?",
       typeof plan.computers === "number" ? `${plan.computers} computers` : "",
-      `${creditsText(plan.hours)} credits${typeof plan.hoursOnSizes === "string" && plan.hoursOnSizes ? ` (${plan.hoursOnSizes})` : ""}`,
+      `${creditsText(plan.hours)} credits${typeof plan.hoursOnSizes === "string" && plan.hoursOnSizes ? ` (${plan.hoursOnSizes}${typeof plan.macTime === "string" ? ` · ${plan.macTime}` : ""})` : ""}`,
       `${words.extra.toLowerCase()}: ${typeof plan.extraHourCents === "number" ? pricing ? words.extraPrice(plan.extraHourCents) : `${plan.extraHourCents}¢ each` : "none"}`,
       plan.outsideAgents === false ? "no outside agents" : "outside agents ok",
     ])));

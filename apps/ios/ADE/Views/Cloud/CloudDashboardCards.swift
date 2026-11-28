@@ -854,20 +854,22 @@ struct CloudMachineRow: View {
   /// The phone's own read carries what each computer costs now (Pricing v3).
   @ObservedObject private var accountStore = AccountCloudStore.shared
 
-  /// "Medium · 8/h with ads", "Large · 25/h · CLI session" while it is awake
+  /// "Medium · 8/h with ads", "Large · 25/h · CLI session", "Mac · 4/min with ads" while it is awake
   /// under Pricing v3; today's line otherwise (asleep: the state word says it).
   private var line: String {
     let base = cloudMachineLine(machine, tier: tier, now: now, words: words)
     guard machine.isAwake, let adWords = CloudAdPriceWords(accountStore.account),
-          let price = adWords.pricing.computer(machine.instanceId) else { return base }
-    let label = tier?.label ?? machine.size ?? ""
-    let parts = [label, adWords.compactPriceNow(price), adWords.shortReason(price)].compactMap { $0 }.filter { !$0.isEmpty }
+          let listed = adWords.pricing.computer(machine.instanceId) else { return base }
+    // The server lists a Mac's price per hour; a Mac is priced by the minute ("Mac · 4/min with ads").
+    let price = machine.isMac ? CloudMacWords.pricePerMinute(listed) : listed
+    let label = machine.isMac ? "Mac" : tier?.label ?? machine.size ?? ""
+    let parts = [label, adWords.compactPriceNow(price, unit: machine.isMac ? .minute : .hour), adWords.shortReason(price)].compactMap { $0 }.filter { !$0.isEmpty }
     return parts.joined(separator: " · ")
   }
 
   var body: some View {
     HStack(spacing: 12) {
-      Image(systemName: tier?.symbol ?? "cloud")
+      Image(systemName: machine.isMac ? "apple.logo" : tier?.symbol ?? "cloud")
         .font(.system(size: 13, weight: .medium))
         .foregroundStyle(ADEColor.textSecondary)
         .frame(width: 28, height: 28)
@@ -941,6 +943,11 @@ struct CloudSizesCard: View {
             if index > 0 { ADESettingsHairline() }
             row(tier)
           }
+          // The DAEX Cloud Mac, while the catalog offers one, then the iPhone: each priced like a size.
+          if let offer = account.macOffer {
+            ADESettingsHairline()
+            macRow(offer)
+          }
           // Pricing v3: the iPhone's price lives here too, while the account has the iPhone.
           if account.phoneOn, let adWords = CloudAdPriceWords(account), let rates = account.catalog?.phone {
             ADESettingsHairline()
@@ -949,6 +956,51 @@ struct CloudSizesCard: View {
         }
       }
     }
+  }
+
+  /// The DAEX Cloud Mac beside the sizes, only while the catalog offers one:
+  /// its one shape, its price (both prices under Pricing v3), and the credits
+  /// left (plan and invites) as time on it at the price paid now.
+  private func macRow(_ offer: CloudMacOffer) -> some View {
+    let adWords = CloudAdPriceWords(account)
+    return HStack(alignment: .center, spacing: 12) {
+      Image(systemName: "apple.logo")
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(CloudBrandColor.mark)
+        .frame(width: 28, height: 28)
+        .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+      VStack(alignment: .leading, spacing: 3) {
+        Text(CloudMacWords.name)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+        Text(CloudMacWords.shapeText(offer))
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textSecondary)
+        Text(adWords != nil ? CloudMacWords.rateText(offer, words: words, ad: adWords) : "Uses \(CloudMacWords.rateText(offer, words: words)) · starts \(CloudMacWords.startWords)")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 8)
+      VStack(alignment: .trailing, spacing: 0) {
+        Text(CloudMacWords.timeAt(offer, leftMilli: leftMilli, ad: adWords))
+          .font(.system(size: adWords != nil ? 24 : 20, weight: .semibold))
+          .monospacedDigit()
+          .foregroundStyle(CloudBrandColor.mark)
+          .lineLimit(1)
+          .minimumScaleFactor(0.6)
+        Text("left on it")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .padding(.horizontal, ADEKit.inset)
+    .padding(.vertical, 11)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityHint(offer.summary ?? CloudMacWords.name)
   }
 
   private func facts(_ tier: CloudPhoneTier) -> String {

@@ -65,6 +65,10 @@ import {
   CLOUD_OUTSIDE_AGENT_FREE_CODE,
   CLOUD_OUTSIDE_AGENT_FREE_MESSAGE,
   CLOUD_PLAN_PAST_DUE_SENTENCE,
+  CLOUD_COMPUTER_UNAVAILABLE_SENTENCE,
+  CLOUD_MAC_START_FAILED_SENTENCES,
+  CLOUD_MAC_UNSUPPORTED_SENTENCES,
+  type CloudComputerAction,
   cloudAutoSizeRefusalSentence,
   computerLimitSentence,
   overPlanLimitsMoveSentence,
@@ -103,7 +107,11 @@ import {
   tierOf,
   type CloudSize,
 } from "./plans";
-import { CloudProviderError, cloudErrorMessage, createCloudProvider, type CloudProvider } from "./provider";
+import { CloudProviderError, cloudErrorMessage, type CloudProvider } from "./provider";
+import { createComputerProvider } from "./computerProvider";
+import { templateDriveFor } from "./macDrives";
+import { hiddenMacInstance, isMacRow, touchMac } from "./macProvider";
+import { macIdleStopMinutes, macReaches } from "./macSwitch";
 import {
   accountComputerCount,
   accountComputerCountSql,
@@ -150,6 +158,7 @@ import {
 } from "./store";
 import {
   CloudUpdateInProgressError,
+  MAC_TEMPLATE_VERSION,
   automaticTemplate,
   channelOfComputer,
   channelTemplate,
@@ -264,7 +273,7 @@ async function computerLimitRefusal(env: CloudEnv, account: AccountRow, now: num
   const detail: CloudComputerLimitDetail = {
     planId,
     limit: computerLimitOf(account),
-    total: await accountComputerCount(env, account.user_id, now),
+    total: await accountComputerCount(env, account.user_id, now, null, !await macReaches(env, account.user_id)),
     lanes: await computerLimitLanes(env, account.user_id),
     nextPlan: nextPlanOffer(planId, cloudOffers(env)),
   };
@@ -278,7 +287,7 @@ async function computerLimitRefusal(env: CloudEnv, account: AccountRow, now: num
  * move's source, left out of its count.
  */
 async function computerLimitCheck(env: CloudEnv, account: AccountRow, now: number, moveFrom: string | null = null): Promise<Refused | null> {
-  return await accountComputerCount(env, account.user_id, now, moveFrom) >= computerLimitOf(account) ? computerLimitRefusal(env, account, now) : null;
+  return await accountComputerCount(env, account.user_id, now, moveFrom, !await macReaches(env, account.user_id)) >= computerLimitOf(account) ? computerLimitRefusal(env, account, now) : null;
 }
 
 /*
@@ -435,9 +444,9 @@ const shortText = (value: unknown, max: number): string | null => {
 /** A computer's name, as the dashboard, the machine list and the provider show it: control and format characters out (`boundedDisplayText`). */
 const computerName = (value: unknown): string | null => boundedDisplayText(value, 60);
 
-function providerFor(env: CloudEnv): CloudProvider | null {
-  const key = env.AGENT37_API_KEY?.trim();
-  return key ? createCloudProvider(key) : null;
+/** The one provider every route holds: Agent 37 for Linux, NoMac for a Mac, by the computer (`createComputerProvider`). */
+function providerFor(env: CloudEnv, waitUntil?: CloudWaitUntil): CloudProvider | null {
+  return createComputerProvider(env, fetch, { waitUntil });
 }
 
 /** Runs a provider call; its failure becomes the plain sentence the client shows. */
@@ -518,6 +527,19 @@ async function blockedNow(env: CloudEnv, userId: string): Promise<Response | nul
   return await isCloudBlocked(env, userId) ? accountBlocked() : null;
 }
 
+/** The instance routes a Mac refuses (`mac_unsupported`), each with the action it names. */
+const MAC_REFUSED_ROUTES: Readonly<Record<string, CloudComputerAction>> = {
+  "POST resize": "resize",
+  "POST fork": "copy",
+  "POST copy": "copy",
+  "POST move": "move",
+  "POST update": "update",
+  "POST backups": "backup",
+  "POST signed-url": "signed_url",
+  "POST public-ports": "public_ports",
+  "PUT auto-sleep": "auto_sleep",
+};
+
 /** The instance actions that start, restart or wake the computer. */
 const WAKING_ACTIONS: ReadonlySet<string> = new Set(["POST start", "POST update", "POST resize", "POST move", "POST free"]);
 
@@ -576,7 +598,8 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
 }): Promise<{ ok: true; pendingId: string } | ({ ok: false } & Refused) | { ok: false; response: Response; refusal: null } | { ok: false; replay: true }> {
   const pendingId = newPendingId();
   const cutoff = args.now - PENDING_TIMEOUT_MS;
-  const count = accountComputerCountSql("?", { moveFrom: args.moveFromInstanceId, cutoff });
+  const hideMacs = !await macReaches(env, account.user_id);
+  const count = accountComputerCountSql("?", { moveFrom: args.moveFromInstanceId, cutoff, hideMacs });
   // Free's Small uses hours while the account shows no sponsored cards (`gravity.ts` `smallUsesNoHours`).
   const rate = args.size.tier === "small" ? rateMilliFor(args.size, await smallUsesNoHours(env, account)) : args.size.multiplierMilli;
   const result = await env.DB.prepare(`
@@ -613,7 +636,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     reportAwakeCap(account.user_id, "create", awake);
     return { ok: false, ...tooManyAwake() };
   }
-  if (await accountComputerCount(env, account.user_id, args.now, args.moveFromInstanceId) >= computerLimitOf(account)) {
+  if (await accountComputerCount(env, account.user_id, args.now, args.moveFromInstanceId, hideMacs) >= computerLimitOf(account)) {
     return { ok: false, ...await computerLimitRefusal(env, account, args.now) };
   }
   // What's left: the computer to move started another move meanwhile.
@@ -725,6 +748,12 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = cloudSizeFor(body.type, resources?.cpu, resources?.memory);
   if (!size) return refused(badRequest("That size isn't one DAEX Cloud offers."));
+  // A Mac comes only from the server launcher's Mac lane (it checked the switch): a bare create, a move or a copy can't make one.
+  if (size.type === "mac" && !extras.mac) {
+    return refused(await macReaches(env, userId)
+      ? fail("mac_unsupported", CLOUD_MAC_UNSUPPORTED_SENTENCES.machine_launch, 409, { action: "machine_launch" })
+      : badRequest("That size isn't one DAEX Cloud offers."));
+  }
   const name = computerName(body.name) ?? "DAEX computer";
   const clientMetadata = clientMetadataOf(body.metadata);
   const requestedEnv = stringMap(body.env, MAX_ENV_ENTRIES);
@@ -755,8 +784,9 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   }
 
   const targets = await readUpdateTargets(env);
-  const templateVersion = channelTemplate(targets, channel);
-  if (!templateVersion) {
+  // A Mac has no image: its drive brings its own DAEX, so no Linux template is needed.
+  const templateVersion = size.type === "mac" ? MAC_TEMPLATE_VERSION : channelTemplate(targets, channel);
+  if (!templateVersion || (size.type === "mac" && !await templateDriveFor(env, { channel }))) {
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
     return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
   }
@@ -785,7 +815,8 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   if (over) return refused(refuse(over));
 
   // A move carries the old computer's disk; a plain create starts at the smallest, or at its repository's setup disk.
-  let diskGb = setupStartDiskGb(size, extras.setupDiskGb);
+  // A Mac's drive is its own fixed size (`CLOUD_MAC_SHAPE`), outside the plan's disk.
+  let diskGb = size.type === "mac" ? size.diskMaxGb : setupStartDiskGb(size, extras.setupDiskGb);
   let moveFromInstanceId: string | null = null;
   let lane = laneFactsOf(metadata);
   if (isMove) {
@@ -836,7 +867,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     if (isOutsideAgentMetadata(clientMetadata)) await noteOutsideAgentWork(env as GravityEnv, { instance_id: instance.id, user_id: userId }, Date.now());
     if (firstProof && adRate != null) await proveFirstMessage(env as GravityEnv, account, instance.id, firstProof, Date.now());
     track({ action, tier: tierOf(size) });
-    return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets) };
+    return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null, provider: size.type === "mac" ? "nomac" : null }, targets) };
   } catch (error) {
     if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     if (error instanceof CloudProviderError && (error.code === "not_found" || error.code === "invalid_request")) {
@@ -1559,6 +1590,8 @@ async function handleTemplate(env: CloudEnv, provider: CloudProvider): Promise<R
 
 async function handleList(env: CloudEnv, userId: string, provider: CloudProvider): Promise<Response> {
   const [rows, targets] = await Promise.all([listComputers(env, userId), readUpdateTargets(env)]);
+  // A Mac the switch doesn't reach reads as a plain stopped computer whose wake answers one sentence (`hiddenMacInstance`).
+  const macHidden = rows.some(isMacRow) && !await macReaches(env, userId);
   // The provider list is kept a few seconds (`instanceListCache.ts`), except right after this account's rows changed.
   const changedSince = Date.now() - INSTANCE_LIST_TTL_S * 1000;
   const fresh = rows.some((row) => isPendingId(row.instance_id) || row.created_at > changedSince || row.status_changed_at > changedSince);
@@ -1597,7 +1630,11 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
   return json({
     data: all
       .filter((instance) => owned.has(instance.id))
-      .map((instance) => withUseFacts(withUpdateFacts(instance, rowById.get(instance.id), targets), rowById.get(instance.id))),
+      .map((instance) => {
+        const row = rowById.get(instance.id);
+        if (macHidden && row && isMacRow(row)) return hiddenMacInstance(row);
+        return withUseFacts(withUpdateFacts(instance, row, targets), row);
+      }),
   });
 }
 
@@ -1669,7 +1706,8 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     // The message queue reads the features (`chatWakeFor`). Every report replaces them: an older image sends none.
     await env.DB.prepare("update cloud_computers set ade_version = coalesce(?, ade_version), ade_version_at = ?, ade_features = ? where instance_id = ?")
       .bind(adeVersion, now, featuresOf(body.features), computer.instance_id).run();
-    return json({ ok: true, sleepWhenIdle });
+    // A Mac stops when it rests, after the server's own minutes (`mac_idle_stop_minutes`); Linux keeps the brain's 3.
+    return json({ ok: true, sleepWhenIdle, ...(isMacRow(computer) ? { idleMinutes: await macIdleStopMinutes(env) } : {}) });
   },
   // The computer's own measure of its disk and its last work, sent at its idle step.
   "POST disk-usage": async (request, env, computer, _provider, { now }) => {
@@ -1786,6 +1824,21 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
   if (!CLOUD_INSTANCE_ID.test(instanceId)) return notFound();
   const computer = await ownedComputer(env, userId, instanceId);
   if (!computer) return notFound();
+  if (isMacRow(computer)) {
+    // The switch doesn't reach this account: a plain stopped computer that can't wake (`hiddenMacInstance`); it can
+    // still be deleted. Its drive stays under the cleanup clock.
+    if (!await macReaches(env, userId)) {
+      if (action === undefined && request.method === "GET") return json(hiddenMacInstance(computer));
+      if (action === undefined && request.method === "DELETE") return handleDelete(request, env, computer, provider, ctx);
+      return fail("computer_unavailable", CLOUD_COMPUTER_UNAVAILABLE_SENTENCE, 409);
+    }
+    const refusedAction = action === undefined ? null : MAC_REFUSED_ROUTES[`${request.method} ${action}`];
+    if (refusedAction) return fail("mac_unsupported", CLOUD_MAC_UNSUPPORTED_SENTENCES[refusedAction], 409, { action: refusedAction });
+    // A drive the provider deleted: nothing can start on it.
+    if (computer.mac_start_failed === "drive_lost" && action !== undefined && WAKING_ACTIONS.has(`${request.method} ${action}`)) {
+      return fail("mac_unsupported", CLOUD_MAC_START_FAILED_SENTENCES.drive_lost, 409, { action: "start" });
+    }
+  }
   if (action === undefined) {
     if (request.method === "GET") {
       try {
@@ -2006,9 +2059,17 @@ function launchDepsFor(request: Request, env: CloudEnv, userId: string, provider
  * calls an idle cleanup's delete off (`cameBack`, `claimDelete`), and marks
  * the use during a save like a person's start (`recordIdleUse`).
  */
-async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: number): Promise<Response> {
+async function handleComputerUse(env: CloudEnv, computer: ComputerRow, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   await env.DB.prepare("update cloud_computers set last_active_at = max(coalesce(last_active_at, 0), ?) where instance_id = ? and deleted_at is null")
     .bind(now, computer.instance_id).run();
+  // A Mac's busy brain: a command keeps NoMac's idle clock from stopping it (`touchMac`). Never holds the answer.
+  if (isMacRow(computer)) {
+    const touch = touchMac(env, computer, now).catch((error: unknown) => {
+      reportCloudFailure("cloud.mac_touch_failed", { message: error instanceof Error ? error.message : "unknown" }, "cloud-mac");
+    });
+    if (waitUntil) waitUntil(touch);
+    else await touch;
+  }
   const refused = await idleUseRefusal(env, computer, now);
   return refused ?? json({ ok: true });
 }
@@ -2037,6 +2098,8 @@ function chatWakeFor(request: Request, env: CloudEnv, userId: string, provider: 
   const planRefusal = async (computer: ComputerRow, outsideAgent: boolean, multiplierMilli = computer.multiplier_milli, message?: { chatId: string; messageId: string }): Promise<Response | null> => {
     const accountBlock = await blockedNow(env, computer.user_id);
     if (accountBlock) return accountBlock;
+    // A Mac the switch doesn't reach: refused before anything is stored, and no other computer is made for the lane.
+    if (isMacRow(computer) && !await macReaches(env, computer.user_id)) return fail("computer_unavailable", CLOUD_COMPUTER_UNAVAILABLE_SENTENCE, 409);
     let { account, blocked } = await wakeBlocker(env, computer, now, multiplierMilli);
     if (blocked && !outsideAgent && message && multiplierMilli === computer.multiplier_milli) {
       await proveWakeMessage(env as GravityEnv, request, account, computer, message.chatId, message.messageId, now, ctx.waitUntil);
@@ -2193,7 +2256,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     return handleCloudWakeRequest(request, env);
   }
 
-  const provider = providerFor(env);
+  const provider = providerFor(env, waitUntil);
   const now = Date.now();
   const ctx: CloudRequestContext = { now, waitUntil };
   // One free plan per computer (`freePlan.ts`) and per GitHub account (`freePlanGithub.ts`): settled before the request's own hours check.
@@ -2256,7 +2319,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     if (!computer) return notFound();
     if (computerRoute.action === "messages") return routeComputerMessages(request, env, computer, computerRoute.rest, now);
     if (computerRoute.rest.length || request.method !== "POST") return notFound();
-    return handleComputerUse(env, computer, now);
+    return handleComputerUse(env, computer, now, waitUntil);
   }
   // Saved chats need no provider: they stay readable when the computer can't be.
   if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {
@@ -2269,7 +2332,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     return routeLanesWithoutComputer(request, path, env, caller.userId, async (laneId, keep) => {
       if (!keep?.backups) await deleteBackupsForLane(env, caller.userId, laneId);
       await deleteSavedChatsForLaneEverywhere(env, caller.userId, laneId, keep?.machineKey ?? null);
-    });
+    }, () => macReaches(env, caller.userId));
   }
   // The account vault's ADE Cloud sign-ins, for the web (status only), and the model list: no provider needed.
   if (path === CLOUD_PATHS.signIns || path.startsWith(`${CLOUD_PATHS.signIns}/`)) return routeAccountSignIns(request, path, env, now);

@@ -129,6 +129,81 @@ activity, so the brain pings its wake URL while work runs (5-minute provider
 timer as backstop); a sleep usually keeps memory but not always; an `update`
 recreates the container (home folder stays).
 
+### The DAEX Cloud Mac (behind a switch)
+
+A Mac (NoMac's, secret `NOMAC_API_KEY`) is a second kind of cloud computer:
+a `cloud_computers` row with `provider = 'nomac'`, `os = 'mac'`, `type =
+'mac'`, id `mac` + 32 hex (Agent 37's are 10 characters). Every caller holds
+one router, `createComputerProvider` (`computerProvider.ts`; the Mac in `macProvider.ts`, its drives in `macDrives.ts`): a Mac's id goes to
+NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
+`CloudMacState`, `CLOUD_MAC_UNSUPPORTED` in `contract.ts`.
+
+- **Switch.** `mac_computers` (`off`/`testers`/`all`, ceiling `MAC_COMPUTERS`,
+  testers through `cloud-owner.mjs mac`; [account test tool](account-test-tool.md)).
+  At `off`, or for an account it doesn't reach, no answer names the Mac: no
+  catalog `mac`, no Mac in a list (a GET answers 404), `os: "mac"` refused
+  like an unknown size, a Mac lane without a computer reads as `default`, and
+  a hidden Mac doesn't count toward the computer limit or as awake. Going
+  back stops a running Mac at the next tick (within a minute; billed by the
+  minute until NoMac shuts it down) and keeps its drive under the idle
+  cleanup clock; no hidden Mac starts again. The person still sees the lane
+  and its chats, with a plain stopped computer (`hiddenMacInstance`): a wake,
+  start or send answers `CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`. When the
+  switch reaches the account again, the lane is a Mac again and its next
+  start continues from its drive.
+- **Launch.** Only through the server launcher (`os: "mac"`): the bare machine
+  launch and `POST /cloud/instances` refuse a Mac (`mac_unsupported`).
+- **Lifecycle.** A start asks NoMac for the label `adem:<id>` with its drive
+  (`reuse`, `require_drive`, the template drive `mac_template_drive_<channel>`
+  for a first start). A full NoMac queue holds the start (`mac_state =
+  'queued'`, an hour at most, retried by the tick). A ready Mac is booted once
+  per session by a NoMac job running `~/drive/.daex/boot.sh` with the join
+  code worked out again from the launch; three failed boots stop the Mac and
+  fail its launch with what to do. A client's read answers with the Mac's last state
+  and writes none: only the tick and the webhook move a Mac to running and
+  start its charge. Whoever polls, one client read of a Mac in 10 s asks
+  NoMac (`mac_read_at`), for 1.5 s at most (NoMac takes seconds at the moment
+  a Mac turns ready); it starts a boot that is due after its answer
+  (`waitUntil`, 20 s), and the tick or the webhook finishes it. The tick also extends a session near
+  its time limit, and stops NoMac sessions no row holds. Webhooks (`mac.*`,
+  `drive.*`) re-read the Mac rather than trust the delivery. A channel with
+  no template drive uses stable's; with none at all, no Mac is made or
+  started (NoMac copies a template only into a new drive).
+- **Test Worker.** A test Worker (`MAC_DIRECTORY_URL`, label prefix
+  `ademdev:`) gives its Mac's boot its own address and Clerk together with
+  `ADE_ALLOW_DEVELOPMENT_CLERK=1` (`testWorkerAccountEnv`); without the
+  override a release build ignores the address and joins production.
+  Production sends none of them, so its Macs use the built-in production
+  server.
+- **Money.** 500 thousandths a minute (`MAC_MILLI_PER_MINUTE`,
+  `multiplier_milli = 30000`), by the whole minute (`stretchChargeEnd`); only
+  `running` meters. Under Pricing v3 a Mac is a computer for the ad price:
+  400 a minute with ads at the default 20% (`computerRatesMilli`), moved by
+  the same `rateMoveStatements`; a move inside a minute charges the whole
+  minutes so far at the old price and the minute begun at the new one. The
+  catalog's `mac.adCreditMilliPerMinute` is sent only under Pricing v3, and
+  `/public/pricing` says `mac: true` only while `mac_computers` is `all` in
+  force (`macMode`). The drive is the
+  Mac's (no plan disk). A kept drive unused for 25 days gets a short upkeep
+  session (DAEX pays). The owner report carries Mac minutes, drive saves and
+  upkeep.
+- **Not on a Mac.** Resize, disk grow, copy, move, update, backups, public
+  ports, signed URLs, auto-sleep settings: `409 mac_unsupported` with the
+  sentence in `CLOUD_MAC_UNSUPPORTED_SENTENCES`.
+- **Clients.** With no catalog `mac`, no client shows a Mac. Desktop and web
+  word it in `shared/cloudMac.ts`; the phone in `CloudMacWords` and
+  `CloudMacPhase` (`CloudPhoneFormat.swift`). Each client hides what the
+  instance's `unsupported` lists, and shows the catalog's provider refusal
+  (`providers`) before a start. A person picks Linux or Mac for a new lane;
+  the saved `cloudDefaultOs` (synced account setting) applies only to a
+  person's own picks on desktop and web. Agents, DAEX MCP, automations and
+  `daex` without `--os mac` start Linux, and an agent's Mac start needs the
+  person's yes. A kept Mac lane continues on a Mac. Settings' Mac pieces are
+  their own components (`CloudMacRowNote`, `CloudMacExplainer`,
+  `CloudMacSizeCard`, `CloudMacRateRow`), each fact in one of them.
+- **Known limit.** The phone doesn't read the synced `cloudDefaultOs`: its
+  pick starts on Linux each time, until that setting reaches iOS.
+
 ## Access
 
 `getCloudProvider` returns DAEX Cloud for a signed-in account (the bearer is the
