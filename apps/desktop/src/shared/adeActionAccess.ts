@@ -21,7 +21,7 @@
  * `"all"` for a whole domain, or the named actions.
  */
 
-import { CLOUD_PHONE_SPEND_ACTIONS, CLOUD_PHONE_USER_ONLY_ACTIONS } from "./cloudPhone";
+import { CLOUD_PHONE_BUILD_ACTIONS, CLOUD_PHONE_SPEND_ACTIONS, CLOUD_PHONE_USER_ONLY_ACTIONS } from "./cloudPhone";
 import { BRAND } from "./brand";
 
 export type AdeActionAccess = "read" | "write";
@@ -622,7 +622,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   cloud_phone: {
     live: "all",
     read: ["getStatus"],
-    write: ["stop", ...CLOUD_PHONE_SPEND_ACTIONS, ...CLOUD_PHONE_USER_ONLY_ACTIONS],
+    write: ["stop", ...CLOUD_PHONE_SPEND_ACTIONS, ...CLOUD_PHONE_BUILD_ACTIONS, ...CLOUD_PHONE_USER_ONLY_ACTIONS],
   },
   ios_simulator: {
     live: "all",

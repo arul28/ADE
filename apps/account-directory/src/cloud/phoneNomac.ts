@@ -143,11 +143,19 @@ async function signPhoneVisitor(secret: string, sessionId: string, visitor: stri
   return `${header}.${payload}.${base64url(mac)}`;
 }
 
+/**
+ * NoMac builds on the phone's own Mac (`app_run`), with the Xcode that host
+ * has: 27.2 when last seen (2026-11-27). NoMac has no build-only tool, so a
+ * build there always has the phone up.
+ */
+const NOMAC_TOOLCHAIN = { xcode: "27.2", sdk: "iOS 27.2", buildsBeforePhone: false } as const;
+
 export const NOMAC_PHONE: PhoneProviderServer = {
   canStart: (env) => Boolean(env.NOMAC_API_KEY?.trim()),
   hasKey: (env) => Boolean(env.NOMAC_API_KEY?.trim()),
   ownsTimeLimit: true,
   stopFailedEvent: "cloud.phone_stop_failed.",
+  toolchain: () => ({ ...NOMAC_TOOLCHAIN }),
 
   async start(env, { userId, label, device, minutes, lastPhoneId, now }) {
     const answer = await nomac(env, "POST", "/api/v1/simulator/sessions", {

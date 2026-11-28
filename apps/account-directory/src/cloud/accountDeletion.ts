@@ -117,6 +117,8 @@ export async function deleteCloudAccount(
       on conflict (user_id, day) do update set cost_micros = max(cloud_revyl_days.cost_micros, excluded.cost_micros), read_at = excluded.read_at
     `).bind(gone, userId),
     env.DB.prepare("delete from cloud_revyl_days where user_id = ?").bind(userId),
+    // Its builds (the one-at-a-time claim and the Revyl limit): their charges are in `cloud_revyl_days` above, so they go.
+    env.DB.prepare("delete from cloud_phone_builds where user_id = ?").bind(userId),
     env.DB.prepare("update cloud_abuse_events set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_owner_alerts set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("delete from cloud_cpu_reports where user_id = ?").bind(userId),

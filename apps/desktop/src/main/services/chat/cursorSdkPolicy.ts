@@ -5,6 +5,7 @@ import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import { isAdeCliCommandWord } from "../../../shared/cliCommandNames";
 import { pathComparisonKey } from "../shared/pathCompare";
+import { shellCommandIsReadOnlyOnPlatform } from "./readOnlyShellCommand";
 import type {
   CursorSdkAgentMode,
   CursorSdkApprovalPolicy,
@@ -32,6 +33,7 @@ const READ_TOOL_NAMES = new Set([
   "semsearch",
   "semantic_search",
   "read_lints",
+  "readlints",
 ]);
 
 const WRITE_TOOL_NAMES = new Set([
@@ -47,14 +49,21 @@ const WRITE_TOOL_NAMES = new Set([
 
 const SHELL_TOOL_NAMES = new Set(["shell", "bash", "terminal", "run_command", "command"]);
 const TASK_TOOL_NAMES = new Set(["task", "subagent", "spawn_agent"]);
-const NETWORK_TOOL_NAMES = new Set(["mcp", "fetch", "web", "web_search"]);
+const NETWORK_TOOL_NAMES = new Set(["mcp", "fetch", "web", "web_search", "websearch", "webfetch", "web_fetch"]);
+
+/** Network tools that only read the web (MCP is not one: its tools may write). */
+const WEB_READ_TOOL_NAMES = new Set(["fetch", "web", "web_search", "websearch", "webfetch", "web_fetch"]);
 
 /**
  * SDK public tool names for ADE ask/plan (read-only). Passed as `AgentOptions.tools`
  * on local create/resume only. `"task"` is omitted so subagents cannot pick up a
- * write-capable toolset of their own.
+ * write-capable toolset of their own. `"shell"` is offered so the agent can read
+ * (`git log`, `ade linear issue ADE-296`); ADE's hook still refuses any command
+ * that is not read-only (`shellCommandIsReadOnly`).
  */
-export const CURSOR_SDK_READONLY_TOOLS = ["read", "grep", "glob", "ls"] as const;
+export const CURSOR_SDK_READONLY_TOOLS = [
+  "read", "grep", "glob", "ls", "semSearch", "readLints", "webSearch", "webFetch", "shell",
+] as const;
 
 export type CursorSdkReadonlyTool = (typeof CURSOR_SDK_READONLY_TOOLS)[number];
 
@@ -769,11 +778,28 @@ export function evaluateCursorSdkHook(args: {
   const normalized = normalizeToolName(args.request.toolName);
   if (args.policy.approvalPolicy === "never") return "allow";
   if (args.policy.approvalPolicy === "read-only") {
-    return args.request.risk === "read" ? "allow" : "deny";
+    if (cursorReadOnlyRequestAllowed(args.request)) return "allow";
+    args.request.reason = args.request.risk === "shell"
+      ? "This chat is read-only (plan/ask): only commands that read can run. Present the plan before making changes."
+      : "This chat is read-only (plan/ask). Present the plan before making changes.";
+    return "deny";
   }
   if (args.request.risk === "read") return "allow";
   if (args.sessionAllowedTools?.has(normalized)) return "allow";
   return "ask";
+}
+
+/**
+ * Whether a read-only (plan/ask) chat may run this call: a read, a web read, or
+ * a shell command that only reads. Everything else is refused.
+ */
+function cursorReadOnlyRequestAllowed(request: CursorSdkHookRequest): boolean {
+  if (request.risk === "read") return true;
+  if (request.risk === "network") return WEB_READ_TOOL_NAMES.has(normalizeToolName(request.toolName));
+  if (request.risk !== "shell") return false;
+  const input = asRecord(request.toolInput);
+  const command = readString(input?.command) ?? readString(input?.cmd);
+  return shellCommandIsReadOnlyOnPlatform(command);
 }
 
 export function denyCursorHook(reason: string): CursorSdkHookDecision {

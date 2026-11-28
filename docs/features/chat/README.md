@@ -1391,9 +1391,9 @@ the same lane, provider, model and account.
 - No history is copied into its transcript; the side-chat role rides the first
   message (`buildSideChatFirstPrompt`) to keep the prompt cache.
 - **Read-only, enforced** per provider (Claude `default` plus a `canUseTool`
-  fence and `PreToolUse` hook, Bash only if `claudeSideChatBashIsReadOnly`;
+  fence and `PreToolUse` hook, a shell command only if it reads (`claudeToolCallAllowedInSideChat`, `shellCommandIsReadOnly`);
   Codex read-only sandbox; OpenCode/Copilot `plan`; Droid `read-only`; Muse
-  `denyUnmatched`; Pi `readOnly`; Kimi `plan` plus an ACP fence).
+  `denyUnmatched`; Pi `readOnly` plus shells that run only reads; Kimi `plan` plus an ACP fence).
   `updateSession` refuses raising access.
 - Hidden from lists unless `includeSideChats`.
 - **Sending to the main chat** only when the user asks: `<send_to_main>…</send_to_main>`

@@ -404,6 +404,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["cloud_phone.launch", CLOUD_PHONE_BUILD_TIMEOUT_MS],
   ["cloud_phone.installApp", CLOUD_PHONE_BUILD_TIMEOUT_MS],
   ["cloud_phone.runTests", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.build", CLOUD_PHONE_BUILD_TIMEOUT_MS],
+  ["cloud_phone.buildLog", CLOUD_PHONE_CALL_TIMEOUT_MS],
   ["cloud_phone.start", CLOUD_PHONE_CALL_TIMEOUT_MS],
   ["cloud_phone.look", CLOUD_PHONE_CALL_TIMEOUT_MS],
   ["cloud_phone.act", CLOUD_PHONE_CALL_TIMEOUT_MS],

@@ -18,6 +18,12 @@ export type CloudPhoneRun<P> = {
   account: string | null;
   /** The agent chat whose call started it; null when a person, a terminal, or a reuse did. */
   chatSessionId: string | null;
+  /**
+   * The command whose start made this phone (a token it passed to the start),
+   * or null: a phone it found already running is no command's. A command
+   * stops only a phone its own start made.
+   */
+  origin: object | null;
   readyAt: number | null;
   lastActivityAt: number | null;
   /** When this brain took it: a status read sent before then can't have seen it. */

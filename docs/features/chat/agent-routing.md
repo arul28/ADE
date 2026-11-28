@@ -528,9 +528,27 @@ the native ones.
 `claudePermissionMode = "plan"` and saves the old mode in
 `claudePrePlanAccessMode`. While in plan, `canUseTool` refuses anything not in
 `CLAUDE_PLAN_MODE_ALLOWED_TOOLS` (`claudeToolGate.ts`, a literal allowlist;
-unknown and MCP tools refused). An approved `ExitPlanMode` returns
+unknown and MCP tools refused), except a `Bash` or `PowerShell` call whose
+command only reads (`claudeToolCallAllowedInPlanMode`). An approved `ExitPlanMode` returns
 `{ behavior: "allow", updatedInput }` and DAEX also calls `setPermissionMode`.
 The stale-session auto-approve branch must not be widened.
+
+**Plan still reads, on every provider.** One check, `shellCommandIsReadOnly`
+(`readOnlyShellCommand.ts`), decides whether a shell command only reads: known
+readers, git and `gh` reads, and DAEX's own reads (`daex linear issue`, `daex prs
+show`, `daex help`, any `--help`; the `ade` alias too), joined by pipes or `&&`,
+with output only to the null device. Anything else is refused, so a wrong
+answer refuses a read rather than letting a write through. Claude applies it in
+the `canUseTool` fence; Codex's plan guard accepts a read once when its
+programs are only the CLI, `gh` and `cd` (on Windows the sandbox user cannot
+open the brain's pipe, so every CLI command must leave the sandbox); Cursor's
+plan/ask gets `shell` behind the read-only hook; Pi gets `bash` (and
+`powershell` on Windows) behind `withPiReadOnlyShell`; OpenCode and Copilot
+answer a plan's shell ask `once` when it reads; Grok, Kimi, Qwen, Devin and
+Antigravity allow an `execute` request once when it reads. Droid and Muse keep
+their own read-only modes. On Windows a Cursor or OpenCode command must read
+under both PowerShell and a POSIX shell (`shellCommandIsReadOnlyOnPlatform`).
+
 
 ## Model selection flow
 

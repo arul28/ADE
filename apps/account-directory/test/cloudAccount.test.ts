@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
+import { revylSpentMicros } from "../src/cloud/phoneRoute";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
@@ -5014,6 +5015,132 @@ describe("ADE Cloud iPhone", () => {
     clock += 12 * 60_000;
     expect(await enforcePhoneAllowance(harness.env, OWNER, clock)).toBe("stopped");
     expect(stops).toHaveLength(1);
+  });
+
+  it("a stop that names a phone stops only that one: a phone another machine started since keeps running", async () => {
+    seedPhoneAccount();
+    seedPhone("ses_live", 2, clock - 2 * 60_000, "live");
+    liveNomacPhone("ses_live", clock - 2 * 60_000, 120);
+    const stops: string[] = [];
+    const network = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? "GET") !== "GET" && String(input instanceof Request ? input.url : input).includes("/simulator/sessions/ses_live")) stops.push(init?.method ?? "");
+      return network(input, init);
+    });
+    const stop = async (query: string) => (await (await harness.send(OWNER, "DELETE", `/cloud/phone${query}`)).json()) as { stopped: boolean };
+
+    expect(await stop("?phoneId=ses_gone")).toEqual({ ok: true, stopped: false });
+    expect(stops).toEqual([]);
+    expect(await stop("?phoneId=ses_live")).toEqual({ ok: true, stopped: true });
+    expect(stops.length).toBeGreaterThan(0);
+  });
+
+  const BUILD_APP = "11111111-1111-4111-8111-111111111111";
+  const BUILD_JOB = "22222222-2222-4222-8222-222222222222";
+  /**
+   * Revyl's build calls for a build with no phone: the workspace, its app, the upload link, the start (`start`:
+   * Revyl's status for it), and the job's status (`job`). Answers the calls made, as `METHOD path`.
+   */
+  function revylBuildNetwork(state: { start: number; job: string; durationMs?: number; recipe?: unknown; statusCode?: number }): string[] {
+    const calls: string[] = [];
+    const network = harness.net.fetchStub;
+    const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith("https://backend.revyl.ai/")) return network(input, init);
+      const path = new URL(url).pathname.replace("/api/v1", "");
+      const method = init?.method ?? "GET";
+      if (path.endsWith("/session-credentials")) return reply(201, { credential: { secret: "rvs_test" } });
+      calls.push(`${method} ${path}`);
+      if (path === "/partner/connections") return reply(201, {});
+      if (path === "/apps/") return reply(201, { id: BUILD_APP });
+      if (path === "/apps/remote/upload-url") return reply(200, { upload_url: "https://uploads.example/put", upload_fields: { key: `org/x/build-sources/${BUILD_APP}/a.tar.gz` } });
+      if (path === "/apps/remote" && method === "POST") {
+        state.recipe = (JSON.parse(String(init?.body ?? "{}")) as { recipe?: unknown }).recipe;
+        return reply(state.start, state.start < 300 ? { build_job_id: BUILD_JOB } : { detail: "no" });
+      }
+      if (path === `/apps/remote/${BUILD_JOB}/status`) return reply(state.statusCode ?? 200, { status: state.job, duration_ms: state.durationMs ?? null });
+      return reply(404, { detail: "Not Found" });
+    });
+    return calls;
+  }
+  const buildCall = (action: string, body: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    harness.send(OWNER, "POST", "/cloud/phone/call", { action, body, providers: ["nomac", "revyl"], ...extra });
+
+  it.each([
+    { name: "a tester's Revyl pick builds with no phone up", pick: "revyl", free: false, creditsOut: false, metalGap: false, builds: [], status: 200, code: null, revyl: true },
+    { name: "a paid plan whose next phone is NoMac's builds on the phone", pick: "auto", free: false, creditsOut: false, metalGap: false, builds: [], status: 409, code: "phone_builds_on_phone", revyl: false },
+    { name: "a paid plan's Metal app goes to Revyl's runners once NoMac lacks Metal", pick: "auto", free: false, creditsOut: false, metalGap: true, builds: ["metal"], status: 200, code: null, revyl: true },
+    { name: "a free plan never reaches Revyl's runners", pick: "auto", free: true, creditsOut: false, metalGap: false, builds: [], status: 409, code: "phone_builds_on_phone", revyl: false },
+    { name: "an account out of credits is refused as its start would be", pick: "revyl", free: false, creditsOut: true, metalGap: false, builds: [], status: 402, code: "phone_credits_out", revyl: false },
+  ] as const)("a build with no phone runs only where a new phone would build first: $name", async ({ pick, free, creditsOut, metalGap, builds, status, code, revyl }) => {
+    seedPhoneTester(pick, "on", { free });
+    if (creditsOut) harness.exec("update cloud_accounts set used_milli = included_milli, extra_enabled = 0 where user_id = ?", OWNER);
+    if (metalGap) harness.insert("cloud_phone_build_gaps", { provider: "nomac", need: "metal", seen_at: clock });
+    const calls = revylBuildNetwork({ start: 200, job: "running" });
+    const answer = await buildCall("build.upload_url", { file_size: 1000 }, { builds });
+    expect(answer.status).toBe(status);
+    if (code) expect(((await answer.json()) as { error: { code: string } }).error.code).toBe(code);
+    expect(calls.includes("POST /apps/remote/upload-url")).toBe(revyl);
+    // No phone was started or kept for it.
+    expect(harness.rows("select phone_id from cloud_phones where user_id = ?", OWNER)).toEqual([]);
+  });
+
+  it("one build at a time per account, freed by its end, and its runner time counts in the plan's Revyl limit", async () => {
+    seedPhoneTester("revyl", "on");
+    const state: { start: number; job: string; durationMs?: number; recipe?: unknown; statusCode?: number } = { start: 200, job: "running" };
+    const calls = revylBuildNetwork(state);
+    const start = () => buildCall("build.start", { source_key: `org/x/build-sources/${BUILD_APP}/a.tar.gz`, path: "apps/ios", cache_key: "proj-1", lockfiles: ["apps/ios/A.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"] });
+    expect((await buildCall("build.upload_url", { file_size: 1000 })).status).toBe(200);
+
+    expect((await start()).status).toBe(200);
+    // ADE's recipe: its image and the project's dependency cache, keyed to the project and saved again only when its lockfile changed.
+    expect(state.recipe).toMatchObject({
+      image: "ios-macos-26-xcode-27.2",
+      caches: [{ key: "spm-proj-1", paths: ["build/SourcePackages"], hash: ["apps/ios/A.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"] }],
+    });
+    // While Revyl runs it, a second start is refused before it reaches Revyl.
+    const second = await start();
+    expect(second.status).toBe(409);
+    expect(((await second.json()) as { error: { code: string } }).error.code).toBe("build_running");
+    expect(calls.filter((call) => call === "POST /apps/remote")).toHaveLength(1);
+
+    // Ten minutes on, Revyl says it ended: its claim ends with what it ran, and the next start claims again.
+    clock += 10 * 60_000;
+    state.job = "success";
+    state.durationMs = 600_000;
+    expect((await buildCall("build.status", { job: BUILD_JOB })).status).toBe(200);
+    expect(harness.row("select status, seconds from cloud_phone_builds where job = ?", BUILD_JOB)).toEqual({ status: "success", seconds: 600 });
+    expect(await revylSpentMicros(harness.env, OWNER, PERIOD, clock)).toBe(600 * 1_000);
+
+    // A start Revyl refuses runs nothing: its claim goes, so a retry may start.
+    state.start = 400;
+    expect((await start()).status).toBe(400);
+    state.start = 200;
+    state.job = "running";
+    expect((await start()).status).toBe(200);
+    // A start whose answer was lost may still run: held, so a retry can't bill a second build.
+    state.job = "success";
+    expect((await buildCall("build.status", { job: BUILD_JOB })).status).toBe(200);
+    state.start = 502;
+    expect((await start()).status).toBe(502);
+    state.start = 200;
+    expect((await start()).status).toBe(409);
+
+    // Past the hold, that lost start lapses, counted as a build's longest (900 s) in the limit, and a new one starts.
+    clock += 31 * 60_000;
+    state.job = "running";
+    expect((await start()).status).toBe(200);
+    expect(await revylSpentMicros(harness.env, OWNER, PERIOD, clock)).toBe((600 + 600 + 900) * 1_000);
+
+    // Revyl's "no such build" right after a start never frees the claim; on a claim two minutes old it does.
+    state.statusCode = 404;
+    expect((await buildCall("build.status", { job: BUILD_JOB })).status).toBe(404);
+    expect((await start()).status).toBe(409);
+    clock += 3 * 60_000;
+    expect((await buildCall("build.status", { job: BUILD_JOB })).status).toBe(404);
+    state.statusCode = 200;
+    expect((await start()).status).toBe(200);
   });
 });
 

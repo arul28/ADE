@@ -1,3 +1,5 @@
+import { shellCommandIsReadOnly, type ReadOnlyShellDialect } from "./readOnlyShellCommand";
+
 /**
  * What ADE knows about one Claude tool call before it decides anything.
  *
@@ -91,6 +93,7 @@ export const CLAUDE_PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
   "taskupdate",
   "taskstop",
   "taskoutput",
+  "bashoutput",
   "notebookread",
 ]);
 
@@ -128,43 +131,37 @@ export function claudeToolAllowedInSideChat(toolName: string): boolean {
   return CLAUDE_SIDE_CHAT_ALLOWED_TOOLS.has(normalizeToolNameForApproval(toolName));
 }
 
-/** Programs that only read, and the git subcommands that only read. */
-const SIDE_CHAT_READ_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
-  "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "pwd", "echo", "which",
-  "file", "stat", "tree", "du", "df", "find", "sort", "uniq", "cut", "jq", "date", "basename",
-  "dirname", "realpath", "nl", "git",
-]);
-const SIDE_CHAT_READ_ONLY_GIT: ReadonlySet<string> = new Set([
-  "status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe", "shortlog", "grep",
-]);
-/** `find` options that write, delete or run something. */
-const FIND_WRITING_OPTIONS = /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
 /**
- * Options that turn a reader into a writer or a runner: `git diff --output`,
- * `sort -o`, `tree -o`, `rg --pre`. `-o` is refused for every program (grep's
- * harmless `-o` included); a narrow list errs toward refusing.
- */
-const WRITING_OPTIONS = /^(--output|--pre|-o)/;
-
-/**
- * True only for a shell command a side chat can run without changing
- * anything: one program, or a `|` pipeline of them, from a short list of
- * readers, with no redirection, command substitution, chaining or background
- * job. Deliberately narrow: a side chat refuses every other command, because
+ * Whether one Claude tool CALL may run in a side chat: a tool on the side-chat
+ * list, or a `Bash` / `PowerShell` command that only reads
+ * (`shellCommandIsReadOnly`: known readers, git and gh reads, and ADE's own
+ * reads such as `ade linear issue`). Every other command is refused, because
  * the user's own Claude allow rules could otherwise run one without asking.
  */
-export function claudeSideChatBashIsReadOnly(command: unknown): boolean {
-  if (typeof command !== "string" || !command.trim()) return false;
-  if (/[;&<>`\n\r]|\$\(|\|\|/.test(command)) return false;
-  return command.split("|").every((segment) => {
-    const words = segment.trim().split(/\s+/).filter(Boolean);
-    const program = words[0] ?? "";
-    if (!SIDE_CHAT_READ_ONLY_PROGRAMS.has(program)) return false;
-    if (words.some((word) => WRITING_OPTIONS.test(word))) return false;
-    if (program === "git") return SIDE_CHAT_READ_ONLY_GIT.has(words[1] ?? "");
-    if (program === "find") return !words.some((word) => FIND_WRITING_OPTIONS.test(word));
-    return true;
-  });
+export function claudeToolCallAllowedInSideChat(toolName: string, input: Record<string, unknown> | undefined): boolean {
+  const shell = claudeShellDialect(toolName);
+  if (shell) return shellCommandIsReadOnly(input?.command, shell);
+  return claudeToolAllowedInSideChat(toolName);
+}
+
+/**
+ * Whether one Claude tool CALL may run in plan mode: a tool on the plan
+ * allowlist, or a `Bash` / `PowerShell` command that only reads. Without the
+ * shell case a plan-mode chat could not even read the Linear issue it was
+ * started on (`ade linear issue ADE-296 --text`), or run `git log`.
+ */
+export function claudeToolCallAllowedInPlanMode(toolName: string, input: Record<string, unknown> | undefined): boolean {
+  if (claudeToolAllowedInPlanMode(toolName)) return true;
+  const shell = claudeShellDialect(toolName);
+  return shell !== null && shellCommandIsReadOnly(input?.command, shell);
+}
+
+/** The shell a Claude shell tool runs, or null for any other tool. */
+export function claudeShellDialect(toolName: string): ReadOnlyShellDialect | null {
+  const normalized = normalizeToolNameForApproval(toolName);
+  if (normalized === "bash") return "bash";
+  if (normalized === "powershell") return "powershell";
+  return null;
 }
 
 /**

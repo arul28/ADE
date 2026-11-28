@@ -1142,7 +1142,7 @@ describe("createAgentChatService", () => {
         params: {
           itemId: "cmd-plan-1",
           turnId: "turn-1",
-          command: "/bin/zsh -lc 'ade --socket lanes list --text'",
+          command: "/bin/zsh -lc 'ade lanes create planned-lane --text'",
         },
       });
 
@@ -1155,6 +1155,64 @@ describe("createAgentChatService", () => {
       });
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-1")).toMatchObject({
         result: { decision: "decline" },
+      });
+
+      // A plan still reads: a command that only reads leaves the sandbox once
+      // (on Windows the sandbox cannot reach ADE's pipe), with no card.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-plan-read",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-plan-read",
+          turnId: "turn-1",
+          command: "/bin/zsh -lc 'ade linear issue ADE-296 --text'",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-read")).toMatchObject({
+          result: { decision: "accept" },
+        });
+      });
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-plan-read"
+      )).toBe(false);
+
+      // A read still keeps to the containment root.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-plan-read-outside",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-plan-read-outside",
+          turnId: "turn-1",
+          cwd: path.dirname(path.dirname(tmpRoot)),
+          command: "/bin/zsh -lc 'ade linear issue ADE-296 --text'",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-read-outside")).toMatchObject({
+          result: { decision: "decline" },
+        });
+      });
+
+      // Other reads run inside the sandbox; one asking to leave it was refused
+      // by the sandbox (a managed deny_read), so it is not answered for it.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-plan-read-sandboxed",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-plan-read-sandboxed",
+          turnId: "turn-1",
+          command: "/bin/zsh -lc 'cat src/a.ts'",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-read-sandboxed")).toMatchObject({
+          result: { decision: "decline" },
+        });
       });
 
       mockState.emitCodexPayload({

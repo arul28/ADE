@@ -17,11 +17,12 @@ access, credits and limits; clients only show the answer.
 |---|---|
 | `apps/account-directory/src/cloud/phones.ts` | Server routes `/cloud/phone*`, credits and the money guard. |
 | `apps/account-directory/src/cloud/phoneProvider.ts`, `phoneNomac.ts`, `phoneRevyl.ts` | One record per provider; the only places that hold provider keys. |
+| `apps/account-directory/src/cloud/phoneRevylWorkspace.ts`, `phoneRevylBuild.ts` | Revyl's per-account workspaces; Revyl builds (the claim, the image, the build step, path caches). |
 | `apps/account-directory/src/cloud/phoneRoute.ts` | Provider order (`routeOf`), failover (`startOnRoute`), build-gap routing. |
 | `apps/account-directory/src/cloud/phoneViewerPage.ts`, `phoneBeta.ts` | Revyl's viewer page; the beta list and its owner route. |
 | `apps/account-directory/src/cloud/credits.ts` | Credit rate (`PHONE_CREDIT_MILLI_PER_MINUTE`) and charging. |
 | `apps/account-directory/src/cloud/contract.ts`, `apps/desktop/src/shared/cloudPhone.ts` | Shared shapes, `CLOUD_PHONE_PROVIDER_ABILITIES`, idle and max-time constants. |
-| `apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts` | The brain's `cloud_phone` action domain; holds one phone token in memory. |
+| `apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`, `cloudPhonePack.ts` | The brain's `cloud_phone` action domain (holds one phone token in memory); what a build uploads. |
 | `apps/desktop/src/main/services/adeCloud/cloudPhoneDriver.ts`, `cloudPhoneNomacDriver.ts`, `cloudPhoneRevylDriver.ts`, `cloudPhoneScreenText.ts` | One driver per provider; the screen as text. |
 | `apps/desktop/src/main/services/adeCloud/cloudPhoneRun.ts`, `cloudPhoneViewHost.ts` | Run bookkeeping and chat notices; the offscreen window that paints the provider's page for the desktop pane. |
 | `apps/ade-cli/src/cliCloudIphone.ts`, `cliDevices.ts` | `daex apple` verbs as `cloud_phone` actions; the `ios@cloud` device row. |
@@ -33,8 +34,8 @@ access, credits and limits; clients only show the answer.
 - **Provider keys are Worker secrets.** `NOMAC_API_KEY` and
   `REVYL_PARTNER_API_KEY` never reach a brain, CLI or renderer.
 - **One phone per account.** Every chat that picked `ios@cloud` drives the same
-  phone. Every command starts a phone (reads too), idle minutes count, and a
-  phone stops after 5 idle minutes (`CLOUD_PHONE_IDLE_SECONDS`) or 2 hours
+  phone. Every command but `status`, `build` and `build-log` starts a phone
+  (reads too), idle minutes count, and a phone stops after 5 idle minutes (`CLOUD_PHONE_IDLE_SECONDS`) or 2 hours
   (`CLOUD_PHONE_MAX_MINUTES`). Batch work.
 - **`keepAlive` never starts a phone.** A brain without the token sends
   `attach`, which answers 409 `phone_not_running`.
@@ -44,7 +45,7 @@ access, credits and limits; clients only show the answer.
 - **Provider names never reach users.** Every answer passes through
   `withoutPhoneProviderNames`; differences are reported as abilities.
 - **Xcode 27.0 and 27.1 ship the same Swift (6.4)**, so `#if compiler(>=6.4)`
-  cannot fence iOS 27.1 APIs on Revyl's 27.0 runner. The DAEX iOS app also
+  cannot fence iOS 27.1 APIs from a build on the 27.0 image. The DAEX iOS app also
   gates them on `!ADE_IOS_SDK_27_0`.
 - **Every provider, both surfaces.** Agents reach the phone only through
   `daex apple`, so all 13 agent providers (chat and CLI) drive it the same way.
@@ -107,7 +108,8 @@ credits when that switch is on. Out of credits with extra off, a start answers
   `cloudAccess.ts`, cached 10 minutes).
 - **Warnings and owner:** credit emails at 80%, 95% and out. Phone cost counts in
   the owner's monthly estimate and alerts. Blocking an account stops its phone.
-  Analytics event: `ade_cloud_phone` (`started`, `ended`, `refused`).
+  Analytics event: `ade_cloud_phone` (`started`, `ended`, `refused`, and
+  `built` for a Revyl build, with its runner minutes).
 
 ## Providers
 
@@ -124,7 +126,11 @@ credits when that switch is on. Out of credits with extra off, a start answers
   switched.
 - **Abilities, not names** (`CLOUD_PHONE_PROVIDER_ABILITIES`): NoMac has `tests`,
   `uninstall`, `storekit`, `locale`, `timezone`, `statusBar`, `launchEnv`; Revyl
-  has `perf` (`daex apple perf`), `shake`, `orientation`. `GET /cloud/phone`
+  has `perf` (`daex apple perf`), `shake`, `orientation`, `launchEnv`. Launch
+  arguments and env values (`relaunch -- …`, `--env`) are for that launch
+  only; NoMac takes env values only with a build. A brain that sends no
+  `launchValues` on its start never lands on a phone that would refuse them:
+  it is told to update DAEX. `GET /cloud/phone`
   returns `abilities`; the brain's status adds `lacks`. A missing ability answers
   "This cloud iPhone can't X." (409 `phone_lacks`). `needs` never picks the
   provider.
@@ -138,11 +144,18 @@ credits when that switch is on. Out of credits with extra off, a start answers
 - **Revyl.** Each account gets its own Revyl workspace (`ade-<userId>`, a
   synthetic `revyl+<hash>@ade-app.dev` address, never the person's email). No
   per-phone token: the brain calls `POST /cloud/phone/call {action, body?,
-  query?}` with its account sign-in (`proxy.<name>` allowlist and
-  `build.upload_url|start|status|logs|install`). The driver turns the
+  query?}` with its account sign-in (`proxy.<name>` allowlist, `build.install`
+  into the live phone, and the account's builds,
+  `build.upload_url|start|status|logs`, which need no phone). The driver turns the
   accessibility tree into the same screen text as NoMac and acts with plain
   taps (never Revyl's AI-priced targeting). Builds run on Revyl's runners
-  (`ios-macos-26-xcode-27.0`, 900 s timeout). The recording id is kept on the
+  before any phone starts (**Builds before the phone**), on the image
+  `REVYL_BUILD_IMAGE` in `phoneRevylBuild.ts` (`ios-macos-26-xcode-27.2`; the
+  Worker var `CLOUD_PHONE_REVYL_IMAGE` moves it without a release, and
+  `--xcode 27.1` picks one of `REVYL_XCODE_IMAGES`). A failed build reads its
+  build step's log (1,000-line pages back from the tail, at most 8) and shows
+  its first `file:line: error:` lines, with the build id for
+  `daex apple build-log`. The recording id is kept on the
   row (`recording_ref`) so any brain can stop it. Revyl has no time limit of its
   own: `stop_at` is set at start and the minute tick stops it.
 - **Build tools a provider lacks** (`CLOUD_PHONE_BUILD_NEEDS`, today `metal`).
@@ -157,6 +170,32 @@ credits when that switch is on. Out of credits with extra off, a start answers
   (`metalProjects`, in memory). Revyl's build step (`buildCommand` in
   `phoneRevyl.ts`) downloads the toolchain and retries when needed. `test` is
   never moved (Revyl has no tests).
+- **Builds before the phone.** A Revyl build belongs to the account, not to a
+  phone: a `cloud_phone_builds` row (migration 0074), one running build per
+  account, claimed in one write as `unknown` just before Revyl is asked. A
+  refused start deletes the claim; one with no job holds 30 minutes; one Revyl
+  took holds until `build.status` says it ended, and lapses after two hours.
+  A build counts at most `REVYL_BUILD_MAX_SECONDS` (900 s). With no Revyl phone
+  up, `build.upload_url` and `build.start` are held to a new phone's checks
+  (`buildRefusal` in `phones.ts`: pause, credits, free-use cap, the route) and
+  run only where the route's first stop is Revyl; elsewhere 409
+  `phone_builds_on_phone` and the brain builds on the phone. So a free plan
+  never reaches Revyl's runners this way. A build costs no credits; its runner
+  time counts in the paid plan's Revyl limit (`revylSpentMicros`). The brain
+  (`buildBeforePhone` in `cloudPhoneService.ts`) builds first for `launch`,
+  `install` and `build`, starts the phone only for a build that worked, and
+  stops a phone that start made (by its id, `DELETE /cloud/phone?phoneId=`)
+  when the build or its follow-up failed. Plan-mode chats are still refused
+  (`cloudPhonePlanGuard` in `registry.ts`). A server that names no
+  `toolchains` makes the brain build on the phone. Each project keeps its last
+  good build in memory (12 hours, 50 projects, keyed by the source's paths,
+  sizes and change times), so a `launch` of the same source installs it
+  without building. NoMac always builds with the phone up.
+- **Path caches.** Each Revyl build caches its Swift packages
+  (`spm-<cache_key>`) and `Pods` beside a `Podfile.lock` (`pods-<cache_key>`),
+  saved only after a build that worked and only when a lockfile changed.
+  Measured on the DAEX iOS app (Xcode 27.2, 2026-11-28): a no-change rebuild
+  takes 91 s against 152 s with no cache.
 - **Revyl's pane** is DAEX's own viewer page,
   `<server>/cloud/phone/viewer#whep=…&ws=…`: Revyl's WebRTC video with a clear
   canvas for touches; input goes over Revyl's socket, keys batched every 25 ms.
@@ -176,7 +215,8 @@ tools pane (CloudIphonePanel)   CLI (daex apple …)   any provider's agent
 
 - **Brain.** `cloud_phone` actions: `getStatus`, `start`, `stop`, `look`, `act`,
   `screenshot`, `launch`, `installApp`, `control`, `logs`, `record`, `runTests`,
-  plus `view` and `keepAlive` for the pane. `getStatus` carries
+  `perf`; `build` and `buildLog` (no phone, no credits, so agents use them
+  without the spending guard); and `view` and `keepAlive` for the pane. `getStatus` carries
   `lastActivityAt` (this brain's last call) for the idle countdown. When an agent
   chat's call starts a phone, that chat gets one notice, and another when the
   phone is found ended (`cloudPhoneRun.ts`).
@@ -210,18 +250,26 @@ daex apple launch --machine cloud   # one command on the phone
 ```
 
 - `start [--device iphone|iphone-pro-max|ipad]`, `stop`, `status` (lists
-  abilities and this period's phones under `recent`).
+  abilities, this period's phones under `recent`, each route stop's Xcode and
+  whether it builds before the phone under `builds:`, and for a chat what its
+  phones used, `chatUse`; `stop` prints that line too).
 - `snapshot`, `tap-element --label/--id [--hold-ms]`, `tap x y`,
   `long-press x y`, `type "text" [--submit]`, `key return|escape|delete|tab|space`,
   `swipe`/`scroll`, `button home`, `wait-for-element` (up to 30 s).
 - `screenshot [--out]` files a PNG to proof (`--no-proof` skips; `--out` must be
   inside the project or temp folder). `record start|stop` answers an MP4 link
   valid 7 days.
-- `launch [--path sub] [--scheme] [--configuration] [--env] [--clean]` packs this
+- `launch [--path sub] [--scheme] [--configuration] [--xcode] [--env] [--clean]` packs this
   checkout and builds it there. With no `--path`, the project is found where a
   Mac's launch looks (`discoverXcodeProjectPaths`, `cloudPhoneBuildFolder`); two
   or more candidates, or none, is refused before upload. Launch arguments after
-  `--` are refused on a build: build, then `relaunch --bundle-id B -- …`.
+  `--` are refused on a build: build, then `relaunch --bundle-id B -- …` (one
+  token each; `--env KEY=VALUE` adds env values).
+- `build [--path] [--scheme] [--configuration] [--xcode] [--clean]` compiles
+  with no phone where builds run before it; `build-log <build id> [--out]
+  [--grep]` saves a build's whole log.
+- `appearance dark|light` and `content-size <size>` are the Mac's verbs for
+  `control appearance` and `control text_size`.
 - `install --app <Simulator .app> [--no-launch]` uploads an app built elsewhere
   (Expo/EAS with `"simulator": true`, Flutter `--simulator`).
 - `open-url`, `logs [--grep] [--since] [--wait-for] [--crashes]`,
@@ -249,7 +297,9 @@ in points.
   (`Pods/`, `node_modules/`, `DerivedData/`, `build/`, `.build/`, `.swiftpm/`,
   `.ade/`, …) and key files: `.env*` (except `.example`, `.sample`,
   `.template`), `*.p8`, `*.p12`, `*.pfx`, `*.pem`, `*.key`, provisioning
-  profiles, keystores, SSH keys and `.netrc`.
+  profiles, keystores, SSH keys and `.netrc`. On Windows the archive is made
+  with System32's bsdtar by absolute path (`resolveTrustedWindowsTool`): Git's
+  GNU tar reads `C:\…` as a remote host.
 
 ## Limits
 
@@ -264,7 +314,13 @@ in points.
   `Podfile.lock`, XcodeGen). Other stacks upload a Simulator build with
   `install --app`.
 - Typical speed: most commands 0.5–4 s, a new phone 8–13 s, first launch on a
-  new phone 11–21 s.
+  new phone 11–21 s, a cached build of a large app about 90 s.
+- Some Revyl routes DAEX calls are named only as families in Revyl's error
+  reference (`/apps/remote*` for builds, `POST /apps/`, `GET /apps/builds/{id}`,
+  `/execution/device-proxy/…`, the device-session and streaming routes), so a
+  change there can break the phone without notice. Only the partner API
+  (`/partner/*`) is fully documented; moving the rest waits on Revyl (asked
+  2026-11-28).
 
 ## Operating it
 
@@ -275,7 +331,8 @@ Secrets (`wrangler secret put …`, again with `--env production`):
 
 Phone tables come from migrations `0047_cloud_phone_beta`,
 `0048_cloud_phone_usage`, `0057_cloud_phone_provider`,
-`0060_cloud_phone_choice_reset` and `0070_cloud_phone_build_gaps`. Apply them
+`0060_cloud_phone_choice_reset`, `0070_cloud_phone_build_gaps` and
+`0074_cloud_phone_builds`. Apply them
 before the Worker that reads them (the production deploy script does):
 
 ```bash
