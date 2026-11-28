@@ -146,8 +146,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const freeSmallNeedsCards = !priced && sponsored != null;
   // Pricing v3: Free's Small is free with ads where ads are (its ad rate 0).
   const freeSmallWithAds = priced && view?.available === true;
-  // Free's Small where no ads are offered under Pricing v3: its rate, when this account's catalog is Free's.
-  const freeSmallMilli = current === "free" ? tiers.find((tier) => tier.id === "small")?.multiplierMilli ?? 0 : 0;
+  // Free's Small full rate for every viewer (`freeSmallMilli`, in every v3 catalog); an older server: the Free viewer's own catalog.
+  const freeSmallMilli = catalog.freeSmallMilli ?? (current === "free" ? tiers.find((tier) => tier.id === "small")?.multiplierMilli ?? 0 : 0);
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
   // A paid plan with a move down waiting: its own column undoes the move (uncharged).
   const canStay = paid && !pastDue && !billing.cancelAtPeriodEnd && current !== "free" && nextPlanId != null && nextPlanId !== current;
@@ -371,7 +371,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 <ul className="adecd-plancard-facts">
                   <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
                   <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open a ${BRAND.CLOUD_NAME} chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span>{column.id === "free" && freeSmallWithAds ? <><b>Free</b> Small computers with ads</>
-                    : column.id === "free" && priced ? freeSmallMilli > 0 ? <>Small: <b className="kit-num" data-face="ui">{words.count(freeSmallMilli / 1000)}</b> an hour</> : <>Small computers use credits</>
+                    : column.id === "free" && priced ? freeSmallMilli > 0 ? <>Small: <b className="kit-num" data-face="ui">{words.count(freeSmallMilli / 1000)}</b> an hour</> : catalog.freeSmallMilli === 0 ? <><b>Unlimited</b> Small computers</> : <>Small computers use credits</>
                     : <><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</>}</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${words.num(column.facts.includedMilli)} ${noun} from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{words.num(oldTerms.hoursMilli)}</b> credits until {until}</span></li>

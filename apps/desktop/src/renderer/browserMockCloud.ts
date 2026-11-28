@@ -725,7 +725,7 @@ export function applyBrowserMockCloud(ade: any): void {
     const available = pricingKind !== "none";
     const noticeSeen = pricingKind === "on" || pricingKind === "off" || pricingKind === "zero";
     const on = available && (pricingKind === "on" || pricingKind === "zero");
-    const catalog = cloudCatalog({ pro: true, max: true }, state.planId ?? "free", { v3: { discountPct, smallFullMilli: free ? 500 : 0 } });
+    const catalog = cloudCatalog({ pro: true, max: true }, state.planId ?? "free", { v3: { discountPct, smallFullMilli: free ? 500 : 0, freeSmallMilli: 500 } });
     state = {
       ...state,
       catalog,

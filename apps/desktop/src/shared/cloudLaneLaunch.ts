@@ -20,6 +20,7 @@ import {
   type CloudMachine,
 } from "./adeCloud";
 import { cloudTier, cloudTierUsesHours } from "./cloudTiers";
+import { cloudAdsViewOf, cloudPricingOf } from "./cloudAdPriceWords";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "./types/chatLaunch";
 import type { AgentChatFileRef } from "./types/chat";
@@ -150,6 +151,13 @@ export type CloudLaneStartBlock = {
   short: string;
 };
 
+/** The server's way out on Free under Pricing v3 (its `out_of_hours` sentence), so both refusals read the same. */
+function freeSmallWayOut(account: CloudAccountState): string {
+  const view = account.plan === "free" && cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+  if (!view?.available) return "";
+  return view.on ? " Small computers keep working in chats with ads: send a message to start one." : " With ads on, Small computers keep working.";
+}
+
 export function cloudLaneStartBlock(
   account: CloudAccountState | null | undefined,
   options: { newLane: boolean; sizeId?: string | null } = { newLane: true },
@@ -168,7 +176,7 @@ export function cloudLaneStartBlock(
     // The free plan's GitHub rules hold its credits: their sentence says why and what to do.
     return {
       code: "out_of_hours",
-      message: why ?? (cloudSmallUsesHours(catalog) ? CLOUD_OUT_OF_HOURS_MESSAGE : `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`),
+      message: why ?? (cloudSmallUsesHours(catalog) ? `${CLOUD_OUT_OF_HOURS_MESSAGE}${freeSmallWayOut(account)}` : `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`),
       short: why ? "Free credits wait on GitHub." : "Out of credits for this size.",
     };
   }
