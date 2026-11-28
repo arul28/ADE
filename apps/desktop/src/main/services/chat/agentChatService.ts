@@ -76535,8 +76535,8 @@ export function createAgentChatService(args: {
    * Every chat with work in hand, for the cloud busy list (`decideCloudBusy`):
    * whether it is stopped waiting on a person, and when it last moved.
    */
-  const listBusyFacts = (): Array<{ waitingOnPerson: boolean; lastActivityAt: number }> => {
-    const facts: Array<{ waitingOnPerson: boolean; lastActivityAt: number }> = [];
+  const listBusyFacts = (): Array<{ waitingOnPerson: boolean; lastActivityAt: number; automation: boolean }> => {
+    const facts: Array<{ waitingOnPerson: boolean; lastActivityAt: number; automation: boolean }> = [];
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;
       const waitingOnPerson = hasLivePendingInput(managed);
@@ -76546,7 +76546,9 @@ export function createAgentChatService(args: {
         && !hasRuntimeActiveWorkload(managed.runtime)
         && !turnDiffSummariesInFlight.has(managed.session.id)
       ) continue;
-      facts.push({ waitingOnPerson, lastActivityAt: managed.lastActivityTimestamp });
+      // An automation's run: the cloud computer reports it as full-price work (Pricing v3).
+      const automation = managed.session.surface === "automation" || Boolean(managed.session.automationRunId);
+      facts.push({ waitingOnPerson, lastActivityAt: managed.lastActivityTimestamp, automation });
     }
     return facts;
   };

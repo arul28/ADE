@@ -79,6 +79,8 @@ export type CloudBusyTerminal = {
 export type CloudBusyChat = {
   /** The turn is stopped on a person's approval or question. */
   waitingOnPerson: boolean;
+  /** An automation's chat (a scheduled, webhook or rule run): full-price work under Pricing v3. Older runtimes leave it out. */
+  automation?: boolean;
   /** Last event, send or answer in the chat. */
   lastActivityAt: number;
 };
