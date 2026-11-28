@@ -515,7 +515,8 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
   }
 
   /** Builds for the account on Revyl's runner, with no phone: the build's version, its errors, or `phone_builds`. */
-  async function buildOnRunner(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void): Promise<CloudPhoneBuilt | "phone_builds"> {
+  async function buildOnRunner(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void, awake?: CloudPhoneHeld): Promise<CloudPhoneBuilt | "phone_builds"> {
+    if (awake) return whileAwake(awake, () => buildOnRunner(account, input, nearlyDone));
     const key = await uploadSource(account, input.project, input.builds);
     if (key === "phone_builds") return key;
     const raw = await accountCall(account, "build.start", {
@@ -646,7 +647,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
     async run(phone, input) {
       // A build belongs to the account: with this phone up it runs as one with none, then goes on it.
-      const built = await whileAwake(phone, () => buildOnRunner(phone.account, input));
+      const built = await buildOnRunner(phone.account, input, undefined, phone);
       if (built === "phone_builds") throw new CloudPhoneError("This cloud iPhone couldn't start the build. Try again.", "build_failed");
       if (!built.ok) return built.answer;
       return (await installBuilt(phone, built, { ...(input.env ? { env: input.env } : {}), launch: true })).answer;
@@ -654,7 +655,7 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
     async install(phone, input) {
       // A `.app` goes up like a project, and Revyl's runner takes it as the build's app.
-      const built = await whileAwake(phone, () => buildOnRunner(phone.account, { project: input.app, name: "app", prebuilt: true }));
+      const built = await buildOnRunner(phone.account, { project: input.app, name: "app", prebuilt: true }, undefined, phone);
       if (built === "phone_builds") throw new CloudPhoneError("This cloud iPhone couldn't take the app. Try again.", "build_failed");
       if (!built.ok) return { answer: built.answer, bundleId: null };
       return installBuilt(phone, built, { launch: false, prebuilt: true });

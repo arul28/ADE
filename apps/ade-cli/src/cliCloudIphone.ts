@@ -126,8 +126,13 @@ function relaunchCall(args: Args, label: string): Call {
   const env = flag(args, "--env");
   return {
     action: "control",
-    // The tokens, and joined as `value` too: a brain from before `args` reads only that.
-    args: { action: "launch", ...(app ? { app } : {}), ...(args.afterDashes.length ? { args: args.afterDashes, value: args.afterDashes.join(" ") } : {}), ...(env ? { env } : {}) },
+    // The tokens, and joined as `value` too: a brain from before `args` reads only that (and takes 4,000 characters at most).
+    args: {
+      action: "launch",
+      ...(app ? { app } : {}),
+      ...(args.afterDashes.length ? { args: args.afterDashes, ...(args.afterDashes.join(" ").length <= 4_000 ? { value: args.afterDashes.join(" ") } : {}) } : {}),
+      ...(env ? { env } : {}),
+    },
     timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS,
     label,
   };
@@ -369,7 +374,9 @@ const clock = (ms: unknown): string => (typeof ms === "number" ? new Date(ms).to
 /** What the calling chat's phones used this period, in the server's count. */
 function chatUseLine(use: unknown): string {
   if (!isRecord(use) || typeof use.minutes !== "number" || typeof use.phones !== "number") return "";
-  return `This chat's cloud iPhones used ${use.minutes} min this period (${use.phones} phone${use.phones === 1 ? "" : "s"}).\n`;
+  // Some of the chat's phones are older than the ones the server lists: the minutes are a floor.
+  const atLeast = use.partial === true ? "at least " : "";
+  return `This chat's cloud iPhones used ${atLeast}${use.minutes} min this period (${use.phones} phone${use.phones === 1 ? "" : "s"}${atLeast ? " the server still lists" : ""}).\n`;
 }
 
 /**

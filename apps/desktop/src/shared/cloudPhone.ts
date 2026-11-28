@@ -134,7 +134,8 @@ export type CloudPhoneStatusView = Omit<CloudPhoneState, "phone"> & {
    * For a chat's call: the minutes this period of the phones that chat's
    * calls drove on this brain, in the server's own count (one phone two chats
    * drove counts for each), among the period's newest phones the server lists
-   * (`CLOUD_PHONE_RECENT_SHOWN`). Absent when the chat drove none here.
+   * (`CLOUD_PHONE_RECENT_SHOWN`): `partial` when some of its phones are older
+   * than those, so the minutes are a floor. Absent when the chat drove none here.
    */
-  chatUse?: { minutes: number; phones: number };
+  chatUse?: { minutes: number; phones: number; partial?: boolean };
 };

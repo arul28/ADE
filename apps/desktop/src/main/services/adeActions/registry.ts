@@ -4769,15 +4769,6 @@ function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
   };
 }
 
-/**
- * The phone spends the account's credits (and extra credits, which cost
- * money), so an agent nobody watches (a full-auto chat, an automation run, an
- * app on ADE MCP) uses it only when the person lets such agents spend
- * (`unattendedSpend`, the same switch as hours); a chat in plan mode never.
- * A person, and an attended chat, go ahead: the phone stops when the credits
- * run out unless the person turned extra credits on. Who is asking is the
- * `approval` the RPC server stamped (`adeRpcServer.ts`), never the caller's word.
- */
 /** What a chat in plan mode is told when it asks the cloud iPhone to run or build anything. */
 const planModeRefusal = (): CloudPhoneError => new CloudPhoneError("This chat is in plan mode, so it doesn't use the ADE Cloud iPhone.", "declined");
 
@@ -4794,6 +4785,15 @@ function cloudPhonePlanGuard(runtime: AccountDomainRuntime): (args: unknown) => 
   };
 }
 
+/**
+ * The phone spends the account's credits (and extra credits, which cost
+ * money), so an agent nobody watches (a full-auto chat, an automation run, an
+ * app on ADE MCP) uses it only when the person lets such agents spend
+ * (`unattendedSpend`, the same switch as hours); a chat in plan mode never.
+ * A person, and an attended chat, go ahead: the phone stops when the credits
+ * run out unless the person turned extra credits on. Who is asking is the
+ * `approval` the RPC server stamped (`adeRpcServer.ts`), never the caller's word.
+ */
 function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) => Promise<void> {
   const limits = createCloudAgentLimitsStore({
     vault: () => (runtime.accountAuthService?.getStatus().signedIn === true && runtime.accountVaultStore

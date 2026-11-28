@@ -196,3 +196,20 @@ export async function knownWorkspace(env: Pick<CloudEnv, "DB">, userId: string):
 export function forgetSessionKey(externalId: string): void {
   sessionKeys.delete(externalId);
 }
+
+/* ---- A brain's call (`POST /cloud/phone/call`) ---- */
+
+/** A Revyl job or build id. */
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const stringArg = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+
+/** A call's action, its body for Revyl and its query (short lowercase keys and values only). */
+export function callParts(body: Record<string, unknown>): { action: string; args: Record<string, unknown>; query: Record<string, string> } {
+  const action = typeof body.action === "string" ? body.action : "";
+  const args = body.body && typeof body.body === "object" && !Array.isArray(body.body) ? body.body as Record<string, unknown> : {};
+  const query = body.query && typeof body.query === "object" && !Array.isArray(body.query)
+    ? Object.fromEntries(Object.entries(body.query as Record<string, unknown>).filter((entry): entry is [string, string] => /^[a-z_]{1,40}$/.test(entry[0]) && typeof entry[1] === "string" && entry[1].length <= 200))
+    : {};
+  return { action, args, query };
+}

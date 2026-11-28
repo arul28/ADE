@@ -201,12 +201,14 @@ both used, without changing anything an agent or a person sees.
 - **Builds before the phone.** A Revyl build belongs to the account, not to
   a phone: its claim is a `cloud_phone_builds` row (migration 0074), one
   running build per account (Revyl's runners bill ADE), claimed in one write.
-  A claim whose start never got Revyl's answer lapses after 6 minutes (it ran
-  nothing); one whose answer was lost (`unknown`) holds 30 minutes and counts
-  as running till then; a build Revyl took holds until a `build.status` read
-  says it ended (asked once when it is in the way; a job Revyl no longer has,
-  404, ended too), which writes what it ran (`seconds`), or two hours at most.
-  A build counts at most its longest (`REVYL_BUILD_MAX_SECONDS`, 900 s), so no
+  A claim is written as `unknown` just before Revyl is asked (a build may run
+  from then on): a refused start deletes it, an answered one names its job,
+  and one with no job (a lost answer, a Worker that stopped mid-start) holds
+  30 minutes, counted as running till then. A build Revyl took holds until a
+  `build.status` read says it ended (asked when it is in the way; a job Revyl
+  no longer has, 404, ends a claim older than 2 minutes), which writes what it
+  ran (`seconds`), and lapses after two hours when Revyl still can't say. A
+  build counts at most its longest (`REVYL_BUILD_MAX_SECONDS`, 900 s), so no
   claim holds an account's builds, or grows its Revyl spend, for good. With a Revyl phone up, a build
   runs as it always did. With none (or a NoMac one), `build.upload_url` and
   `build.start` are held to what a new phone's start is held to
@@ -221,7 +223,8 @@ both used, without changing anything an agent or a person sees.
   (`buildBeforePhone` in `cloudPhoneService.ts`) builds first for `launch`,
   `install` and `build`, starts the phone only for a build that worked (as
   its build step passes, while the app is packed), and stops a phone that
-  start made (never one already up, nor one it found running) when the build
+  start made (its own `origin` token: never one already up, one another chat
+  or the person started meanwhile, nor one it found running) when the build
   then failed or its follow-up threw. A failed build's answer says what it
   cost in phone minutes. With a Revyl phone held, the build keeps it awake, so
   a long build is never installed on a fresh phone by building again.

@@ -5,9 +5,10 @@
 -- costs no phone minutes.
 --
 -- One running build per account (the runners bill ADE): a start claims it in
--- one write. `job` is the runner's build job id once it answered; null while
--- the start waits for that answer (a claim that died lapses); `unknown` when
--- the answer was lost, so a build may run (held a while, then lapsed).
+-- one write, as `job = 'unknown'` (it asks the runner next, so a build may run
+-- from then on). A refused start deletes its claim; an answered one names its
+-- job (the runner's build job id). A claim with no job is held a while, then
+-- lapses; a job holds until the runner says it ended, or two hours at most.
 -- `seconds` is what the build ran, for the paid plan's limit at the provider
 -- (`revylSpentMicros`); a running one counts until now. `phone_id` is the live
 -- phone at the start, or null.

@@ -276,7 +276,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   }
 
 
-  function hold(start: CloudPhoneStart, client: CloudProvider, chatSessionId: string | null): Held {
+  function hold(start: CloudPhoneStart, client: CloudProvider, chatSessionId: string | null, origin: object | null = null): Held {
     held = {
       account: accountOf(client),
       phoneId: start.phone.id,
@@ -292,7 +292,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     };
     if (liveRun?.phoneId === held.phoneId && liveRun.account === held.account) liveRun.phone = held;
     // A reused phone was started by someone else: nobody is told of it.
-    else liveRun = { phoneId: held.phoneId, account: held.account, chatSessionId: start.reused ? null : chatSessionId, reused: start.reused, readyAt: start.phone.readyAt, lastActivityAt: null, heldAt: Date.now(), phone: held, startLine: start.reused ? null : cloudPhoneStartLine(start) };
+    else liveRun = { phoneId: held.phoneId, account: held.account, chatSessionId: start.reused ? null : chatSessionId, origin: start.reused ? null : origin, readyAt: start.phone.readyAt, lastActivityAt: null, heldAt: Date.now(), phone: held, startLine: start.reused ? null : cloudPhoneStartLine(start) };
     return held;
   }
 
@@ -326,7 +326,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * The account's ready phone, started when there is none; `chatSessionId` is the agent chat told of a new one.
    * `account`: the account the command began under (a retry's), refused when another is signed in now.
    */
-  async function ensure({ device, chatSessionId = null, needs = [], builds = [], missing, account: began }: {
+  async function ensure({ device, chatSessionId = null, needs = [], builds = [], missing, account: began, origin = null }: {
     device?: CloudPhoneDevice;
     chatSessionId?: string | null;
     needs?: readonly CloudPhoneAbility[];
@@ -335,6 +335,8 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     /** The build on this phone just failed for want of `need`: told to the server with the start. */
     missing?: { phoneId: string; need: CloudPhoneBuildNeed };
     account?: string | null;
+    /** The command asking: a phone this start makes is marked its own (`CloudPhoneRun.origin`). */
+    origin?: object | null;
   } = {}): Promise<Held> {
     const switched = (): CloudPhoneError => new CloudPhoneError("The ADE account changed while the cloud iPhone was in use. Try again.", "no_account");
     const account = await currentAccount();
@@ -393,7 +395,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
           throw new CloudPhoneError(lacksSentence((running && cloudPhoneLacks(running, needs)[0]) || needs[0]), "phone_lacks");
         });
         const previous = liveRun;
-        const phone = hold(start, client, chatSessionId);
+        const phone = hold(start, client, chatSessionId, origin);
         deps.logger?.info?.("cloud_phone.held", { phoneId: phone.phoneId, reused: start.reused, minutesLeft: start.minutes.left });
         // A new phone replaced the one this brain took: that one ended.
         if (previous && previous !== liveRun && previous.account === phone.account) await settleEnd(previous, true);
@@ -458,11 +460,12 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * minutes (`recent`, billed minutes or so far), or null when this brain saw
    * the chat drive none or the server names no phones (an older one).
    */
-  function chatUseOf(state: { recent?: Array<{ id?: string; minutes: number }> }, chatSessionId: string | null): { minutes: number; phones: number } | null {
+  function chatUseOf(state: { recent?: Array<{ id?: string; minutes: number }> }, chatSessionId: string | null): { minutes: number; phones: number; partial: boolean } | null {
     const phones = chatSessionId ? chatPhones.get(chatSessionId) : null;
     if (!phones?.size || !state.recent?.some((use) => typeof use.id === "string")) return null;
     const used = state.recent.filter((use) => use.id && phones.has(use.id));
-    return { minutes: used.reduce((sum, use) => sum + use.minutes, 0), phones: used.length };
+    // The server lists only the period's newest phones: a chat phone older than those is missing from the sum.
+    return { minutes: used.reduce((sum, use) => sum + use.minutes, 0), phones: used.length, partial: used.length < phones.size };
   }
 
   /** The driver whose builds run on build runners before any phone (Revyl's), when a provider has them. */
@@ -485,28 +488,31 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     const driver = runnerDriver();
     if (!driver?.buildOnRunner) return null;
     const account = await currentAccount();
-    const before = await mayBuildBeforePhone(account, input.builds ?? []);
-    if (!before) return null;
+    if (!(await mayBuildBeforePhone(account, input.builds ?? []))) return null;
     const last = options.reuse ? lastBuilds.get(options.reuse.key) : undefined;
     if (last && options.reuse && last.fingerprint === options.reuse.fingerprint && last.account === account && Date.now() - last.at < LAST_BUILD_KEEP_MS) {
       deps.logger?.info?.("cloud_phone.build_reused", { job: last.job });
       return { built: { ok: true, version: last.version, seconds: 0, job: last.job }, reused: true, spent: null };
     }
+    // This command's own token: only a phone its start makes is ever stopped for it.
+    const origin = {};
     const early: { phone: Promise<Held> | null } = { phone: null };
     const start = options.startPhone;
     const nearlyDone = start
       ? () => {
         // The build's step passed: the phone comes up while the app is packed. A failed start is the install's to say.
-        early.phone = ensure({ chatSessionId: start.chatSessionId, needs: start.needs, builds: input.builds ?? [], account });
+        early.phone = ensure({ chatSessionId: start.chatSessionId, needs: start.needs, builds: input.builds ?? [], account, origin });
         early.phone.catch(() => undefined);
       }
       : undefined;
+    // A Revyl phone already up is touched while the build runs, so its idle stop doesn't come first.
+    const awake = held?.provider === "revyl" && held.account === account ? held : undefined;
     let built: CloudPhoneBuilt | "phone_builds";
     try {
-      built = await driver.buildOnRunner(account, input, nearlyDone);
+      built = await driver.buildOnRunner(account, input, nearlyDone, awake);
     } catch (error) {
       // A status read failed, or the build outran its wait: a phone started alongside it goes again.
-      if (early.phone) await stopPhoneStartedFor(early.phone, before.livePhoneId);
+      if (early.phone) await stopPhoneStartedFor(early.phone, origin);
       throw error;
     }
     if (built === "phone_builds") return null;
@@ -520,40 +526,40 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     }
     // Packing the app failed after a phone started for it (rare): one this start made goes again.
     if (!early.phone) return { built, reused: false, spent: NO_PHONE_SPENT };
-    return { built, reused: false, spent: (await stopPhoneStartedFor(early.phone, before.livePhoneId)) ? EARLY_PHONE_STOPPED : null };
+    return { built, reused: false, spent: (await stopPhoneStartedFor(early.phone, origin)) ? EARLY_PHONE_STOPPED : null };
   }
 
   /**
    * Whether a build could run before any phone, as far as the brain can tell
-   * before asking, and the phone live then: never with a NoMac phone held
-   * here (it builds on itself), nor on a server from before builds with no
-   * phone (it names no `toolchains` and would answer phone_not_running). With
-   * no build tool in play the route's first stop decides; with one (`metal`)
-   * any stop that builds first may get it, and the server says.
+   * before asking: never with a NoMac phone held here (it builds on itself),
+   * nor on a server from before builds with no phone (it names no
+   * `toolchains` and would answer phone_not_running). With no build tool in
+   * play the route's first stop decides; with one (`metal`) any stop that
+   * builds first may get it, and the server says.
    */
-  async function mayBuildBeforePhone(account: string | null, builds: readonly CloudPhoneBuildNeed[]): Promise<{ livePhoneId: string | null } | null> {
-    if (held?.provider === "nomac" && held.account === account) return null;
+  async function mayBuildBeforePhone(account: string | null, builds: readonly CloudPhoneBuildNeed[]): Promise<boolean> {
+    if (held?.provider === "nomac" && held.account === account) return false;
     const state = await (await provider()).phoneState!().catch((error: unknown) => {
       // Unread: the phone builds, as before (with the phone up).
       deps.logger?.warn?.("cloud_phone.build_first_state_failed", { error: error instanceof Error ? error.message : String(error) });
       return null;
     });
     const toolchains = state?.toolchains;
-    if (!toolchains?.length) return null;
-    const first = builds.length ? toolchains.some((toolchain) => toolchain.buildsBeforePhone) : toolchains[0]!.buildsBeforePhone === true;
-    return first ? { livePhoneId: state?.phone && state.phone.state !== "ended" ? state.phone.id : null } : null;
+    if (!toolchains?.length) return false;
+    return builds.length ? toolchains.some((toolchain) => toolchain.buildsBeforePhone) : toolchains[0]!.buildsBeforePhone === true;
   }
 
   /**
    * Stops a phone `buildBeforePhone` started alongside a build that then
-   * failed, only when this start made it: never the phone already up before
-   * the build, nor one the start found running (another machine's). Its start
-   * answers in seconds (its readiness can take minutes), so that answer is
-   * waited for briefly; a start still in flight then is stopped when it
-   * answers. Answers whether it stopped one now.
+   * failed, only when this command's own start made it (`origin`): never a
+   * phone already up, one another chat or the person started meanwhile, nor
+   * one the start found running. Its start answers in seconds (its readiness
+   * can take minutes), so that answer is waited for briefly; a start still in
+   * flight then is stopped once it settles, whichever way. Answers whether it
+   * stopped one now.
    */
-  async function stopPhoneStartedFor(early: Promise<Held>, livePhoneId: string | null): Promise<boolean> {
-    const mine = (): CloudPhoneRun<Held> | null => (liveRun && !liveRun.reused && liveRun.phoneId !== livePhoneId ? liveRun : null);
+  async function stopPhoneStartedFor(early: Promise<Held>, origin: object): Promise<boolean> {
+    const mine = (): CloudPhoneRun<Held> | null => (liveRun?.origin === origin ? liveRun : null);
     let settled = false;
     void early.then(() => { settled = true; }, () => { settled = true; });
     const by = Date.now() + EARLY_STOP_WAIT_MS;
@@ -561,10 +567,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     const run = mine();
     if (run) return stopRun(run);
     if (!settled) {
-      void early.then(() => {
+      const stopLate = () => {
         const late = mine();
         if (late) void stopRun(late);
-      }, () => undefined);
+      };
+      void early.then(stopLate, stopLate);
     }
     return false;
   }
@@ -593,7 +600,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
    * need and the last good build are kept per key) and, unless it builds
    * clean, what an unchanged source reuses. The caller removes the archive.
    */
-  async function projectBuild(args: { root?: unknown; path?: unknown; scheme?: unknown; configuration?: unknown; clean?: unknown; xcode?: unknown } | null | undefined, env?: string) {
+  function projectBuild(args: { root?: unknown; path?: unknown; scheme?: unknown; configuration?: unknown; clean?: unknown; xcode?: unknown } | null | undefined, env?: string) {
     const { root, sub } = projectArgs(args);
     const configuration = args?.configuration === undefined ? undefined : args.configuration === "Release" ? "Release" : args.configuration === "Debug" ? "Debug" : null;
     if (configuration === null) throw new CloudPhoneError("configuration is Debug or Release.", "bad_request");
@@ -738,7 +745,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     },
 
     /** Stops the account's phone; for a chat's call, what that chat's phones used this period (`chatUse`). */
-    async stop(args?: unknown): Promise<{ stopped: boolean; chatUse?: { minutes: number; phones: number } | null }> {
+    async stop(args?: unknown): Promise<{ stopped: boolean; chatUse?: { minutes: number; phones: number; partial: boolean } | null }> {
       held = null;
       const stopping = liveRun;
       const client = await provider();
@@ -764,7 +771,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
      * refused with a sentence, and spends nothing.
      */
     async build(args: { root?: unknown; path?: unknown; scheme?: unknown; configuration?: unknown; clean?: unknown; xcode?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer & { files: number; bytes: number; job: string | null }> {
-      const project = await projectBuild(args);
+      const project = projectBuild(args);
       // Nothing is packed where no build can run before a phone: said at once, spending nothing.
       if (!(await mayBuildBeforePhone(await currentAccount(), ["metal"]))) return { ...textAnswer(BUILD_NEEDS_PHONE, true), files: 0, bytes: 0, job: null };
       const { packed, input, reuse } = await project.pack();
@@ -919,7 +926,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     async launch(args: { root?: unknown; path?: unknown; scheme?: unknown; configuration?: unknown; env?: unknown; clean?: unknown; xcode?: unknown } | null | undefined): Promise<CloudPhoneToolAnswer & { files: number; bytes: number }> {
       const chatSessionId = cloudPhoneCallerChat(args);
       const env = textArg(args?.env, "env", 8_000);
-      const project = await projectBuild(args, env);
+      const project = projectBuild(args, env);
       const { packed, input, buildKey, reuse } = await project.pack();
       const builds = input.builds ?? [];
       try {

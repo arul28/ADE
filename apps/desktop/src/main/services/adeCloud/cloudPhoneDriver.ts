@@ -161,9 +161,10 @@ export type CloudPhoneDriver = {
    * account's builds run on the phone itself (the server says). `prebuilt`:
    * the upload is one Simulator `.app`, handed back as the build's app.
    * `nearlyDone` is called once, when only packing the built app is left, so
-   * a phone can start alongside.
+   * a phone can start alongside. `awake`: a phone already up, touched while
+   * the build runs so its idle stop doesn't come first.
    */
-  buildOnRunner?(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void): Promise<CloudPhoneBuilt | "phone_builds">;
+  buildOnRunner?(account: string | null, input: CloudPhoneRunInput & { prebuilt?: boolean }, nearlyDone?: () => void, awake?: CloudPhoneHeld): Promise<CloudPhoneBuilt | "phone_builds">;
   /** Installs a build `buildOnRunner` made (`seconds` null: one made earlier, used again; `prebuilt`: an app built elsewhere) and, unless `launch` is false, launches it with `env`: the answer and its bundle id. */
   installBuilt?(phone: CloudPhoneHeld, built: { version: string; seconds: number | null }, input: { env?: string; launch: boolean; prebuilt?: boolean }): Promise<{ answer: CloudPhoneToolAnswer; bundleId: string | null }>;
   /** A build's log by its job (`CloudPhoneBuilt.job`), for the account. */

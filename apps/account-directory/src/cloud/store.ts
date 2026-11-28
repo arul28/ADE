@@ -52,7 +52,7 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   CLOUDFLARE_BILLING_TOKEN?: string;
   /** The owner's switch for Revyl: `on` lets new phones start there (with the key set). Unset or anything else: NoMac only (`revylEnabled`). */
   CLOUD_PHONE_REVYL?: string;
-  /** The Xcode image Revyl builds run on (`ios-macos-26-xcode-27.2`); unset: `REVYL_BUILD_IMAGE` in `phoneRevyl.ts`. */
+  /** The Xcode image Revyl builds run on (`ios-macos-26-xcode-27.2`); unset: `REVYL_BUILD_IMAGE` in `phoneRevylBuild.ts`. */
   CLOUD_PHONE_REVYL_IMAGE?: string;
   /** Who may use the ADE Cloud iPhone: `beta` (default, the owner's list), `all`, or `off` (`phones.ts`). */
   CLOUD_PHONE_ACCESS?: string;

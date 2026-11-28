@@ -6,7 +6,7 @@
  */
 
 import { fail, json } from "./http";
-import { SLOW_REQUEST_TIMEOUT_MS, knownWorkspace, sha256Hex, workspaceApp, workspaceJson, workspaceOf, type WorkspaceRow } from "./phoneRevylWorkspace";
+import { SLOW_REQUEST_TIMEOUT_MS, UUID, callParts, knownWorkspace, sha256Hex, stringArg, workspaceApp, workspaceJson, workspaceOf, type WorkspaceRow } from "./phoneRevylWorkspace";
 import { logCloud, type CloudEnv } from "./store";
 
 /**
@@ -15,12 +15,16 @@ import { logCloud, type CloudEnv } from "./store";
  * limit (`revylSpentMicros`), however long its claim stays open.
  */
 export const REVYL_BUILD_MAX_SECONDS = 900;
-/** A build's claim whose start never got Revyl's answer (the Worker stopped mid-start) lapses after this; the start's own calls take at most about 5 minutes. */
-const BUILD_START_LAPSE_MS = 6 * 60_000;
-/** A start whose answer was lost may have a build running: its claim holds this long (the build's limit plus a wait for a runner), then lapses. */
+/**
+ * A claim with no job (its start is asking Revyl, or never got Revyl's
+ * answer, so a build may run) holds this long: the build's limit plus a wait
+ * for a runner. Then it lapses, counted as running till then.
+ */
 const BUILD_UNKNOWN_HOLD_MS = 30 * 60_000;
-/** A build Revyl took holds its claim until Revyl says it ended, or this long at most (a job Revyl lost, or one nobody asks after). */
+/** A build Revyl took holds its claim until Revyl says it ended, or this long at most when Revyl can't say. */
 const BUILD_JOB_HOLD_MS = 2 * 60 * 60_000;
+/** Revyl's "no such build" ends a claim only once the claim is this old: never a status read that beats Revyl to its own new job. */
+const BUILD_GONE_AFTER_MS = 2 * 60_000;
 
 /**
  * The Xcode image a build runs on unless it names another: Revyl's newest
@@ -68,7 +72,6 @@ export const isRevylBuildAction = (action: unknown): boolean => typeof action ==
 /** Revyl's words for a build that finished, whichever way (`build.status`'s `status`). */
 const BUILD_ENDED = new Set(["success", "succeeded", "completed", "failed", "error", "cancelled", "canceled", "timeout"]);
 
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SCHEME = /^[A-Za-z0-9 _.+()-]{1,200}$/;
 /**
  * A folder inside the uploaded project: no `..`, no absolute path, no control
@@ -202,17 +205,6 @@ function revylRecipe(app: string, input: RevylBuildInput): Record<string, unknow
   };
 }
 
-export const stringArg = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
-
-/** A call's action, its body for Revyl and its query (short lowercase keys and values only). */
-export function callParts(body: Record<string, unknown>): { action: string; args: Record<string, unknown>; query: Record<string, string> } {
-  const action = typeof body.action === "string" ? body.action : "";
-  const args = body.body && typeof body.body === "object" && !Array.isArray(body.body) ? body.body as Record<string, unknown> : {};
-  const query = body.query && typeof body.query === "object" && !Array.isArray(body.query)
-    ? Object.fromEntries(Object.entries(body.query as Record<string, unknown>).filter((entry): entry is [string, string] => /^[a-z_]{1,40}$/.test(entry[0]) && typeof entry[1] === "string" && entry[1].length <= 200))
-    : {};
-  return { action, args, query };
-}
 
 /* ---- Builds: the account's, with or without a phone (`cloud_phone_builds`) ---- */
 
@@ -222,52 +214,64 @@ function buildSecondsOf(status: Record<string, unknown> | null, startedAt: numbe
   return Math.min(REVYL_BUILD_MAX_SECONDS, Math.max(0, Math.ceil((Number.isFinite(ms) && ms > 0 ? ms : now - startedAt) / 1000)));
 }
 
-/** Revyl's answer for a build that ended, whichever way; a job Revyl no longer has (404) ended too. */
+/** Revyl's answer for a build that ended, whichever way; a job Revyl no longer has (404) may have ended too (`endBuild` decides by its age). */
 const buildEnded = (answer: { status: number; body: Record<string, unknown> | null }): boolean =>
   answer.status === 404 || (answer.status === 200 && BUILD_ENDED.has(String(answer.body?.status ?? "").toLowerCase()));
 
-/** A build Revyl answers ended: its claim ends with what it ran (only that job's, never a newer build's). */
-async function endBuild(env: Pick<CloudEnv, "DB">, userId: string, job: string, answer: { status: number; body: Record<string, unknown> | null }, now: number): Promise<void> {
+/**
+ * A build Revyl answers ended: its claim ends with what it ran (only that
+ * job's, never a newer build's). Answers whether it ended: Revyl's "no such
+ * build" counts only for a claim older than `BUILD_GONE_AFTER_MS`.
+ */
+async function endBuild(env: Pick<CloudEnv, "DB">, userId: string, job: string, answer: { status: number; body: Record<string, unknown> | null }, now: number): Promise<boolean> {
   const row = await env.DB.prepare("select id, started_at from cloud_phone_builds where user_id = ? and job = ? and ended_at is null").bind(userId, job).first<{ id: string; started_at: number }>();
-  if (!row) return;
-  const status = answer.status === 404 ? "gone" : String(answer.body?.status ?? "ended").toLowerCase().slice(0, 40);
-  await env.DB.prepare("update cloud_phone_builds set ended_at = ?, status = ?, seconds = ? where id = ? and ended_at is null")
-    .bind(now, status, buildSecondsOf(answer.status === 404 ? null : answer.body, row.started_at, now), row.id).run();
+  if (!row) return false;
+  const gone = answer.status === 404;
+  if (gone && now - row.started_at < BUILD_GONE_AFTER_MS) return false;
+  const status = gone ? "gone" : String(answer.body?.status ?? "ended").toLowerCase().slice(0, 40);
+  const ended = await env.DB.prepare("update cloud_phone_builds set ended_at = ?, status = ?, seconds = ? where id = ? and ended_at is null")
+    .bind(now, status, buildSecondsOf(gone ? null : answer.body, row.started_at, now), row.id).run();
+  return (ended.meta?.changes ?? 0) === 1;
 }
 
 /**
  * The account's one build at a time (Revyl's runners bill ADE): claimed in
- * one write, so two starts can't both run. A claim whose start never got
- * Revyl's answer lapses (it ran nothing); one whose answer was lost lapses
- * later, counted as running till then (at most a build's longest); a build
- * Revyl took holds it until Revyl says it ended (asked once here when it's in
- * the way; a job Revyl no longer has ended too), or two hours at most. So no
- * claim holds an account's builds, or grows its Revyl spend, for good.
- * Answers the claim's id, or null while another build runs.
+ * one write, as `unknown` (its start asks Revyl next, so a build may run from
+ * then on), so two starts can't both run. A refused start deletes its claim;
+ * an answered one names its job. A claim with no job lapses after
+ * `BUILD_UNKNOWN_HOLD_MS`, counted as running till then (at most a build's
+ * longest). A build Revyl took holds it until Revyl says it ended, which is
+ * asked here when it's in the way, and lapses the same way when Revyl still
+ * can't say after `BUILD_JOB_HOLD_MS`. So no claim holds an account's builds,
+ * or grows its Revyl spend, for good. Answers the claim's id, or null while
+ * another build runs.
  */
 async function claimBuild(env: CloudEnv, workspace: WorkspaceRow, phoneId: string | null, now: number): Promise<string | null> {
   const userId = workspace.user_id;
-  await env.DB.prepare(`update cloud_phone_builds set ended_at = ?, status = 'lapsed',
-      seconds = case when job is null then 0 else min(?, max(0, ? - started_at) / 1000) end
-    where user_id = ? and ended_at is null
-      and ((job is null and started_at <= ?) or (job = 'unknown' and started_at <= ?) or (job is not null and started_at <= ?))`)
-    .bind(now, REVYL_BUILD_MAX_SECONDS, now, userId, now - BUILD_START_LAPSE_MS, now - BUILD_UNKNOWN_HOLD_MS, now - BUILD_JOB_HOLD_MS).run();
+  const lapse = (where: string, ...binds: unknown[]) => env.DB.prepare(`update cloud_phone_builds set ended_at = ?, status = 'lapsed',
+      seconds = min(?, max(0, ? - started_at) / 1000)
+    where user_id = ? and ended_at is null and ${where}`).bind(now, REVYL_BUILD_MAX_SECONDS, now, userId, ...binds).run();
+  await lapse("job = 'unknown' and started_at <= ?", now - BUILD_UNKNOWN_HOLD_MS);
   const claim = async (): Promise<string | null> => {
     const id = crypto.randomUUID();
     const made = await env.DB.prepare(`insert into cloud_phone_builds (id, user_id, provider, job, started_at, phone_id)
-      select ?, ?, 'revyl', null, ?, ? where not exists (select 1 from cloud_phone_builds where user_id = ? and ended_at is null)`)
+      select ?, ?, 'revyl', 'unknown', ?, ? where not exists (select 1 from cloud_phone_builds where user_id = ? and ended_at is null)`)
       .bind(id, userId, now, phoneId, userId).run();
     return (made.meta?.changes ?? 0) === 1 ? id : null;
   };
   const claimed = await claim();
   if (claimed) return claimed;
-  // The held build may have ended with nobody following it (ADE closed, a status read failed): asked once,
-  // an ended one frees the claim. An unknown outcome stays held.
-  const held = await env.DB.prepare("select job from cloud_phone_builds where user_id = ? and ended_at is null limit 1").bind(userId).first<{ job: string | null }>();
+  // The held build may have ended with nobody following it (ADE closed, a status read failed): Revyl is asked
+  // once, and an ended one frees the claim. One Revyl can't answer for after two hours lapses.
+  const held = await env.DB.prepare("select id, job from cloud_phone_builds where user_id = ? and ended_at is null limit 1").bind(userId).first<{ id: string; job: string | null }>();
   if (!held?.job || !UUID.test(held.job)) return null;
   const status = await workspaceJson(env, workspace, "GET", `/apps/remote/${encodeURIComponent(held.job)}/status`);
-  if (!buildEnded(status)) return null;
-  await endBuild(env, userId, held.job, status, now);
+  const ended = buildEnded(status) && await endBuild(env, userId, held.job, status, now);
+  if (!ended) {
+    const running = status.status === 200 && !buildEnded(status);
+    if (running) return null;
+    await lapse("id = ? and started_at <= ?", held.id, now - BUILD_JOB_HOLD_MS);
+  }
   return await claim();
 }
 
@@ -346,15 +350,12 @@ export async function routeRevylBuild(
     timeoutMs: SLOW_REQUEST_TIMEOUT_MS,
   });
   const buildJob = typeof answer.body?.build_job_id === "string" ? answer.body.build_job_id : null;
-  // A start Revyl refused runs nothing: the claim goes. A 5xx or a timeout may hide a build Revyl took:
-  // the claim holds (`unknown`) a while, so a retry can't bill a second one. A claim that lapsed meanwhile
-  // (a very slow start) stays lapsed: its job is never written onto it beside another build's.
-  if (answer.status < 300) {
-    await env.DB.prepare("update cloud_phone_builds set job = ? where id = ? and ended_at is null").bind(buildJob ?? "unknown", claim).run();
-  } else if (answer.status < 500) {
+  // A start Revyl refused runs nothing: the claim goes. An answered one names its job. A 5xx or a timeout may
+  // hide a build Revyl took: the claim stays `unknown` a while, so a retry can't bill a second one.
+  if (answer.status < 300 && buildJob) {
+    await env.DB.prepare("update cloud_phone_builds set job = ? where id = ? and ended_at is null").bind(buildJob, claim).run();
+  } else if (answer.status >= 300 && answer.status < 500) {
     await env.DB.prepare("delete from cloud_phone_builds where id = ?").bind(claim).run();
-  } else {
-    await env.DB.prepare("update cloud_phone_builds set job = 'unknown' where id = ? and ended_at is null").bind(claim).run();
   }
   logCloud("cloud.phone_revyl_build", { userId, status: answer.status, withPhone: phoneId != null, image });
   return json(answer.body ?? {}, answer.status);
