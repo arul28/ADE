@@ -39,7 +39,7 @@ import {
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
 import { withOptimisticLifecycle } from "../../state/sessionLifecycleOptimism";
-import { UNSETTLE_LIFECYCLE_PATCH, settleLifecyclePatch } from "../../webclient/adapter/sessionLifecycleOverlay";
+import { settleLifecyclePatch, unsettleLifecyclePatch } from "../../lib/sessionLifecycleOverlay";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneCloudMarker } from "./LaneMachineMarker";
@@ -1852,7 +1852,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       group.ids,
       settleLifecyclePatch(),
       () => window.ade.sessions.settleMany(group.ids, group.pin),
-      { action: "settle", applied: (changed) => (Array.isArray(changed) ? changed as string[] : null) },
+      { action: "settle", applied: (changed) => changed },
     )));
     const settledGroups: SettleMachineGroup[] = [];
     results.forEach((result, index) => {
@@ -1871,7 +1871,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     setSettleUndo(null);
     const results = await Promise.allSettled(groups.map((group) => withOptimisticLifecycle(
       group.ids,
-      UNSETTLE_LIFECYCLE_PATCH,
+      unsettleLifecyclePatch(),
       () => window.ade.sessions.unsettleMany(group.ids, group.pin),
       { action: "unsettle" },
     )));

@@ -78,7 +78,7 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { reconcileLifecycleRows, useLifecycleRowDecorator } from "../../state/sessionLifecycleOptimism";
+import { reconcileLifecycleRows, useLifecycleDecoratedSlices, useLifecycleRowDecorator } from "../../state/sessionLifecycleOptimism";
 import { patchCrossMachineSessionsPinned, requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, unionSlotIdForBinding, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
@@ -824,8 +824,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const workViewByProject = useAppStore((s) => s.workViewByProject);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
-  const retainedCrossMachineSlices = useRetainedCrossMachineSlices();
-  const machineRouter = useWorkMachineRouter(retainedCrossMachineSlices);
+  const rawCrossMachineSlices = useRetainedCrossMachineSlices();
+  // Another machine's rows, with a settle, snooze or wake pressed a moment ago
+  // painted on (`sessionLifecycleOptimism`); retired against the raw slices.
+  const retainedCrossMachineSlices = useLifecycleDecoratedSlices(rawCrossMachineSlices);
+  useEffect(() => {
+    for (const machine of rawCrossMachineSlices) reconcileLifecycleRows(machine.sessions);
+  }, [rawCrossMachineSlices]);
+  // The router reads bindings only, so it takes the raw slices and does not
+  // re-derive for a pending settle or snooze.
+  const machineRouter = useWorkMachineRouter(rawCrossMachineSlices);
 
   // `hostSessions` is exactly what the active binding's runtime reported (plus
   // the usual optimistic PTY/chat rows); `sessions` below also lists chats whose

@@ -22,7 +22,11 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { machineErrorText } from "../../lib/machineErrorText";
 import { sendWithCloudWakeMark } from "../../state/cloudSavedChatsSync";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
-import { withOptimisticLifecycle } from "../../state/sessionLifecycleOptimism";
+import {
+  SupersededLifecycleWriteError,
+  withOptimisticLifecycle,
+  type LifecycleWriteAction,
+} from "../../state/sessionLifecycleOptimism";
 import {
   CLEAR_WOKE_LIFECYCLE_PATCH,
   settleLifecyclePatch,
@@ -31,7 +35,7 @@ import {
   unsettleLifecyclePatch,
   wakeLifecyclePatch,
   type SessionLifecyclePatch,
-} from "../../webclient/adapter/sessionLifecycleOverlay";
+} from "../../lib/sessionLifecycleOverlay";
 
 /**
  * One place for every write the Work tab's menus make against a session: the
@@ -48,17 +52,30 @@ const UNDO_TOAST_MS = 5_000;
 /**
  * Every lifecycle write below goes through here: the row shows the change at
  * once, the write still goes to the session's own machine by its pin, and a
- * failed write puts the row back before the caller reports it.
+ * failed write puts the row back before the caller reports it. Snooze, wake,
+ * keep-active and the woke clear answer `false` when the machine changed
+ * nothing (the row was already woken, say), which puts the row back too.
  */
-function lifecycleWrite<T>(
-  action: string,
+function lifecycleWrite<T extends boolean | void>(
+  action: LifecycleWriteAction,
   sessionId: string,
   patch: SessionLifecyclePatch,
   pin: OpenProjectBinding | null | undefined,
   write: (target: OpenProjectBinding) => Promise<T>,
 ): Promise<T> {
-  return withOptimisticLifecycle([sessionId], patch, () => withChatPin(pin, write), { action });
+  return withOptimisticLifecycle([sessionId], patch, () => withChatPin(pin, write), {
+    action,
+    applied: (result) => (result === false ? [] : [sessionId]),
+  });
 }
+
+const settleWrite = (
+  sessionId: string,
+  options: { dismissPendingInput?: boolean } | undefined,
+  pin?: OpenProjectBinding | null,
+) =>
+  lifecycleWrite("settle", sessionId, settleLifecyclePatch(options ?? {}), pin, (target) =>
+    window.ade.sessions.settle(sessionId, options, target));
 
 const snoozeWrite = (sessionId: string, untilIso: string, pin?: OpenProjectBinding | null) =>
   lifecycleWrite("snooze", sessionId, snoozeLifecyclePatch(untilIso), pin, (target) =>
@@ -104,6 +121,13 @@ export async function renameSession(
  * few seconds later.
  */
 function reportFailure(action: string, sessionId: string, error: unknown, retry?: () => void): void {
+  // The user acted on the row again before this write finished; the row shows
+  // that later action, and a "failed" toast (with a Try again that would undo
+  // it) would be wrong.
+  if (error instanceof SupersededLifecycleWriteError) {
+    console.info(`[sessionLifecycle] ${action} replaced by a later action`, { sessionId });
+    return;
+  }
   console.error(`[sessionLifecycle] ${action} failed`, { sessionId, error });
   showToast({
     // A retry that fails again replaces this toast instead of stacking a second.
@@ -165,10 +189,13 @@ async function runBulkLifecycle(
   write: (target: BulkLifecycleTarget) => Promise<unknown>,
 ): Promise<BulkLifecycleTarget[]> {
   const results = await Promise.allSettled(targets.map(write));
-  const failedIndex = results.findIndex((result) => result.status === "rejected");
+  // A row the user acted on again mid-write is not a failure (see `reportFailure`).
+  const failed = (result: PromiseSettledResult<unknown>): result is PromiseRejectedResult =>
+    result.status === "rejected" && !(result.reason instanceof SupersededLifecycleWriteError);
+  const failedIndex = results.findIndex(failed);
   if (failedIndex >= 0) {
     const failure = results[failedIndex] as PromiseRejectedResult;
-    const failedCount = results.filter((result) => result.status === "rejected").length;
+    const failedCount = results.filter(failed).length;
     reportFailure(
       targets.length > 1 ? `${action} (${failedCount} of ${targets.length})` : action,
       targets[failedIndex]!.session.id,
@@ -216,9 +243,7 @@ export async function wakeSessions(targets: ReadonlyArray<BulkLifecycleTarget>):
  * out, and none of these writes carries `dismissPendingInput`.
  */
 export async function settleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
-  const settled = await runBulkLifecycle("Settle", targets, ({ session, pin }) =>
-    lifecycleWrite("settle", session.id, settleLifecyclePatch(), pin, (target) =>
-      window.ade.sessions.settle(session.id, undefined, target)));
+  const settled = await runBulkLifecycle("Settle", targets, ({ session, pin }) => settleWrite(session.id, undefined, pin));
   if (!settled.length) return;
   showToast({
     id: `session-settle-bulk:${++bulkToastSeq}`,
@@ -287,8 +312,7 @@ export async function settleSession(
     ? { dismissPendingInput: true }
     : undefined;
   try {
-    await lifecycleWrite("settle", session.id, settleLifecyclePatch(options ?? {}), pin, (target) =>
-      window.ade.sessions.settle(session.id, options, target));
+    await settleWrite(session.id, options, pin);
   } catch (error) {
     reportFailure("Settle", session.id, error, () => { void settleSession(session, pin); });
   }
@@ -318,7 +342,7 @@ export function clearSessionWokeMarker(
   const clear = window.ade.sessions?.clearWokeMarker;
   if (!clear) return;
   if (!pin) return;
-  void withOptimisticLifecycle([sessionId], CLEAR_WOKE_LIFECYCLE_PATCH, () => clear(sessionId, pin), { action: "clear_woke" })
+  void lifecycleWrite("clear_woke", sessionId, CLEAR_WOKE_LIFECYCLE_PATCH, pin, (target) => clear(sessionId, target))
     .catch((error: unknown) => {
       console.error("[sessionLifecycle] clearWokeMarker failed", { sessionId, error });
     });

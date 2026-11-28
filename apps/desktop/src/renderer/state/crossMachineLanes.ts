@@ -28,7 +28,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
-import { reconcileLifecycleRows, useLifecycleRowDecorator } from "./sessionLifecycleOptimism";
+import { decorateLifecycleSlices, useLifecycleRowDecorator } from "./sessionLifecycleOptimism";
 import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import type {
   AgentChatSession,
@@ -445,9 +445,8 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId) ?? {};
   const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
   const unionScopeKey = useRootAppStore((s) => s.crossMachineLaneScopeKey);
-  const decorateLifecycle = useLifecycleRowDecorator();
 
-  const retainedSlices = useMemo(() => {
+  return useMemo(() => {
     const nextRepoKey = repoKeyForBinding(projectBinding);
     let retained = retainedSlotFor(nextRepoKey, projectStateKey);
     // The live union is one repository. A background tab for another repo must
@@ -515,23 +514,6 @@ export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLan
     const slices = Array.from(retained.machinesById.values());
     return slices;
   }, [crossMachineLanesByMachineId, intendedMachineIds, projectBinding, projectStateKey, unionScopeKey]);
-
-  // A settle, snooze or wake pressed on another machine's row shows at once
-  // (`sessionLifecycleOptimism`); the union re-reads foreign machines on a
-  // slower cadence than this machine's change feed.
-  useEffect(() => {
-    for (const machine of retainedSlices) reconcileLifecycleRows(machine.sessions);
-  }, [retainedSlices]);
-  return useMemo(() => {
-    let painted = false;
-    const shown = retainedSlices.map((machine) => {
-      const sessions = decorateLifecycle.rows(machine.sessions);
-      if (sessions.every((row, index) => row === machine.sessions[index])) return machine;
-      painted = true;
-      return { ...machine, sessions };
-    });
-    return painted ? shown : retainedSlices;
-  }, [decorateLifecycle, retainedSlices]);
 }
 
 function pickPinnedMachineEntry(
@@ -3524,7 +3506,16 @@ export function useCrossMachineLaneUnion(
   }, [localSessions]);
   const localLanes = useAppStore((state) => state.lanes);
   const projectBinding = useAppStore((state) => state.projectBinding);
-  const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const rawMachines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  // A settle, snooze or wake pressed on another machine's row reads on its card
+  // and menu at once, as it does in the filing (`sessionLifecycleOptimism`).
+  const decorateLifecycle = useLifecycleRowDecorator();
+  const machines = useMemo(() => {
+    const slices = Object.values(rawMachines);
+    const shown = decorateLifecycleSlices(slices, decorateLifecycle);
+    if (shown === slices) return rawMachines;
+    return Object.fromEntries(Object.keys(rawMachines).map((machineId, index) => [machineId, shown[index]!]));
+  }, [decorateLifecycle, rawMachines]);
   // Marker names follow the lane index: a freed lane computer stops being named at once.
   const { computers: cloudLaneComputers } = useAdeCloudLaneComputers();
   useCrossMachineLaneSync(active);

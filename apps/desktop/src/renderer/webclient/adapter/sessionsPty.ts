@@ -20,14 +20,14 @@ import type { AdapterInfra, AdeNamespace } from "./types";
 import { chatTerminalFromSummary } from "./infra/registries";
 import { stableCacheKey } from "./infra/cacheKey";
 import {
-  SessionLifecycleOverlay,
   CLEAR_WOKE_LIFECYCLE_PATCH,
-  UNSETTLE_LIFECYCLE_PATCH,
+  SessionLifecycleOverlay,
   settleLifecyclePatch,
   snoozeLifecyclePatch,
+  unsettleLifecyclePatch,
   wakeLifecyclePatch,
   type SessionLifecyclePatch,
-} from "./sessionLifecycleOverlay";
+} from "../../lib/sessionLifecycleOverlay";
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import { previewRowsFromTranscript } from "../../components/terminals/terminalPreviewRows";
@@ -415,11 +415,11 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         sessionId,
         ...(opts?.outcome ? { outcome: opts.outcome } : {}),
         ...(opts?.dismissPendingInput ? { dismissPendingInput: true } : {}),
-      }, sessionId, settlePatch());
+      }, sessionId, settleLifecyclePatch({ dismissPendingInput: opts?.dismissPendingInput === true }));
     },
     unsettle: async (sessionId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.unsettle", pin, infra);
-      await lifecycleCall("session.unsettleSession", { sessionId }, sessionId, UNSETTLE_PATCH);
+      await lifecycleCall("session.unsettleSession", { sessionId }, sessionId, unsettleLifecyclePatch());
     },
     // The Work list sends one batch per machine, each with that machine's pin
     // (`SessionListPane` groups the rows). The federated surface hands a
@@ -432,13 +432,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.settleSessions",
         { sessionIds },
         sessionIds,
-        settlePatch(),
+        settleLifecyclePatch(),
         appliedToId,
       )) ?? [];
     },
     unsettleMany: async (sessionIds: string[], pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.unsettleMany", pin, infra);
-      await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, UNSETTLE_PATCH);
+      await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, unsettleLifecyclePatch());
     },
     snoozeSession: async (sessionId: string, untilIso: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.snoozeSession", pin, infra);
@@ -446,7 +446,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.snoozeSession",
         { sessionId, untilIso },
         sessionId,
-        snoozePatch(untilIso),
+        snoozeLifecyclePatch(untilIso),
         appliedToAll,
       ));
     },
@@ -456,7 +456,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.wakeSession",
         { sessionId, ...(reason ? { reason } : {}) },
         sessionId,
-        wakePatch(reason),
+        wakeLifecyclePatch(normalizeWakeReason(reason)),
         appliedToAll,
       ));
     },
@@ -465,7 +465,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.snoozeSessions",
         { sessionIds, untilIso },
         sessionIds,
-        snoozePatch(untilIso),
+        snoozeLifecyclePatch(untilIso),
         appliedToId,
       )) ?? [],
     wakeSessions: async (sessionIds: string[], reason?: string) =>
@@ -473,7 +473,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.wakeSessions",
         { sessionIds, ...(reason ? { reason } : {}) },
         sessionIds,
-        wakePatch(reason),
+        wakeLifecyclePatch(normalizeWakeReason(reason)),
         appliedToId,
       )) ?? [],
     setSettleOverride: async (
@@ -528,7 +528,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         "session.clearWokeMarker",
         { sessionId },
         sessionId,
-        CLEAR_WOKE_PATCH,
+        CLEAR_WOKE_LIFECYCLE_PATCH,
         appliedToAll,
       ));
     },
@@ -811,14 +811,6 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     terminal: terminal as AdeNamespace<"terminal">,
   };
 }
-
-/** Host-mirroring patches live beside the overlay, shared with the desktop's. */
-const settlePatch = (): SessionLifecyclePatch => settleLifecyclePatch();
-const UNSETTLE_PATCH = UNSETTLE_LIFECYCLE_PATCH;
-const snoozePatch = snoozeLifecyclePatch;
-const wakePatch = (reason?: string): SessionLifecyclePatch => wakeLifecyclePatch(normalizeWakeReason(reason));
-
-const CLEAR_WOKE_PATCH = CLEAR_WOKE_LIFECYCLE_PATCH;
 
 const WAKE_REASONS = new Set<SessionWakeReason>(["timer", "needs_you", "error", "turn_complete", "manual"]);
 
