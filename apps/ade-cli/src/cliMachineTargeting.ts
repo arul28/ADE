@@ -21,6 +21,7 @@ import { JsonRpcError } from "./jsonrpc";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { ADE_CLOUD_NAME } from "../../desktop/src/shared/adeCloudMachine";
 import { BRAND } from "../../desktop/src/shared/brand";
+import { displayLegacyDefaultName } from "../../desktop/src/shared/legacyDefaultNames";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
@@ -1317,11 +1318,10 @@ export function markCloudComputers(machines: unknown, cloudKeys: ReadonlySet<str
  */
 export function machineListLabel(name: string, cloud: boolean): string {
   if (!cloud) return name;
-  if (name.startsWith(ADE_CLOUD_NAME)) return name;
-  // A name saved before the rename still starts with the old product name.
-  const legacy = `${BRAND.FORMER_NAME} Cloud`;
-  if (name.startsWith(legacy)) return `${ADE_CLOUD_NAME}${name.slice(legacy.length)}`;
-  return `${ADE_CLOUD_NAME} · ${name}`;
+  // A default saved before the rename reads with the new product name.
+  const shown = displayLegacyDefaultName(name);
+  if (shown.startsWith(ADE_CLOUD_NAME)) return shown;
+  return `${ADE_CLOUD_NAME} · ${shown}`;
 }
 
 async function withMachineBrain<T>(

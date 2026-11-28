@@ -41,6 +41,7 @@ import type {
   CloudReferralSummary,
 } from "../../../account-directory/src/cloud/contract";
 import { BRAND } from "./brand";
+import { displayLegacyDefaultName } from "./legacyDefaultNames";
 export {
   CLOUD_INVITE_REFUSAL_REASONS,
   CLOUD_REFERRAL_ENTER_DAYS,
@@ -824,13 +825,13 @@ export function cloudHoursLeftMilli(account: Pick<CloudAccountState, "hours" | "
 /** The name DAEX shows for a computer it made with no lane name (`cloudMachineCreator`). */
 export const CLOUD_MACHINE_DEFAULT_NAME = `${BRAND.CLOUD_NAME} computer`;
 
-/** The same default under the old product name, as computers made before the rename are stored. */
-export const LEGACY_CLOUD_MACHINE_DEFAULT_NAME = `${BRAND.FORMER_NAME} Cloud computer`;
-
-/** True for the name DAEX gives a computer with no lane name, under either product name. */
+/**
+ * True for the name DAEX gives a computer with no lane name, under either
+ * product name (computers made before the rename keep "ADE Cloud computer").
+ */
 export function isCloudMachineDefaultName(name: string | null | undefined): boolean {
   const trimmed = name?.trim();
-  return trimmed === CLOUD_MACHINE_DEFAULT_NAME || trimmed === LEGACY_CLOUD_MACHINE_DEFAULT_NAME;
+  return !!trimmed && displayLegacyDefaultName(trimmed) === CLOUD_MACHINE_DEFAULT_NAME;
 }
 
 /** At this share of one computer's disk, ADE warns and offers "Free up space". */

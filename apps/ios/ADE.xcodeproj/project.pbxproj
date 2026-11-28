@@ -149,6 +149,7 @@
 		BD0000000000000000000011 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
 		BD0000000000000000000012 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
 		BD0000000000000000000013 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0000000000000000000001 /* Brand.swift */; };
+		BE00000000000000000000B3 /* LegacyDefaultNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE00000000000000000000A3 /* LegacyDefaultNames.swift */; };
 		AE00000000000000000000B5 /* ADEAgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */; };
 		AE00000000000000000000C5 /* ADEAgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */; };
 		AE00000000000000000000B6 /* ADEAgentActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */; };
@@ -765,6 +766,7 @@
 		AE00000000000000000000A3 /* LiveActivityService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityService.swift; path = ADE/Services/LiveActivityService.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPushDeliverySection.swift; path = ADE/Views/Settings/SettingsPushDeliverySection.swift; sourceTree = "<group>"; };
 		BD0000000000000000000001 /* Brand.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Brand.swift; path = ADE/Shared/Brand.swift; sourceTree = "<group>"; };
+		BE00000000000000000000A3 /* LegacyDefaultNames.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LegacyDefaultNames.swift; path = ADE/Shared/LegacyDefaultNames.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAgentActivityAttributes.swift; path = ADE/Shared/ADEAgentActivityAttributes.swift; sourceTree = "<group>"; };
 		AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAgentActivityWidget.swift; path = ADEWidgets/ADEAgentActivityWidget.swift; sourceTree = "<group>"; };
 		AF00000000000000000000A1 /* DpopKeyService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DpopKeyService.swift; path = ADE/Services/DpopKeyService.swift; sourceTree = "<group>"; };
@@ -1926,6 +1928,7 @@
 				AA5100000000000000000004 /* AttentionActionIntents.swift */,
 				AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */,
 				BD0000000000000000000001 /* Brand.swift */,
+				BE00000000000000000000A3 /* LegacyDefaultNames.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -2431,6 +2434,7 @@
 				AA1100000000000000000004 /* ActivityRowPresentation.swift in Sources */,
 				AA1100000000000000000005 /* ActivityWidgetPresentation.swift in Sources */,
 				BD0000000000000000000011 /* Brand.swift in Sources */,
+				BE00000000000000000000B3 /* LegacyDefaultNames.swift in Sources */,
 				C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */,
 				0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */,
 				E7C4AFA1DEBFC844E11CC907 /* SpeechDictationService.swift in Sources */,

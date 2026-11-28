@@ -8,7 +8,7 @@
  * which swaps the product name in the exact defaults only. Anything else,
  * including every name a person typed, comes back unchanged.
  *
- * The iOS copy is `displayLegacyDefaultName` in apps/ios/ADE/Services/AccountDirectory.swift.
+ * The iOS copy is `displayLegacyDefaultName` in apps/ios/ADE/Shared/LegacyDefaultNames.swift.
  */
 
 import { BRAND } from "./brand";
