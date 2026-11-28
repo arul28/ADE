@@ -624,6 +624,116 @@ struct WorkPendingSettingsChip: View {
   }
 }
 
+/// "A newer version is out: Fable 5.2." above the prompt box (ADE-300), the
+/// twin of the desktop's `ModelUpgradeStrip`: the provider sign-in strip's
+/// shape (`providerSignInSlot.css`), a tab on the box in the newer model's
+/// tint, with Switch and ×. Only a suggestion: ADE never changes the model
+/// itself.
+struct WorkModelUpgradeStrip: View {
+  let upgrade: WorkModelUpgrade
+  var isBusy = false
+  let onSwitch: () -> Void
+  let onDismiss: () -> Void
+
+  /// The strip's height, as the desktop's sign-in strip.
+  static let height: CGFloat = 34
+
+  private var tint: Color { providerTint(upgrade.brand) }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      WorkProviderBareLogo(
+        provider: upgrade.brand,
+        fallbackSymbol: providerIcon(upgrade.brand),
+        tint: tint,
+        size: 14
+      )
+      .accessibilityHidden(true)
+      // Narrow: "Fable 5.2 is out".
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 0) {
+          Text("A newer version is out: ").foregroundStyle(ADEColor.textSecondary)
+          Text(upgrade.toName).fontWeight(.semibold).foregroundStyle(ADEColor.textPrimary)
+          Text(".").foregroundStyle(ADEColor.textSecondary)
+        }
+        Text("\(upgrade.toName) is out")
+          .foregroundStyle(ADEColor.textSecondary)
+          .truncationMode(.tail)
+      }
+      .font(.caption)
+      .lineLimit(1)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityElement(children: .combine)
+      Button(action: onSwitch) {
+        Text("Switch")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .padding(.horizontal, 10)
+          .frame(height: 24)
+          .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(isBusy)
+      .opacity(isBusy ? 0.6 : 1)
+      .accessibilityLabel("Switch to \(upgrade.toName)")
+      .accessibilityIdentifier("Work.Composer.ModelUpgrade.Switch")
+      Button(action: onDismiss) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(width: 24, height: 24)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Keep \(upgrade.fromName)")
+      .accessibilityIdentifier("Work.Composer.ModelUpgrade.Dismiss")
+    }
+    .padding(.leading, 10)
+    .padding(.trailing, 4)
+    .frame(height: Self.height)
+    .modifier(WorkComposerTabSurface(tint: tint))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Work.Composer.ModelUpgrade")
+  }
+}
+
+/// A strip above the prompt box drawn as a tab on it (the desktop's
+/// `[data-composer-above-slot] .ade-psi-strip`): inset from the box's sides,
+/// rounded at the top, open at the bottom where it meets the box, the
+/// composer's glass with the tint mixed in and a tinted edge.
+struct WorkComposerTabSurface: ViewModifier {
+  let tint: Color
+
+  private var shape: UnevenRoundedRectangle {
+    UnevenRoundedRectangle(topLeadingRadius: 12, topTrailingRadius: 12, style: .continuous)
+  }
+
+  func body(content: Content) -> some View {
+    content
+      .background(tint.opacity(0.07), in: shape)
+      .workChatGlass(in: shape)
+      .overlay(WorkComposerTabEdge().stroke(tint.opacity(0.24), lineWidth: 0.75))
+  }
+}
+
+/// The tab's edge: both sides and the rounded top, none along the bottom.
+struct WorkComposerTabEdge: Shape {
+  var radius: CGFloat = 12
+
+  func path(in rect: CGRect) -> Path {
+    var path = Path()
+    let r = min(radius, rect.height, rect.width / 2)
+    path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+    path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
+    path.addArc(center: CGPoint(x: rect.minX + r, y: rect.minY + r), radius: r, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+    path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.minY))
+    path.addArc(center: CGPoint(x: rect.maxX - r, y: rect.minY + r), radius: r, startAngle: .degrees(270), endAngle: .degrees(0), clockwise: false)
+    path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+    return path
+  }
+}
+
 /// Compact horizontal strip matching the desktop composer toolbar: small
 /// single-line pills for access, model, pending status chips,
 /// and nothing else. Reasoning is summarized in the model chip and changed

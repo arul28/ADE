@@ -666,6 +666,32 @@ struct WorkSessionDestinationView: View {
     return AccountCloudLaunchStore.shared.catalog ?? .pending
   }
 
+  /// The models this chat's own machine runs, for the composer's
+  /// newer-version offer (ADE-300): ADE Cloud's list for a cloud chat, the
+  /// personal chat's machine for a personal chat, else the focused machine's.
+  /// Nil for a chat another machine serves: the phone holds no list for it,
+  /// so it is never offered a model its machine may not run.
+  var modelUpgradeCandidatesLoader: (@MainActor () async -> [String]?)? {
+    let sync = syncService
+    if restingCloudModelCatalog != nil || providerSignInIsAdeCloud {
+      return {
+        let store = AccountCloudLaunchStore.shared
+        await store.loadCatalogIfNeeded(using: sync)
+        return store.catalog.map { catalog in catalog.providers.flatMap { provider in provider.models.map(\.id) } }
+      }
+    }
+    if personalChat {
+      let machineKey = personalChatMachineKey
+      return {
+        (try? await sync.getPersonalChatModelCatalog(mode: "cached", machineKey: machineKey))
+          .map(workAvailableCatalogModelIds)
+      }
+    }
+    guard !isRemoteMachineChat, registeredRemoteMachineKey == nil,
+          !sync.isRemoteMachineChat(sessionId: sessionId) else { return nil }
+    return { (try? await sync.getChatModelCatalog(mode: "cached")).map(workAvailableCatalogModelIds) }
+  }
+
   /// The account machine key this chat's held messages are filed under:
   /// set only for a chat on an ADE Cloud computer.
   var cloudQueueAccountKey: String? {
@@ -2836,6 +2862,7 @@ struct WorkSessionDestinationView: View {
     chatView.cloudHeld = cloudHeldThread(frame: thread.frame)
     chatView.sponsoredInstanceId = sponsoredInstanceId
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog
+    chatView.loadModelUpgradeCandidates = modelUpgradeCandidatesLoader
     chatView.sendBlockedReason = cloudNewComputerBlockedReason
     return chatView
   }

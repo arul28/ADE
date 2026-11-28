@@ -4,6 +4,7 @@ import { FreeModelBadge } from "./FreeModelBadge";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Brain, Check, ImageSquare, Lightning, SignIn, Star } from "@phosphor-icons/react";
 import {
+  getModelById,
   modelSupportsFastMode,
   modelSupportsServiceTier,
   modelSupportsUltrafast,
@@ -143,6 +144,8 @@ export const ModelListRow = memo(function ModelListRow({
   const details = modelDetailLine(model, { omitProvider: omitProviderInDetail, omitContext: showCopilotContextChip });
   const localBadge = isLocalModel(model);
   const maxModeBadge = model.cursorMaxModeOnly === true;
+  // An older version of a model the provider has replaced (ADE-300).
+  const newerVersion = model.successorId ? getModelById(model.successorId) ?? null : null;
   const showFastChip = !serviceTierMode && Boolean(onFastModeChange) && modelSupportsFastMode(model);
   const fastBlocked = showFastChip && Boolean(fastUnavailableReason);
   const showServiceTierChip = serviceTierMode
@@ -325,7 +328,7 @@ export const ModelListRow = memo(function ModelListRow({
           aria-disabled={!isAvailable || undefined}
           aria-selected={isActive}
           aria-current={isFocused ? "true" : undefined}
-          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${freeBadge ? `, ${FREE_MODEL_BADGE_LABELS[freeBadge].toLowerCase()}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${
+          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${freeBadge ? `, ${FREE_MODEL_BADGE_LABELS[freeBadge].toLowerCase()}` : ""}${maxModeBadge ? ", max mode only" : ""}${newerVersion ? `, previous version of ${newerVersion.displayName}` : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${
             // This label replaces the descendants' accessible names, so the
             // badge beside the chip is otherwise invisible to a screen reader —
             // and "the server gave you a different tier" is exactly the kind of
@@ -412,9 +415,11 @@ export const ModelListRow = memo(function ModelListRow({
             {details ? (
               <span
                 className="block truncate text-[11px] font-normal leading-snug text-muted-fg/60"
-                title={details}
+                title={newerVersion ? `${details} · ${newerVersion.displayName} is the newer version` : details}
               >
                 {details}
+                {/* An older version of a model the provider replaced (ADE-300): said quietly, so the name keeps its width. */}
+                {newerVersion ? <span data-model-picker-previous-version="true"> · Previous version</span> : null}
               </span>
             ) : null}
           </span>

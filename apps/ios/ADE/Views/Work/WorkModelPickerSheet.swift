@@ -1927,6 +1927,9 @@ struct ModelPickerListRow: View {
             .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
             .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
             .lineLimit(1)
+          if newerVersionName != nil {
+            previousVersionTag
+          }
         }
         if let piContextLabel {
           Text(piContextLabel)
@@ -1955,6 +1958,9 @@ struct ModelPickerListRow: View {
             .font(.system(size: 14.5, weight: isSelected ? .semibold : .medium))
             .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
             .lineLimit(1)
+          if newerVersionName != nil {
+            previousVersionTag
+          }
         }
         if let piContextLabel {
           Text(piContextLabel)
@@ -1969,6 +1975,18 @@ struct ModelPickerListRow: View {
     .accessibilityLabel(modelAccessibilityLabel)
   }
 
+  /// An older version of a model the provider has replaced (ADE-300).
+  private var newerVersionName: String? {
+    workModelNewerVersionName(model.id)
+  }
+
+  /// The quiet tag beside an older version's name.
+  private var previousVersionTag: some View {
+    ADEKitTag(text: "Previous", tone: .neutral, keepsCase: true)
+      .layoutPriority(1)
+      .accessibilityHidden(true)
+  }
+
   /// A free model's badge, wherever the row shows.
   private var freeEntry: WorkFreeModelEntry? {
     workFreeModelEntry(modelId: model.id)
@@ -1978,6 +1996,7 @@ struct ModelPickerListRow: View {
     [
       model.displayName,
       freeEntry?.badge.label,
+      newerVersionName.map { "Previous version. \($0) is the newer version" },
       piContextLabel,
       model.isAvailable ? "Available" : "Unavailable",
       isSelected ? "Selected" : nil,

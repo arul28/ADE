@@ -5,6 +5,7 @@ import {
   BACKGROUND_UTILITY_CURSOR_MODEL_ID,
 } from "../../../../shared/backgroundUtilityModel";
 import { getModelById } from "../../../../shared/modelRegistry";
+import { findModelUpgrade } from "../../../../shared/modelSuccessors";
 
 /**
  * The tour's "Send your first chat" step, for someone with no chats yet: a
@@ -41,6 +42,8 @@ export function pickFirstChatModel(status: AiSettingsStatus | null): FirstChatMo
     const descriptor = getModelById(id);
     const price = descriptor?.inputPricePer1M;
     if (!descriptor || descriptor.deprecated || typeof price !== "number") continue;
+    // Never an older version whose newer one runs here too (Sonnet 5 beside Sonnet 5.5).
+    if (findModelUpgrade(id, [...available])) continue;
     if (!cheapest || price < cheapest.price) cheapest = { id, label: descriptor.displayName, price };
   }
   return cheapest ? { id: cheapest.id, label: cheapest.label } : null;

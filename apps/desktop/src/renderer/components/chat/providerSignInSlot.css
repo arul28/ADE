@@ -71,6 +71,57 @@
   border-radius: 12px 12px 0 0;
 }
 
+/* Two strips at once (ComposerNoticeStack in ModelUpgradeStrip.tsx): one tab
+   on the box, each strip a line of it with a hairline between, each keeping
+   its own tint. */
+.ade-psi-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 6px;
+}
+
+[data-composer-above-slot] .ade-psi-stack {
+  gap: 0;
+  margin: 0 26px -7px;
+  overflow: hidden;
+  border: 1px solid var(--kit-panel-edge);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+}
+
+[data-composer-above-slot] .ade-psi-stack > .ade-psi-strip {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+[data-composer-above-slot] .ade-psi-stack > .ade-psi-strip + .ade-psi-strip {
+  border-top: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+/* A strip's × (the newer-version strip): quiet until hovered. */
+.ade-psi-dismiss {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  color: var(--kit-text-3, color-mix(in srgb, var(--color-fg) 45%, transparent));
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.ade-psi-dismiss:hover {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-psi-dismiss:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--psi-accent) 70%, var(--color-fg));
+  outline-offset: 1px;
+}
+
 .ade-psi-short { display: none; }
 
 @container (max-width: 300px) {

@@ -398,6 +398,10 @@ import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive, rowSaysTurnEnded } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { useFreeModelsDraft } from "./useFreeModelsDraft";
+import { useModelUpgradeSuggestion } from "./useModelUpgradeSuggestion";
+import { ComposerNoticeStack, ModelUpgradeStrip } from "./ModelUpgradeStrip";
+import { dismissModelUpgrade } from "./modelUpgradeMemory";
+import { findModelUpgrade } from "../../../shared/modelSuccessors";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -20159,6 +20163,15 @@ export function AgentChatPane({
     }
     return null;
   }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, connectionsByProvider, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  // A fresh chat draft the person runs here with the composer's own model:
+  // not a subagent, a cloud or CLI draft, a parallel set or a narrowed list.
+  const composerFreshDraft = !selectedSessionId
+    && selectedEvents.length === 0
+    && !chatScope
+    && !subagentView
+    && !draftSkipsLocalSignIn
+    && !parallelDraftActive
+    && !modelSelectionConstrained;
   // Free models (`shared/freeModels.ts`), from the composer machine's status
   // like the sign-in check above.
   const { offerFreeModel, handleUseFreeModel } = useFreeModelsDraft({
@@ -20168,13 +20181,7 @@ export function AgentChatPane({
     runtimeBinding: activeComposerRuntimeBinding ?? null,
     composerIsRemote: composerRuntimePin != null,
     draftKey: companionStateKey,
-    freshDraft: !selectedSessionId
-      && selectedEvents.length === 0
-      && !chatScope
-      && !subagentView
-      && !draftSkipsLocalSignIn
-      && !parallelDraftActive
-      && !modelSelectionConstrained,
+    freshDraft: composerFreshDraft,
     modelId,
     composerReady: preferencesReady && !loading,
     personModelChangeRef,
@@ -20392,6 +20399,44 @@ export function AgentChatPane({
     const failure = await resendLastUserMessage(selectedSessionId, null);
     return typeof failure === "string" ? failure : null;
   }, [accountSwitchShown, resendLastUserMessage, selectedSessionId]);
+  const cursorCloudSessionActive = cursorCloudMode || cursorRuntime === "cloud";
+  const devinCloudSessionActive = devinCloudMode || devinRuntime === "cloud";
+  // A resting ADE Cloud computer cannot say which models it can run: its
+  // sign-ins are unknown, not missing. The picker then lists every model as
+  // one to pick (the send wakes the computer, which names a real sign-in
+  // problem), instead of "Sign in" rows that lead to a settings page for a
+  // computer that is asleep.
+  const restingModelPicker = chatComputerResting && !cursorCloudSessionActive;
+  const composerAvailableModelIds = cursorCloudSessionActive
+    ? cursorCloudModelIds
+    : adeCloudMode && !selectedSessionId && adeCloudModelIds
+      ? adeCloudModelIds
+      : effectiveAvailableModelIds;
+  // A new chat on ADE Cloud offers only the models ADE Cloud runs, each one to
+  // pick (see `adeCloudProviderAuthStatus`), as Cursor Cloud narrows to its own.
+  const adeCloudDraftAuthStatus = adeCloudMode && !selectedSessionId && !cursorCloudSessionActive && adeCloudModelIds
+    ? adeCloudProviderAuthStatus
+    : null;
+  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive || adeCloudDraftAuthStatus != null;
+  // The composer's model controls are locked (the same rule its picker uses).
+  const composerModelLocked = modelSelectionLocked || sessionMutationKind === "model" || turnActive
+    || projectTransitionBlocksChat || Boolean(subagentView);
+  // A newer version of the composer's model (ADE-300): offered, never applied
+  // by ADE. Only a model this composer can pick on the chat's machine.
+  const modelUpgrade = useModelUpgradeSuggestion({
+    modelId,
+    availableModelIds: composerAvailableModelIds,
+    canSwitch: Boolean(modelId) && !composerModelLocked && !hideModelControls && !isPersistentIdentitySurface
+      && !activeHarnessPresetId,
+    personModelChangeRef,
+  });
+  const modelUpgradeStrip = modelUpgrade ? (
+    <ModelUpgradeStrip
+      key={`${modelUpgrade.fromModelId}>${modelUpgrade.toModelId}`}
+      upgrade={modelUpgrade}
+      catalogScopeKey={composerModelCatalogScopeKey}
+    />
+  ) : null;
   // Sits above the prompt box, which stays mounted: typed text never hides.
   const providerSignInSlot = useMemo(() => {
     if (!providerSignInShown && accountSwitchShown) {
@@ -20411,28 +20456,37 @@ export function AgentChatPane({
       );
     }
     if (!providerSignInShown) {
-      return adeCloudSignInNeed ? (
-        <ProviderSignInStrip
-          key={adeCloudSignInNeed.key}
-          provider={adeCloudSignInNeed.provider}
-          machineName="ADE Cloud"
-          runsHere={false}
-          adeCloudPass={adeCloudSignInNeed.kind === "claude-pass"}
-          onSignIn={openAdeCloudSignIn}
-        />
-      ) : null;
+      return (
+        <ComposerNoticeStack>
+          {adeCloudSignInNeed ? (
+            <ProviderSignInStrip
+              key={adeCloudSignInNeed.key}
+              provider={adeCloudSignInNeed.provider}
+              machineName="ADE Cloud"
+              runsHere={false}
+              adeCloudPass={adeCloudSignInNeed.kind === "claude-pass"}
+              onSignIn={openAdeCloudSignIn}
+            />
+          ) : null}
+          {modelUpgradeStrip}
+        </ComposerNoticeStack>
+      );
     }
     const openedFromStrip = providerSignInShown.key === signInCardKey;
     if (providerSignInShown.reason === "no-login" && !openedFromStrip) {
+      // The sign-in first (it blocks the send), then a newer version, as one tab.
       return (
-        <ProviderSignInStrip
-          key={providerSignInShown.key}
-          provider={providerSignInShown.provider}
-          machineName={signInMachineName}
-          runsHere={signInRunsHere}
-          onSignIn={() => setSignInCardKey(providerSignInShown.key)}
-          {...(offerFreeModel ? { onUseFreeModel: handleUseFreeModel } : {})}
-        />
+        <ComposerNoticeStack>
+          <ProviderSignInStrip
+            key={providerSignInShown.key}
+            provider={providerSignInShown.provider}
+            machineName={signInMachineName}
+            runsHere={signInRunsHere}
+            onSignIn={() => setSignInCardKey(providerSignInShown.key)}
+            {...(offerFreeModel ? { onUseFreeModel: handleUseFreeModel } : {})}
+          />
+          {modelUpgradeStrip}
+        </ComposerNoticeStack>
       );
     }
     return (
@@ -20462,6 +20516,7 @@ export function AgentChatPane({
     continueSwitchInNewThread,
     handleProviderSignedIn,
     handleUseFreeModel,
+    modelUpgradeStrip,
     offerFreeModel,
     openAdeCloudSignIn,
     openSignInSettings,
@@ -20782,8 +20837,6 @@ export function AgentChatPane({
     chatRuntimePinKey,
   );
 
-  const cursorCloudSessionActive = cursorCloudMode || cursorRuntime === "cloud";
-  const devinCloudSessionActive = devinCloudMode || devinRuntime === "cloud";
   // Held while its five flags hold: an inline object here is a fresh prop on
   // every pane render, which would defeat the composer's memo boundary.
   // Above the early return below: hooks must run in the same order every render.
@@ -20816,6 +20869,7 @@ export function AgentChatPane({
     enabled: Boolean(selectedSessionId) && !chatScope && !subagentView && !machineChipAction
       && (selectedSession?.surface ?? "work") === "work",
   });
+
 
   // A personal pane has no lane by design; everything below handles that.
   // A draft on an ADE Cloud tab needs none either: it starts or picks an ADE
@@ -22052,23 +22106,6 @@ export function AgentChatPane({
     : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
-  // A resting ADE Cloud computer cannot say which models it can run: its
-  // sign-ins are unknown, not missing. The picker then lists every model as
-  // one to pick (the send wakes the computer, which names a real sign-in
-  // problem), instead of "Sign in" rows that lead to a settings page for a
-  // computer that is asleep.
-  const restingModelPicker = chatComputerResting && !cursorCloudSessionActive;
-  const composerAvailableModelIds = cursorCloudSessionActive
-    ? cursorCloudModelIds
-    : adeCloudMode && !selectedSessionId && adeCloudModelIds
-      ? adeCloudModelIds
-      : effectiveAvailableModelIds;
-  // A new chat on ADE Cloud offers only the models ADE Cloud runs, each one to
-  // pick (see `adeCloudProviderAuthStatus`), as Cursor Cloud narrows to its own.
-  const adeCloudDraftAuthStatus = adeCloudMode && !selectedSessionId && !cursorCloudSessionActive && adeCloudModelIds
-    ? adeCloudProviderAuthStatus
-    : null;
-  const composerConstrainModelSelection = modelSelectionConstrained || cursorCloudSessionActive || adeCloudDraftAuthStatus != null;
 
   const compactionIdleMode = selectedSession?.compactionIdleMode;
   const selectedProvider = selectedSession?.provider ?? "";
@@ -22246,6 +22283,16 @@ export function AgentChatPane({
     const applied = handleComposerModelChange(nextModelId, options);
     // A refused pick (models still loading) is not a choice.
     if (applied) draftModelChosenRef.current = true;
+    return applied;
+  };
+  // The composer's own picker and @ menu: an older version chosen there by
+  // hand is the person's answer to "a newer version is out" (ADE-300), so
+  // that suggestion is not shown for it. Not the tour's pick or a draft
+  // request, which ADE or a caller made.
+  const handlePickerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {
+    const applied = handlePersonModelChange(nextModelId, options);
+    const upgrade = applied && !options?.presetId ? findModelUpgrade(nextModelId, composerAvailableModelIds) : null;
+    if (upgrade) dismissModelUpgrade(upgrade);
     return applied;
   };
   personModelChangeRef.current = handlePersonModelChange;
@@ -22464,7 +22511,7 @@ export function AgentChatPane({
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
             onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
-            onModelChange={handlePersonModelChange}
+            onModelChange={handlePickerModelChange}
             onOpenModelPickerRequest={handleListChooseProviderFailureModel}
             sessionLaneId={laneId}
             onReasoningEffortChange={handleReasoningEffortChange}

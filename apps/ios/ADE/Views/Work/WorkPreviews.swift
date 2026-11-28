@@ -521,7 +521,8 @@ func workPreviewChatSessionView(
   providerSignInHost: ProviderAccountsHost? = nil,
   providerSignInMachineName: String? = nil,
   isStreaming: Bool = false,
-  ctoLive: CtoLiveModel? = nil
+  ctoLive: CtoLiveModel? = nil,
+  modelUpgradeCandidates: [String]? = nil
 ) -> WorkChatSessionView {
   var summary = WorkPreviewData.chatSummary
   if let provider {
@@ -620,6 +621,7 @@ func workPreviewChatSessionView(
   view.ctoLive = ctoLive
   view.providerSignInHost = providerSignInHost
   if let providerSignInMachineName { view.providerSignInMachineName = providerSignInMachineName }
+  if let modelUpgradeCandidates { view.loadModelUpgradeCandidates = { modelUpgradeCandidates } }
   return view
 }
 
@@ -1544,6 +1546,12 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// the model chip's name/mark and the lane-selector layout are screenshotable
   /// with no pairing.
   case newChatDeepSeek = "new-chat-deepseek"
+  /// The New Chat page remembered on Fable 5.1 on a machine that lists 5.2:
+  /// it opens on 5.2 with the "newer version" notice (ADE-300).
+  case newChatModelUpgrade = "new-chat-model-upgrade"
+  /// The real chat on Sonnet 5 on a machine that lists Sonnet 5.5: the
+  /// composer offers the switch (ADE-300).
+  case chatModelUpgrade = "chat-model-upgrade"
   /// The real model picker with fixture Custom harnesses. See
   /// `WorkModelPickerPreviewHost`.
   case modelPicker = "model-picker"
@@ -1926,6 +1934,14 @@ struct ADEPreviewScreenHost: View {
       WorkNewChatPreviewHost()
     case .newChatDeepSeek:
       WorkNewChatPreviewHost(usesGatewayModelFixture: true)
+    case .newChatModelUpgrade:
+      WorkNewChatPreviewHost(modelUpgradeFixture: true)
+    case .chatModelUpgrade:
+      NavigationStack {
+        workPreviewChatSessionView(
+          modelUpgradeCandidates: ["anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5"]
+        )
+      }
     case .modelPicker:
       WorkModelPickerPreviewHost()
     case .modelPickerFree:

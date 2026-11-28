@@ -2527,6 +2527,12 @@ final class WorkComposerSuggestionController: ObservableObject {
     if let modelId = suggestion.modelId {
       // Shared with the picker's Recents, so the next `@` leads with it.
       WorkModelMentionDirectory.shared.noteRecent(modelId)
+      // An older version chosen by name turns its newer-version pair down,
+      // as a picker pick does (ADE-300).
+      WorkModelUpgradeMemory.notePicked(
+        modelId,
+        available: WorkModelMentionDirectory.shared.availableEntries.map(\.modelId)
+      )
       let revision = WorkModelMentionDirectory.shared.recentsRevisionSnapshot
       if let syncService {
         Task {
