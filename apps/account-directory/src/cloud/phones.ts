@@ -40,6 +40,8 @@
 import { isCloudBlocked, sendOwnerAlert } from "./blocks";
 import { PHONE_CREDIT_MILLI_PER_MINUTE, PHONE_RATE_SQL, accountWithUnsettledPhones, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
 import { PHONE_MILLI_PER_MINUTE_V3 } from "./plans";
+import { settlePhoneAtEnd } from "./adPrice";
+import type { GravityEnv } from "./gravity";
 import { pricingV3Mode, pricingV3Reaches } from "./sponsoredSwitch";
 import { captureCloudPhone, type CloudWaitUntil } from "./analytics";
 import { freeCapRefuses } from "./costReport";
@@ -229,13 +231,15 @@ function phoneCreditStatements(db: D1Database, phoneId: string, now: number): D1
  * account's credits in the same write.
  */
 async function savePhone(
-  env: Pick<CloudEnv, "DB">,
+  env: CloudEnv,
   userId: string,
   session: PhoneSession,
   now: number,
   { free = false, onlyLiveAccount = false, rateMilli = null }: { free?: boolean; onlyLiveAccount?: boolean; rateMilli?: number | null } = {},
 ): Promise<boolean> {
   const facts = phoneFacts(session, now);
+  // Pricing v3: its last minutes at the ad price go in before its final charge (`adPrice.ts`).
+  if (facts.ended) await settlePhoneAtEnd(env as GravityEnv, session.id, Math.min(facts.endedAt ?? now, now));
   // `onlyLiveAccount`: a new row only while the account exists, checked in this write, so a deletion
   // that re-keyed its phones meanwhile never gets a row under the person's id back.
   const [saved] = await env.DB.batch([
@@ -322,6 +326,7 @@ async function stopPhone(env: CloudEnv, userId: string, phoneId: string, now: nu
   }
   if (stopped.after) await savePhone(env, userId, stopped.after.session, now);
   else if (stopped.status === 404) {
+    await settlePhoneAtEnd(env as GravityEnv, phoneId, now);
     await env.DB.prepare("update cloud_phones set state = 'ended', ended_at = coalesce(ended_at, ?), end_reason = coalesce(end_reason, 'gone'), build_started_at = null, updated_at = ? where phone_id = ?")
       .bind(now, now, phoneId).run();
   }

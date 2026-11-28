@@ -95,7 +95,12 @@ export function smallStateOf(account: AccountRow, consent: ConsentRow | null, wh
  * never spends real credits.
  */
 export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, settings?: CloudSettings, now = Date.now()): Promise<boolean> {
-  return SMALL_FREE_WHYS.has(await smallRule(env, account, settings, now));
+  const read = settings ?? (await readCloudSettings(env));
+  const why = await smallRule(env, account, read, now);
+  if (why !== "pricing_v3") return SMALL_FREE_WHYS.has(why);
+  // Pricing v3's own rule (`adPrice.ts` `computerRatesMilli`): free off Free and while the ad switch
+  // doesn't reach the account; on Free it starts at its full price, and the price sync moves it to the ad price.
+  return !freeRuleCharges(account) || !(await switchReaches(env, account, (await gravitySwitches(env, read)).mode));
 }
 
 /**

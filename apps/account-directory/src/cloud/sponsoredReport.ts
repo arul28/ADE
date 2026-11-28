@@ -1,5 +1,6 @@
 import type { CloudSponsoredFormat } from "./contract";
-import { ALL, INDEX_REPORT_URL, PLACEMENTS, PLATFORM_URL, SPLIT_ARMS, TURN_TTL_MS, type GravityEnv } from "./gravity";
+import { ALL, INDEX_REPORT_URL, PLACEMENTS, PLATFORM_URL, SPLIT_ARMS, type GravityEnv } from "./gravity";
+import { TURN_TTL_MS } from "./sponsoredTurns";
 import { utcDay } from "./plans";
 import { readCloudSettings } from "./settings";
 import { gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";

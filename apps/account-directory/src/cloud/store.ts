@@ -776,8 +776,9 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
   const nextMetered = isMeteredStatus(status);
   if (wasMetered && !nextMetered) {
     statements.push(...settleStatements(env, computer, now, guard), ...freeWakeStatements(env, computer, now, guard));
-    // Pricing v3 (`adPrice.ts`): the full-price work its brain reported ends with the stretch awake.
-    statements.push(env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, updated_at = ? where target = ? and coalesce(full_work, '[]') <> '[]'")
+    // Pricing v3 (`adPrice.ts`): the full-price work its brain reported, and an outside agent's
+    // message, end with the stretch awake.
+    statements.push(env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, outside_at = null, updated_at = ? where target = ? and (coalesce(full_work, '[]') <> '[]' or outside_at is not null)")
       .bind(now, now, computer.instance_id));
     // A free wake that didn't count as use (an automatic update's window) leaves
     // `last_awake_at` before its start; closing it keeps the 30-day delete clock where it was.

@@ -439,7 +439,9 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
 - **Owner**: `scripts/cloud-owner.mjs ad-price [--days N]` (ad income against
   the discount, by product), also in the daily sponsored report.
 - **Website**: `GET /public/pricing` (no auth, CORS `*`, no-store) says whether
-  Pricing v3 is on and the visitor's ad terms.
+  Pricing v3 is on, the visitor's ad terms, and what a Small costs on Free for
+  that visitor (`freeSmallMilli`, by the bill's own rule: 0 while the ad switch
+  doesn't reach everyone).
 
 ### DAEX Free Models (any plan, behind a switch)
 

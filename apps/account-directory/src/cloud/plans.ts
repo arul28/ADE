@@ -238,6 +238,9 @@ export type CloudOffers = {
 // The label stays on this server's pages: the catalog's plans keep their shape.
 const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFacts => ({ ...terms, diskGb: terms.computerLimit * LARGEST_DISK_MAX_GB });
 
+/** The catalog's Pricing v3 terms for one account (`adPrice.ts` `pricingAccountState`): the discount, and Small's full rate. */
+export type V3CatalogTerms = { discountPct: number; smallFullMilli: number };
+
 /**
  * What `GET /cloud/account` tells a client about sizes and plans. Pro and Max
  * are left out until they are set up, so no client offers them. Extra disk
@@ -248,7 +251,7 @@ const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFact
 export function cloudCatalog(
   offers: CloudOffers,
   planId: CloudPlanId = "free",
-  { smallUsesHours = false, v3 }: { smallUsesHours?: boolean; v3?: { discountPct: number; smallFullMilli: number } } = {},
+  { smallUsesHours = false, v3 }: { smallUsesHours?: boolean; v3?: V3CatalogTerms } = {},
 ): CloudCatalog {
   return {
     sizes: CLOUD_SIZES.map(({ type, cpu, memoryGb, multiplierMilli, tier, label, diskMaxGb }) => {

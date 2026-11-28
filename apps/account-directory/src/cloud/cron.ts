@@ -1,4 +1,4 @@
-import { syncAdPricesInTick } from "./adPrice";
+import { syncAdPricesInTick, syncPhonePricesInTick } from "./adPrice";
 import type { GravityEnv } from "./gravity";
 import { carryLaunchMessagesForComputer, expireChatMessages } from "./chatMessages";
 import { runLinearRenewalCron } from "./linearRenewal";
@@ -107,6 +107,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   await stopPhonesDue(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.phone_stops_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
+  // Pricing v3: each cloud iPhone on its price now, with or without computers (`adPrice.ts`). Never throws.
+  await syncPhonePricesInTick(env as GravityEnv, now);
   const key = env.AGENT37_API_KEY?.trim();
   if (!key) return;
   const rows = await env.DB.prepare(`

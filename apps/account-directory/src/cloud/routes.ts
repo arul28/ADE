@@ -1657,10 +1657,14 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   "POST activity": async (request, env, computer, _provider, { now, waitUntil }) => {
     const report = parseActivityReport(await readJson(request), now);
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-    await recordActivity(env, computer.instance_id, report, waitUntil);
-    // Pricing v3: CLI sessions, automations and outside agents running here give it the full price (`adPrice.ts`).
-    await noteFullPriceWork(env, computer, report.fullPriceWork, now);
-    if (!report.busy) await noteComputerIdle(env, computer, now);
+    const latest = await recordActivity(env, computer.instance_id, report, waitUntil);
+    // Pricing v3: CLI sessions, automations and outside agents running here give it the full price
+    // (`adPrice.ts`). Only from the newest report: one sent late never undoes a newer one.
+    if (latest) {
+      await noteFullPriceWork(env, computer, report.fullPriceWork, now);
+      // Idle since: a message an outside agent sent after it hasn't had its turn yet.
+      if (!report.busy) await noteComputerIdle(env, computer, Math.min(report.idleSince ?? now, now), now);
+    }
     // The network its brain calls from, for Free Small's tripwire (`sponsoredSmall.ts`). Never fails the report.
     await noteComputerNetwork(env, computer, requestNetwork(request)).catch((error: unknown) => {
       reportCloudFailure("cloud.computer_network_failed", { message: error instanceof Error ? error.message : "unknown" });

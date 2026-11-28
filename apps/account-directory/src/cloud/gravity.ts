@@ -13,7 +13,6 @@ import {
   CLOUD_SPONSORED_RENDERERS,
   CLOUD_SPONSORED_SURFACES,
   CLOUD_SPONSORED_TRACKING,
-  type CloudSponsoredAd,
   type CloudAdProofAnswer,
   type CloudSponsoredAdAnswer,
   type CloudSponsoredConsent,
@@ -23,11 +22,11 @@ import {
   type CloudSponsoredIndexAnswer,
   type CloudSponsoredMessage,
   type CloudSponsoredNoAdReason,
-  type CloudSponsoredPick,
   type CloudSponsoredState,
 } from "./contract";
 import { readClerkUser } from "./email";
-import { adOfGravity, gravityLink, httpsUrl, inlineFavicon, plainText } from "./gravityAd";
+import { adOfGravity, inlineFavicon, modelUsageOf, pickOfIndex } from "./gravityAd";
+import { TURN_TTL_MS, claimTurn, readTurn, releaseTurn, saveTurn } from "./sponsoredTurns";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, shortString } from "./http";
 import { utcDay } from "./plans";
 import { readCloudSettings, type CloudSettings } from "./settings";
@@ -145,8 +144,6 @@ const ACCOUNT_DAILY_ADS = 120;
 const ACCOUNT_DAILY_INDEX = 20;
 /** Card requests one account may make a UTC day in ADE Free Models chats (their own count, `fm_ad`). */
 const ACCOUNT_DAILY_FREE_MODEL_ADS = 400;
-/** A turn's stored answer lives this long. */
-export const TURN_TTL_MS = 24 * 60 * 60_000;
 export const ALL = "*";
 const INDEX_CONTEXT_MESSAGES = 6;
 /** Where Gravity fills real ads (Gravity, 2026-11-24): the US, Canada, the UK and Australia. */
@@ -486,17 +483,19 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   const choice = CLOUD_SPONSORED_CHOICES.find((entry) => entry === body.consent);
   if (!choice) return badRequest("Say granted, declined or notice.");
   const account = await loadAccount(env, userId, now);
-  const switches = await gravitySwitches(env);
-  const v3 = await v3For(env, userId);
+  const settings = await readCloudSettings(env);
+  const switches = await gravitySwitches(env, settings);
+  const v3 = await v3For(env, userId, settings);
   if ((await blockedReason(env, account, null, switches, v3)) === "off") return notFound();
   const who = sponsoredRequester(request);
   const consent: CloudSponsoredConsent = choice === "declined" ? "declined" : "granted";
   // Pricing v3: the app showed the ads notice or question with this answer. Kept on the row
   // whatever the answer, so every device knows; never before a row exists to hold it.
-  const markNotice = async () => {
+  // `sync: false`: the caller moves the prices itself.
+  const markNotice = async ({ sync = true }: { sync?: boolean } = {}) => {
     if (!v3 || body.noticeSeen !== true) return;
     await env.DB.prepare("update cloud_sponsored_consent set notice_seen_at = coalesce(notice_seen_at, ?) where user_id = ?").bind(now, userId).run();
-    await syncAccountPrices(env, account, now);
+    if (sync) await syncAccountPrices(env, account, now);
   };
   // A yes keeps Free's Small unlimited, for cards Gravity shows only in its
   // countries: from anywhere else it is refused (a tester's test ads aside).
@@ -552,9 +551,9 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // Small's rate follows the answer at once (`smallUsesNoHours`): a no has it use credits; a yes
   // over a yes keeps its look.
   await syncSmallRates(env, account, now, { waitUntil });
-  // The ad price follows it too (Pricing v3): ads off is the full price from now.
+  // The ad price follows it too (Pricing v3), with the notice: ads off is the full price from now.
+  await markNotice({ sync: false });
   await syncAccountPrices(env, account, now);
-  await markNotice();
   return answered();
 }
 
@@ -593,9 +592,9 @@ async function ownLivePhone(env: GravityEnv, userId: string, value: unknown): Pr
  */
 async function chatRunsOn(env: GravityEnv, userId: string, chatId: string, instanceId: string, { newChat = false }: { newChat?: boolean } = {}): Promise<boolean> {
   const copies = await env.DB.prepare(`
-    select count(*) as total, coalesce(max(parent_chat_id is not null and instance_id = ?), 0) as child, coalesce(max(instance_id = ?), 0) as here
+    select count(*) as total, coalesce(max(parent_chat_id is not null), 0) as child, coalesce(max(instance_id = ?), 0) as here
     from cloud_chat_copies where user_id = ? and chat_id = ?
-  `).bind(instanceId, instanceId, userId, chatId).first<{ total: number; child: number; here: number }>();
+  `).bind(instanceId, userId, chatId).first<{ total: number; child: number; here: number }>();
   if (!copies || copies.total === 0) return newChat;
   return Boolean(copies.here) && !copies.child;
 }
@@ -653,7 +652,8 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   const account = await loadAccount(env, userId, now);
   const who = sponsoredRequester(request);
   const country = who.country;
-  const blocked = await blockedReason(env, account, country, undefined, await v3For(env, userId));
+  const settings = await readCloudSettings(env);
+  const blocked = await blockedReason(env, account, country, await gravitySwitches(env, settings), await v3For(env, userId, settings));
   const read = await readConsent(env, userId);
   // A browser's Global Privacy Control from the US opts the whole account out (cards stop on every device).
   const consent = blocked === "off" ? read : await honorGpc(env, account, read, who, now);
@@ -679,58 +679,6 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   return json({ ok: true });
 }
 
-/** A reply's ask is being answered: the row is claimed, Gravity's answer not in yet. */
-const PENDING_TURN = "pending";
-
-/**
- * The reply's saved answer. One asked for another placement (the reply opened
- * on another surface, the format changed, or it was saved before placements
- * were) is no card here: its tracking links count for that placement, and
- * the inline length limit may not hold.
- */
-async function readTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, placementId: string, now: number): Promise<CloudSponsoredAdAnswer | null> {
-  const row = await env.DB.prepare("select ad_json, reason, created_at, placement_id from cloud_sponsored_turns where user_id = ? and chat_id = ? and turn_id = ?")
-    .bind(userId, chatId, turnId).first<{ ad_json: string | null; reason: string | null; created_at: number; placement_id: string | null }>();
-  if (!row || now - row.created_at > TURN_TTL_MS) return null;
-  if (row.placement_id !== placementId) return { ad: null, reason: "no_fill" };
-  if (!row.ad_json) {
-    const reason = !row.reason || row.reason === PENDING_TURN ? "no_fill" : row.reason as CloudSponsoredNoAdReason;
-    return { ad: null, reason };
-  }
-  try {
-    return { ad: JSON.parse(row.ad_json) as CloudSponsoredAd };
-  } catch {
-    reportCloudFailure("cloud.sponsored.turn_unreadable", {});
-    return { ad: null, reason: "no_fill" };
-  }
-}
-
-/**
- * Claims a reply before Gravity is asked: of two screens asking at once, only
- * the one that wrote the row asks. False when another ask holds it.
- */
-async function claimTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, format: CloudSponsoredFormat, placementId: string, now: number): Promise<boolean> {
-  const [, claim] = await env.DB.batch([
-    env.DB.prepare("delete from cloud_sponsored_turns where created_at < ?").bind(now - TURN_TTL_MS),
-    env.DB.prepare(`
-      insert into cloud_sponsored_turns (user_id, chat_id, turn_id, ad_json, reason, created_at, format, placement_id) values (?, ?, ?, null, ?, ?, ?, ?)
-      on conflict (user_id, chat_id, turn_id) do nothing
-    `).bind(userId, chatId, turnId, PENDING_TURN, now, format, placementId),
-  ]);
-  return (claim?.meta?.changes ?? 0) === 1;
-}
-
-async function saveTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, answer: CloudSponsoredAdAnswer): Promise<void> {
-  await env.DB.prepare("update cloud_sponsored_turns set ad_json = ?, reason = ? where user_id = ? and chat_id = ? and turn_id = ?")
-    .bind(answer.ad ? JSON.stringify(answer.ad) : null, answer.ad ? null : answer.reason ?? "no_fill", userId, chatId, turnId).run();
-}
-
-/** Gravity didn't answer: the claim goes, so a later ask for this reply may try again. */
-async function releaseTurn(env: GravityEnv, userId: string, chatId: string, turnId: string): Promise<void> {
-  await env.DB.prepare("delete from cloud_sponsored_turns where user_id = ? and chat_id = ? and turn_id = ? and reason = ?")
-    .bind(userId, chatId, turnId, PENDING_TURN).run();
-}
-
 type FreeModelAdGate = { reason: CloudSponsoredNoAdReason } | { live: boolean; emailHash: string | null; usage: ModelUsage | null };
 
 /**
@@ -750,24 +698,6 @@ async function freeModelAdGate(env: GravityEnv, userId: string, chatId: string, 
   if (!freeYesHolds(consent, who)) return { reason: "consent" };
   if (outsideInferenceCountries(env, who.country)) return { reason: "country" };
   return { live: inference.live, emailHash: consent.email_hash, usage: modelUsageOf(chat.last_usage_json) };
-}
-
-/** The usage the proxy saved (`freeModels.ts`), in Gravity's `usage` shape, or null. */
-function modelUsageOf(text: string | null): ModelUsage | null {
-  if (!text) return null;
-  try {
-    const raw = JSON.parse(text) as Record<string, unknown>;
-    const count = (value: unknown) => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined);
-    const usage: ModelUsage = {
-      ...(typeof raw.model === "string" ? { model: raw.model.slice(0, 120) } : {}),
-      ...(count(raw.inputTokens) !== undefined ? { inputTokens: count(raw.inputTokens) } : {}),
-      ...(count(raw.cachedInputTokens) !== undefined ? { cachedInputTokens: count(raw.cachedInputTokens) } : {}),
-      ...(count(raw.outputTokens) !== undefined ? { outputTokens: count(raw.outputTokens) } : {}),
-    };
-    return Object.keys(usage).length ? usage : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -843,8 +773,9 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
       await noteUnverified(env, account, targets, asn, now, waitUntil);
       return none("unverified");
     }
-    // The proof, once per reply, whatever Gravity answers below (no ad, the daily limit).
-    if (targets.instanceId || targets.phoneId) {
+    // The proof, once per reply, whatever Gravity answers below (no ad, the daily limit). A free-model
+    // chat on the person's own machine counts only for the owner's report.
+    if (targets.instanceId || targets.phoneId || free) {
       await countAdProof(env, account, { chatId, turnId, kind: "reply", freeModel: free != null, ...targets }, now).catch((error: unknown) => {
         reportCloudFailure("cloud.ad_price.proof_failed", { message: error instanceof Error ? error.message : "unknown" });
       });
@@ -993,55 +924,6 @@ async function handleHide(request: Request, env: GravityEnv, userId: string, now
   return json({ ok: true, counted: (results[2]?.meta?.changes ?? 0) > 0 });
 }
 
-/** One of Gravity's Index answers as a pick, or null. */
-function pickOfIndex(raw: unknown): CloudSponsoredPick | null {
-  if (!raw || typeof raw !== "object") return null;
-  const answer = raw as Record<string, unknown>;
-  const rec = answer.recommendation && typeof answer.recommendation === "object" ? answer.recommendation as Record<string, unknown> : null;
-  if (!rec) return null;
-  const url = gravityLink(rec.click_url) ?? gravityLink(answer.click_url);
-  const name = plainText(rec.name, 80);
-  if (!url || !name) return null;
-  const objectOf = (value: unknown) => (value && typeof value === "object" ? value as Record<string, unknown> : null);
-  const install = objectOf(rec.install) ?? objectOf(answer.install);
-  // Every documented step form, in order: plain text, a command, a file to write, or something the person does.
-  const stepText = (step: unknown): unknown => {
-    if (typeof step === "string") return step;
-    const entry = objectOf(step);
-    if (!entry) return null;
-    const file = typeof entry.file === "string" ? entry.file : null;
-    const action = typeof entry.action === "string" ? entry.action : null;
-    return entry.text ?? entry.command ?? entry.user_action ?? entry.description ?? (action && file ? `${action}: ${file}` : action ?? file);
-  };
-  // A command keeps its exact spacing, without control, zero-width or
-  // direction marks; one too long to show whole is never cut.
-  const stepOf = (step: unknown): string => {
-    const value = stepText(step);
-    if (typeof value !== "string") return "";
-    const clean = value.replace(/[\u0000-\u0008\u000b-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, "").trim();
-    return clean.length <= 500 ? clean : "";
-  };
-  // The steps in order up to the first that can't be shown whole: "Use it"
-  // never puts a sequence with a hole in it in the prompt box.
-  const steps: string[] = [];
-  for (const step of Array.isArray(install?.steps) ? install.steps.slice(0, 8) : []) {
-    const text = stepOf(step);
-    if (!text) break;
-    steps.push(text);
-  }
-  return {
-    id: plainText(answer.search_id, 80) || crypto.randomUUID(),
-    name,
-    description: plainText(rec.description, 400),
-    category: plainText(rec.category, 60) || null,
-    url,
-    websiteUrl: httpsUrl(rec.website_url),
-    docsUrl: httpsUrl(rec.docs_url),
-    sponsored: rec.sponsored === true,
-    installSteps: steps,
-  };
-}
-
 /**
  * An agent on an ADE Cloud computer asks the Index for a service the person
  * needs. Only from the account's own cloud computer, only while a person has
@@ -1061,8 +943,9 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   const viewer = await env.DB.prepare("select * from cloud_sponsored_viewers where user_id = ? and instance_id = ?")
     .bind(userId, computer.instance_id).first<{ ip: string | null; ua: string | null; os: string; tracking: string | null; country: string | null; region: string | null; seen_at: number }>();
   // The country is the person's, from their last look at the chat: the agent's computer is not where they are.
-  const switches = await gravitySwitches(env);
-  const blocked = await blockedReason(env, account, viewer?.country ?? null, switches, await v3For(env, userId));
+  const settings = await readCloudSettings(env);
+  const switches = await gravitySwitches(env, settings);
+  const blocked = await blockedReason(env, account, viewer?.country ?? null, switches, await v3For(env, userId, settings));
   if (blocked) return none(blocked);
   // Gravity's Index has no test mode, so before go-live only the testers' searches reach it,
   // and a tester abroad gets none: its picks are real recommendations.
@@ -1074,13 +957,8 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   if (!viewer?.ip || now - viewer.seen_at > SPONSORED_VIEWER_FRESH_MS) return none("nobody_watching");
   const chatId = shortString(body.chatId, 160);
   if (chatId && ROW_ID.test(chatId)) {
-    // The chat runs on this computer and is a person's, not a subagent's. A
-    // chat with no copy yet is on its first turn, before its copy is saved.
-    const copies = await env.DB.prepare(`
-      select count(*) as total, coalesce(max(parent_chat_id is not null), 0) as child, coalesce(max(instance_id = ?), 0) as here
-      from cloud_chat_copies where user_id = ? and chat_id = ?
-    `).bind(computer.instance_id, userId, chatId).first<{ total: number; child: number; here: number }>();
-    if (copies && copies.total > 0 && (copies.child || !copies.here)) return none("not_cloud");
+    // A chat with no copy yet is on its first turn, before its copy is saved.
+    if (!(await chatRunsOn(env, userId, chatId, computer.instance_id, { newChat: true }))) return none("not_cloud");
   }
   if (!(await reserveRequest(env, now, userId, "index", switches.live))) return none("limit");
   const messages = readMessages(body.messages, INDEX_CONTEXT_MESSAGES);

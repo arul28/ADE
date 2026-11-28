@@ -4074,10 +4074,13 @@ export const CLOUD_PUBLIC_PRICING_PATH = "/public/pricing";
 
 /**
  * `GET /public/pricing`. `pricingV3` is true only while the `pricing_v3`
- * setting is `all`; `mac` only while `mac_computers` is `all`. `ads` is set
- * only when the request's country has ads and the ad switch reaches
+ * setting is `all`; `mac` only while `mac_computers` is `all`.
+ * `freeSmallMilli`: a Small's full rate an hour on Free for this visitor, as
+ * the bill decides it (500 while the ad switch reaches everyone, 0 while it
+ * doesn't: Small on Free is free then); missing means it charges. `ads` is
+ * set only when the request's country has ads and the ad switch reaches
  * everyone; `startsOn` is the app's own rule for that region.
  */
 export type CloudPublicPricing =
   | { pricingV3: false }
-  | { pricingV3: true; mac: boolean; ads: { startsOn: boolean; discountPct: number; adWindowMinutes: number } | null };
+  | { pricingV3: true; mac: boolean; freeSmallMilli?: number; ads: { startsOn: boolean; discountPct: number; adWindowMinutes: number } | null };

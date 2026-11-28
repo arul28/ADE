@@ -2,7 +2,7 @@ import { PHONE_CREDIT_MILLI_PER_MINUTE, liveUsedWithPhones } from "./credits";
 import { sponsoredAccountState } from "./gravity";
 import { freeModelsAccountState } from "./freeModels";
 import { smallUsesNoHours } from "./sponsoredSmall";
-import { adContextFor, computerRatesMilli, pricingAccountState } from "./adPrice";
+import { pricingAccountState } from "./adPrice";
 import { adsCountryHas } from "./gravity";
 import { PHONE_MILLI_PER_MINUTE_V3 } from "./plans";
 import { sponsoredRequester } from "./sponsoredConsent";
@@ -70,12 +70,6 @@ async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: nu
   return (rows.results ?? []).map((row) => row.instance_id);
 }
 
-/** The catalog's Pricing v3 terms for this account: the discount, and Small's full rate (`computerRatesMilli`). */
-async function v3CatalogTerms(env: CloudEnv, account: AccountRow): Promise<{ discountPct: number; smallFullMilli: number }> {
-  const { ctx } = await adContextFor(env, account);
-  return { discountPct: ctx.discountPct, smallFullMilli: computerRatesMilli({ type: "default", cpu: 2, memory_gb: 4, multiplier_milli: 0, ad_full_milli: null }, ctx).fullMilli };
-}
-
 export async function buildAccountState(env: CloudEnv, userId: string, now: number, request?: Request): Promise<CloudAccountState> {
   const account = await loadAccount(env, userId, now);
   const [computers, deletedInstanceIds, recentMilli, growth] = await Promise.all([
@@ -116,11 +110,11 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     return undefined;
   });
   // Pricing v3 (`adPrice.ts`): left out while `pricing_v3` doesn't reach the account; then nothing below changes.
-  const pricing = await pricingAccountState(env, account, computers, who, adsCountryHas(env, who.country), now).catch((error: unknown) => {
+  const priced = await pricingAccountState(env, account, computers, who, adsCountryHas(env, who.country), now).catch((error: unknown) => {
     reportCloudFailure("cloud.ad_price.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
-  const v3Catalog = pricing ? await v3CatalogTerms(env, account) : null;
+  const pricing = priced?.state;
   // An app that doesn't know Pricing v3 (no `X-ADE-Pricing: 3`) gets no `pricing` while Pricing v3 reaches the
   // account, and `sponsored` only on Free, by today's Free rule: it keeps its ads there (its card requests are
   // proofs, and keep Small as free as today), and never shows an ad on a paid plan. The catalog's numbers are real.
@@ -177,8 +171,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     dueForDeletion: due,
     deletedInstanceIds,
     // Small's rate is the account's own: half a Medium-hour on Free with no sponsored cards (`gravity.ts` `smallUsesNoHours`).
-    catalog: v3Catalog
-      ? cloudCatalog(offers, shownPlan, { v3: v3Catalog })
+    catalog: priced
+      ? cloudCatalog(offers, shownPlan, { v3: priced.catalog })
       : cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) }),
     billing: {
       periodStart: account.period_start,
