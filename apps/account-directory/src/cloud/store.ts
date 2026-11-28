@@ -1514,7 +1514,10 @@ async function claimTesterInvites(env: CloudEnv, userId: string, now: number): P
     const waitingLists: TesterList[] = [];
     for (const list of TESTER_LISTS) {
       // A list whose table isn't there yet (a Worker ahead of its migration) is skipped, never a failed sign-up.
-      const waiting = await env.DB.prepare(`select 1 as waiting from ${list.pendingTable} limit 1`).first<{ waiting: number }>().catch(() => null);
+      const waiting = await env.DB.prepare(`select 1 as waiting from ${list.pendingTable} limit 1`).first<{ waiting: number }>().catch((error: unknown) => {
+        reportCloudFailure("cloud.tester_list_unreadable", { list: list.event, message: error instanceof Error ? error.message : "unknown" });
+        return null;
+      });
       if (waiting) waitingLists.push(list);
     }
     if (!waitingLists.length) return;
