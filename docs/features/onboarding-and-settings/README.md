@@ -111,7 +111,8 @@ Renderer components are under `renderer/components/`.
   per repository across the account (`repo:<origin>` rows; last writer wins).
 - `projects/CreateProjectForm.tsx`: new empty project.
 - Opening a project with no own computer online binds the tab to DAEX Cloud
-  (`openAdeCloudProject`, `renderer/state/adeCloudTabs.ts`).
+  (`openAdeCloudProject` in `renderer/state/appStore.ts`; tab helpers in
+  `renderer/state/adeCloudTabs.ts`).
 
 **First run and help**
 
@@ -177,7 +178,10 @@ Renderer components are under `renderer/components/`.
   OpenCode custom providers; field specs in `providerKeySpecs.ts`),
   `providers/ProviderContextPanel.tsx`, `PiProvidersPanel.tsx`,
   `OAuthConnectModal.tsx`, `providers/cliTools.ts`.
-- Integrations: `integrations/` (home, MCP catalogue, stuck-computer warning),
+- Integrations: `integrations/` (`IntegrationsHome.tsx`,
+  `MachineIntegrationWarning.tsx` for a computer stuck on DAEX MCP,
+  `IntegrationChrome.tsx`), `mcp/` (MCP servers and the catalogue dialog;
+  [mcp-servers.md](./mcp-servers.md)),
   `GitHubIntegrationSection.tsx`, `GitHubSection.tsx`,
   `github/GitHubAppInstallPanel.tsx`, `LinearIntegrationSection.tsx`,
   `LinearSection.tsx`, `JiraSection.tsx`.
