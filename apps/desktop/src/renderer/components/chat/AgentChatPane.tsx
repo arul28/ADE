@@ -480,7 +480,7 @@ import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus, CloudTierRequestsAboveComposer, useCloudTierRequestCards } from "../cloudLane/CloudLaneChatCards";
 import { CloudLaneComputerDeletedBanner, cloudLaneComputerDeletedFacts } from "../cloudLane/CloudLaneComputerDeletedBanner";
 import { cloudAccountNow, useCloudAccount, useCloudAccountPricedPhoneId } from "../../state/cloudAccountStore";
-import { useCloudPhoneHeldBy } from "../../state/cloudPhoneLive";
+import { readCloudPhoneStatus, useCloudPhoneHeldBy } from "../../state/cloudPhoneLive";
 import { askCloudCliStart } from "../cloudLane/cloudCliStartNotice";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { useChatCloudLaneJob } from "../cloudLane/cloudLaneStores";
@@ -4507,13 +4507,14 @@ type CloudAdsProofTarget = { sessionId: string | null; instanceId: string | null
  * blocks or fails the send.
  */
 function noteCloudAdsSent(target: CloudAdsProofTarget, sessionId: string, messageId: string | null): void {
-  if (target.sessionId !== sessionId || (!target.instanceId && !target.phoneId)) return;
+  // No id of the send: nothing a wake's proof or a repeat could match, so no proof.
+  if (!messageId || target.sessionId !== sessionId || (!target.instanceId && !target.phoneId)) return;
   if (!cloudAccountNow()?.pricing) return;
   void window.ade?.cloud?.sponsoredSent?.({
     instanceId: target.instanceId,
     ...(target.phoneId ? { phoneId: target.phoneId } : {}),
     chatId: sessionId,
-    messageId: messageId ?? globalThis.crypto.randomUUID(),
+    messageId,
   })?.catch(() => undefined);
 }
 
@@ -7577,6 +7578,21 @@ export function AgentChatPane({
   // only when the answer changes; no read of its own.
   const pricedPhoneId = useCloudAccountPricedPhoneId(!isSubagentView && renderedSessionId != null);
   const heldPhoneId = useCloudPhoneHeldBy(isSubagentView ? null : renderedSessionId, pricedPhoneId);
+  // Only the brain that drives the phone names its chat, and the top bar reads
+  // through the tab's machine. A chat on another machine reads the phone
+  // through its own machine when it opens and when each turn ends (its agent's
+  // phone calls happen in turns). No timer; nothing while no phone runs.
+  const renderedChatPinRef = useRef(renderedChatRuntimePin);
+  renderedChatPinRef.current = renderedChatRuntimePin;
+  const phoneReadThroughChat = pricedPhoneId != null
+    && renderedSessionId != null
+    && !isSubagentView
+    && renderedChatPinKey != null
+    && renderedChatPinKey !== projectBinding?.key;
+  useEffect(() => {
+    if (!phoneReadThroughChat || turnActive) return;
+    void readCloudPhoneStatus(renderedChatPinRef.current).catch(() => undefined);
+  }, [phoneReadThroughChat, renderedSessionId, renderedChatPinKey, turnActive]);
   const cloudAdsProofRef = useRef<CloudAdsProofTarget>({ sessionId: null, instanceId: null, phoneId: null });
   cloudAdsProofRef.current = isSubagentView
     ? { sessionId: null, instanceId: null, phoneId: null }

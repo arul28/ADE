@@ -580,7 +580,11 @@ export function createWebCloudNamespace(
     sponsoredSent: async (input) => {
       const api = accountClient.cloudApi();
       if (!api) return { counted: false };
-      return api.sponsoredSent(input).catch(() => ({ counted: false }));
+      return api.sponsoredSent(input).catch((error: unknown) => {
+        // A lost proof prices the computer without ads: Sentry sees it, rate-limited per event.
+        forwardSignalToSentry("web.cloud_sponsored_sent_failed", { message: error instanceof Error ? error.message : String(error) });
+        return { counted: false };
+      });
     },
     sponsoredSeen: async (input) => {
       await accountClient.cloudApi()?.sponsoredSeen(input).catch(() => undefined);

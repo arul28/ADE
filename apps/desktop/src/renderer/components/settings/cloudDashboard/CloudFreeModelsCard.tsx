@@ -15,9 +15,10 @@ import { SettingsToggle } from "../primitives/SettingsControls";
  * the hero, which sets the price of cloud computers: this one says so, so the
  * two never read as one switch twice. Off stops the models on every device;
  * on opens the consent sheet. Account level, no pin; shows only to an account
- * the server sends `freeModels`.
+ * the server sends `freeModels`. The page reads its account from the machines
+ * read, so `onChanged` reads it again after either answer.
  */
-export function CloudFreeModelsCard({ account }: { account: CloudAccountState }) {
+export function CloudFreeModelsCard({ account, onChanged }: { account: CloudAccountState; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const freeModels = account.freeModels;
   if (!freeModels) return null;
@@ -25,6 +26,7 @@ export function CloudFreeModelsCard({ account }: { account: CloudAccountState })
   const flip = (enabled: boolean) => {
     setBusy(true);
     void (enabled ? askAdeFreeModelsConsent() : setCloudFreeModelsConsent("declined"))
+      .then(() => onChanged())
       .catch((error: unknown) => showToast({ tone: "error", title: `Couldn't change ${BRAND.NAME} Free Models`, message: ipcErrorMessage(error) || "Try again in a moment." }))
       .finally(() => setBusy(false));
   };
