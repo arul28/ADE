@@ -47,9 +47,16 @@ let isolatedAdeHome = "";
 beforeEach(() => {
   isolatedAdeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-runtime-"));
   process.env.ADE_HOME = isolatedAdeHome;
+  // No test here may ask this computer's `gh` (or its hosts file) for a token:
+  // that read can take seconds and time a test out.
+  vi.stubEnv("ADE_DISABLE_GH_AUTH_FALLBACK", "1");
 });
 
 afterEach(() => {
+  // Spies and env go back here, not in a test's `finally`: a test that timed
+  // out runs its `finally` late, inside the next test, and would undo that
+  // test's mock and env.
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   if (originalAdeHome === undefined) delete process.env.ADE_HOME;
   else process.env.ADE_HOME = originalAdeHome;
@@ -2407,10 +2414,8 @@ describe("multi-project RPC server", () => {
     fs.mkdirSync(parentDir, { recursive: true });
     const sourceHeadSha = "2".repeat(40);
     const destinationToken = "destination-private-token";
-    const originalAdeHome = process.env.ADE_HOME;
-    const originalGitHubToken = process.env.ADE_GITHUB_TOKEN;
-    process.env.ADE_HOME = path.join(root, "machine-home");
-    process.env.ADE_GITHUB_TOKEN = destinationToken;
+    vi.stubEnv("ADE_HOME", path.join(root, "machine-home"));
+    vi.stubEnv("ADE_GITHUB_TOKEN", destinationToken);
     const runGitSpy = vi.spyOn(gitModule, "runGit").mockResolvedValue({
       exitCode: 0,
       stdout: `${sourceHeadSha}\trefs/heads/feature/handoff\n`,
@@ -2469,11 +2474,6 @@ describe("multi-project RPC server", () => {
         .toEqual([{ key: "http.https://github.com/.extraheader", value: expectedAuthorization }]);
     } finally {
       handler.dispose();
-      runGitSpy.mockRestore();
-      if (originalAdeHome === undefined) delete process.env.ADE_HOME;
-      else process.env.ADE_HOME = originalAdeHome;
-      if (originalGitHubToken === undefined) delete process.env.ADE_GITHUB_TOKEN;
-      else process.env.ADE_GITHUB_TOKEN = originalGitHubToken;
     }
   });
 
@@ -2481,9 +2481,7 @@ describe("multi-project RPC server", () => {
     const { root, registry } = createRegistry();
     const parentDir = path.join(root, "projects");
     fs.mkdirSync(parentDir, { recursive: true });
-    const originalGitHubToken = process.env.ADE_GITHUB_TOKEN;
-    // A token here keeps the clone from asking `gh` on this computer for one.
-    process.env.ADE_GITHUB_TOKEN = "test-token";
+    vi.stubEnv("ADE_GITHUB_TOKEN", "test-token");
     let releaseClone!: () => void;
     const cloneGate = new Promise<void>((resolve) => { releaseClone = resolve; });
     const writeOrigin = (folder: string) => {
@@ -2549,9 +2547,6 @@ describe("multi-project RPC server", () => {
         .rejects.toThrow(/target_exists|already exists/);
     } finally {
       handler.dispose();
-      runGitSpy.mockRestore();
-      if (originalGitHubToken === undefined) delete process.env.ADE_GITHUB_TOKEN;
-      else process.env.ADE_GITHUB_TOKEN = originalGitHubToken;
     }
   });
 
