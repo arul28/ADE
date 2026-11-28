@@ -104,7 +104,9 @@ async function assertPackagedResolutionCliHelp() {
     try {
       ({ stdout } = await execFileAsync(process.execPath, [isolatedCliPath, "--help"], {
         cwd: appDir,
-        env: { ...process.env, NODE_PATH: nodeModules },
+        // The copy sits outside the checkout, so the CLI would hand the call to an installed
+        // DAEX on PATH; this checks the built file, so it must run itself.
+        env: { ...process.env, NODE_PATH: nodeModules, ADE_CLI_NO_DELEGATE: "1" },
       }));
     } catch (error) {
       const stderr = error && typeof error === "object" && "stderr" in error ? String(error.stderr) : "";
