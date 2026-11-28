@@ -99,6 +99,8 @@ export async function deleteCloudAccount(
     // The GitHub account's claim stays too, for the same reason; the hashed sign-up address goes.
     env.DB.prepare("update cloud_free_github_claims set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("delete from cloud_signup_ips where user_id = ?").bind(userId),
+    // The addresses its computers joined from (`newDeviceEmail.ts`).
+    env.DB.prepare("delete from cloud_quiet_sign_ins where user_id = ?").bind(userId),
     // Safety (`safety.ts`): a card's free unlock and a block stay, so a re-made account can't use the card or come back
     // unblocked; abuse events and owner alerts stay for the owner. All re-keyed to the hash.
     env.DB.prepare("update cloud_free_card_claims set user_id = ? where user_id = ?").bind(gone, userId),

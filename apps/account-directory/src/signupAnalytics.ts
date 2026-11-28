@@ -14,8 +14,9 @@
  * user id (`signupEventUuid`, `accountDeletedEventUuid`), so a retried
  * delivery and `scripts/analytics/reconcile-signups.mjs`, which backfills
  * sign-ups the webhook missed, all produce the same uuid for one account and
- * PostHog keeps one copy. Every other Clerk event type is acknowledged and
- * ignored.
+ * PostHog keeps one copy. `email.created` goes to `newDeviceEmail.ts` (Clerk's
+ * "new device" email, which ADE sends itself). Every other Clerk event type is
+ * acknowledged and ignored.
  *
  * Test and internal accounts carry `ade_internal: true` in their Clerk
  * private or public metadata; the sign-up then carries `is_internal: true`
@@ -34,6 +35,7 @@ import { reportCloudFailure } from "./cloud/store";
 import { hasInternalFlag } from "./cloud/email";
 import { accountDistinctId, uuidFromSeed } from "./sinkUtils";
 import { verifyWebhookSignature } from "./webhookSignature";
+import { handleClerkEmailCreated } from "./newDeviceEmail";
 import { scheduleWelcomeEmail } from "./welcomeEmail";
 
 /** `RelayAccountPurgeEnv`: a `user.deleted` also removes the account's vault and settings on the push relay. */
@@ -55,7 +57,8 @@ export type SignupAnalyticsEnv = RelayAccountPurgeEnv & Partial<Omit<GithubAppEn
 };
 
 const ROUTE = "/webhooks/clerk";
-const MAX_BODY_BYTES = 64 * 1024;
+/** Room for `email.created`, which carries a whole rendered email. */
+const MAX_BODY_BYTES = 512 * 1024;
 const SIGNUP_METHODS = new Set(["google", "github", "apple", "microsoft", "gitlab", "discord", "linear"]);
 
 export function isSignupAnalyticsRequest(url: URL): boolean {
@@ -162,6 +165,9 @@ export async function handleSignupAnalyticsRequest(
     nowSeconds: Math.floor(Date.now() / 1000),
   });
   if (verified === "secret_unreadable") reportCloudFailure("signup_webhook_secret_unreadable", {}, "signup");
+  // Clerk delivers a refused event again for about a day, then drops it; with ADE sending the new-device email
+  // (`newDeviceEmail.ts`), a signing secret out of step would lose that notice, so a refusal is reported.
+  if (verified === "invalid") reportCloudFailure("clerk_webhook_bad_signature", {}, "signup");
   if (verified !== "valid") return json(401, { error: "bad_signature" });
 
   let payload: ClerkUserEvent;
@@ -169,6 +175,11 @@ export async function handleSignupAnalyticsRequest(
     payload = JSON.parse(body) as ClerkUserEvent;
   } catch {
     return json(400, { error: "bad_json" });
+  }
+  // Clerk's "new device" email, which ADE sends itself (`newDeviceEmail.ts`); every other email is ignored there.
+  if (payload.type === "email.created") {
+    const eventAt = typeof payload.timestamp === "number" && Number.isFinite(payload.timestamp) ? payload.timestamp : Date.now();
+    return handleClerkEmailCreated(env, (payload.data ?? {}) as Parameters<typeof handleClerkEmailCreated>[1], eventAt);
   }
   if (payload.type !== "user.created" && payload.type !== "user.deleted") return json(200, { ignored: true });
   const userId = typeof payload.data?.id === "string" ? payload.data.id.trim() : "";

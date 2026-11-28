@@ -2446,10 +2446,10 @@ describe("ADE Cloud server launcher", () => {
 
   const madeCalls = () => providerCalls(harness, /POST .*\/instances$/);
   const joinCode = (): string => (madeCalls()[0]!.body!.env as Record<string, string>).ADE_LAUNCH_JOIN!;
-  const join = (body: Record<string, unknown>, instanceId = "madenew12345") => {
+  const join = (body: Record<string, unknown>, instanceId = "madenew12345", address = "203.0.113.7") => {
     const request = new Request(`https://directory.test/cloud/launches/${LAUNCH}/join`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-ade-instance": instanceId },
+      headers: { "content-type": "application/json", "x-ade-instance": instanceId, "cf-connecting-ip": address },
       body: JSON.stringify(body),
     });
     // The provider's network, as Cloudflare names it.
@@ -2593,6 +2593,70 @@ describe("ADE Cloud server launcher", () => {
     expect((await join({ nonce: joinCode(), needsApproval: true })).status).toBe(200);
     const record = await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json();
     expect(record).toEqual(expect.objectContaining({ state: "needs_approval", approval: expect.objectContaining({ userCode: "GHJK-6789" }) }));
+  });
+
+  it("Clerk's new-device email: a cloud computer's own sign-in after its join sends nothing, once; ADE sends every other one with its own next steps and the time in UTC", async () => {
+    const secret = Buffer.from("clerk-webhook-secret-for-this-test");
+    const env = { DB: harness.DB, RESEND_API_KEY: "resend-key", CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}` };
+    let delivery = 0;
+    const clerkEmail = (id: string, data: Record<string, unknown> = {}, vars: Record<string, unknown> = {}, at = NOW + 5_000) => {
+      delivery += 1;
+      const body = JSON.stringify({
+        type: "email.created",
+        timestamp: at,
+        data: {
+          id, object: "email", slug: "new_device_sign_in", user_id: OWNER, to_email_address: "owner@example.test",
+          subject: "New device signed in to your ADE account\n", delivered_by_clerk: false, ...data,
+          data: { app: { name: "ADE" }, ip_address: "203.0.113.7", browser_name: "node", operating_system: "unknown", location: "Leesburg, US", session_created_at: "November 27, 11:44PM MST", revoke_session_url: "https://clerk.test/revoke", ...vars },
+        },
+      });
+      const timestamp = String(Math.floor(NOW / 1000));
+      const signature = createHmac("sha256", secret).update(`msg_${delivery}.${timestamp}.${body}`).digest("base64");
+      return handleSignupAnalyticsRequest(new Request("https://directory.test/webhooks/clerk", {
+        method: "POST", headers: { "svix-id": `msg_${delivery}`, "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` }, body,
+      }), env);
+    };
+    const sent = () => providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/);
+
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    seedDeviceSignIn();
+    seedDeviceSignIn("GHJK-6789");
+    // The computer joins over IPv4, then again (a restart mid-sign-in) over IPv6.
+    expect((await join({ nonce: joinCode(), userCode: USER_CODE })).status).toBe(200);
+    expect((await join({ nonce: joinCode(), userCode: "GHJK-6789" }, "madenew12345", "2001:db8:1:2::5")).status).toBe(200);
+
+    // While Clerk still delivers it, ADE sends nothing and keeps the join's quiet email.
+    expect(await (await clerkEmail("ema_dry", { delivered_by_clerk: true })).json()).toEqual({ delivered: "clerk" });
+    // Every other email Clerk makes is acknowledged and left alone.
+    expect(await (await clerkEmail("ema_code", { slug: "verification_code" })).json()).toEqual({ ignored: true });
+    expect(sent()).toHaveLength(0);
+
+    // The computer's own sign-ins: quiet, also when Clerk delivers the same email again, and over IPv6 by its /64.
+    expect(await (await clerkEmail("ema_cloud")).json()).toEqual({ delivered: "none" });
+    expect(await (await clerkEmail("ema_cloud")).json()).toEqual({ delivered: "none" });
+    expect(await (await clerkEmail("ema_cloud_v6", {}, { ip_address: "2001:db8:1:2:abcd::9" })).json()).toEqual({ delivered: "none" });
+    expect(sent()).toHaveLength(0);
+
+    // A join quiets one email: a second sign-in from that address, another account, another address, or one past the window is sent.
+    expect((await clerkEmail("ema_again")).status).toBe(200);
+    expect((await clerkEmail("ema_other_user", { user_id: OTHER })).status).toBe(200);
+    expect((await clerkEmail("ema_other_ip", {}, { ip_address: "198.51.100.9" })).status).toBe(200);
+    expect((await clerkEmail("ema_late", {}, { ip_address: "2001:db8:1:2::6" }, NOW + 16 * 60_000)).status).toBe(200);
+    expect(sent().map((call) => call.idempotencyKey)).toEqual(["clerk-email/ema_again", "clerk-email/ema_other_user", "clerk-email/ema_other_ip", "clerk-email/ema_late"]);
+
+    // ADE's copy: the device, the time in UTC, and ADE's own next steps in place of Clerk's links.
+    const notice = sent()[0]!.body as { to: string[]; subject: string; text: string; html: string };
+    expect(notice.to).toEqual(["owner@example.test"]);
+    expect(notice.subject).toBe("New device signed in to your ADE account");
+    expect(notice.text).toContain("Device: node on unknown");
+    expect(notice.text).toContain("UTC");
+    expect(`${notice.text}${notice.html}`).not.toMatch(/MST|clerk\.test\/revoke/);
+
+    // Resend down: an error, so Clerk delivers it again, and that delivery is sent under the same key.
+    harness.net.once.push({ match: /POST https:\/\/api\.resend\.com\/emails$/, reply: harness.net.reply({ message: "busy" }, 503) });
+    expect((await clerkEmail("ema_retry", {}, { ip_address: "198.51.100.10" })).status).toBe(502);
+    expect((await clerkEmail("ema_retry", {}, { ip_address: "198.51.100.10" })).status).toBe(200);
+    expect(sent().slice(-2).map((call) => call.idempotencyKey)).toEqual(["clerk-email/ema_retry", "clerk-email/ema_retry"]);
   });
 
   it("a Retry holds the failed launch while it deletes its computer: that computer's reports and a second start change nothing, the launch starts again with a new deadline", async () => {

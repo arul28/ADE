@@ -1483,7 +1483,9 @@ computer. The new computer runs its own launch. The routes are in
     sign-in was not approved, at most 5 times. `409 join_not_ready` is
     retried with a backoff for up to 10 minutes.
   - The answer is a Clerk sign-in ticket for the launch's account only. The
-    computer completes it with no browser through Clerk's Frontend API
+    join first notes the address it came from, so Clerk's "new device" email
+    for the computer's own sign-in isn't sent (`newDeviceEmail.ts` in the
+    account server). The computer completes it with no browser through Clerk's Frontend API
     (`approveSignInLinkDirectly` in `cloudHeadlessApproval.ts`), only on the
     hosts it already signs in with. A headless Chromium is the fallback while
     the ticket is unused. After that, the launch shows `needs_approval` with
