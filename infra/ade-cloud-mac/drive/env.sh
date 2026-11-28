@@ -5,13 +5,17 @@
 # Only ~/drive outlives a stop (NoMac deletes the rest, the keychain
 # included), so everything DAEX keeps is on it:
 #   ~/drive/.daex/        these scripts, the template's DAEX (ade/) and its baked agents (tools/)
-#   ~/drive/.ade/         ADE_HOME: the brain's identity, databases, sign-ins, `ade brain update`'s DAEX
+#   ~/drive/.ade/         the brain's home (ADE_HOME, as ~/.ade): identity, databases, sign-ins, `ade brain update`'s DAEX
 #   ~/drive/.daex/home/   the dotfiles agents keep in $HOME (linked back by boot.sh)
 #   ~/drive/src/<repo>    the lane's repositories (NoMac's advice, so builds stay incremental)
 #   ~/drive/.cache/       package and build caches (NoMac puts them there already)
 
 daex_root="$HOME/drive/.daex"
-export ADE_HOME="$HOME/drive/.ade"
+daex_drive_home="$HOME/drive/.ade"
+# Named as ~/.ade, the link boot.sh makes to the drive's home: DAEX runs
+# machine sync (its check-ins with the account and its machine connection)
+# only in the machine's default home, never in any other path.
+export ADE_HOME="$HOME/.ade"
 case "$(uname -m)" in
   arm64|aarch64) daex_target=darwin-arm64 ;;
   *) daex_target=darwin-x64 ;;

@@ -16,8 +16,8 @@ set -u
 # join code never reaches a drive save.
 state="$HOME/.daex-boot"
 umask 077
-mkdir -p "$state" "$ADE_HOME/logs" "$daex_root/home"
-log="$ADE_HOME/logs/mac-boot.log"
+mkdir -p "$state" "$daex_drive_home/logs" "$daex_root/home"
+log="$daex_drive_home/logs/mac-boot.log"
 say() { echo "$(date -u +%FT%TZ) $*" >> "$log"; }
 
 # The dotfiles agents keep in $HOME live on the drive. A fresh Mac may already
@@ -37,8 +37,8 @@ keep_home() {
   fi
   ln -sfn "$target" "$link"
 }
-# DAEX itself: code that reads ~/.ade directly sees ADE_HOME.
-keep_home .ade "$ADE_HOME"
+# DAEX itself: ADE_HOME is ~/.ade (env.sh), the machine's default home, kept on the drive.
+keep_home .ade "$daex_drive_home"
 # A launch clones into ~/Projects (the brain's default folder for a new
 # project): it is the drive's src/, so the lane's repositories outlive a stop.
 keep_home Projects "$HOME/drive/src"
