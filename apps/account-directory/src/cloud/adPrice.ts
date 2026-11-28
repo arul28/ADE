@@ -733,17 +733,20 @@ export async function wakeRateMilli(env: GravityEnv, account: AccountRow, comput
 }
 
 /**
- * Whether Free's Small still starts with no credits left: Pricing v3 and the
- * ad switch reach the account and its ads are on, so a person's message wakes
- * it at the price with ads (`routes.ts`). For the credits emails
- * (`hoursWarnings.ts`). Nothing beyond the settings read at `off`.
+ * How Free's Small keeps working with no credits left, under Pricing v3:
+ * `ads_on` (a person's message wakes it at the price with ads, `routes.ts`),
+ * `ads_off` (ads are offered: with them on it would), or null (another plan,
+ * Pricing v3 or the ad switch not reaching the account, or no ads in the
+ * country its ads answer came from). For the credits emails and the
+ * `out_of_hours` refusal, which have no request. Only the settings read at `off`.
  */
-export async function freeSmallStartsWithAds(env: GravityEnv, account: AccountRow): Promise<boolean> {
-  if (!freeRuleCharges(account)) return false;
+export async function freeSmallWayOut(env: GravityEnv, account: AccountRow): Promise<"ads_on" | "ads_off" | null> {
+  if (!freeRuleCharges(account)) return null;
   const settings = await readCloudSettings(env);
-  if ((await pricingV3Mode(env, settings)) === "off") return false;
-  const { ctx } = await adContextFor(env, account, await pricingSwitches(env, settings));
-  return ctx.v3 && ctx.adsReach && ctx.adsOn;
+  if ((await pricingV3Mode(env, settings)) === "off") return null;
+  const { ctx, consent } = await adContextFor(env, account, await pricingSwitches(env, settings));
+  if (!ctx.v3 || !ctx.adsReach || !adsCountryHas(env, consent?.country ?? null)) return null;
+  return ctx.adsOn ? "ads_on" : "ads_off";
 }
 
 /* ---- What the apps read ---- */
@@ -803,7 +806,7 @@ export async function pricingAccountState(
   const phone = live
     ? { phoneId: live.phone_id, ...priceOf(decidePrice(targets.get(phoneTarget(live.phone_id)) ?? null, ctx, null, now), phoneRatesMilli(live.rate_milli, ctx.discountPct), here) }
     : null;
-  return { state: { creditScale: CREDIT_SCALE, ads, computers: computerPrices, phone }, catalog: { discountPct: ctx.discountPct, smallFullMilli: smallFullMilli(ctx) } };
+  return { state: { creditScale: CREDIT_SCALE, ads, computers: computerPrices, phone }, catalog: { discountPct: ctx.discountPct, smallFullMilli: smallFullMilli(ctx), freeSmallMilli: smallFullMilli({ ...ctx, freeRule: true }) } };
 }
 
 /* ---- The public read for the website ---- */

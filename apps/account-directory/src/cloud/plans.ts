@@ -239,7 +239,7 @@ export type CloudOffers = {
 const catalogPlan = ({ label: _label, ...terms }: CloudPlanTerms): CloudPlanFacts => ({ ...terms, diskGb: terms.computerLimit * LARGEST_DISK_MAX_GB });
 
 /** The catalog's Pricing v3 terms for one account (`adPrice.ts` `pricingAccountState`): the discount, and Small's full rate. */
-export type V3CatalogTerms = { discountPct: number; smallFullMilli: number };
+export type V3CatalogTerms = { discountPct: number; smallFullMilli: number; freeSmallMilli: number };
 
 /**
  * What `GET /cloud/account` tells a client about sizes and plans. Pro and Max
@@ -278,6 +278,7 @@ export function cloudCatalog(
     ...(v3 ? {
       creditScale: CREDIT_SCALE,
       phone: { milliPerMinute: PHONE_MILLI_PER_MINUTE_V3, adMilliPerMinute: adRateMilli(PHONE_MILLI_PER_MINUTE_V3, v3.discountPct) },
+      freeSmallMilli: v3.freeSmallMilli,
     } : {}),
   };
 }

@@ -4,7 +4,7 @@
  * phone check for accounts with a running iPhone (`phones.ts`).
  */
 
-import { freeSmallStartsWithAds } from "./adPrice";
+import { freeSmallWayOut } from "./adPrice";
 import type { CloudHoursState } from "./contract";
 import type { GravityEnv } from "./gravity";
 import { sendCloudEmail } from "./email";
@@ -20,7 +20,7 @@ type WarningText = { all: string; small: string; ads: string };
  * plan, which runs nothing once it is out, or whose Small uses credits (Free
  * without sponsored cards, `smallUsesNoHours`), reads the plain text (`all`).
  * Free under Pricing v3 with ads on reads `ads`: its Small still starts when
- * the person sends a message (`freeSmallStartsWithAds`).
+ * the person sends a message (`freeSmallWayOut`).
  * An account that can use the ADE Cloud iPhone reads `phone`: the iPhone
  * draws from the same credits and stops with them.
  */
@@ -83,7 +83,7 @@ export async function warnHours(env: CloudEnv, account: AccountRow, state: Cloud
   const warning = WARNINGS[state];
   if (account[warning.column] != null) return;
   const smallFree = !allStop && (await smallUsesNoHours(env, account));
-  const smallWithAds = !allStop && !smallFree && (await freeSmallStartsWithAds(env as GravityEnv, account));
+  const smallWithAds = !allStop && !smallFree && (await freeSmallWayOut(env as GravityEnv, account)) === "ads_on";
   // Claimed in the write: the minute tick and the phone check may both reach it, and only one sends.
   const claimed = await env.DB.prepare(`update cloud_accounts set ${warning.column} = ?, updated_at = ? where user_id = ? and ${warning.column} is null`).bind(now, now, account.user_id).run();
   if ((claimed.meta?.changes ?? 0) !== 1) return;

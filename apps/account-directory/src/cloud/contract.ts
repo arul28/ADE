@@ -747,6 +747,12 @@ export type CloudCatalog = {
   creditScale?: number;
   /** The DAEX Cloud iPhone's full and ad rate, in thousandths a minute (500 and 400 at a 20% discount). */
   phone?: { milliPerMinute: number; adMilliPerMinute: number };
+  /**
+   * Free's Small full rate an hour for this account (500 while the ad switch
+   * reaches it, else 0; free with ads either way), whatever the viewer's own
+   * plan: the Free plan card's Small line. Missing from older servers.
+   */
+  freeSmallMilli?: number;
 };
 
 /**

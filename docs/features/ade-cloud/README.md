@@ -379,7 +379,7 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
 
 - **Rates** (`plans.ts`, `pricingV3Rates`): milli-credits stay as stored; the
   catalog adds `creditScale` 10 (one shown credit is 100 milli),
-  `sizes[].adMultiplierMilli` and `phone`. Each ad rate is the full rate less
+  `sizes[].adMultiplierMilli`, `phone` and `freeSmallMilli` (Free's Small full rate, for the Free plan card on any plan). Each ad rate is the full rate less
   the discount, rounded down to a whole shown credit (`adRateMilli`); shapes
   not in the size list round down too (`v3FullRateMilli`). The iPhone is 500
   milli a minute. Small on Free is 500 milli an hour full and free with ads
@@ -424,8 +424,11 @@ settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
   automation started later puts it at the full price, and the zero stop
   stops it. The credits emails (`hoursWarnings.ts`) say so on Free with ads
   on: "Small computers keep working in chats with ads: send a message to
-  start one." (`freeSmallStartsWithAds`); a paid plan's read that Small
-  doesn't use credits.
+  start one." (`freeSmallWayOut`); a paid plan's read that Small doesn't use
+  credits. The `out_of_hours` refusal on Free adds the same sentence with ads
+  on, and "With ads on, Small computers keep working." where ads are offered
+  but off (the country of the account's ads answer); nothing where there are
+  no ads.
 - **Requests that do not count**: a proof from the network of one of the
   account's own cloud computers (its `net_asn`, or one it joined from in the
   last 30 days) is not counted, Gravity is not asked, the owner gets an alert

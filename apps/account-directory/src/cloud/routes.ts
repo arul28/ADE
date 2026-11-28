@@ -1,4 +1,4 @@
-import { noteActivityReport, noteOutsideAgentWork, syncComputerPrice, wakeRateMilli } from "./adPrice";
+import { freeSmallWayOut, noteActivityReport, noteOutsideAgentWork, syncComputerPrice, wakeRateMilli } from "./adPrice";
 import { proveWakeMessage } from "./adProof";
 import { authenticate } from "../callerToken";
 import { liveUsedWithPhones } from "./credits";
@@ -125,6 +125,7 @@ import {
   ComputerCloseError,
   deleteComputer,
   goneFromProviderStatements,
+  isOutOfHours,
   isOutOfHoursFor,
   isOwnEnvironment,
   isPendingId,
@@ -193,12 +194,17 @@ const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
  * GitHub rule holding the free credits is the reason itself: its sentence,
  * with the hold for the client (`CloudOutOfHoursDetail`).
  */
-const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true, freeGithub: CloudFreePlanGithub | null = null) => fail(
+/** Free under Pricing v3: how its Small still works with no credits (`freeSmallWayOut`). */
+const SMALL_WAY_OUT = {
+  ads_on: " Small computers keep working in chats with ads: send a message to start one.",
+  ads_off: " With ads on, Small computers keep working.",
+} as const;
+const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true, freeGithub: CloudFreePlanGithub | null = null, wayOut: keyof typeof SMALL_WAY_OUT | null = null) => fail(
   "out_of_hours",
   freeGithub?.sentence
     ?? (account && smallFree && !hasNoFreePlan(account)
       ? "You're out of DAEX Cloud credits for this period. Small computers don't use credits, so they keep working."
-      : "You're out of DAEX Cloud credits for this period."),
+      : `You're out of DAEX Cloud credits for this period.${wayOut ? SMALL_WAY_OUT[wayOut] : ""}`),
   402,
   freeGithub?.sentence ? { freeGithub } satisfies CloudOutOfHoursDetail : undefined,
 );
@@ -473,15 +479,17 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
   // A free plan a GitHub rule holds: a refusal names the hold, not credits spent. Read only for a held account.
   const freeGithub = account.free_github_hold != null ? await freePlanGithubOf(env, account).catch(() => null) : null;
   const held = freeGithub && freeGithub.state !== "ok" ? freeGithub : null;
+  // Free under Pricing v3 with no credits left: the refusal says how its Small keeps working. Read only then.
+  const wayOut = !smallFree && !hasNoFreePlan(account) && isOutOfHours(account, liveUsed) ? await freeSmallWayOut(env as GravityEnv, account) : null;
   return {
     account,
     computers,
     smallFree,
     outOfHoursFor: (multiplierMilli) => {
       const rate = multiplierMilli === 0 && !smallFree ? SMALL_NO_CARDS_RATE_MILLI : multiplierMilli;
-      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account, smallFree, held), refusal: "out_of_hours" } : null;
+      return isOutOfHoursFor(account, liveUsed, rate) ? { response: outOfHours(account, smallFree, held, wayOut), refusal: "out_of_hours" } : null;
     },
-    outOfHoursAt: (rateMilli) => (isOutOfHoursFor(account, liveUsed, rateMilli) ? { response: outOfHours(account, smallFree, held), refusal: "out_of_hours" } : null),
+    outOfHoursAt: (rateMilli) => (isOutOfHoursFor(account, liveUsed, rateMilli) ? { response: outOfHours(account, smallFree, held, wayOut), refusal: "out_of_hours" } : null),
   };
 }
 
