@@ -3416,6 +3416,11 @@ describe("ADE Cloud without a computer", () => {
     // A save from far past the server's clock is refused, so it can't hold off the computer's next ones.
     expect((await save(INSTANCE, "key-a", NOW + HOUR, "future")).status).toBe(400);
     expect((await read(`&since=${NOW + 30}`)).body).toEqual({ unchanged: true, savedAt: NOW + 30 });
+    // The computer's key changing case keeps its copy readable: the row takes the key the copy is sealed under.
+    harness.exec("update cloud_computers set machine_key = 'KEY-A' where instance_id = ?", INSTANCE);
+    expect(await (await save(INSTANCE, "key-a", NOW + 40, "upload-fix")).json()).toEqual({ ok: true, kept: false });
+    expect((await read(`&since=${NOW + 30}`)).body).toMatchObject({ snapshot: { savedAt: NOW + 40 } });
+    harness.exec("update cloud_computers set machine_key = 'key-a' where instance_id = ?", INSTANCE);
 
     // Deleting the lane's saved chats deletes the menu its computer saved, whatever case the path used.
     expect((await harness.send(OWNER, "DELETE", `/cloud/chats/KEY-A/lanes/${LANE}`)).status).toBe(200);

@@ -91,7 +91,8 @@ async function handlePut(request: Request, env: CloudEnv, userId: string, namedM
   const computer = await callingComputer(env, request, userId, body.value.instanceId);
   // Only the computer itself saves its menu, under its own key.
   if (!computer?.machine_key || computer.machine_key.toLowerCase() !== namedMachineKey.toLowerCase()) return fail("not_found", "ADE Cloud has no such computer.", 404);
-  // Stored, sealed and deleted under the computer's own key, whatever case the path used.
+  // Stored, sealed and deleted under the computer's own key, whatever case the path used;
+  // the row takes it on every save, so its key is always the one the copy is sealed under.
   const machineKey = computer.machine_key;
   const projectKey = projectKeyOf(body.value.projectKey);
   const snapshot = readCloudMentionSnapshot(body.value.snapshot);
@@ -103,7 +104,7 @@ async function handlePut(request: Request, env: CloudEnv, userId: string, namedM
     insert into cloud_mention_snapshots (user_id, machine_key, project_key, instance_id, sealed, saved_at, updated_at)
     values (?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id, machine_key, project_key) do update set
-      instance_id = excluded.instance_id, sealed = excluded.sealed, saved_at = excluded.saved_at, updated_at = excluded.updated_at
+      machine_key = excluded.machine_key, instance_id = excluded.instance_id, sealed = excluded.sealed, saved_at = excluded.saved_at, updated_at = excluded.updated_at
     where excluded.saved_at > cloud_mention_snapshots.saved_at and ? = 0
   `).bind(userId, machineKey, projectKey, computer.instance_id, sealed, snapshot.savedAt, now, body.value.partial === true ? 1 : 0),
   // Its newest few: a computer can't grow the account's rows without end by naming new projects.
