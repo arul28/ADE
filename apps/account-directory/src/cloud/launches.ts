@@ -929,6 +929,8 @@ export async function startServerLaunch(
   const launchId = parsed.launchId;
 
   const existing = await readLaunch(env, launchId);
+  // A Retry of a chat the person moved to a free model: the request the record holds is what runs.
+  if (options.restarted && existing) parsed = keepFreeModelMove(existing, parsed);
   // The id finds a computer in the shared provider list, so it can only ever be one account's.
   if (existing && existing.user_id !== userId) return badRequest("That launch id can't be used.");
   // The same launch again answers what it is now. A start whose create didn't
@@ -1539,6 +1541,21 @@ async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps
 /* ---- A waiting chat moves to DAEX Free Models ---- */
 
 /**
+ * A Retry of a launch whose chat the person moved to a free model in its
+ * sign-in step. A client that sends the first choice again (its own copy of
+ * the request) starts the free model, not the sign-in the person skipped. A
+ * different choice is the person's and goes as sent.
+ */
+function keepFreeModelMove(existing: LaunchRow, parsed: ParsedLaunchRequest): ParsedLaunchRequest {
+  const stored = parseJsonColumn<CloudServerLaunchRequest | null>(existing.request_json, null, { launchId: existing.launch_id, column: "request_json" });
+  const moved = stored?.chat?.switchedFrom;
+  if (!moved || !stored?.chat || !parsed.chat) return parsed;
+  if ((stored.chat.messageId ?? existing.launch_id) !== parsed.chat.messageId) return parsed;
+  if (parsed.chat.provider !== moved.provider || parsed.chat.modelId !== moved.modelId) return parsed;
+  return { ...parsed, chat: { ...parsed.chat, provider: stored.chat.provider, modelId: stored.chat.modelId, effort: null, fast: false, switchedFrom: moved } };
+}
+
+/**
  * `POST /cloud/launches/:launch/free-model`: the person's chat launch, while
  * it waits in its sign-in step, starts on the first DAEX Free Model instead,
  * with its first message unchanged, on the same computer: the computer reads
@@ -1564,7 +1581,8 @@ async function handleFreeModel(request: Request, env: CloudEnv, row: LaunchRow, 
   const next: CloudServerLaunchRequest = {
     ...stored!,
     // The first message, its attachments and its id stay as they are.
-    chat: { ...chat, provider: "opencode", modelId: SWITCH_FREE_MODEL.id, effort: null, fast: false },
+    // What it asked for first: a Retry that sends it again keeps the free model (`keepFreeModelMove`).
+    chat: { ...chat, provider: "opencode", modelId: SWITCH_FREE_MODEL.id, effort: null, fast: false, switchedFrom: { provider: chat.provider, modelId: chat.modelId } },
   };
   const written = await env.DB.prepare(`
     update cloud_launches set request_json = ?, updated_at = ? where launch_id = ? and state = 'waiting_for_sign_in' and request_json = ?
