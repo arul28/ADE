@@ -39,7 +39,8 @@ export type AccountCloudLaunchEntry = {
    * The start's answer never came (no answer, or a server error such as a
    * gateway timeout), with its error. The server may have kept the start and
    * goes on without this tab, so the launch is read by id until it moves; only
-   * a read that finds no launch shows this error, with Retry.
+   * a read that finds no launch, or finds it back as a draft, shows this error,
+   * with Retry.
    */
   answerLost?: string | null;
   /** What the launch was started with, for a retry of a start that failed. */
@@ -238,6 +239,13 @@ async function readInProgress(): Promise<boolean> {
     try {
       if (launchInProgress(entry)) {
         const record = await api.status(entry.launchId);
+        // A start refused with a 5xx (the owner's pause is a 503) puts a launch
+        // with files back to `draft`: that start ended, so its error and Retry.
+        if (entry.answerLost && !entry.record && record.state === "draft") {
+          changed = true;
+          patchEntry(entry.launchId, { startError: entry.answerLost, answerLost: null });
+          continue;
+        }
         // A Retry that answered while this read was out has the newer record.
         const current = snapshot.entries.find((candidate) => candidate.launchId === entry.launchId);
         if (current?.record === entry.record && !startsInFlight.has(entry.launchId) && signatureOf(record) !== signatureOf(entry.record)) {

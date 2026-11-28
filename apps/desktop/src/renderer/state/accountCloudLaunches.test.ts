@@ -103,15 +103,17 @@ describe("account cloud launch files", () => {
 /** A web start whose answer never came: the server may have kept it and makes the computer without the tab. */
 describe("account cloud launch whose start answer was lost", () => {
   const noAnswer = new CloudApiError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
-  it.each<[string, CloudApiError, "kept" | "missing", { state: string | null; startError: string | null; read: boolean }]>([
+  const paused = new CloudApiError("ADE Cloud isn't starting new computers right now. Try again later.", "creates_paused", 503);
+  it.each<[string, CloudApiError, "kept" | "missing" | "draft", { state: string | null; startError: string | null; read: boolean }]>([
     ["a gateway timeout, for a start the server kept: the card follows the launch", new CloudApiError("ADE Cloud had a problem.", "http_524", 524), "kept", { state: "joining", startError: null, read: true }],
     ["no answer, for a start the server kept: the card follows the launch", noAnswer, "kept", { state: "joining", startError: null, read: true }],
     ["no answer, for a start the server never got: its error, with Retry", noAnswer, "missing", { state: null, startError: noAnswer.message, read: true }],
+    ["a 5xx refusal of a start with files, which the server put back to a draft: its error, with Retry", paused, "draft", { state: null, startError: paused.message, read: true }],
     ["a refusal: its error at once, and nothing is read", new CloudApiError("You're using all 3 of your cloud computers.", "computer_limit", 409), "kept", { state: null, startError: "You're using all 3 of your cloud computers.", read: false }],
   ])("%s", async (_label, error, server, expected) => {
     const status = vi.fn(async (launchId: string) => {
       if (server === "missing") throw new CloudApiError("Not found.", "not_found", 404);
-      return { launchId, state: "joining", stages: [], updatedAt: 2 };
+      return { launchId, state: server === "draft" ? "draft" : "joining", stages: [], updatedAt: 2 };
     });
     globalThis.window.ade = {
       cloudLaunches: {
