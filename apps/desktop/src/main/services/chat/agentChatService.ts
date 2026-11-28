@@ -241,7 +241,7 @@ import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
 import { codexImageGenerationRefFields, looksLikeInlineBase64Image } from "../../../shared/codexImageGeneration";
 import { codexDaybreakProgram, readCodexCyberAccessPrograms, type CodexAccessProgram, type CodexDaybreakProgram } from "../../../shared/codexDaybreak";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
-import { mergeSlashCommands } from "./markdownSlashCommandDiscovery";
+import { ancestorConfigRoots, mergeSlashCommands } from "./markdownSlashCommandDiscovery";
 import {
   SIDE_CHAT_READ_ONLY_MESSAGE,
   parseSideSlashCommand,
@@ -68428,11 +68428,16 @@ export function createAgentChatService(args: {
     args = withSideChatRole(managed, args);
     // `/ade:ade-browser` and `/ade-browser` (saved prompts, automations, habit)
     // name skills that are `daex:daex-browser` / `daex-browser` now, unless a
-    // project or user skill still carries the old name.
+    // project or user skill, or a Claude or Cursor custom command
+    // (`commands/<name>.md`), still carries the old name. Checked only when
+    // the message opens with an old bundled name.
     if (!options?.preparedMessage && typeof args.text === "string") {
+      const cwd = managed.laneWorktreePath;
       const renamed = rewriteLegacyBundledSkillCommand(args.text, (name) =>
-        getAgentSkillRootsWithSource({ cwd: managed.laneWorktreePath })
-          .some(({ root, source }) => source !== "bundled" && fs.existsSync(path.join(root, name, "SKILL.md"))));
+        getAgentSkillRootsWithSource({ cwd })
+          .some(({ root, source }) => source !== "bundled" && fs.existsSync(path.join(root, name, "SKILL.md")))
+        || [...ancestorConfigRoots(cwd, ".claude"), ...ancestorConfigRoots(cwd, ".cursor")]
+          .some((root) => fs.existsSync(path.join(root, "commands", `${name}.md`))));
       if (renamed !== args.text) args = { ...args, text: renamed };
     }
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
