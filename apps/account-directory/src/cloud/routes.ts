@@ -398,6 +398,19 @@ function stringMap(value: unknown, maxEntries: number): Record<string, string> |
   return out;
 }
 
+/**
+ * A client's metadata. The server's own tag (`ade_env`) is dropped before the
+ * count: the server writes it over any value anyway, and a map read back from
+ * a computer (the client's entries plus the tag) still fits when written again.
+ */
+function clientMetadataOf(value: unknown): Record<string, string> | null {
+  if (value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, CLOUD_ENV_METADATA)) {
+    const { [CLOUD_ENV_METADATA]: _serverTag, ...sent } = value as Record<string, unknown>;
+    return stringMap(sent, MAX_METADATA_ENTRIES);
+  }
+  return stringMap(value, MAX_METADATA_ENTRIES);
+}
+
 const shortText = (value: unknown, max: number): string | null => {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -684,7 +697,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const size = cloudSizeFor(body.type, resources?.cpu, resources?.memory);
   if (!size) return refused(badRequest("That size isn't one ADE Cloud offers."));
   const name = computerName(body.name) ?? "ADE computer";
-  const clientMetadata = stringMap(body.metadata, MAX_METADATA_ENTRIES);
+  const clientMetadata = clientMetadataOf(body.metadata);
   const requestedEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
   if (!clientMetadata || !requestedEnv || !publicPorts) return refused(badRequest(UNREADABLE_REQUEST_MESSAGE));
@@ -855,7 +868,7 @@ async function planFork(
 
 /** Why a copy of `computer` with this fork body would be refused now, or null when it may go ahead (the server copy's start). */
 export async function forkRefusal(env: CloudEnv, computer: ComputerRow, body: Record<string, unknown>, ctx: CloudRequestContext): Promise<Response | null> {
-  const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
+  const metadataIn = clientMetadataOf(body.metadata);
   if (!metadataIn) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const planned = await planFork(env, computer, body, metadataIn, ctx);
   return planned.ok ? null : planned.response;
@@ -870,7 +883,7 @@ export async function forkComputer(env: CloudEnv, computer: ComputerRow, provide
   const refused = (response: Response): CreateComputerOutcome => ({ kind: "refused", response });
   const { body } = extras;
   const { now } = ctx;
-  const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
+  const metadataIn = clientMetadataOf(body.metadata);
   if (!metadataIn) return refused(badRequest(UNREADABLE_REQUEST_MESSAGE));
   // A repeat of a copy this account asked for gets that computer, before any
   // limit, as a repeated create does.
@@ -1697,7 +1710,7 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   "PUT metadata": async (request, env, computer, provider) => {
     const body = await readJson(request);
-    const sent = body ? stringMap(body.metadata, MAX_METADATA_ENTRIES) : null;
+    const sent = body ? clientMetadataOf(body.metadata) : null;
     if (!sent) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     // The environment tag is the server's: a client can't move its computer to another server.
     const metadata: Record<string, string> = { ...sent, [CLOUD_ENV_METADATA]: cloudEnvironmentOf(env) };
