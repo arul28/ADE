@@ -181,6 +181,10 @@ export function useAdeCloudDraft({
   const defaultOs = useRootAppStore((state) => state.cloudDefaultOs);
   // Batch work keeps its own pick (Linux until the person picks a Mac there).
   const [pickedOs, setPickedOs] = useState<CloudComputerOs | null>(null);
+  // A batch dialog stays mounted between opens: each open starts on Linux again.
+  useEffect(() => {
+    if (!enabled) setPickedOs(null);
+  }, [enabled]);
   const os: CloudComputerOs = macOffer ? (savedOs ? defaultOs : pickedOs ?? "linux") : "linux";
   // Elsewhere the last pick is the saved one (a synced account setting), so
   // the composer, the new lane dialog and every other window show one answer.
