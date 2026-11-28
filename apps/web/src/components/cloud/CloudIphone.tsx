@@ -1,6 +1,8 @@
 import { ArrowRight, Clapperboard, Laptop, MousePointerClick, Smartphone } from "lucide-react";
 import { PHONE_CREDITS_PER_MINUTE, PRICING_SIZES, formatCount } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
+import type { PricingView } from "../../lib/pricingView";
+import { AppleMark } from "../home/marks";
 import { LINKS } from "../../lib/links";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
@@ -8,26 +10,17 @@ const AMBER = "#fdba74";
 
 /**
  * Each size once, then the iPhone: one panel, a column each (a row each on a
- * narrow screen), with the rate as the big number.
+ * narrow screen), with the rate as the big number. Under Pricing v3 the rates
+ * come from the visitor's view: the Mac joins when it is open to all, and with
+ * ads each rate shows the ad price with the full price struck beside it.
  */
-export function SizesStrip({ className }: { className?: string }) {
-  const tiles = [
-    ...PRICING_SIZES.map((size) => ({
-      id: size.id,
-      name: size.machine,
-      rate: size.rate > 0 ? formatCount(size.rate) : "Free",
-      per: size.rate > 0 ? `${size.rate === 1 ? "credit" : "credits"} an hour` : "on paid plans, or Free with ads",
-      spec: `${size.cpu} CPUs, ${size.memoryGb} GB`,
-      use: size.use,
-      phone: false,
-    })),
-    { id: "iphone", name: "iOS Simulator", rate: formatCount(PHONE_CREDITS_PER_MINUTE), per: `${PHONE_CREDITS_PER_MINUTE === 1 ? "credit" : "credits"} a minute`, spec: "An iPhone in the cloud", use: "No Mac needed", phone: true },
-  ];
+export function SizesStrip({ className, view }: { className?: string; view?: PricingView }) {
+  const tiles: Tile[] = view?.v3 ? v3Tiles(view) : todayTiles();
   return (
     <div
       className={cn(
         "grid overflow-hidden rounded-[24px] border border-white/[0.08] bg-[#100e22] divide-y divide-white/[0.07] lg:divide-x lg:divide-y-0",
-        tiles.length === 5 ? "lg:grid-cols-5" : "lg:grid-cols-4",
+        tiles.length === 6 ? "lg:grid-cols-6" : tiles.length === 5 ? "lg:grid-cols-5" : "lg:grid-cols-4",
         className,
       )}
     >
@@ -37,17 +30,26 @@ export function SizesStrip({ className }: { className?: string }) {
           className={cn(
             "grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 p-5 lg:grid-cols-1 lg:p-6",
             tile.phone && "bg-[linear-gradient(160deg,rgba(253,186,116,0.12),transparent_70%)]",
+            tile.mac && "bg-[linear-gradient(160deg,rgba(196,181,253,0.12),transparent_70%)]",
           )}
         >
           <div className="col-start-1 row-start-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             {tile.phone ? <Smartphone className="h-4 w-4" style={{ color: AMBER }} /> : null}
+            {tile.mac ? <AppleMark className="h-4 w-4 text-[#c4b5fd]" /> : null}
             <span className="text-[16px] font-semibold text-white">{tile.name}</span>
           </div>
           <div className="col-start-2 row-span-2 row-start-1 self-center text-right lg:col-start-1 lg:row-span-1 lg:row-start-2 lg:mt-5 lg:text-left">
+            {tile.struck != null ? (
+              <s className="mr-2 font-display text-[22px] leading-none text-white/35 decoration-white/45 decoration-[1.5px] lg:text-[26px]">
+                <span className="sr-only">Full price </span>
+                {tile.struck}
+              </s>
+            ) : null}
             <span
               className={cn("font-display text-[34px] leading-none lg:text-[44px]", tile.rate === "Free" ? "text-[color:var(--color-lamp)]" : "text-white")}
-              style={tile.phone ? { color: AMBER } : undefined}
+              style={tile.phone ? { color: AMBER } : tile.mac ? { color: "#c4b5fd" } : undefined}
             >
+              {tile.struck != null ? <span className="sr-only">With ads </span> : null}
               {tile.rate}
             </span>
             <span className="mt-1 block text-[13px] text-white/50">{tile.per}</span>
@@ -60,6 +62,53 @@ export function SizesStrip({ className }: { className?: string }) {
       ))}
     </div>
   );
+}
+
+type Tile = { id: string; name: string; rate: string; struck?: string | null; per: string; spec: string; use: string; phone: boolean; mac?: boolean };
+
+function todayTiles(): Tile[] {
+  return [
+    ...PRICING_SIZES.map((size) => ({
+      id: size.id,
+      name: size.machine,
+      rate: size.rate > 0 ? formatCount(size.rate) : "Free",
+      per: size.rate > 0 ? `${size.rate === 1 ? "credit" : "credits"} an hour` : "on paid plans, or Free with ads",
+      spec: `${size.cpu} CPUs, ${size.memoryGb} GB`,
+      use: size.use,
+      phone: false,
+    })),
+    { id: "iphone", name: "iOS Simulator", rate: formatCount(PHONE_CREDITS_PER_MINUTE), per: `${PHONE_CREDITS_PER_MINUTE === 1 ? "credit" : "credits"} a minute`, spec: "An iPhone in the cloud", use: "No Mac needed", phone: true },
+  ];
+}
+
+function v3Tiles(view: PricingView): Tile[] {
+  const small = PRICING_SIZES.find((size) => size.rate === 0)!;
+  const freeSmallRate = view.freeSmall.struck ?? view.freeSmall.now;
+  const smallTile: Tile = {
+    id: small.id,
+    name: small.machine,
+    rate: "Free",
+    per: view.ads
+      ? `on paid plans, and on Free with ads. ${formatCount(freeSmallRate)} credits an hour on Free with no ads.`
+      : `on paid plans. ${formatCount(freeSmallRate)} credits an hour on Free.`,
+    spec: `${small.cpu} CPUs, ${small.memoryGb} GB`,
+    use: small.use,
+    phone: false,
+  };
+  return [
+    smallTile,
+    ...view.machines.map((machine) => ({
+      id: machine.id,
+      name: machine.kind === "linux" ? machine.name : machine.name,
+      rate: formatCount(machine.price.now),
+      struck: machine.price.struck != null ? formatCount(machine.price.struck) : null,
+      per: `${machine.price.now === 1 ? "credit" : "credits"} a${machine.per === "hour" ? "n hour" : " minute"}`,
+      spec: machine.specs,
+      use: machine.use,
+      phone: machine.kind === "iphone",
+      mac: machine.kind === "mac",
+    })),
+  ];
 }
 
 /** Home page: the ADE Cloud iPhone's own band, a real capture beside a short pitch. */

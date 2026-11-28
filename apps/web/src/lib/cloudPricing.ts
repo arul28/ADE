@@ -202,7 +202,7 @@ export function hoursOnSize(hours: number, size: PricingSize): number | null {
 }
 
 /** "a Medium", "an X-Large". */
-const withArticle = (label: string): string => `${/^[AEIOUX]/i.test(label) ? "an" : "a"} ${label}`;
+export const withArticle = (label: string): string => `${/^[AEIOUX]/i.test(label) ? "an" : "a"} ${label}`;
 
 /**
  * A plan's hours as time on each size that uses them, never a multiplier:
@@ -257,14 +257,15 @@ export type PlanCost = {
  * only inside its own hours (work on the bigger sizes stops there); a paid
  * plan runs past its hours with extra hours turned on.
  */
-export function planCostsFor(hours: number, computers = 1): PlanCost[] {
+export function planCostsFor(hours: number, computers = 1, { freeExtraHours = 0 }: { freeExtraHours?: number } = {}): PlanCost[] {
   const needed = Math.max(0, hours);
   return PRICING_PLANS.flatMap((plan): PlanCost[] => {
     if (computers > plan.computerLimit) return [];
-    const extraHours = Math.max(0, needed - plan.hours);
+    const used = needed + (plan.priceUsd === 0 ? Math.max(0, freeExtraHours) : 0);
+    const extraHours = Math.max(0, used - plan.hours);
     if (extraHours > 0 && plan.extraHourCents == null) return [];
     const costUsd = plan.priceUsd + (extraHours * (plan.extraHourCents ?? 0)) / 100;
-    return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - needed) }];
+    return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - used) }];
   }).sort((a, b) => a.costUsd - b.costUsd || b.spareHours - a.spareHours);
 }
 
@@ -281,8 +282,8 @@ export const formatUsd = (usd: number): string => {
  * it costs more than $5 or 30% more: a person rarely wants a bill that grows
  * with every hour to save a dollar or two.
  */
-export function suggestPlan(hours: number, computers = 1): { pick: PlanCost; other: PlanCost | null } | null {
-  const costs = planCostsFor(hours, computers);
+export function suggestPlan(hours: number, computers = 1, options?: { freeExtraHours?: number }): { pick: PlanCost; other: PlanCost | null } | null {
+  const costs = planCostsFor(hours, computers, options);
   const cheapest = costs[0];
   if (!cheapest) return null;
   const covered = costs.find((cost) => cost.extraHours === 0) ?? null;

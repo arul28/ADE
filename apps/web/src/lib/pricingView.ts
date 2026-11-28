@@ -1,0 +1,180 @@
+/**
+ * The prices a visitor sees, today's or Pricing v3's, in the units the page
+ * shows. The plan facts stay in `cloudPricing.ts` (the server's own files);
+ * this adds what Pricing v3 changes on the page:
+ *
+ * - credits shown at 10 times the stored unit (`V3_CREDIT_SCALE`), so the
+ *   money and the hours of every plan stay the same;
+ * - the cloud iPhone at half its price in money, and the cloud Mac;
+ * - the ad price (`discountPct` less, rounded to whole credits) beside the
+ *   full price, only where the server says the visitor's country has ads.
+ *
+ * Inside, every amount stays in the stored unit (Medium-hours, a thousandth
+ * of which the server keeps), so the plan finder's arithmetic is the same
+ * for both; only what is shown is scaled.
+ */
+import { useMemo } from "react";
+import {
+  FREE_PLAN,
+  HOURLY_SIZES,
+  INVITE_RULES,
+  PHONE_CREDITS_PER_MINUTE,
+  PRICING_PLANS,
+  SMALL_NO_ADS_RATE,
+  SMALL_SIZE,
+  formatCount,
+  type PricingPlan,
+  type PricingSize,
+} from "./cloudPricing";
+import { useAdsOn, useSiteOffer, type SiteAds, type SiteOffer } from "./siteOffer";
+import { BRAND } from "../../../desktop/src/shared/brand";
+
+/**
+ * Pricing v3's numbers that the server's plan files do not carry yet. The
+ * server lane ("the ad price on the server") owns them; when its catalog
+ * exports them (`creditScale`, the iPhone's and the Mac's milli-credits a
+ * minute, the ad rounding), these read from there instead.
+ */
+/** Shown credits for each stored Medium-hour. */
+export const V3_CREDIT_SCALE = 10;
+/** Stored Medium-hours a minute of the cloud iPhone uses under Pricing v3: 500 milli-credits. */
+const V3_PHONE_HOURS_PER_MINUTE = 0.5;
+/** Stored Medium-hours a minute of the cloud Mac uses: 500 milli-credits. */
+const V3_MAC_HOURS_PER_MINUTE = 0.5;
+
+/** The ad price of a full price in whole shown credits: `pct` less, rounded. */
+export const adPriceOf = (full: number, pct: number): number => Math.round((full * (100 - pct)) / 100);
+
+/** A price as shown: what it costs now, and the full price struck beside it while ads are on (null with no ads). */
+export type ShownPrice = { now: number; struck: number | null };
+
+export type Machine = {
+  id: PricingSize["id"] | "mac" | "iphone";
+  name: string;
+  /** Specs in words. */
+  specs: string;
+  /** What it is for, in a few words. */
+  use: string;
+  per: "hour" | "minute";
+  /** Shown credits for each hour (or minute). */
+  price: ShownPrice;
+  /** Stored Medium-hours for each hour (or minute) at the price now. */
+  storedRate: number;
+  kind: "linux" | "mac" | "iphone";
+};
+
+export type PricingView = {
+  v3: boolean;
+  /** The ad price, where the visitor's country has it: the control shows. Null: full prices only, no word about ads. */
+  ads: SiteAds | null;
+  /** The control is on "With ads". */
+  withAds: boolean;
+  /** Shown credits for `stored` Medium-hours. */
+  credits: (stored: number) => number;
+  /** "1 credit", "6,000 credits". */
+  creditsLabel: (shown: number) => string;
+  /** The machines that use credits, in the order the page lists them: the hourly sizes, the Mac (when open), the iPhone. */
+  machines: Machine[];
+  /** Free's Small for an hour, in shown credits: free with ads, a rate without. */
+  freeSmall: ShownPrice;
+  /** How far `storedHours` of a plan goes on `machine`, in whole hours or minutes. */
+  timeOn: (storedHours: number, machine: Machine) => number;
+  /** The same with no ads, for the honest "50 with no ads" beside it. Null when the control is not on "With ads". */
+  timeOnFull: (storedHours: number, machine: Machine) => number | null;
+  /** Extra credits: "$4 for 1,000" under v3, "4¢ each" today. */
+  extraPrice: (plan: PricingPlan) => string | null;
+  /** Stored Medium-hours each Small hour on Free uses at the price now (0 with ads). */
+  freeSmallStoredRate: number;
+  /** An invite's reward in shown credits. */
+  inviteCredits: number;
+};
+
+const machineName = (size: PricingSize) => size.machine;
+
+function sizeMachine(size: PricingSize, scale: number, ads: SiteAds | null, withAds: boolean): Machine {
+  const full = Math.round(size.rate * scale);
+  const ad = ads ? adPriceOf(full, ads.discountPct) : full;
+  const now = withAds ? ad : full;
+  return {
+    id: size.id,
+    name: machineName(size),
+    specs: size.specs,
+    use: size.use,
+    per: "hour",
+    price: { now, struck: withAds && ad !== full ? full : null },
+    storedRate: now / scale,
+    kind: "linux",
+  };
+}
+
+function minuteMachine(id: "mac" | "iphone", storedPerMinute: number, scale: number, ads: SiteAds | null, withAds: boolean): Machine {
+  const full = Math.round(storedPerMinute * scale);
+  const ad = ads ? adPriceOf(full, ads.discountPct) : full;
+  const now = withAds ? ad : full;
+  return id === "mac"
+    ? { id, name: "Mac", specs: "6 CPUs, 8 GB, Xcode", use: "Mac and iPhone builds", per: "minute", price: { now, struck: withAds && ad !== full ? full : null }, storedRate: now / scale, kind: "mac" }
+    : { id, name: "iOS Simulator", specs: "An iPhone in the cloud", use: "No Mac needed", per: "minute", price: { now, struck: withAds && ad !== full ? full : null }, storedRate: now / scale, kind: "iphone" };
+}
+
+/** The view for one answer of the server and one position of the control. Pure, so the numbers table can be checked. */
+export function pricingViewFor(offer: SiteOffer, adsOnChoice: boolean): PricingView {
+  const v3 = offer.v3;
+  const ads = offer.v3 ? offer.ads : null;
+  const withAds = ads != null && adsOnChoice;
+  const scale = v3 ? V3_CREDIT_SCALE : 1;
+  const credits = (stored: number) => Math.round(stored * scale);
+  const creditsLabel = (shown: number) => `${formatCount(shown)} ${shown === 1 ? "credit" : "credits"}`;
+
+  const machines: Machine[] = HOURLY_SIZES.map((size) => sizeMachine(size, scale, ads, withAds));
+  if (offer.v3 && offer.mac) machines.push(minuteMachine("mac", V3_MAC_HOURS_PER_MINUTE, scale, ads, withAds));
+  machines.push(minuteMachine("iphone", v3 ? V3_PHONE_HOURS_PER_MINUTE : PHONE_CREDITS_PER_MINUTE, scale, ads, withAds));
+
+  const smallFull = Math.round(SMALL_NO_ADS_RATE * scale);
+  // Free's Small: free with ads (in every ad country), the full rate without.
+  const freeSmall: ShownPrice = withAds ? { now: 0, struck: smallFull } : { now: smallFull, struck: null };
+
+  const fullRate = (machine: Machine) => (machine.price.struck ?? machine.price.now) / scale;
+  const timeOn = (stored: number, machine: Machine) => Math.floor(stored / machine.storedRate + 1e-9);
+  const timeOnFull = (stored: number, machine: Machine) => (machine.price.struck == null ? null : Math.floor(stored / fullRate(machine) + 1e-9));
+
+  const extraPrice = (plan: PricingPlan): string | null => {
+    if (plan.extraHourCents == null) return null;
+    if (!v3) return null;
+    // A stored Medium-hour costs `extraHourCents`; 1,000 shown credits are 1,000 / scale of them.
+    const usd = (plan.extraHourCents * (1000 / scale)) / 100;
+    return `$${Number.isInteger(usd) ? usd : usd.toFixed(2)} for 1,000`;
+  };
+
+  return {
+    v3,
+    ads,
+    withAds,
+    credits,
+    creditsLabel,
+    machines,
+    freeSmall,
+    timeOn,
+    timeOnFull,
+    extraPrice,
+    freeSmallStoredRate: freeSmall.now / scale,
+    inviteCredits: credits(INVITE_RULES.rewardHours),
+  };
+}
+
+/** The view for this visitor, live with the server's answer and the control. */
+export function usePricingView(): PricingView {
+  const offer = useSiteOffer();
+  const adsOn = useAdsOn();
+  return useMemo(() => pricingViewFor(offer, adsOn), [offer, adsOn]);
+}
+
+/** The control's one sentence (`Words` in the plan: never "earn", "reward" or "watch"). */
+export function adsSentence(ads: SiteAds): string {
+  return `A chat that uses ${BRAND.CLOUD_NAME} shows an ad under each reply. With ads on, ${BRAND.CLOUD_NAME} costs ${ads.discountPct}% less.`;
+}
+
+/** When the ad price counts, in one line for the small print. */
+export const AD_PRICE_RULE_SENTENCE =
+  `The ad price counts while you use a ${BRAND.CLOUD_NAME} chat on that computer, and for an hour after. Agent CLI sessions in a terminal and automations use the full price.`;
+
+export { FREE_PLAN, PRICING_PLANS, SMALL_SIZE };

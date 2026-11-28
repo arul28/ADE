@@ -1,12 +1,14 @@
 import { useRef, useState, type ComponentType, type ReactNode } from "react";
 import { ArrowDown, Bot, Check, ChevronDown, Clock, Gift, Recycle, Smartphone, X } from "lucide-react";
 
+import { AdsControl, PriceFigure } from "../../components/cloud/AdsControl";
 import { CloudLockup } from "../../components/cloud/CloudMark";
 import { ComingSoon } from "../../components/cloud/ComingSoon";
 import { SizesStrip } from "../../components/cloud/CloudIphone";
 import { PlanButton } from "../../components/cloud/PlanButton";
 import { Moon, NightSky, PlanTower } from "../../components/cloud/NightCity";
 import { InstallBlock } from "../../components/home/Hero";
+import { AppleMark } from "../../components/home/marks";
 import { Page } from "../../components/Page";
 import { RIVALS } from "../../lib/cloudCompetitors";
 import { cn } from "../../lib/cn";
@@ -41,6 +43,7 @@ import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES, MARKETING_SCREENS } from "
 import { captureMarketingFeature } from "../../lib/marketingAnalyticsBrowser";
 import { PLAN_CTAS } from "../../lib/planLinks";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { AD_PRICE_RULE_SENTENCE, usePricingView, type Machine, type PricingView } from "../../lib/pricingView";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
 /** Each plan's tower over its card: more floors and more lights for a bigger plan. */
@@ -120,6 +123,7 @@ export function PricingPage() {
 }
 
 function PricingHero() {
+  const view = usePricingView();
   return (
     <section aria-labelledby="plans-title" id="plans" className="relative overflow-hidden">
       <NightSky seed={21} />
@@ -147,14 +151,24 @@ function PricingHero() {
           </a>
         </div>
 
-        <div className="mt-[136px] grid gap-x-4 gap-y-[150px] sm:grid-cols-2 xl:grid-cols-4">
+        {view.ads ? <AdsControl view={view} className="mt-9" /> : null}
+
+        <div className={cn(view.ads ? "mt-[120px]" : "mt-[136px]", "grid gap-x-4 gap-y-[150px] sm:grid-cols-2 xl:grid-cols-4")}>
           {PRICING_PLANS.map((plan) => (
-            <PlanCard key={plan.id} plan={plan} />
+            <PlanCard key={plan.id} plan={plan} view={view} />
           ))}
         </div>
 
         <p className="mx-auto mt-8 max-w-[48rem] text-center text-[14px] leading-[1.6] text-white/45">
-          Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE} On Free, Small stays free while you open a {BRAND.CLOUD_NAME} chat or terminal from the US at least once a week.
+          {view.v3 ? (
+            <>
+              Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE} {view.ads ? AD_PRICE_RULE_SENTENCE : null}
+            </>
+          ) : (
+            <>
+              Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE} On Free, Small stays free while you open a {BRAND.CLOUD_NAME} chat or terminal from the US at least once a week.
+            </>
+          )}
         </p>
       </div>
     </section>
@@ -169,7 +183,7 @@ const PLAN_CARD_TONES: Record<"lamp" | "violet" | "quiet", string> = {
 };
 
 /** One plan: its price, its month of hours (or credits), then the same rows in the same order on every card, so the four read across. */
-function PlanCard({ plan }: { plan: PricingPlan }) {
+function PlanCard({ plan, view }: { plan: PricingPlan; view: PricingView }) {
   const tower = PLAN_TOWERS[plan.id];
   const free = plan.priceUsd === 0;
   const cheapest = plan.id === CHEAPEST_PAID?.id;
@@ -188,10 +202,10 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         </span>
         <span className="text-[14px] text-white/45">a month</span>
       </p>
-      <PlanAllowance plan={plan} free={free} />
+      <PlanAllowance plan={plan} free={free} view={view} />
       <dl className="mt-5 flex flex-1 flex-col border-t border-white/[0.08] pt-2 text-[14px]">
         <PlanRow label="Cloud computers" value={formatCount(plan.computerLimit)} />
-        <PlanRow label={UNIT.extraTitle} value={plan.extraHourCents == null ? "None" : `${formatCents(plan.extraHourCents)} each`} muted={plan.extraHourCents == null} />
+        <PlanRow label={UNIT.extraTitle} value={plan.extraHourCents == null ? "None" : (view.extraPrice(plan) ?? `${formatCents(plan.extraHourCents)} each`)} muted={plan.extraHourCents == null} />
       </dl>
       <PlanButton
         cta={PLAN_CTAS[plan.id].cta}
@@ -206,7 +220,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       <div aria-hidden={!free} className={cn("mt-3 text-center text-[13px] leading-[1.5]", !free && "invisible")}>
         <p className="text-[color:var(--color-lamp)]">No credit card needed</p>
         <p className="mx-auto mt-1.5 max-w-[17rem] text-white/50">
-          Unlimited free {SMALL_SIZE.machine}es with ads on, in the US. Otherwise {formatCount(SMALL_NO_ADS_RATE)} {UNIT.many} an hour.
+          {view.v3 ? freeSmallNote(view) : <>Unlimited free {SMALL_SIZE.machine}es with ads on, in the US. Otherwise {formatCount(SMALL_NO_ADS_RATE)} {UNIT.many} an hour.</>}
         </p>
       </div>
     </div>
@@ -218,41 +232,105 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
  * of the credits), then the month's credits and how far they go on each
  * bigger machine, or on the iPhone, if they all went to that one.
  */
-function PlanAllowance({ plan, free }: { plan: PricingPlan; free: boolean }) {
+function PlanAllowance({ plan, free, view }: { plan: PricingPlan; free: boolean; view: PricingView }) {
+  if (!view.v3) {
+    return (
+      <div className="mt-6 border-t border-white/[0.08] pt-5">
+        <ul>
+          <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value="Unlimited" unit={free ? "with ads on" : "free"} free />
+        </ul>
+        <p className="mt-5 flex items-baseline gap-2">
+          <span className="font-display text-[34px] leading-none text-white tabular-nums">{formatCount(plan.hours)}</span>
+          <span className="text-[15px] text-white/70">{UNIT.many} a month</span>
+        </p>
+        <p className="mt-1 text-[13px] text-white/45">Enough for up to</p>
+        <ul className="mt-1">
+          {HOURLY_SIZES.map((size) => (
+            <AllowanceRow key={size.id} name={size.machine} detail={size.specs} value={formatCount(hoursOnSize(plan.hours, size) ?? 0)} unit="h" />
+          ))}
+          <AllowanceRow name="iOS Simulator" detail="No Mac needed" value={formatCount(Math.floor(plan.hours / PHONE_CREDITS_PER_MINUTE))} unit="min" phone />
+        </ul>
+      </div>
+    );
+  }
+  const smallFreeHere = !free || view.withAds;
   return (
     <div className="mt-6 border-t border-white/[0.08] pt-5">
       <ul>
-        <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value="Unlimited" unit={free ? "with ads on" : "free"} free />
+        {smallFreeHere ? (
+          <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value="Unlimited" unit={free ? "free with ads" : "free"} free />
+        ) : (
+          <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value={formatCount(view.freeSmall.now)} unit={`${UNIT.many} an hour`} stacked />
+        )}
       </ul>
       <p className="mt-5 flex items-baseline gap-2">
-        <span className="font-display text-[34px] leading-none text-white tabular-nums">{formatCount(plan.hours)}</span>
+        <span className="font-display text-[34px] leading-none text-white tabular-nums">{formatCount(view.credits(plan.hours))}</span>
         <span className="text-[15px] text-white/70">{UNIT.many} a month</span>
       </p>
-      <p className="mt-1 text-[13px] text-white/45">Enough for up to</p>
+      <p className="mt-1 text-[13px] text-white/45">{view.withAds ? "With ads, enough for up to" : "Enough for up to"}</p>
       <ul className="mt-1">
-        {HOURLY_SIZES.map((size) => (
-          <AllowanceRow key={size.id} name={size.machine} detail={size.specs} value={formatCount(hoursOnSize(plan.hours, size) ?? 0)} unit="h" />
+        {view.machines.map((machine) => (
+          <AllowanceRow
+            key={machine.id}
+            name={machine.name}
+            detail={machine.kind === "linux" ? machine.specs : machine.use}
+            value={formatCount(view.timeOn(plan.hours, machine))}
+            unit={machine.per === "hour" ? "h" : "min"}
+            without={view.timeOnFull(plan.hours, machine)}
+            phone={machine.kind === "iphone"}
+            mac={machine.kind === "mac"}
+          />
         ))}
-        <AllowanceRow name="iOS Simulator" detail="No Mac needed" value={formatCount(Math.floor(plan.hours / PHONE_CREDITS_PER_MINUTE))} unit="min" phone />
       </ul>
     </div>
   );
 }
 
+/** The Free card's small print about Small under Pricing v3: what it costs with and with no ads, or only its price where there are no ads. */
+function freeSmallNote(view: PricingView): string {
+  const rate = `${formatCount(view.freeSmall.struck ?? view.freeSmall.now)} ${UNIT.many} an hour`;
+  if (!view.ads) return `Small is free on every paid plan, and ${rate} on Free.`;
+  return view.withAds ? `Small is free with ads on. With no ads, ${rate}.` : `Small is ${rate} with no ads, and free with ads on.`;
+}
+
 /** One machine in a plan's allowance: its name and specs, then how much of it the plan gets. */
-function AllowanceRow({ name, detail, value, unit, free, phone }: { name: string; detail: string; value: string; unit: string; free?: boolean; phone?: boolean }) {
+function AllowanceRow({
+  name,
+  detail,
+  value,
+  unit,
+  free,
+  phone,
+  mac,
+  stacked,
+  without,
+}: {
+  name: string;
+  detail: string;
+  value: string;
+  unit: string;
+  free?: boolean;
+  phone?: boolean;
+  mac?: boolean;
+  /** The unit under the value, as a free row has it. */
+  stacked?: boolean;
+  /** The same allowance with no ads, shown small under it while ads are on. */
+  without?: number | null;
+}) {
   return (
     <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 list-none">
       <span className="min-w-0">
         <span className="flex items-center gap-1.5 text-[15px] text-white/90">
           {phone ? <Smartphone className="h-3.5 w-3.5 shrink-0 text-[#fdba74]" /> : null}
+          {mac ? <AppleMark className="h-3.5 w-3.5 shrink-0 text-white/80" /> : null}
           {name}
         </span>
         <span className="block text-[12.5px] leading-[1.4] text-white/45">{detail}</span>
       </span>
       <span className="text-right">
-        <span className={cn("font-display leading-none tabular-nums", free ? "text-[19px] text-[color:var(--color-lamp)]" : "text-[22px] text-white")}>{value}</span>
-        <span className={cn("block text-[12px] text-white/45", !free && "inline pl-1")}>{unit}</span>
+        <span className={cn("font-display leading-none tabular-nums", free ? "text-[19px] text-[color:var(--color-lamp)]" : stacked ? "text-[19px] text-white" : "text-[22px] text-white")}>{value}</span>
+        <span className={cn("block text-[12px] text-white/45", !free && !stacked && "inline pl-1")}>{unit}</span>
+        {without != null ? <span className="block text-[11.5px] leading-tight text-white/40 tabular-nums">{formatCount(without)} with no ads</span> : null}
       </span>
     </li>
   );
@@ -274,12 +352,15 @@ function PlanRow({ label, value, muted }: { label: string; value: string; muted?
  * far each plan's credits go.
  */
 function RateSection() {
+  const view = usePricingView();
   return (
     <section aria-labelledby="rates-title" id="rates" className={cn(wrap, sectionGap, "scroll-mt-16")}>
       <SectionTitle id="rates-title" title={UNIT.rateTitle}>
-        Bigger computers and the iPhone use {UNIT.many} only while they run. Your {UNIT.many} start over each month.
+        {view.v3
+          ? `Bigger computers${view.machines.some((machine) => machine.kind === "mac") ? ", the Mac" : ""} and the iPhone use ${UNIT.many} only while they run. Your ${UNIT.many} start over each month.`
+          : <>Bigger computers and the iPhone use {UNIT.many} only while they run. Your {UNIT.many} start over each month.</>}
       </SectionTitle>
-      <SizesStrip className="mt-8" />
+      <SizesStrip className="mt-8" view={view} />
     </section>
   );
 }
