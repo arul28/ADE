@@ -104,6 +104,9 @@ function platformPackageTarget(packageName) {
     /^@anthropic-ai\/claude-agent-sdk-(darwin|linux|win32)-(arm64|x64)(?:-musl)?$/,
     /^@opencode\/cli-(darwin|linux|windows)-(arm64|x64)$/,
     /^@esbuild\/(darwin|linux|win32)-(arm64|x64)$/,
+    // koffi's native builds, under the Copilot SDK. npm installs the build
+    // host's even for another target, so a darwin build leaked into linux.
+    /^@koromix\/koffi-(darwin|linux|win32)-(arm64|x64)$/,
   ];
 
   for (const pattern of patterns) {

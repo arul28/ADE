@@ -8,6 +8,7 @@ import {
   resolveMachineToolsRoot,
   tryResolveTool,
 } from "../services/tools";
+import { resolveDeletedPinReplacement } from "../services/tools/overrides";
 import { resolveToolsRootLayout } from "../services/tools/paths";
 import { selectDemandedAgentTools } from "../../../desktop/src/main/services/tools/agentToolDemand";
 import { BRAND } from "../../../desktop/src/shared/brand";
@@ -40,6 +41,8 @@ type ToolStatusRow = {
   packageName: string | null;
   version: string | null;
   entryPath: string | null;
+  /** This build pins no copy for this platform (ffmpeg on macOS): never installed here, never missing. */
+  unsupported?: true;
 };
 
 function describeProgress(progress: ToolProgress): string {
@@ -73,7 +76,7 @@ function formatMib(bytes: number): string {
 
 function summarize(rows: ToolStatusRow[]): string {
   return rows
-    .map((row) => (row.installed ? `${row.tool} ${row.version}` : `${row.tool} missing`))
+    .map((row) => (row.installed ? `${row.tool} ${row.version}` : row.unsupported ? `${row.tool} no build for this platform` : `${row.tool} missing`))
     .join(", ");
 }
 
@@ -86,6 +89,21 @@ function statusRow(tool: string, resolved: ToolResolution | null): ToolStatusRow
     version: resolved?.version ?? null,
     entryPath: resolved?.entryPath ?? null,
   };
+}
+
+/** The pin on disk, or else the stand-in for a pin its vendor deleted (Devin's fall-forward). */
+function installedCopy(tool: string, resolve: typeof tryResolveTool, env: NodeJS.ProcessEnv): ToolResolution | null {
+  return resolve(tool, { env }) ?? resolveDeletedPinReplacement(tool, { env });
+}
+
+/** `tool`'s status row; a tool with no pin for this platform is one row saying so, never a throw. */
+function hostStatusRow(tool: string, resolve: typeof tryResolveTool, env: NodeJS.ProcessEnv): ToolStatusRow {
+  try {
+    return statusRow(tool, installedCopy(tool, resolve, env));
+  } catch (error) {
+    if (isToolError(error) && error.kind === "unsupported-target") return { ...statusRow(tool, null), unsupported: true };
+    throw error;
+  }
 }
 
 /**
@@ -115,7 +133,7 @@ export async function runToolsCommand(
   const layout = resolveToolsRootLayout(env);
 
   if (sub === "status") {
-    const tools = pinned.map((tool) => statusRow(tool, resolve(tool, { env })));
+    const tools = pinned.map((tool) => hostStatusRow(tool, resolve, env));
     return {
       ok: true,
       action: "tools-status",
@@ -128,7 +146,7 @@ export async function runToolsCommand(
       // form a human (and the installer's output) can actually use.
       summary: summarize(tools),
       tools,
-      missing: tools.filter((row) => !row.installed).map((row) => row.tool),
+      missing: tools.filter((row) => !row.installed && !row.unsupported).map((row) => row.tool),
     };
   }
 
@@ -148,21 +166,35 @@ export async function runToolsCommand(
     const demand = requested.length > 0 || rest.includes("--all")
       ? null
       : (deps.selectDemand ?? ((tools, demandEnv) => selectDemandedAgentTools(tools, { env: demandEnv })))(pinned, env);
-    const names = requested.length > 0 ? requested : demand ? demand.fetch : pinned;
+    // `--all` means every tool this platform has a build of; a named tool with
+    // none still fails with its own `unsupported-target` error below.
+    const names = requested.length > 0
+      ? requested
+      : demand ? demand.fetch : pinned.filter((tool) => !hostStatusRow(tool, resolve, env).unsupported);
     const skipped = demand?.skip ?? [];
     const startedAtMs = Date.now();
     try {
-      const resolved = await ensure(names, {
+      // A pin its vendor deleted can never download again; its installed
+      // stand-in is the answer, as it is for a chat. Inside the try: a named
+      // tool with no build here fails with its typed error below.
+      const standIns = new Map<string, ToolResolution>();
+      for (const name of names) {
+        if (resolve(name, { env })) continue;
+        const standIn = resolveDeletedPinReplacement(name, { env });
+        if (standIn) standIns.set(name, standIn);
+      }
+      const resolved = await ensure(names.filter((name) => !standIns.has(name)), {
         env,
         onProgress: textProgress ? (progress) => write(describeProgress(progress)) : undefined,
       });
+      const rows = names.map((name) => statusRow(name, resolved.get(name) ?? standIns.get(name) ?? null));
       return {
         ok: true,
         action: "tools-ensure",
         toolsRoot,
         durationMs: Date.now() - startedAtMs,
-        summary: summarize(names.map((name) => statusRow(name, resolved.get(name) ?? null))),
-        tools: names.map((name) => statusRow(name, resolved.get(name) ?? null)),
+        summary: summarize(rows),
+        tools: rows,
         // Not used on this machine yet; each downloads when first needed.
         skipped,
       };

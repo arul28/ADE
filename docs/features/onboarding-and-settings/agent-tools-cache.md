@@ -153,7 +153,7 @@ remote action open.
     .install-complete             sentinel (TOOL_INSTALL_SENTINEL)
   .staging/  .locks/
   .installed-packages.json        GC ledger
-  .version-overrides.json         fall-forward records (Claude, Codex, Muse)
+  .version-overrides.json         fall-forward records (Claude, Codex, Muse, Devin)
 ```
 
 Vendor pins use their own directory names (`devin-<target>`,
@@ -177,7 +177,8 @@ Vendor pins use their own directory names (`devin-<target>`,
 Every provider resolver uses the same order:
 
 1. **Env override**: a developer/test hook only; no UI sets it.
-2. **Fall-forward override**: Claude Code, Codex and Muse only.
+2. **Fall-forward override**: Claude Code, Codex and Muse only. Devin's
+   deleted-pin override stands in for the pin itself, at step 3 (below).
 3. **Current pin** in the tools cache.
 4. **`node_modules` copy**: source checkouts only, lockfile tools only
    (`codex`, `claude-code`, `opencode`, `copilot`). Muse has no checkout copy.
@@ -271,6 +272,29 @@ Meta's channel document. Below the floor, with a channel build of the same
 release, DAEX falls forward (a `file` pin, `reason: "vendor_min_version"`);
 otherwise the status line asks the user to update DAEX.
 
+### Devin fall-forward (deleted pin)
+
+Devin's CDN keeps only its current release; an older archive answers HTTP 403.
+When a tracked download of the pin (`trackPinnedToolFetch` in `onDemand.ts`:
+a chat, a CLI, a Retry, and the launch and `daex serve` prefetches) fails
+with HTTP 403 or 404, and only then (never a
+network error or a 5xx; `isDeletedPinFailure`), the registered
+`DeletedPinFallback` (`ai/devinFallForward.ts`) reads
+`static.devin.ai/cli/current/manifest.json` (the pin's own source), takes this
+target's URL and sha256, installs it through the tools cache (Devin's host
+only; sha256 and size checked before unpacking), checks `devin --version`, and
+records an `archive` override with `reason: "vendor_pin_deleted"`. Before the
+install it records the same override as `vendor_pin_deleted_unchecked`: a
+recorded override is never taken as a previous pin, so no other chat or
+terminal runs the build before its check passes. Such a
+record stands in for the pin: `lookupCachedTool`, `resolveCurrentPinnedTool`,
+the status (`ready`, `runningVersion` the new build) and
+`pinnedToolFetchPending` all take it once the pin itself is not on disk
+(`resolveDeletedPinReplacement`). The person sees nothing new. The switch logs
+`ai.devin_fall_forward` and sends one Sentry warning per install (fingerprint
+`tool-pin-deleted/devin/<pin>`, versions only) so the pin gets moved. A failed
+attempt keeps the download failure; the next start tries again.
+
 Copilot has no fall-forward: its runtime is paired with the SDK. The org-policy
 refusal shows the required and pinned versions.
 
@@ -351,9 +375,9 @@ tool, never per pass (`agentTools.resolve_failed`).
 
 | Command | Behavior |
 |---|---|
-| `daex tools status` | Per-tool install state and the tools root. No network. |
+| `daex tools status` | Per-tool install state and the tools root. No network. A tool with no build for this platform (ffmpeg on macOS) is one row, `unsupported: true`, not in `missing`. A deleted pin's stand-in (Devin fall-forward) counts as installed. |
 | `daex tools ensure` | Fetch the demanded tools (same rule as the brain). |
-| `daex tools ensure <names…>` / `--all` | Fetch exactly those, or every pin. |
+| `daex tools ensure <names…>` / `--all` | Fetch exactly those, or every pin this platform has a build of. A named tool with none fails `unsupported-target`. A deleted pin with an installed stand-in is not fetched again. |
 | `daex tools gc [--dry-run] [--no-keep-previous]` | Collect, plus stale staging and locks. |
 
 JSON by default; `--text` streams progress to stderr. A typed failure returns

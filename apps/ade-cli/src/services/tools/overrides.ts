@@ -11,10 +11,12 @@ import { type ToolTarget, assertSafePackageCoordinates, detectToolTarget, isTool
 /**
  * A newer vendor build ADE runs in place of a pin the vendor refused.
  *
- * ADE runs only its pinned copies, with one approved exception: when the
+ * ADE runs only its pinned copies, with two approved exceptions: when the
  * vendor provably refuses the pin as too old (Claude Code, Codex and Muse;
  * see `claudeFallForward.ts`, `codexFallForward.ts` and `museFallForward.ts`
- * in desktop), ADE installs the vendor's newest build
+ * in desktop), or when the vendor deleted the pinned build from its own host
+ * (Devin, `devinFallForward.ts`; reason {@link VENDOR_PIN_DELETED}), ADE
+ * installs the vendor's newest build
  * into the tools cache as its own version directory, probes it, and records it
  * here. The record names the pin it replaces, so it ends by itself when an ADE
  * update moves the pin: resolution honours it only while `pinnedVersion` is
@@ -31,6 +33,15 @@ import { type ToolTarget, assertSafePackageCoordinates, detectToolTarget, isTool
 const OVERRIDES_FILE = ".version-overrides.json";
 const OVERRIDES_SCHEMA_VERSION = 1;
 
+/**
+ * The reason of an override whose pin the vendor no longer serves (its archive
+ * answers 403 or 404). Unlike a refused pin, such a pin can never install, so
+ * the override stands in for the pin itself: the pinned-tool resolvers, the
+ * status and the "needs a download" check all take it as the pin
+ * ({@link resolveDeletedPinReplacement}).
+ */
+export const VENDOR_PIN_DELETED = "vendor_pin_deleted";
+
 export type ToolVersionOverride = {
   tool: string;
   target: ToolTarget;
@@ -41,9 +52,10 @@ export type ToolVersionOverride = {
   overrideVersion: string;
   /**
    * How the override installs: an npm tarball (`tarball` + `integrity`, the
-   * default) or a bare vendor file (`url` + `sha256` + `size`, Muse).
+   * default), a bare vendor file (`url` + `sha256` + `size`, Muse), or a vendor
+   * archive (the same, plus `archive` and `stripComponents`, Devin).
    */
-  format: "npm-tarball" | "file";
+  format: "npm-tarball" | "file" | "archive";
   /** Registry tarball and SRI the override was installed from and verified against (npm). Empty for a file. */
   tarball: string;
   integrity: string;
@@ -51,6 +63,9 @@ export type ToolVersionOverride = {
   url?: string;
   sha256?: string;
   size?: number;
+  /** Archive kind and leading segments dropped on unpack (archive). */
+  archive?: "tar.gz" | "tar.xz" | "zip";
+  stripComponents?: number;
   /** What the refusal was limited to, when it was (Codex: the model). */
   scope?: string | null;
   /** The vendor's signal that refused the pin (e.g. `startup_min_version`). */
@@ -84,18 +99,25 @@ function parseOverride(raw: unknown): ToolVersionOverride | null {
   const packageName = text("packageName");
   const pinnedVersion = text("pinnedVersion");
   const overrideVersion = text("overrideVersion");
-  const format = value.format === "file" ? "file" : value.format === undefined || value.format === "npm-tarball" ? "npm-tarball" : null;
+  const format = value.format === "file" || value.format === "archive"
+    ? value.format
+    : value.format === undefined || value.format === "npm-tarball" ? "npm-tarball" : null;
   const tarball = text("tarball");
   const integrity = text("integrity");
   const url = text("url");
   const sha256 = text("sha256");
   const size = typeof value.size === "number" && Number.isSafeInteger(value.size) && value.size > 0 ? value.size : null;
+  const archive = value.archive === "tar.gz" || value.archive === "tar.xz" || value.archive === "zip" ? value.archive : null;
+  const stripComponents = typeof value.stripComponents === "number" && Number.isInteger(value.stripComponents) && value.stripComponents >= 0
+    ? value.stripComponents
+    : null;
   const reason = text("reason");
   const at = text("at");
   if (!tool || !target || !isToolTarget(target) || !packageName || !pinnedVersion || !overrideVersion || !format || !reason || !at) {
     return null;
   }
   if (format === "npm-tarball" ? !tarball || !integrity : !url || !sha256 || size == null) return null;
+  if (format === "archive" && (!archive || stripComponents == null)) return null;
   try {
     // Both become path segments under the tools root.
     assertSafePackageCoordinates(packageName, pinnedVersion);
@@ -112,7 +134,8 @@ function parseOverride(raw: unknown): ToolVersionOverride | null {
     format,
     tarball: tarball ?? "",
     integrity: integrity ?? "",
-    ...(format === "file" ? { url: url!, sha256: sha256!, size: size! } : {}),
+    ...(format !== "npm-tarball" ? { url: url!, sha256: sha256!, size: size! } : {}),
+    ...(format === "archive" ? { archive: archive!, stripComponents: stripComponents! } : {}),
     scope: text("scope"),
     reason,
     requiredVersion: text("requiredVersion"),
@@ -198,11 +221,22 @@ export async function writeToolVersionOverride(override: ToolVersionOverride, co
  */
 export function manifestWithOverride(
   override: Pick<ToolVersionOverride, "tool" | "target" | "packageName" | "overrideVersion" | "tarball" | "integrity">
-    & Partial<Pick<ToolVersionOverride, "format" | "url" | "sha256" | "size">>,
+    & Partial<Pick<ToolVersionOverride, "format" | "url" | "sha256" | "size" | "archive" | "stripComponents">>,
   base: ToolsManifest = loadToolsManifest(),
 ): ToolsManifest {
   const pin: ToolPin = findToolPin(base, override.tool);
-  const targetPin = override.format === "file"
+  const targetPin = override.format === "archive"
+    ? {
+      format: "archive",
+      package: override.packageName,
+      version: override.overrideVersion,
+      url: override.url,
+      archive: override.archive,
+      stripComponents: override.stripComponents,
+      sha256: override.sha256,
+      size: override.size,
+    }
+    : override.format === "file"
     ? {
       format: "file",
       package: override.packageName,
@@ -243,7 +277,7 @@ export function resolveActiveToolVersionOverride(name: string, context: ToolsCon
     const manifest = context.manifest ?? loadToolsManifest();
     const target = context.target ?? detectToolTarget(context.platform ?? process.platform, context.arch ?? os.arch());
     const pin = findToolTargetPin(manifest, name, target);
-    if (pin.format !== "npm-tarball" && pin.format !== "file") return null;
+    if (pin.format !== "npm-tarball" && pin.format !== "file" && pin.format !== "archive") return null;
     const override = readToolVersionOverrides(context).find((entry) =>
       entry.tool === name && entry.target === target && entry.packageName === pin.package && entry.pinnedVersion === pin.version
       && entry.format === pin.format);
@@ -253,6 +287,16 @@ export function resolveActiveToolVersionOverride(name: string, context: ToolsCon
   } catch {
     return null;
   }
+}
+
+/**
+ * The installed stand-in for a pin the vendor deleted (an active override with
+ * reason {@link VENDOR_PIN_DELETED}), or null. The pinned-tool resolvers read
+ * it only after the pin itself was not found on disk. Never throws.
+ */
+export function resolveDeletedPinReplacement(name: string, context: ToolsContext = {}): ToolResolution | null {
+  const active = resolveActiveToolVersionOverride(name, context);
+  return active?.override.reason === VENDOR_PIN_DELETED ? active.resolution : null;
 }
 
 /**
