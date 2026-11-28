@@ -676,6 +676,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const who = sponsoredRequester(request);
   // A chat ADE Free Models served lately, on any machine and plan, has its own rules.
   const free = await freeModelAdGate(env, userId, chatId, who, now);
+  /** The DAEX Cloud computer the chat runs on, once the cloud path checked it is the account's own. */
+  let cloudInstanceId: string | null = null;
   if (free && "reason" in free) return none(free.reason);
   let live: boolean;
   let emailHash: string | null;
@@ -694,6 +696,7 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     // Only a chat on one of the account's own ADE Cloud computers: never one on the person's own machine.
     const computer = await ownCloudComputer(env, userId, body.instanceId);
     if (!computer) return none("not_cloud");
+    cloudInstanceId = computer.instance_id;
     // And the chat itself runs there: that computer saved a copy of it after a
     // turn (`chats.ts`), and it is a person's chat, not a subagent's. Never
     // stored, so the first reply's ask may come again once its copy is saved.
@@ -722,7 +725,7 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     await releaseTurn(env, userId, chatId, turnId);
     return none("limit");
   }
-  await noteCardRequest(env, account, request, who, free != null, lookUnder, now, waitUntil);
+  await noteCardRequest(env, account, request, who, { chatId, turnId, instanceId: cloudInstanceId }, free != null, lookUnder, now, waitUntil);
 
   const ip = clientIp(request);
   // The A/B test's counts: requests, fills and hides per format.
@@ -802,11 +805,14 @@ async function noteCardRequest(
   account: AccountRow,
   request: Request,
   who: SponsoredRequester,
+  /** The reply the ad was asked for, and the account's own DAEX Cloud computer it runs on (null for a free-model chat elsewhere). */
+  reply: { chatId: string; turnId: string; instanceId: string | null },
   freeModelChat: boolean,
   lookUnder: ConsentRow | null,
   now: number,
   waitUntil?: CloudWaitUntil,
 ): Promise<void> {
+  void reply;
   try {
     if (freeModelChat) await resetFreeModelMeter(env, account.user_id, now);
     else if (lookUnder) await noteSmallLook(env, account, lookUnder, who.country, requestNetwork(request), now, waitUntil);
