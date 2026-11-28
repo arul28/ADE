@@ -62,3 +62,28 @@ export async function switchReaches(env: GravityEnv, account: AccountRow, mode: 
   if (mode === "off") return false;
   return mode === "all" || isTester(env, account.user_id);
 }
+
+export type PricingV3Mode = CloudSettingValue<"pricing_v3">;
+
+/**
+ * Pricing v3's switch (`adPrice.ts`): the `pricing_v3` setting held under the
+ * deploy variable `PRICING_V3` (unset or `off`: a hard off). Read once per
+ * request.
+ */
+export async function pricingV3Mode(env: GravityEnv, settings?: CloudSettings): Promise<PricingV3Mode> {
+  const read = settings ?? (await readCloudSettings(env));
+  const ceiling = env.PRICING_V3?.trim().toLowerCase();
+  return heldUnder("pricing_v3", read.pricing_v3, isCloudSettingValue("pricing_v3", ceiling) ? ceiling : "off");
+}
+
+/** Whether Pricing v3 reaches this account: `all`, or `testers` and it is on the tester list. */
+export async function pricingV3Reaches(env: GravityEnv, userId: string, mode: PricingV3Mode): Promise<boolean> {
+  if (mode === "off") return false;
+  return mode === "all" || isTester(env, userId);
+}
+
+/** The ad price's discount and window as set (`ad_discount_pct`, `ad_window_minutes`). */
+export function adTerms(settings: CloudSettings): { discountPct: number; windowMinutes: number } {
+  return { discountPct: Number(settings.ad_discount_pct), windowMinutes: Number(settings.ad_window_minutes) };
+}
+

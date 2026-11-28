@@ -125,6 +125,8 @@ export type GravityEnv = CloudEnv & {
   GRAVITY_INFERENCE_COUNTRIES?: string;
   /** Gravity's inference API. Default `https://inference.trygravity.ai/v1`. */
   GRAVITY_INFERENCE_BASE?: string;
+  /** The highest the `pricing_v3` setting may go (`adPrice.ts`): `off` (default, a hard off), `testers` or `all`. */
+  PRICING_V3?: string;
 };
 
 const INDEX_URL = "https://index.trygravity.com/search";

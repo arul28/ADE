@@ -7,7 +7,9 @@ import type { CloudDb } from "./store";
  *
  * A switch with a deploy variable is held under it: the variable is the
  * highest the switch may go (`off` there is a hard off whatever the row
- * says). A switch with no row reads its first value, which is always off.
+ * says). A switch with no row reads its first value, which is always off;
+ * for the two numbers (`ad_discount_pct`, `ad_window_minutes`) it is the
+ * starting value.
  */
 export const CLOUD_SETTINGS = {
   /** Sponsored cards and the Index (`gravity.ts`); held under `GRAVITY_ADS`. */
@@ -32,6 +34,21 @@ export const CLOUD_SETTINGS = {
    * while `gravity_live` is in force: no free inference behind test ads.
    */
   gravity_inference: ["off", "testers", "all"],
+  /**
+   * Pricing v3 (`adPrice.ts`): the ad price, the credit scale of 10, the
+   * iPhone at 5 credits a minute and ads on every plan. `testers` reaches the
+   * accounts in `cloud_sponsored_testers`. Held under `PRICING_V3` (unset or
+   * `off`: a hard off). At `off` every answer is today's.
+   */
+  pricing_v3: ["off", "testers", "all"],
+  /**
+   * The ad price's discount in percent. Not a switch: the first value is the
+   * start (20), and the ad rates round down to whole shown credits
+   * (`adRateMilli` in `plans.ts`). A change applies from the next minute.
+   */
+  ad_discount_pct: ["20", "0", "5", "10", "15", "25", "30", "35", "40", "45", "50"],
+  /** How long a message sent or a finished reply keeps a computer at the ad price, in minutes. The first value is the start (60). */
+  ad_window_minutes: ["60", "5", "10", "15", "30", "45", "90", "120", "240", "480", "720", "1440"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

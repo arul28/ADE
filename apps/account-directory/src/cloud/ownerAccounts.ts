@@ -1,7 +1,7 @@
 import { isSponsoredFormat, type GravityEnv } from "./gravity";
 import { sponsoredAbReport } from "./sponsoredReport";
 import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsoredSmall";
-import { gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
+import { pricingV3Mode, gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
 import { freeModelsHoldOf } from "./freePlanGithub";
 import { PAUSE_AFTER_CALLS, SLOW_AFTER_CALLS, readFreeModelMeter, throttleOf } from "./freeModelsMeter";
 import { fail, json } from "./http";
@@ -393,8 +393,9 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
       gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off",
       // Off whatever the variable says while a key is missing (`GRAVITY_INFERENCE_KEY`, `GRAVITY_API_KEY`).
       gravity_inference: env.GRAVITY_INFERENCE_KEY?.trim() && env.GRAVITY_API_KEY?.trim() ? env.GRAVITY_INFERENCE?.trim() || "off" : "off (no key)",
+      pricing_v3: env.PRICING_V3?.trim() || "off",
     },
-    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", gravity_inference: inference.mode },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", gravity_inference: inference.mode, pricing_v3: await pricingV3Mode(env, settings) },
   });
 }
 

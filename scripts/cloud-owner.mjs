@@ -34,6 +34,9 @@ Switches:
   settings                               every switch, its deploy ceiling and what is in force
   set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
                                          gravity_inference off|testers|all (ADE Free Models),
+                                         pricing_v3 off|testers|all (the ad price, credit scale 10),
+                                         ad_discount_pct 0-50 in steps of 5 (start 20),
+                                         ad_window_minutes 5|10|15|30|45|60|90|120|240|480|720|1440 (start 60),
                                          gravity_format below_reply|above_prompt|inline|split,
                                          gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
                                          (under the reply - inline - above the prompt box)

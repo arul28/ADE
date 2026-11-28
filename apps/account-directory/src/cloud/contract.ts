@@ -263,7 +263,7 @@ export const CLOUD_PATHS = {
   agent37Webhook: "/cloud/agent37/webhook",
   /**
    * Sponsored cards and the Index on the Free plan's ADE Cloud chats
-   * (`gravity.ts`). `PUT /consent` `{ consent: CloudSponsoredChoice }` records
+   * (`gravity.ts`). `PUT /consent` `CloudSponsoredConsentRequest` records
    * the account's answer, or the notice that cards are on, and answers
    * `CloudSponsoredState` (409 for a notice where cards don't start on); `POST /seen` `CloudSponsoredSeenRequest` says a
    * person has one of the account's cloud chats open (for the Index only); `POST /ad`
@@ -275,6 +275,13 @@ export const CLOUD_PATHS = {
   sponsoredAd: "/cloud/sponsored/ad",
   sponsoredIndex: "/cloud/sponsored/index",
   sponsoredHide: "/cloud/sponsored/hide",
+  /**
+   * Pricing v3 (`adPrice.ts`): `POST` `CloudAdSentRequest`, a person sent a
+   * message in a chat that uses DAEX Cloud. Answers `CloudAdProofAnswer`. Not
+   * sent for CLI sessions, automations or outside agents. Answers 404 while
+   * Pricing v3 doesn't reach the account.
+   */
+  sponsoredSent: "/cloud/sponsored/sent",
   /**
    * ADE Free Models (`freeModels.ts`): Gravity's hosted models, paid for by
    * the sponsored cards in the chats that use them, on any plan and machine.
@@ -512,6 +519,13 @@ export type CloudComputerActivityReport = {
   sleepsAt: number | null;
   runningAgents: number;
   reportedAt: number;
+  /**
+   * Pricing v3: the kinds of full-price work running on the computer now
+   * (`CloudFullPriceWork`), each listed once; empty when none. While any
+   * runs, the whole computer has the full price. Sent again whenever the
+   * list changes. An older brain leaves it out: read as none.
+   */
+  fullPriceWork?: CloudFullPriceWork[];
 };
 
 /** How hard a computer pushes one of its limits, as the provider reads it. */
@@ -697,6 +711,12 @@ export type CloudCatalog = {
     label?: string;
     /** How far the disk may grow at this size. */
     diskMaxGb?: number;
+    /**
+     * Pricing v3: the ad price of this size, in the same unit as
+     * `multiplierMilli` (the full price). Sent only when Pricing v3 reaches
+     * the account; Small reads 0 (free with ads).
+     */
+    adMultiplierMilli?: number;
   }>;
   /**
    * `paid` is Plus, kept for builds that know only two plans. Servers before
@@ -717,6 +737,15 @@ export type CloudCatalog = {
   hourUnit?: "medium";
   /** Older servers only: what 10 GB of extra disk cost for a month. Pricing v2 servers leave it out (no extra disk). */
   extraDiskCentsPer10GbMonth?: number;
+  /*
+   * Pricing v3 (`adPrice.ts`): sent only when Pricing v3 reaches the account.
+   * An app that doesn't know these fields shows `multiplierMilli` (the full
+   * price) in the old unit: the same hours and money.
+   */
+  /** Shown credits = milli / 1000 x `creditScale` (10): a Medium hour shows as 10 credits. */
+  creditScale?: number;
+  /** The DAEX Cloud iPhone's full and ad rate, in thousandths a minute (500 and 400 at a 20% discount). */
+  phone?: { milliPerMinute: number; adMilliPerMinute: number };
 };
 
 /**
@@ -744,6 +773,12 @@ export type CloudExtraDiskState = "off" | "asked" | "on";
 export type CloudDiskRefusalReason = "plan_disk" | "needs_approval" | "extra_off" | "monthly_limit" | "tier_limit" | "unavailable";
 
 export type CloudAccountState = {
+  /**
+   * Pricing v3: the ad price, what each computer and the iPhone cost now, and
+   * the ads switch (`adPrice.ts`). Sent only when the server's `pricing_v3`
+   * setting reaches this account; absent, a client shows today's prices.
+   */
+  pricing?: CloudPricingState;
   /**
    * Sponsored cards and the Index in this account's ADE Cloud chats
    * (`gravity.ts`). Sent only when the server's switch reaches this account;
@@ -3657,6 +3692,15 @@ export const CLOUD_SPONSORED_OSES = ["macos", "windows", "linux", "ios", "androi
 
 /** `POST /cloud/sponsored/seen`: a person has a chat or terminal of this ADE Cloud computer open now. */
 export type CloudSponsoredSeenRequest = { instanceId: string; device: CloudSponsoredDevice };
+/**
+ * `PUT /cloud/sponsored/consent`. `confirmed`: the second confirm of a yes
+ * (`CloudSponsoredState.confirmYes`). `noticeSeen` (Pricing v3): the app
+ * showed the ads notice or question with this answer, or showed the notice
+ * over an answer already saved (send that answer again). The account's
+ * `CloudAdsState.noticeSeen` then reads true on every device. An older app
+ * leaves it out.
+ */
+export type CloudSponsoredConsentRequest = { consent: CloudSponsoredChoice; confirmed?: boolean; noticeSeen?: boolean };
 
 /* ---- ADE Free Models (`freeModels.ts`) ---- */
 
@@ -3756,6 +3800,14 @@ export type CloudSponsoredAdRequest = {
    * server checks it served that chat instead.
    */
   instanceId: string | null;
+  /**
+   * Pricing v3: the DAEX Cloud iPhone this chat holds now (its
+   * `CloudPhoneSummary.id`), from a chat on any machine. The server checks it
+   * is the account's live phone; the request then counts as the phone's
+   * proof, and a chat on the person's own computer may show an ad while it
+   * holds it. Absent: none.
+   */
+  phoneId?: string | null;
   chatId: string;
   /** The finished reply the card goes under. Asking again for it answers the same card, with no new request to Gravity. */
   turnId: string;
@@ -3840,8 +3892,13 @@ export type CloudSponsoredGravityAd = {
 };
 /** `POST /cloud/sponsored/hide`: the person hid this reply's card (counted once per reply, per format, for the A/B test). */
 export type CloudSponsoredHideRequest = { chatId: string; turnId: string };
-/** Why no card: the answer is still a 200, and a client shows nothing either way. */
-export type CloudSponsoredNoAdReason = "off" | "plan" | "country" | "consent" | "not_cloud" | "limit" | "no_fill" | "unavailable";
+/**
+ * Why no card: the answer is still a 200, and a client shows nothing either
+ * way. Pricing v3 adds `notice` (the account hasn't seen the ads notice yet:
+ * no ad before it) and `unverified` (the request came from the network of the
+ * account's own cloud computers: it doesn't count, `CloudFullPriceReason`).
+ */
+export type CloudSponsoredNoAdReason = "off" | "plan" | "country" | "consent" | "not_cloud" | "limit" | "no_fill" | "unavailable" | "notice" | "unverified";
 export type CloudSponsoredAdAnswer = { ad: CloudSponsoredAd | null; reason?: CloudSponsoredNoAdReason };
 
 /** `POST /cloud/sponsored/index`: an agent on an ADE Cloud computer asks for a service the person needs. */
@@ -3893,3 +3950,123 @@ export function readCloudSponsoredPick(value: unknown): CloudSponsoredPick | nul
     installSteps: Array.isArray(raw.installSteps) ? raw.installSteps.filter((step): step is string => typeof step === "string") : [],
   };
 }
+
+/* ---- Pricing v3: the ad price (`adPrice.ts`, README "Plans, credits and sizes") ---- */
+
+/**
+ * The credit scale apps show under Pricing v3: shown credits = milli / 1000
+ * x 10. Storage stays in milli (1,000 milli = one Medium-hour); only the
+ * shown number changes. Also in `CloudCatalog.creditScale` and
+ * `CloudPricingState.creditScale`, which apps read instead of this.
+ */
+export const CLOUD_CREDIT_SCALE_V3 = 10;
+
+/** What a minute of a computer or the iPhone costs now: the full price, or the ad price. */
+export type CloudPriceNow = "ad" | "full";
+
+/**
+ * Work on a cloud computer where DAEX can't show an ad: an agent CLI session in
+ * a terminal, an automation (a scheduled or webhook run included), or a chat
+ * or lane an outside agent started through DAEX MCP. While one runs, the whole
+ * computer has the full price.
+ */
+export const CLOUD_FULL_PRICE_WORK = ["cli_session", "automation", "outside_agent"] as const;
+export type CloudFullPriceWork = (typeof CLOUD_FULL_PRICE_WORK)[number];
+
+/**
+ * Why a computer or the iPhone has the full price now, one line in the price
+ * row ("Full price: a CLI session runs here"):
+ * - `ads_off`: ads are off for the account (or it hasn't seen the notice).
+ * - `no_ads_here`: the person's country (this request's) has no ads.
+ * - `not_in_use`: no message sent and no finished reply in its chats within
+ *   the window (`CloudAdsState.windowMinutes`).
+ * - `cli_session`, `automation`, `outside_agent`: full-price work runs on it
+ *   (`CloudFullPriceWork`).
+ * - `unverified`: its latest request came from the network of the account's
+ *   own cloud computers, which doesn't count.
+ * A client that doesn't know a reason shows only "Full price".
+ */
+export type CloudFullPriceReason = "ads_off" | "no_ads_here" | "not_in_use" | CloudFullPriceWork | "unverified";
+
+/** What one computer or the iPhone costs now. */
+export type CloudPrice = {
+  now: CloudPriceNow;
+  /** Why it has the full price; null with the ad price. */
+  reason: CloudFullPriceReason | null;
+  /** When the ad price ends unless a new message or finished reply comes first (ms); null with the full price. */
+  adUntil: number | null;
+  /** What it uses now, in thousandths: a Medium-hour unit an hour for a computer, a minute for the iPhone. */
+  rateMilli: number;
+  /** The other price, in the same unit, for "8 with ads" beside "10". Equal to `rateMilli` when there is only one price. */
+  otherRateMilli: number;
+};
+
+/** `CloudPricingState.computers[]`: one of the account's computers. */
+export type CloudComputerPrice = CloudPrice & { instanceId: string };
+
+/**
+ * The account's ads, as the server decides them. The switch is one for the
+ * account (Linux, Mac and iPhone); `PUT /cloud/sponsored/consent` changes it
+ * (`CloudSponsoredConsentRequest`), and off takes effect at the next minute.
+ */
+export type CloudAdsState = {
+  /** This request's country has ads (US, Canada, the UK, Australia). False: show no second price and nothing about ads. */
+  available: boolean;
+  /** Ads are on for the account now: a yes that holds here and the notice seen. */
+  on: boolean;
+  /** This region starts with ads on (the US outside California): the notice tells, instead of asking. */
+  startsOn: boolean;
+  /** The account saw the ads notice (one answer on every device). No ad shows before it. */
+  noticeSeen: boolean;
+  /** The ad price's discount, in percent (`ad_discount_pct`). */
+  discountPct: number;
+  /** How long a message or a finished reply keeps the ad price (`ad_window_minutes`). */
+  windowMinutes: number;
+};
+
+/** `CloudAccountState.pricing`. */
+export type CloudPricingState = {
+  creditScale: number;
+  ads: CloudAdsState;
+  /** Every computer of the account, asleep ones included. */
+  computers: CloudComputerPrice[];
+  /** The live DAEX Cloud iPhone, or null when none runs. */
+  phone: (CloudPrice & { phoneId: string }) | null;
+};
+
+/**
+ * `POST /cloud/sponsored/sent`: a person sent a message in a chat that uses
+ * DAEX Cloud. `instanceId`: the cloud computer the chat runs on (null for a
+ * chat on the person's own computer). `phoneId`: the cloud iPhone the chat
+ * holds now. `messageId`: the message's own id; one (account, chat, message)
+ * counts once on any number of devices.
+ */
+export type CloudAdSentRequest = {
+  instanceId: string | null;
+  phoneId?: string | null;
+  chatId: string;
+  messageId: string;
+};
+
+/**
+ * Why a proof (a message sent, a finished reply's ad request) didn't count:
+ * `off` (Pricing v3 doesn't reach the account), `ads_off`, `no_ads_here`,
+ * `not_cloud` (not the account's own computer or live iPhone, or not a
+ * person's chat there), `repeat` (that message or reply already counted),
+ * `unverified` (from the network of the account's own cloud computers).
+ */
+export type CloudAdProofRefusal = "off" | "ads_off" | "no_ads_here" | "not_cloud" | "repeat" | "unverified";
+export type CloudAdProofAnswer = { counted: boolean; reason?: CloudAdProofRefusal };
+
+/** `GET /public/pricing`: no auth, CORS `*`, never cached. For the website. */
+export const CLOUD_PUBLIC_PRICING_PATH = "/public/pricing";
+
+/**
+ * `GET /public/pricing`. `pricingV3` is true only while the `pricing_v3`
+ * setting is `all`; `mac` only while `mac_computers` is `all`. `ads` is set
+ * only when the request's country has ads and the ad switch reaches
+ * everyone; `startsOn` is the app's own rule for that region.
+ */
+export type CloudPublicPricing =
+  | { pricingV3: false }
+  | { pricingV3: true; mac: boolean; ads: { startsOn: boolean; discountPct: number; adWindowMinutes: number } | null };
