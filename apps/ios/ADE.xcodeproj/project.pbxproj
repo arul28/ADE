@@ -542,7 +542,7 @@
 		A90000000000000000000001 /* ProductAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000011 /* ProductAnalytics.swift */; };
 		A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */; };
 		A11800000000000000000002 /* AppUpdateAdvisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11800000000000000000001 /* AppUpdateAdvisorTests.swift */; };
-		A1D500000000000000000002 /* CloudAdProofRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D500000000000000000001 /* CloudAdProofRequestTests.swift */; };
+		A1D500000000000000000002 /* CloudAccountRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D500000000000000000001 /* CloudAccountRequestTests.swift */; };
 		A1E700000000000000000008 /* ClientUpdateGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E700000000000000000007 /* ClientUpdateGateTests.swift */; };
 		A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */; };
 		A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90100000000000000000011 /* PrivacyInfo.xcprivacy */; };
@@ -1149,7 +1149,7 @@
 		A90000000000000000000011 /* ProductAnalytics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalytics.swift; path = ADE/Services/ProductAnalytics.swift; sourceTree = "<group>"; };
 		A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalyticsPolicyTests.swift; path = ADETests/ProductAnalyticsPolicyTests.swift; sourceTree = "<group>"; };
 		A11800000000000000000001 /* AppUpdateAdvisorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppUpdateAdvisorTests.swift; path = ADETests/AppUpdateAdvisorTests.swift; sourceTree = "<group>"; };
-		A1D500000000000000000001 /* CloudAdProofRequestTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudAdProofRequestTests.swift; path = ADETests/CloudAdProofRequestTests.swift; sourceTree = "<group>"; };
+		A1D500000000000000000001 /* CloudAccountRequestTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudAccountRequestTests.swift; path = ADETests/CloudAccountRequestTests.swift; sourceTree = "<group>"; };
 		A1E700000000000000000007 /* ClientUpdateGateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ClientUpdateGateTests.swift; path = ADETests/ClientUpdateGateTests.swift; sourceTree = "<group>"; };
 		A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParserTests.swift; path = ADETests/PrGitHubDescriptionParserTests.swift; sourceTree = "<group>"; };
 		A90100000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADE/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -2094,7 +2094,7 @@
 				FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */,
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
 				A11800000000000000000001 /* AppUpdateAdvisorTests.swift */,
-				A1D500000000000000000001 /* CloudAdProofRequestTests.swift */,
+				A1D500000000000000000001 /* CloudAccountRequestTests.swift */,
 				A1E700000000000000000007 /* ClientUpdateGateTests.swift */,
 				A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */,
 				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
@@ -2954,7 +2954,7 @@
 				FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */,
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
 				A11800000000000000000002 /* AppUpdateAdvisorTests.swift in Sources */,
-				A1D500000000000000000002 /* CloudAdProofRequestTests.swift in Sources */,
+				A1D500000000000000000002 /* CloudAccountRequestTests.swift in Sources */,
 				A1E700000000000000000008 /* ClientUpdateGateTests.swift in Sources */,
 				A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */,
 				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,

@@ -469,11 +469,15 @@ struct CloudMachineControls: View {
   var showsOpenWork = true
   @State private var confirmDelete = false
   @State private var confirmFree = false
+  @State private var confirmDeleteHeld = false
 
   private var working: Bool { store.busy.contains(machine.instanceId) }
   private var busy: Bool { working || machine.isMoving || store.isMoving(machine.instanceId) }
   private var idle: CloudPhoneAccount.IdleCleanup? {
     store.account?.dueForDeletion.first { $0.instanceId == machine.instanceId }
+  }
+  private var heldWords: CloudIdleHeldWords? {
+    idle.flatMap { CloudIdleHeldWords($0, now: store.now.timeIntervalSince1970 * 1000) }
   }
 
   var body: some View {
@@ -516,6 +520,12 @@ struct CloudMachineControls: View {
           if idle != nil {
             Button { ADEHaptics.light(); Task { await store.keep(machine) } } label: { Label("Keep it", systemImage: "clock.arrow.circlepath") }
               .buttonStyle(ADEKitButtonStyle(tone: .warn))
+              .disabled(busy)
+          }
+          // Kept because its work isn't saved (ADE-223): delete it anyway, behind one confirm.
+          if heldWords != nil {
+            Button(role: .destructive) { confirmDeleteHeld = true } label: { Label("Delete anyway", systemImage: "trash") }
+              .buttonStyle(ADEKitButtonStyle(tone: .crit))
               .disabled(busy)
           }
           if machine.isAwake {
@@ -579,6 +589,15 @@ struct CloudMachineControls: View {
       Button("Delete it", role: .destructive) { Task { await store.deleteComputer(machine) } }
     } message: {
       Text("Everything on its disk is gone for good: repos, lanes, and any work not pushed.")
+    }
+    .alert(heldWords?.confirmTitle ?? "", isPresented: $confirmDeleteHeld) {
+      Button(CloudIdleHeldWords.confirmLabel, role: .destructive) {
+        guard let words = heldWords else { return }
+        Task { await store.deleteHeld(machine, words: words) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(heldWords?.confirmBody ?? "")
     }
     .confirmationDialog("Free the computer of \(machine.displayName)?", isPresented: $confirmFree, titleVisibility: .visible) {
       Button("Free the computer") { Task { await store.freeComputer(machine) } }

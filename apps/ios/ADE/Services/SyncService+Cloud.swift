@@ -331,6 +331,9 @@ struct CloudPhoneAccount: Decodable, Equatable {
       let reason: String
       /// When ADE tries again; an older server leaves it out (`deletesAt` then).
       let retryAt: Double?
+      /// What ends the hold (`CloudIdleHeldKind`): the server decides it. An
+      /// older server leaves it out; missing or unknown reads as `open_once`.
+      let kind: String?
     }
     let instanceId: String
     let name: String?

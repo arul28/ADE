@@ -1,12 +1,16 @@
 import XCTest
 @testable import ADE
 
-/// Pricing v3's proofs from the phone (`CloudAdSentRequest`,
-/// `CloudSponsoredAdRequest` in the account server's `contract.ts`). Both apps
-/// ignore the answer, so a body the server can't read fails with nothing on
-/// screen and the computer or the cloud iPhone stays at the full price. This
-/// pins the JSON the server reads, through the public client calls.
-final class CloudAdProofRequestTests: XCTestCase {
+/// Account server request bodies the phone must get exactly right, through
+/// the public client calls:
+/// - Pricing v3's proofs (`CloudAdSentRequest`, `CloudSponsoredAdRequest` in
+///   the account server's `contract.ts`). Both apps ignore the answer, so a
+///   body the server can't read fails with nothing on screen and the computer
+///   or the cloud iPhone stays at the full price.
+/// - "Delete anyway" on a computer the idle cleanup kept (ADE-223): it must
+///   keep the lane (the server takes its branch from its own row), or the
+///   lane and its chats are lost with the computer.
+final class CloudAccountRequestTests: XCTestCase {
   private struct Case {
     let name: String
     let path: String
@@ -57,21 +61,21 @@ final class CloudAdProofRequestTests: XCTestCase {
     ]
 
     let configuration = URLSessionConfiguration.ephemeral
-    configuration.protocolClasses = [CloudAdProofStubProtocol.self]
+    configuration.protocolClasses = [CloudAccountStubProtocol.self]
     var client = CloudServerClient(baseURL: URL(string: "https://account.test")!, token: "token")
     client.session = URLSession(configuration: configuration)
-    defer { CloudAdProofStubProtocol.reset() }
+    defer { CloudAccountStubProtocol.reset() }
 
     for item in cases {
-      CloudAdProofStubProtocol.reset()
-      CloudAdProofStubProtocol.answer = Data(item.answer.utf8)
+      CloudAccountStubProtocol.reset()
+      CloudAccountStubProtocol.answer = Data(item.answer.utf8)
       try await item.call(client)
 
-      let request = try XCTUnwrap(CloudAdProofStubProtocol.request, item.name)
+      let request = try XCTUnwrap(CloudAccountStubProtocol.request, item.name)
       XCTAssertEqual(request.httpMethod, "POST", item.name)
       XCTAssertEqual(request.url?.path, item.path, item.name)
       XCTAssertEqual(request.value(forHTTPHeaderField: "X-ADE-Pricing"), "3", item.name)
-      let body = try XCTUnwrap(CloudAdProofStubProtocol.body, item.name)
+      let body = try XCTUnwrap(CloudAccountStubProtocol.body, item.name)
       let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any], item.name)
       for (key, value) in item.expected {
         let sent = try XCTUnwrap(json[key], "\(item.name): \(key) missing")
@@ -84,25 +88,62 @@ final class CloudAdProofRequestTests: XCTestCase {
   }
 }
 
+extension CloudAccountRequestTests {
+  func testDeleteAnywayKeepsTheLaneWithNoBranch() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [CloudAccountStubProtocol.self]
+    var client = CloudServerClient(baseURL: URL(string: "https://account.test")!, token: "token")
+    client.session = URLSession(configuration: configuration)
+    CloudAccountStubProtocol.reset()
+    defer { CloudAccountStubProtocol.reset() }
+    // The delete answers 200; the read after it answers 404: the computer is gone.
+    CloudAccountStubProtocol.goneOnRead = true
+
+    let gone = try await client.deleteInstanceConfirmed("inst-9", keepLane: true)
+
+    XCTAssertTrue(gone)
+    let request = try XCTUnwrap(CloudAccountStubProtocol.deleteRequest)
+    XCTAssertEqual(request.httpMethod, "DELETE")
+    XCTAssertEqual(request.url?.path, "/cloud/instances/inst-9")
+    let body = try XCTUnwrap(CloudAccountStubProtocol.deleteBody)
+    let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? NSDictionary)
+    XCTAssertEqual(json, ["reason": "freed", "keepLane": ["branchRef": NSNull()]] as NSDictionary)
+  }
+}
+
 /// Records the one request and answers 200 with the case's body.
-private final class CloudAdProofStubProtocol: URLProtocol {
+private final class CloudAccountStubProtocol: URLProtocol {
   nonisolated(unsafe) static var request: URLRequest?
   nonisolated(unsafe) static var body: Data?
   nonisolated(unsafe) static var answer = Data("{}".utf8)
+  /// A GET answers 404 (a deleted computer); the DELETE before it is kept apart.
+  nonisolated(unsafe) static var goneOnRead = false
+  nonisolated(unsafe) static var deleteRequest: URLRequest?
+  nonisolated(unsafe) static var deleteBody: Data?
 
   static func reset() {
     request = nil
     body = nil
     answer = Data("{}".utf8)
+    goneOnRead = false
+    deleteRequest = nil
+    deleteBody = nil
   }
 
   override class func canInit(with request: URLRequest) -> Bool { true }
   override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
   override func startLoading() {
-    Self.request = request
-    Self.body = request.httpBody ?? request.httpBodyStream.map(Self.read)
-    let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+    let body = request.httpBody ?? request.httpBodyStream.map(Self.read)
+    if request.httpMethod == "DELETE" {
+      Self.deleteRequest = request
+      Self.deleteBody = body
+    } else {
+      Self.request = request
+      Self.body = body
+    }
+    let status = Self.goneOnRead && request.httpMethod == "GET" ? 404 : 200
+    let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
     client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
     client?.urlProtocol(self, didLoad: Self.answer)
     client?.urlProtocolDidFinishLoading(self)
