@@ -1,206 +1,83 @@
 # GitHub stacked pull requests
 
-GitHub is the authority for stacked pull request membership, ordering, review
-requirements, rebases performed on GitHub, merge queue state, and merging. DAEX
-adds local lane and agent context, a fast operational view, native stack
-creation and synchronization, and local conflict repair.
+GitHub is the authority for stack membership, order, reviews, branch rules,
+merge queue state and merging. DAEX adds lane and chat context, a fast view in
+the PRs tab, stack creation and sync, and the merge through GitHub's async
+merge API. Stacks are a GitHub public preview; DAEX uses the `2026-03-10` REST
+contract and treats the repository-scoped stack number as the identity.
 
-Stacked pull requests are part of GitHub's public preview. DAEX uses the
-`2026-03-10` REST API contract and treats the repository-scoped GitHub stack
-number as the remote identity.
+- Stacks live in the PRs tab; there is no Stacks tab.
+- DAEX does not recreate GitHub's merge box and does not need `gh-stack`.
+- The DAEX GitHub App is enough for desktop and headless stack operations; an environment token is an automation override.
 
-## Product boundaries
+Sources: `apps/desktop/src/main/services/prs/githubStackStore.ts` (decode,
+persist, reconcile), `githubStackMerge.ts` (merge),
+`renderer/components/prs/shared/GitHubStackInspector.tsx`, `GitHubStackBadge.tsx`.
 
-- Stacks live in the existing PRs tab. There is no separate top-level Stacks
-  tab.
-- GitHub remains the authority for reviews, branch rules, and the merge. DAEX
-  starts a stack merge through GitHub's async merge API and follows the result;
-  it does not recreate GitHub's merge box.
-- DAEX may create, extend, merge, unstack, rebase, adopt, and locally repair
-  stacks.
-- Existing integration PR workflows remain independent from stacked PRs.
-- Users do not need to install `gh-stack`; DAEX uses GitHub's API directly.
-- Authorizing the DAEX GitHub App is sufficient for desktop and headless CLI
-  stack operations. An explicit environment token remains available as an
-  automation override; a separate PAT or `gh` login is not required.
+## Model
 
-## Canonical model
+DAEX stores complete GitHub stack snapshots, never inferring membership from
+lane parents or PR bases. A `GitHubPrStack` has repo, global id and stack
+number, base branch, open/completed state, ordered entries (bottom → top: PR
+number, position, state, head branch and SHA, merged time), fetch time and the
+last reconciliation error. Snapshots are replaced whole in one transaction.
+When lane topology and GitHub disagree, GitHub wins.
 
-DAEX persists complete GitHub stack snapshots rather than inferring remote stack
-membership from lane parents or PR base branches.
+## Lifecycle
 
-```text
-GitHubPrStack
-  repo owner/name
-  global id + repository-scoped stack number
-  base branch
-  open/completed state
-  ordered entries (bottom → top)
-  fetched timestamp + last reconciliation error
+Webhooks are hints that schedule an authoritative read, never membership
+mutations:
 
-GitHubPrStackEntry
-  PR number + original position
-  open/closed/merged/draft state
-  head branch + SHA
-  merged timestamp
-```
+- `pull_request.opened` may arrive before the PR joins a stack; `pull_request.stacked` and later deliveries carrying `pull_request.stack` schedule one `GET /repos/{owner}/{repo}/stacks/{number}`.
+- A known member's delivery without stack metadata reconciles its previous stack.
+- Relay cursor expiry, and a project's first relay drain, run a bounded repository-wide reconcile (`reconcileGithubStacks`).
+- Duplicate or out-of-order deliveries cannot overwrite a newer snapshot.
+- GitHub sends no `unstacked` action, so refresh and background polling reconcile removals.
 
-Lane topology remains DAEX's local execution model. When lane topology and the
-GitHub stack disagree, GitHub wins for remote membership and DAEX presents the
-divergence with an explicit adopt or restructure action.
-
-Whole stack snapshots are replaced transactionally. Webhooks are hints that
-schedule an authoritative stack read; they are not independently applied as
-membership mutations.
-
-## GitHub lifecycle
-
-- A normal `pull_request.opened` delivery may arrive before the PR joins a
-  stack.
-- `pull_request.stacked` identifies the stack when a PR is added.
-- Later `pull_request` deliveries include `pull_request.stack` while the PR
-  remains stacked.
-- A webhook referencing a stack schedules one authoritative
-  `GET /repos/{owner}/{repo}/stacks/{number}`.
-- A known member delivery with missing stack metadata schedules reconciliation
-  of its previously known stack.
-- Cursor expiry schedules a bounded repository-wide stack reconciliation.
-- Duplicate and out-of-order deliveries cannot overwrite a newer complete
-  snapshot with partial event data.
-- Because GitHub does not document an `unstacked` webhook action, explicit
-  refresh and background polling reconcile removals and dissolved stacks.
-
-Partial merges preserve completed entries for history while the remaining open
-entries receive their new bases and positions from GitHub. `merge_queued` is not
-treated as merged. Fully completed stacks remain visible as history and cannot
-be extended.
+Partial merges keep completed entries as history; open entries take new bases
+from GitHub. `merge_queued` is not merged. A fully merged stack stays visible
+and cannot be extended.
 
 ## Operations
 
-DAEX exposes the same workflow through desktop, hosted web, CLI actions, and
-agent tools:
-
-```text
-list/show status
-plan layers
-create from ordered lanes or PRs
-add an eligible PR or lane to the top
-adopt a remote stack into local lanes
-sync local and remote state
-request a clean GitHub rebase
-resolve conflicts locally with ADE
-unstack with a consequence preview
-merge the stack through GitHub's async merge API
-open the GitHub review/merge surface
-```
-
-Structural changes such as reorder, insert, fold, rename, or remove are
-destructive remote/local operations. They require a clean worktree, linear
-history, no queued member, a preview of the resulting chain, and explicit
-confirmation. DAEX snapshots the prior branch heads before applying changes.
+Actions in the `pr` domain (desktop, web, CLI, agent tools):
+`listGithubStacks`, `createGithubStack`, `addGithubStackPullRequests`,
+`syncGithubStacks`, `unstackGithubStack` (with a consequence preview),
+`linkChatStack`, `getStackLinkOffer`, and merge through `land`.
 
 ## PRs tab
 
-The normal GitHub PR list renders stack metadata from the cached aggregate
-snapshot. Opening the tab never performs per-row stack requests.
+- Rows show stack metadata from the cached snapshot; opening the tab makes no per-row stack request. `Stacked` filters to members; `Group by stack` draws connected rails.
+- A stacked PR's detail opens with `GitHubStackInspector`: the base and each layer as a chip (state, number, CI dot), one line saying what blocks the merge from the bottom up (`Blocked at #842: checks failing.`), and Refresh, GitHub, Manage (add PRs, Unstack) and a layer-list toggle. A merged PR finds its completed stack by member number.
 
-```text
-#843  Desktop stack UI                         Stack 4 of 5
-      feat/stack-ui → feat/stack-cli           Checks pass · Review pending
-```
+**Merging.** The Merge card on a stacked PR merges every open PR from the stack
+base up to it, all or none, through `githubStackMerge.ts`; the first click arms
+the button. **Bypass branch rules** is offered on every layer, but GitHub honors
+a bypass only for the bottom open PR, so from higher up DAEX merges layer by
+layer from the bottom, waiting for GitHub to restack each. The stale-head guard
+holds: lower heads must be inside the confirmed top head, and each restacked
+layer must carry the same commits and files, or the run stops. A failure names
+the layers that merged. iOS offers the layered bypass above the bottom PR only
+when the host advertises `prsStackLayeredBypass` in `hello_ok.features`.
 
-- `Stacked` filters to stack members.
-- `Group by stack` shows connected rails; ordinary sorting shows position
-  badges without implying row adjacency.
-- Selecting the badge opens a compact stack map.
-- A stacked PR's detail opens with a stack strip (`GitHubStackInspector`): one
-  row with the base branch and each layer as a chip (GitHub state icon, number,
-  CI dot; the selected layer in the accent), and one line saying what blocks
-  the merge, from the bottom up (`Blocked at #842: checks failing.`, `All 3
-  open PRs are ready to merge.`, `All 3 merged.`). Refresh, GitHub, Manage
-  (add PRs, Unstack with a confirm dialog) and a toggle for the full layer list
-  (title, lane, checks and review per layer) sit on the right; the toggle is
-  remembered. A merged PR from closed history finds its finished stack by
-  member number, so the strip also shows a completed stack.
-- Copy uses concrete state: `Blocked by #842: one required check failed`, not
-  internal terms such as queue position or landing state.
-- Empty, loading, stale, permission, unsupported-host, conflict, queued,
-  partially merged, and completed states have distinct copy and actions.
+## Work cards and chats
 
-The Merge card for a stacked PR merges the stack from DAEX. GitHub merges every
-open PR from the stack base up to the selected one, all or none, and runs branch
-rules during the merge; DAEX starts it, polls the result, and reports the outcome
-in a result banner. The first click arms the button because one merge covers more
-than this PR. **Bypass branch rules** is offered on every layer. GitHub honors a
-bypass only for the bottom open PR, so from higher up DAEX merges the covered PRs
-one at a time from the bottom, each with the bypass, and waits for GitHub to
-restack the next one first. The stale-head guard still holds: every lower
-layer's head must be inside the top head you confirmed (a stacked branch carries
-the layers below it), the bottom layer merges against that head, and each higher
-layer, whose SHA GitHub
-rewrites when it restacks, must still carry the same commits and leave the same
-files as when you confirmed, or the run stops. If a layer fails, the layers below
-it stay merged and the result names them. iOS offers the same override from its Merge anyway menu above the bottom PR only when the host advertises `prsStackLayeredBypass` in `hello_ok.features`; an older host keeps it on the bottom PR, where GitHub honors it. `GitHub` still opens the review and merge surface in the built-in
-browser, and mutating DAEX actions open the inspector and require confirmation.
+- When every member is merged, linked chats get one `pr_stack_land` card keyed `pr-stack-land:{owner}:{repo}:{stackNumber}` (`prChatCards.ts`), updated in place and sent to every linked chat, including other lanes. Card actions only navigate.
+- Chats own PRs through `pull_request_chat_sessions` edges ([PR README › chat edges](./README.md#multi-pr-lane-ownership-and-chat-edges)). A link from a coordinator chat on another lane is a reference, not a claim, so each layer's own chats keep their PR.
+- When a chat's PR belongs to a stack, the pane offers **Link stack** for unclaimed siblings (**Not now** hides it per chat and stack). A new layer an agent creates attaches to parent chats that linked an earlier layer.
 
-## Work card
+## Agent guidance
 
-There is no stack card while a stack is being built. When every member of a
-GitHub stack is merged, linked Work chats get one stable `pr_stack_land` card
-(`pr-stack-land:{owner}:{repo}:{stackNumber}`, `prChatCards.ts`), anchored to
-the bottom layer so later layers update the same episode. It fans out to every
-linked chat, including chats on another lane. Card actions navigate; rebase,
-restructure and unstack never run from transcript history.
+The bundled skills teach agents to propose dependency-ordered, reviewable
+layers first, ask whether to use one lane per PR or a lead with subagents, keep
+foundations at the bottom, fix shared failures at the lowest owning layer and
+rebase upward, report bottom-up, and leave final review and merge to GitHub.
 
-## Chat linking
+## Edge cases worth testing
 
-Work chats own PRs through hybrid edges (`pull_request_chat_sessions`) plus
-unlink tombstones (`pull_request_chat_session_dismissals`). `selectPrsForChatInLane`
-(`shared/prChatScope.ts`) is edges-first: a chat that linked any PRs shows only those (including
-cross-lane GitHub stack members); a zero-edge chat may display unedged
-current-branch PRs with no silent write; an unlinked PR never revives as
-fallback. Merge and rebase are not chat-peek actions.
-
-The desktop Work peek is a peek: an `#N` header or a chip switcher, status, and
-a stack-offer banner. A link from a chat on another lane (the stack coordinator) is a reference,
-not a claim, so each layer's own chats keep their PR badge and pane after the
-coordinator links the stack. When the selected PR belongs to a GitHub stack, the
-banner lists unclaimed siblings and offers **Link stack**; **Not now** hides it
-for that chat+stack. Agents silent-expand the next layer onto parent chats that
-already linked the base instead of emitting an offer. A chat that created a
-layer edges that PR.
-
-## Agent behavior
-
-Bundled DAEX skills teach agents to:
-
-1. Propose dependency-ordered, independently reviewable layers before coding.
-2. Ask whether the user wants one isolated DAEX lane and owner per PR, or one
-   lead coordinating subagents across stable boundaries.
-3. Put foundations below their consumers.
-4. Create and validate one deliberate branch layer at a time.
-5. Run the ship loop for every PR and fix shared failures at the lowest owning
-   layer before cascading the result upward.
-6. Delegate only work whose dependency boundary is already stable.
-7. Apply feedback to the correct layer, then rebase every layer above it.
-8. Review and report progress bottom-up.
-9. Send final review and merge decisions to GitHub.
-
-## Edge cases to check
-
-- Opened then stacked webhook ordering.
-- Duplicate, replayed, and out-of-order deliveries.
-- Remote-only, partially adopted, inaccessible, or deleted members.
-- Local lane order diverging from GitHub order.
-- Partial merges and survivor retarget/rebase.
-- Closed or draft members below an otherwise ready member.
-- Down-stack checks, reviews, rules, and merge-queue blockers.
-- Clean rebase running, diverged branches, merge conflicts, and failed rebase.
-- Stale/rate-limited GitHub detail with a retained cached snapshot.
-- Inspector open while the remote stack changes.
-- Non-default bases, same-repository enforcement, fork rejection, and 100-entry
-  stacks.
-- Completed and remotely unstacked stacks.
-- Agent or lane removal while the GitHub member remains active.
-- Older desktop, web, and iOS clients receiving additive card/snapshot
-  fields.
+Opened-then-stacked ordering; duplicate and out-of-order deliveries;
+inaccessible or deleted members; partial merges and retargeting; closed or
+draft members below a ready one; down-stack check and rule blockers; stale or
+rate-limited GitHub with a cached snapshot; forks and non-default bases;
+completed and remotely unstacked stacks; older clients receiving additive
+fields.
