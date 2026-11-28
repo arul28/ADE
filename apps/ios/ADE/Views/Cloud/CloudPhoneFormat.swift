@@ -392,11 +392,27 @@ struct CloudPhoneTier: Identifiable, Equatable {
   /// The full and ad price, for `CloudAdPriceWords.rate`. Without an ad price both are the full one.
   var ratePair: CloudRatePair { CloudRatePair(fullMilli: multiplierMilli, adMilli: adMultiplierMilli ?? multiplierMilli) }
 
-  /// This size at the rate the account pays now (Pricing v3): the ad price
-  /// while ads are on, so "left on it" counts what the credits really buy.
+  /// This size at the rate the account pays now (Pricing v3), as the
+  /// desktop's size table counts "Left at this size": the ad price while ads
+  /// are offered here and on, else the full price. An ad price of 0 (Free's
+  /// Small with ads) uses no credits: "Unlimited". Without `pricing`, as today.
+  /// Every "left on it" line and size list counts time with it.
   func atPriceNow(_ pricing: CloudPricingState?) -> CloudPhoneTier {
     guard let pricing, pricing.ads.available, pricing.ads.on, let ad = adMultiplierMilli, ad != multiplierMilli else { return self }
-    return CloudPhoneTier(id: id, label: label, type: type, cpu: cpu, memoryGb: memoryGb, multiplierMilli: ad, diskMaxGb: diskMaxGb, adMultiplierMilli: ad)
+    return atRate(ad)
+  }
+
+  /// One computer of this size at the rate the server says it pays now
+  /// (`pricing.computers[].rateMilli`): a computer kept at the full price
+  /// while ads are on counts its time at the full price. With no row for it,
+  /// the size's price now (`atPriceNow`).
+  func atComputerPriceNow(_ pricing: CloudPricingState?, instanceId: String?) -> CloudPhoneTier {
+    if let listed = pricing?.computer(instanceId) { return atRate(listed.rateMilli) }
+    return atPriceNow(pricing)
+  }
+
+  private func atRate(_ milli: Int) -> CloudPhoneTier {
+    CloudPhoneTier(id: id, label: label, type: type, cpu: cpu, memoryGb: memoryGb, multiplierMilli: max(0, milli), diskMaxGb: diskMaxGb, adMultiplierMilli: adMultiplierMilli)
   }
 
   /// Small on a Pricing v2 server: it never uses hours (`multiplierMilli` 0),

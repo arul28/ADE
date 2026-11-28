@@ -183,7 +183,8 @@ struct CloudMachineFacts: View {
           if let drive = CloudMacWords.driveText(machine.mac) { fact("Drive", drive) }
         } else if let tier {
           fact("Size", "\(tier.label)\(tier.full ? ", full computer" : "") · \(tier.cpu) CPU · \(cloudGbText(tier.memoryGb)) GB")
-          fact(store.words.title, tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words))
+          // At the price this computer pays now (the ad price while ads are on).
+          fact(store.words.title, tier.atComputerPriceNow(cloudPricing(), instanceId: machine.instanceId).hoursLine(leftMilli: store.hoursLeftMilli, words: store.words))
         } else if let size = machine.size {
           fact("Size", size)
         }
@@ -432,6 +433,8 @@ struct CloudMachineSizeCard: View {
 
   private func row(_ tier: CloudPhoneTier, current: CloudPhoneTier, busy: Bool) -> some View {
     let isCurrent = tier.id == current.id
+    // Time left at each size, at the price paid now (Free's Small with ads: Unlimited).
+    let now = tier.atPriceNow(cloudPricing())
     let sameKind = tier.type == current.type
     return Button { ask = tier } label: {
       HStack(spacing: 12) {
@@ -457,7 +460,7 @@ struct CloudMachineSizeCard: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 8)
-        Text(store.hoursLeftMilli.map { tier.hoursLeftLabel($0) } ?? (tier.usesHours ? "Uses \(store.words.unit)" : "Unlimited"))
+        Text(store.hoursLeftMilli.map { now.hoursLeftLabel($0) } ?? (now.usesHours ? "Uses \(store.words.unit)" : "Unlimited"))
           .font(.system(size: 13, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
@@ -471,9 +474,9 @@ struct CloudMachineSizeCard: View {
     .disabled(isCurrent || (!sameKind && store.movesUnsupported) || busy)
     .accessibilityHint(
       isCurrent ? "Its size now."
-        : sameKind ? "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). It restarts on the new size."
+        : sameKind ? "\(now.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). It restarts on the new size."
         : store.movesUnsupported ? cloudPhoneKindChangeReason(to: tier)
-        : "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). \(Brand.name) moves it to a new computer."
+        : "\(now.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). \(Brand.name) moves it to a new computer."
     )
   }
 }

@@ -401,7 +401,7 @@ struct CloudHero: View {
       if let small = cloudSmallTierUsingHours(account) {
         CloudMiniMeter(
           label: "Small computers",
-          value: small.hoursLeftLabel(account.hoursLeftMilli),
+          value: small.atPriceNow(cloudPricing()).hoursLeftLabel(account.hoursLeftMilli),
           of: nil,
           fraction: nil,
           note: cloudPricing() != nil
@@ -1103,7 +1103,7 @@ struct CloudSizesCard: View {
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
-    .accessibilityHint("\(tier.runs). \(tier.hoursLine(leftMilli: leftMilli, words: words)).")
+    .accessibilityHint("\(tier.runs). \(tier.atPriceNow(cloudPricing()).hoursLine(leftMilli: leftMilli, words: words)).")
   }
 }
 
