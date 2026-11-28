@@ -358,8 +358,8 @@ export type McpAccountState = { members: string[]; front: string | null; off?: s
 export type McpAccountLeaveReason = "off" | "moved";
 
 export const MCP_MACHINE_OFF_DESCRIPTION =
-  "Daex MCP is off on that computer. Turn it on in Daex Settings → Daex MCP.";
-export const MCP_MACHINE_OFFLINE_DESCRIPTION = "That computer is offline, or Daex isn't running on it.";
+  "DAEX MCP is off on that computer. Turn it on in DAEX Settings → DAEX MCP.";
+export const MCP_MACHINE_OFFLINE_DESCRIPTION = "That computer is offline, or DAEX isn't running on it.";
 
 export function mcpErrorResponse(
   status: number,

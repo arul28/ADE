@@ -298,7 +298,7 @@ export async function githubRepoVisibility(origin: string): Promise<RepoVisibili
   if (!owner || !repo) return "unknown";
   try {
     const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
-      headers: { accept: "application/vnd.github+json", "user-agent": "Daex" },
+      headers: { accept: "application/vnd.github+json", "user-agent": "DAEX" },
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     });
     if (response.status === 404) return "private";
@@ -314,13 +314,13 @@ export async function githubRepoVisibility(origin: string): Promise<RepoVisibili
 /** The plain sentence a refused launch gives (the desktop's `cloudGitPreflight`). */
 export function connectGitHubSentence(origin: string): string {
   const name = origin.replace(/^github\.com\//, "");
-  return `${name} isn't public on GitHub, and your Daex account has no GitHub sign-in a cloud computer can clone it with. Connect GitHub in Settings › GitHub so your sign-in follows your Daex account, then send again.`;
+  return `${name} isn't public on GitHub, and your DAEX account has no GitHub sign-in a cloud computer can clone it with. Connect GitHub in Settings › GitHub so your sign-in follows your DAEX account, then send again.`;
 }
 
 /** The plain sentence a launch refused for a missing App installation gives. */
 export function giveAdeAccessSentence(origin: string): string {
   const [, owner = "", repo = ""] = origin.split("/");
-  return `Give Daex access to ${owner}: install the Daex GitHub App on ${owner} with ${repo} selected, then send again.`;
+  return `Give DAEX access to ${owner}: install the DAEX GitHub App on ${owner} with ${repo} selected, then send again.`;
 }
 
 export type ServerGitCheck = { ok: true } | { ok: false; code: "git_credential_missing" | "github_app_not_installed"; message: string; installUrl?: string };
@@ -344,7 +344,7 @@ async function githubAppRepoAccess(env: GithubAppEnv, userId: string, origin: st
     if (outcome.kind === "not_connected" || outcome.kind === "needs_reauth") return "not_connected";
     if (outcome.kind !== "token") return "unknown";
     const response = await fetch(`${rt.config.apiBase}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
-      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${outcome.token.accessToken}`, "user-agent": "Daex" },
+      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${outcome.token.accessToken}`, "user-agent": "DAEX" },
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     });
     await response.body?.cancel().catch(() => {});

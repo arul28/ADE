@@ -141,11 +141,11 @@ function mcpAccountCandidates(state: McpAccountState): string[] {
 type WaitUntil = { waitUntil(promise: Promise<unknown>): void };
 
 const MCP_ACCOUNT_OFF_DESCRIPTION =
-  "Daex MCP is off for this account. Turn it on in Daex Settings → Daex MCP on one of your computers.";
+  "DAEX MCP is off for this account. Turn it on in DAEX Settings → DAEX MCP on one of your computers.";
 const MCP_ACCOUNT_UNKNOWN_DESCRIPTION =
-  "No computer answers this Daex MCP address. It may be an old address: copy the Server URL from Daex Settings → Daex MCP.";
+  "No computer answers this DAEX MCP address. It may be an old address: copy the Server URL from DAEX Settings → DAEX MCP.";
 const MCP_ACCOUNT_OFFLINE_DESCRIPTION =
-  "None of your computers with Daex MCP on are online. Open Daex on one of them, or try again shortly.";
+  "None of your computers with DAEX MCP on are online. Open DAEX on one of them, or try again shortly.";
 
 /** A machine object's answer as a client gets it: without the relay's own lost-request marker. */
 function withoutLostHeader(response: Response): Response {

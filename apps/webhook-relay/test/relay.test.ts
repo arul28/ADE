@@ -482,7 +482,7 @@ describe("webhook relay", () => {
       expect(String(input)).toBe("https://api.github.com/repos/owner/repo");
       expect(init?.headers).toEqual(expect.objectContaining({
         authorization: `Bearer ${token}`,
-        "user-agent": "Daex GitHub Webhook Relay",
+        "user-agent": "DAEX GitHub Webhook Relay",
         "x-github-api-version": "2026-03-10",
       }));
       return new Response(JSON.stringify({ full_name: "owner/repo", permissions }), {
@@ -1769,7 +1769,7 @@ describe("webhook relay", () => {
       expect(init?.headers).toEqual(expect.objectContaining({
         accept: "application/vnd.github+json",
         authorization: expect.stringMatching(/^Bearer [-_A-Za-z0-9]+\.[-_A-Za-z0-9]+\.[-_A-Za-z0-9]+$/),
-        "user-agent": "Daex GitHub Webhook Relay",
+        "user-agent": "DAEX GitHub Webhook Relay",
       }));
       return new Response(JSON.stringify({
         id: 456,

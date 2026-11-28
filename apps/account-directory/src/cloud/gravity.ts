@@ -361,7 +361,7 @@ function readDevice(value: unknown): CloudSponsoredDevice | null {
 
 /**
  * The account's hashed email for Gravity, when this device may send it. The
- * Daex iPhone and iPad app (its own `Daex-iOS/` user agent, `ADE-iOS/` before
+ * DAEX iPhone and iPad app (its own `DAEX-iOS/` user agent, `ADE-iOS/` before
  * the rename) sends it only once the person allowed tracking in Apple's
  * prompt (App Tracking Transparency);
  * any other answer, or none from an older app, leaves it out. Desktop and the
@@ -369,7 +369,7 @@ function readDevice(value: unknown): CloudSponsoredDevice | null {
  */
 function hashedEmailFor(device: { os: string; ua?: string | null; tracking?: string | null } | null, emailHash: string | null): string | null {
   if (!emailHash) return null;
-  const iosApp = device?.os === "ios" && /^(?:Daex|ADE)-iOS\//.test(device.ua ?? "");
+  const iosApp = device?.os === "ios" && /^(?:DAEX|ADE)-iOS\//.test(device.ua ?? "");
   if (iosApp && device?.tracking !== "authorized") return null;
   return emailHash;
 }
@@ -409,7 +409,7 @@ export async function routeSponsored(request: Request, path: string, env: Gravit
   return null;
 }
 
-const notFound = () => fail("not_found", "That Daex Cloud route doesn't exist.", 404);
+const notFound = () => fail("not_found", "That DAEX Cloud route doesn't exist.", 404);
 
 /**
  * The account's answer, on every machine. A yes keeps the SHA-256 of the
@@ -440,11 +440,11 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   if (choice === "granted") {
     before = await honorGpc(env, account, await readConsent(env, userId), who, now);
     if (body.confirmed !== true && yesNeedsConfirm(before, await shownAnswer(env, before, who, now), who)) {
-      return fail("sponsored_confirm", "Turning sponsored cards back on takes a second confirm. Try again, or update Daex if it doesn't ask.", 409);
+      return fail("sponsored_confirm", "Turning sponsored cards back on takes a second confirm. Try again, or update DAEX if it doesn't ask.", 409);
     }
   }
   if (choice === "notice") {
-    if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so Daex asks first.", 409);
+    if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so DAEX asks first.", 409);
     before = await readConsent(env, userId);
     // An answer that holds, or any no (even one run out), stands: the person is asked, never told.
     if (!startsOnNow(env, before, await shownAnswer(env, before, who, now), who)) return answered();

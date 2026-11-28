@@ -42,7 +42,7 @@ export type GithubTokenFailure =
 
 export type GithubTokenResult = { ok: true; tokens: GithubTokens } | ({ ok: false } & GithubTokenFailure);
 
-const USER_AGENT = "Daex-account-directory";
+const USER_AGENT = "DAEX-account-directory";
 const API_VERSION = "2022-11-28";
 /** Below the 45 s lease, so a hung request never outlives the lease that guards it. */
 export const GITHUB_REQUEST_TIMEOUT_MS = 20_000;
