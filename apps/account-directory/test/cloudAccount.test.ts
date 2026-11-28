@@ -2631,9 +2631,10 @@ describe("ADE Cloud server launcher", () => {
     expect(await (await clerkEmail("ema_code", { slug: "verification_code" })).json()).toEqual({ ignored: true });
     expect(sent()).toHaveLength(0);
 
-    // The computer's own sign-ins: quiet, also when Clerk delivers the same email again, and over IPv6 by its /64.
-    expect(await (await clerkEmail("ema_cloud")).json()).toEqual({ delivered: "none" });
-    expect(await (await clerkEmail("ema_cloud")).json()).toEqual({ delivered: "none" });
+    // The computer's own sign-ins: quiet, also when Clerk delivers the same email again (here its IPv4 address
+    // written as IPv4-mapped IPv6 in hex), and over IPv6 by its /64.
+    expect(await (await clerkEmail("ema_cloud", {}, { ip_address: "::ffff:cb00:7107" })).json()).toEqual({ delivered: "none" });
+    expect(await (await clerkEmail("ema_cloud", {}, { ip_address: "::ffff:cb00:7107" })).json()).toEqual({ delivered: "none" });
     expect(await (await clerkEmail("ema_cloud_v6", {}, { ip_address: "2001:db8:1:2:abcd::9" })).json()).toEqual({ delivered: "none" });
     expect(sent()).toHaveLength(0);
 

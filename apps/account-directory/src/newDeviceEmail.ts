@@ -45,15 +45,19 @@ export type NewDeviceEmailEnv = {
 /**
  * The part of an address a sign-in is matched on: an IPv4 address whole, an
  * IPv6 address by its /64 (one computer's network), an IPv4-mapped IPv6
- * address as IPv4. Null when it isn't an address.
+ * address (`::ffff:203.0.113.7`, `::ffff:cb00:7107`) as IPv4. Null when it
+ * isn't an address.
  */
 function signInAddressKey(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
-  const address = raw.trim().toLowerCase();
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(address);
-  const v4 = mapped ? mapped[1]! : address;
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(v4)) {
-    return v4.split(".").every((part) => Number(part) <= 255) ? `v4:${v4.split(".").map(Number).join(".")}` : null;
+  let address = raw.trim().toLowerCase();
+  const quad = /^(.*:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
+  if (quad) {
+    const parts = quad.slice(2).map(Number);
+    if (parts.some((part) => part > 255)) return null;
+    if (!quad[1]) return `v4:${parts.join(".")}`;
+    // IPv6 written with an IPv4 tail: the tail is its last two groups.
+    address = `${quad[1]}${((parts[0]! << 8) | parts[1]!).toString(16)}:${((parts[2]! << 8) | parts[3]!).toString(16)}`;
   }
   if (!/^[0-9a-f:]+$/.test(address) || !address.includes(":") || address.split("::").length > 2) return null;
   const [head = "", tail] = address.split("::");
@@ -63,6 +67,10 @@ function signInAddressKey(raw: unknown): string | null {
   if (missing < 0 || (tail === undefined && missing !== 0)) return null;
   const groups = [...left, ...Array<string>(tail === undefined ? 0 : missing).fill("0"), ...right];
   if (groups.length !== 8 || groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return null;
+  const value = groups.map((group) => Number.parseInt(group, 16));
+  if (value.slice(0, 5).every((group) => group === 0) && value[5] === 0xffff) {
+    return `v4:${value[6]! >> 8}.${value[6]! & 255}.${value[7]! >> 8}.${value[7]! & 255}`;
+  }
   return `v6:${groups.slice(0, 4).map((group) => group.replace(/^0+(?=.)/, "")).join(":")}`;
 }
 
