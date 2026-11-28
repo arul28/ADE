@@ -73,12 +73,13 @@ struct CloudSignInStepDetail: View {
   /// Dropped on send: the keyboard would hide the answer under the field.
   @FocusState private var fieldFocused: Bool
 
-  init(signIn: CloudLaunchSignIn, instanceId: String?, launchId: String? = nil, codeState: CodeState = .idle, onDone: @escaping @MainActor () async -> Void = {}) {
+  init(signIn: CloudLaunchSignIn, instanceId: String?, launchId: String? = nil, codeState: CodeState = .idle, consentOpen: Bool = false, onDone: @escaping @MainActor () async -> Void = {}) {
     self.signIn = signIn
     self.instanceId = instanceId
     self.launchId = launchId
     self.onDone = onDone
     _codeState = State(initialValue: codeState)
+    _consentOpen = State(initialValue: consentOpen)
   }
 
   private var isKey: Bool { signIn.kind == "api_key" }
@@ -150,6 +151,10 @@ struct CloudSignInStepDetail: View {
         waysOut
       }
     }
+    // A new link, job or code from the computer: the last code's result is over.
+    .onChange(of: "\(signIn.jobId ?? "")|\(signIn.url ?? "")|\(signIn.userCode ?? "")") { _, _ in
+      if codeState != .checking { codeState = .idle }
+    }
     .sheet(isPresented: $consentOpen) {
       if let freeModel = signIn.freeModel {
         WorkFreeModelsGateSheet(modelId: freeModel.modelId, modelName: freeModel.label) {
@@ -157,7 +162,7 @@ struct CloudSignInStepDetail: View {
           case .success(let state):
             guard state.granted else { return "\(Brand.name) couldn't save that. Try again." }
             consentOpen = false
-            startOnFreeModel()
+            startOnFreeModel(afterConsent: true)
             return nil
           case .failure(let failure):
             return failure.message
@@ -165,7 +170,7 @@ struct CloudSignInStepDetail: View {
         } onReady: {
           guard consentOpen else { return }
           consentOpen = false
-          startOnFreeModel()
+          startOnFreeModel(afterConsent: true)
         } onClose: {
           consentOpen = false
         }
@@ -196,7 +201,7 @@ struct CloudSignInStepDetail: View {
   @ViewBuilder private var waysOut: some View {
     if let freeModel = signIn.freeModel, launchId != nil {
       VStack(alignment: .leading, spacing: 3) {
-        Button(action: startOnFreeModel) {
+        Button { startOnFreeModel() } label: {
           HStack(spacing: 6) {
             if freeModelBusy { ProgressView().controlSize(.mini) }
             Text("Start with \(freeModel.label) instead")
@@ -226,16 +231,31 @@ struct CloudSignInStepDetail: View {
       .fixedSize(horizontal: false, vertical: true)
   }
 
-  private func startOnFreeModel() {
-    guard let launchId, !freeModelBusy else { return }
+  /// One request per tap. A consent refusal opens the sheet only when a fresh
+  /// read of the account says there is no yes yet; a refusal right after a
+  /// yes, or with the account still agreeing, shows a sentence and stops.
+  private func startOnFreeModel(afterConsent: Bool = false) {
+    guard let launchId, let freeModel = signIn.freeModel, !freeModelBusy else { return }
     freeModelBusy = true
     freeModelError = nil
     Task {
       defer { freeModelBusy = false }
-      switch await launches.startOnFreeModel(launchId, using: syncService) {
+      switch await launches.startOnFreeModel(launchId, freeModel: freeModel, using: syncService) {
       case .started: break
-      case .needsConsent: consentOpen = true
       case .failed(let message): freeModelError = message
+      case .needsConsent(let message):
+        // Refused again right after a yes: the server's sentence, and stop.
+        guard !afterConsent else { freeModelError = message; return }
+        let stuck = "\(Brand.name) couldn't start \(freeModel.label). Try again in a moment."
+        if let client = await syncService.cloudServerClient(), let owner = AccountService.shared.currentPairingAuthorization {
+          await AccountCloudStore.shared.refresh(client: client, owner: owner)
+        }
+        guard let state = AccountCloudStore.shared.account?.freeModels, state.lists(freeModel.modelId) else {
+          freeModelError = "\(Brand.name) Free Models aren't open for this account right now."
+          return
+        }
+        guard !state.granted else { freeModelError = stuck; return }
+        consentOpen = true
       }
     }
   }

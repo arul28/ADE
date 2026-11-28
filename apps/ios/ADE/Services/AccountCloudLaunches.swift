@@ -987,25 +987,31 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// What came of "Start with … instead".
   enum FreeModelAnswer: Equatable {
     case started
-    /// The account hasn't agreed to DAEX Free Models yet: the sheet, then again.
-    case needsConsent
+    /// The account hasn't agreed to DAEX Free Models yet: the sheet once,
+    /// then one more call. The server's sentence, for when that call is refused too.
+    case needsConsent(String)
     case failed(String)
   }
 
   /// "Start with … instead" on a launch waiting on a sign-in: the server
   /// starts its chat on the offered DAEX Free Model, on the same computer.
-  func startOnFreeModel(_ launchId: String, using sync: SyncService) async -> FreeModelAnswer {
+  func startOnFreeModel(_ launchId: String, freeModel: CloudLaunchSignIn.FreeModel, using sync: SyncService) async -> FreeModelAnswer {
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return .failed("Sign in to \(Brand.name) again, then try again.") }
     do {
       let record = try await client.startLaunchOnFreeModel(launchId)
       guard generation == accountGeneration else { return .started }
-      patch(launchId) { Self.take(record, into: &$0) }
+      patch(launchId) {
+        Self.take(record, into: &$0)
+        Self.moveToFreeModel(freeModel, into: &$0)
+      }
+      // The answer can already be a running chat: connect it as a start does.
+      connectWhenReady(using: sync)
       poll(using: sync)
       return .started
     } catch CloudServerClient.Failure.refused(let code, let message) {
       switch code {
-      case "free_models_consent": return .needsConsent
+      case "free_models_consent": return .needsConsent(message)
       case "launch_not_waiting":
         // The step is over: the launch as it is now.
         await refresh(launchId, using: sync)
@@ -1014,6 +1020,28 @@ final class AccountCloudLaunchStore: ObservableObject {
       }
     } catch {
       return .failed(cloudServerFailureMessage(error))
+    }
+  }
+
+  /// After "Start with … instead": the page and a later Retry name the free
+  /// model, never the provider the person chose to skip. A server record that
+  /// already names it is the truth (the saved start goes, Retry sends the
+  /// server's); one that still names the first provider gets its chat
+  /// rewritten for the Retry.
+  private static func moveToFreeModel(_ model: CloudLaunchSignIn.FreeModel, into entry: inout Entry) {
+    let freeProvider = "opencode"
+    entry.modelId = model.modelId
+    if entry.record?.modelId == model.modelId {
+      entry.body = nil
+      entry.provider = entry.record?.provider ?? freeProvider
+      return
+    }
+    entry.provider = freeProvider
+    if case .object(var fields)? = entry.record?.request ?? entry.body, case .object(var chat)? = fields["chat"] {
+      chat["provider"] = .string(freeProvider)
+      chat["modelId"] = .string(model.modelId)
+      fields["chat"] = .object(chat)
+      entry.body = .object(fields)
     }
   }
 
