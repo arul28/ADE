@@ -78521,6 +78521,13 @@ export function createAgentChatService(args: {
   const MODEL_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
   const MODEL_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
   let modelCatalogCache: AgentChatModelCatalog | null = null;
+  /**
+   * Builds run side by side (a person's Refresh beside a scheduled force), so
+   * each takes a start number and only the latest-started build that finished
+   * publishes: an older build landing last must not replace a newer list.
+   */
+  let modelCatalogBuildSeq = 0;
+  let modelCatalogPublishedSeq = 0;
   // A newly applied model manifest can add, hide, or re-default models, so the
   // cached catalog is stale until the next rebuild — served once more while a
   // background refresh picks up the change, never rebuilt on the caller.
@@ -79203,6 +79210,7 @@ export function createAgentChatService(args: {
     if (mode === "cached" && modelCatalogCache) {
       return withModelCatalogStaleFlag(modelCatalogCache, isModelCatalogRefreshStale());
     }
+    const buildSeq = ++modelCatalogBuildSeq;
 
     const activateAllDynamic = mode === "force" && !refreshProvider;
     const shouldRefreshProvider = (provider: AgentChatModelCatalogRefreshProvider): boolean =>
@@ -79539,6 +79547,9 @@ export function createAgentChatService(args: {
         })),
       })),
     };
+    // A build that started before the published one answers with that one.
+    if (buildSeq < modelCatalogPublishedSeq && modelCatalogCache) return modelCatalogCache;
+    modelCatalogPublishedSeq = buildSeq;
     modelCatalogCache = catalog;
     modelCatalogBuiltInputsKey = inputsKeyAtBuild;
     modelCatalogInputsChangedMemo = null;

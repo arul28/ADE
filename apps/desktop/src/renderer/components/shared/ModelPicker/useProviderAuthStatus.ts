@@ -236,11 +236,14 @@ function probeBinary(scopeKey: string, pin?: OpenProjectBinding | null): Promise
  * caches the refresh just renewed, and every surface reading this bucket (this
  * hook, the chat pane) follows the update event.
  */
-export function revalidateProviderAuthStatus(runtimePin: OpenProjectBinding | null | undefined): void {
+export function revalidateProviderAuthStatus(
+  runtimePin: OpenProjectBinding | null | undefined,
+  /** Read by the caller from its own store, the one this hook reads too. */
+  store: { tabBindingKey: string | null; activeProjectRoot: string | null },
+): void {
   if (typeof window.ade?.ai?.getStatus !== "function") return;
-  const state = useAppStore.getState();
-  const pin = statusCachePin(runtimePin, state.projectBinding?.key ?? null);
-  const projectRoot = runtimePin?.rootPath ?? selectActiveProjectRoot(state);
+  const pin = statusCachePin(runtimePin, store.tabBindingKey);
+  const projectRoot = pin?.rootPath ?? store.activeProjectRoot;
   void getAiStatusCached({ projectRoot, pin, revalidate: true }).catch(() => undefined);
 }
 
