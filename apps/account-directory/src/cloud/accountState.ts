@@ -142,7 +142,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     computers: {
       // What the computer limit counts (`accountComputerCountSql`), so the count and a refusal agree.
       total: countedComputers(computers, now, { hideMacs: !macShown }),
-      awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
+      // The same Macs left out as `total`, so a hidden Mac never reads as "0 computers · 1 awake" (the tick stops it).
+      awake: computers.filter((computer) => isMeteredStatus(computer.status) && (macShown || computer.type !== "mac")).length,
       limit: computerLimitOf(account),
       // What the limit card offers: the same answer a `computer_limit` refusal carries.
       nextPlan: nextPlanOffer(computerLimitPlanOf(account), offers),

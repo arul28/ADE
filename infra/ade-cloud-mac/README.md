@@ -20,7 +20,7 @@ This folder is what runs on it.
 | `~/drive/.daex/tools/` | The agents that release pins, baked (`ADE_TOOLS_BAKED_ROOTS`). |
 | `~/drive/.daex/home/` | The dotfiles agents keep in `$HOME` (`.claude`, `.codex`, `.config/gh`, `.ssh`, …), linked from `$HOME` at each boot. |
 | `~/drive/.ade/` | `ADE_HOME`: the brain's identity, databases and sign-ins, and the DAEX `ade brain update` installs. `~/.ade` links to it. Never in the template. |
-| `~/drive/src/<repo>` | The lane's repositories, as NoMac advises, so builds stay incremental. |
+| `~/drive/src/<repo>` | The lane's repositories, as NoMac advises, so builds stay incremental. `~/Projects` (where a launch clones) links to it. |
 | `~/drive/.cache/` | Package and build caches (DerivedData, SwiftPM, CocoaPods, npm…), where NoMac already puts them. |
 
 Two NoMac facts shape the scripts:

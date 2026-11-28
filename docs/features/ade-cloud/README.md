@@ -143,8 +143,10 @@ NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
   At `off`, or for an account it doesn't reach, no answer names the Mac: no
   catalog `mac`, no Mac in a list (a GET answers 404), `os: "mac"` refused
   like an unknown size, a Mac lane without a computer reads as `default`, and
-  a hidden Mac doesn't count toward the computer limit. Going back stops a
-  running Mac (the tick) and keeps its drive under the idle cleanup clock.
+  a hidden Mac doesn't count toward the computer limit or as awake. Going
+  back stops a running Mac at the next tick (within a minute; billed by the
+  minute until NoMac shuts it down) and keeps its drive under the idle
+  cleanup clock; no hidden Mac starts again.
 - **Launch.** Only through the server launcher (`os: "mac"`): the bare machine
   launch and `POST /cloud/instances` refuse a Mac (`mac_unsupported`).
 - **Lifecycle.** A start asks NoMac for the label `adem:<id>` with its drive

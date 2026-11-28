@@ -39,6 +39,10 @@ keep_home() {
 }
 # DAEX itself: code that reads ~/.ade directly sees ADE_HOME.
 keep_home .ade "$ADE_HOME"
+# A launch clones into ~/Projects (the brain's default folder for a new
+# project): it is the drive's src/, so the lane's repositories outlive a stop.
+keep_home Projects "$HOME/drive/src"
+mkdir -p "$HOME/drive/src"
 for name in .claude .codex .cursor .factory .gemini .kimi .kimi-code .qwen .grok .copilot .pi .devin .muse \
   .agent-browser .ssh .config/gh .config/opencode .config/github-copilot .local/share/opencode .local/state/opencode; do
   keep_home "$name" "$daex_root/home/$name"
