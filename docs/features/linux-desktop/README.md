@@ -54,7 +54,7 @@ Linux-specific files only; the shared files are in the
   `/tmp/ade-ld-<uid>/<N>/` without `XDG_RUNTIME_DIR`; it is created `0700` and
   refused if it is a link or owned by another user.
 - **No lease for input.** A lane's X display has no human pointer, so XTEST
-  input is background input by construction (`real input  needs no lease`). A
+  input is background input by construction (real input needs no lease). A
   viewer's takeover still wins. XSendEvent is not used: Chromium and GTK drop
   synthetic pointer events.
 - **Chromium needs flags.** `app.launch` adds `--force-renderer-accessibility`

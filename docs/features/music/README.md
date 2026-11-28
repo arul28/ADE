@@ -164,15 +164,7 @@ and stops the host without a snapshot. A 401 on a `/v1/me` call drops the token
 
 ## Player hosts
 
-Wire format, one JSON object per line: `{"rid":"r1","cmd":"seek","position":60}`
-in; `{"reply":"r1","ok":true,"result":{…}}` or `{"event":"time",…}` out.
-`player.js` commands: `configure`, `authorize`, `unauthorize`, `queue`,
-`playItems`, `playCollection`, `pause`, `resume`, `toggle`, `next`, `prev`,
-`seek`, `volume`, `shuffle`, `repeat`, `playAt`, `playNext`, `playLater`,
-`snapshot`. Events: `loaded`, `state`, `time`, `queueChanged`, `authorization`,
-`playbackError`, `loadFailed`; the host adds `hostReady`, `hostClosing`,
-`hostError`, `authWindow`. Host commands `showAuth` / `closeAuth` back "Show
-sign-in window" and "Cancel".
+Wire format: one JSON object per line over stdio (`{"rid":"r1","cmd":"seek","position":60}` in; `{"reply":"r1","ok":true,…}` or `{"event":"time",…}` out). The command and event lists live in each page's `player.js` and in `musicHostProcess.ts`.
 
 Both hosts exit on stdin EOF, `{"cmd":"quit"}`, or when `--parent-pid` exits.
 Navigation is limited to the page, `https://*.apple.com` and
@@ -207,15 +199,7 @@ DAEX was killed exits 0. Built by `build:music-host:mac` (part of
 
 ## Renderer API (for widgets)
 
-`apps/desktop/src/renderer/components/music/musicStore.ts`: `useMusicNowPlaying()`
-(`available`, `nowPlaying`, `isPlaying`, `busy`, `duration`,
-`artworkUrl(cssPx)`), `useMusicPosition(intervalMs)`, `useMusicState(selector)`,
-`useMusicLike()`, `friendlyMusicError(raw)`, `musicActions.*` (transport,
-volume, shuffle, repeat, `playItems`, `playCollection`, `playNext`,
-`playLater`, `playAt`, `connect`, `disconnect`, `warm`, `open`, `showSignIn`,
-`cancelSignIn`, `unload`), `formatMusicTime`. Every hook shares one IPC
-subscription. The home widget is `home/widgets/NowPlayingWidget.tsx` (see "Now
-Playing" in `docs/plans/ade-dev-home.md`).
+`apps/desktop/src/renderer/components/music/musicStore.ts` exports the hooks a widget needs (`useMusicNowPlaying`, `useMusicPosition`, `useMusicState`, `useMusicLike`), `musicActions.*` and `friendlyMusicError`. Every hook shares one IPC subscription. The home widget is `home/widgets/NowPlayingWidget.tsx`.
 
 ## Failure modes
 
