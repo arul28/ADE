@@ -571,6 +571,13 @@ export function LaneSetupCard({
         </ul>
       )}
 
+      {failed && !refused && snapshot.error?.trim() && !snapshot.stages.some((stage) => stage.status === "failed") ? (
+        // A failure no row holds (a cloud launch the server ended in its sign-in step): its sentence under the rows.
+        <div data-testid="lane-setup-failure" className="mt-1.5">
+          <StageErrorCallout error={launchErrorText(snapshot.error)} className={metaSize} />
+        </div>
+      ) : null}
+
       {failed && snapshot.cloud?.refusal?.code === CLOUD_COMPUTER_LIMIT_CODE ? (
         // All the plan's cloud computers in use: the card offers the three ways out, then Retry starts this one.
         <div className={cn("mt-1.5", metaSize)}>
