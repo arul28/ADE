@@ -282,7 +282,7 @@ struct CloudSessionCopyScreen: View {
     let instance = syncService.cloudServerInstance(fleetKey: fleetKey)
     let onMac = instance?.isMac == true
     return VStack(spacing: 6) {
-      if let unavailable = instance?.unavailable {
+      if let unavailable = instance?.unavailable ?? (instance?.macDriveLost == true ? CloudMacWords.sentence(instance?.mac) : nil) {
         Text(unavailable)
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
@@ -304,7 +304,7 @@ struct CloudSessionCopyScreen: View {
         .frame(maxWidth: .infinity)
       }
       .buttonStyle(ADEKitButtonStyle(prominent: true))
-      .disabled(waking || fleetKey == nil || instance?.unavailable != nil || instance?.macStopping == true)
+      .disabled(waking || fleetKey == nil || instance?.unavailable != nil || instance?.macStopping == true || instance?.macDriveLost == true)
       .adeInspectable("Work.CloudSessionCopy.Wake")
     }
     .padding(.horizontal, 16)

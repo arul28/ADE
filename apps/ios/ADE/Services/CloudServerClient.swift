@@ -154,6 +154,8 @@ struct CloudServerInstance: Decodable, Equatable {
   var isMac: Bool { os == "mac" }
   /// A Mac saving its drive: the server reads it stopped, but it can't start until that ends.
   var macStopping: Bool { isMac && mac?.state == CloudMacPhase.stopping.rawValue }
+  /// A Mac whose drive is gone: it can never start again (its saved work is in Lanes without a computer).
+  var macDriveLost: Bool { isMac && mac?.failure == CloudMacPhase.driveLost.rawValue }
   /// The server can't wake or send to it now: its sentence (`CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`), else nil.
   var unavailable: String? {
     guard statusReason?.code == "computer_unavailable" else { return nil }
