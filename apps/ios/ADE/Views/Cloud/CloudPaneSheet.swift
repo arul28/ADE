@@ -552,12 +552,13 @@ final class CloudPaneStore: ObservableObject {
   }
 
   /// "Delete anyway" for a computer the idle cleanup kept (ADE-223): an
-  /// account call by its id that keeps its lane and chats (the server takes
-  /// the lane's branch from its own row). It never wakes the computer, saves
-  /// or pushes nothing, and never deletes the lane's saved chats.
+  /// account call by its id. It never wakes the computer and saves or pushes
+  /// nothing. A computer made for a lane keeps its lane and chats (the server
+  /// takes the lane's branch from its own row); one with no lane gets a plain
+  /// delete, since the server refuses to keep a lane it doesn't have.
   func deleteHeld(_ machine: CloudPhoneMachine, words: CloudIdleHeldWords) async {
     await act(on: machine, title: words.deletedTitle, gone: true) { client in
-      guard try await client.deleteInstanceConfirmed(machine.instanceId, keepLane: true) else {
+      guard try await client.deleteInstanceConfirmed(machine.instanceId, keepLane: words.hasLane) else {
         return CloudComputerOutcome(ok: false, message: "Try again in a moment.")
       }
       return words.deletedDetail.map { CloudComputerOutcome(ok: true, message: $0) }

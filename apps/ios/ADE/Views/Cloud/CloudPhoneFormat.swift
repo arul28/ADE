@@ -219,7 +219,9 @@ struct CloudIdleHeldWords: Equatable {
       }
     }
     if let laneName, reason.hasPrefix("\(laneName): ") { reason = String(reason.dropFirst(laneName.count + 2)) }
-    let ignored = entry.ignoredFiles
+    // A read that missed some lane and found nothing reads as not read yet:
+    // it doesn't mean no files git ignores are there.
+    let ignored = entry.ignoredFiles.flatMap { $0.incomplete == true && cloudIgnoredFilesList($0) == nil ? nil : $0 }
     let list = ignored.flatMap(cloudIgnoredFilesList)
     let ignoredLine: String? = {
       guard let ignored else { return "Files git ignores, such as .env, are never saved." }

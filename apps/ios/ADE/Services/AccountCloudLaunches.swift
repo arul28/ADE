@@ -470,9 +470,11 @@ final class AccountCloudLaunchStore: ObservableObject {
     var startedHere = false
 
     var isLane: Bool { kind == "lane" }
-    var inProgress: Bool { startError == nil && (record?.inProgress ?? true) }
+    /// A start whose answer was lost is followed as in progress, even over an
+    /// older failed record (a Retry): the server may run it already.
+    var inProgress: Bool { startError == nil && (answerLost != nil || (record?.inProgress ?? true)) }
     /// The start failed, the launch failed, or it was cancelled.
-    var failed: Bool { startError != nil || record?.failed == true }
+    var failed: Bool { startError != nil || (answerLost == nil && record?.failed == true) }
     var cancelled: Bool { record?.cancelled == true }
     /// The launch's page can queue a message now.
     var canQueueMessages: Bool { !isLane && startError == nil && record?.takesMessages == true }
@@ -482,7 +484,8 @@ final class AccountCloudLaunchStore: ObservableObject {
     /// chat needs that id).
     var awaitsChat: Bool {
       guard startError == nil else { return false }
-      guard let record else { return answerLost != nil }
+      if answerLost != nil { return true }
+      guard let record else { return false }
       return record.inProgress || (record.state == "running" && (isLane || record.sessionId == nil))
     }
   }
@@ -1078,7 +1081,7 @@ final class AccountCloudLaunchStore: ObservableObject {
             if Task.isCancelled || self.pollGeneration != generation { break }
             // A start whose answer was lost, and the server has no launch under
             // its id: it never got the start. The error and Retry (same id) now.
-            if case .noAccess? = error as? CloudServerClient.Failure, let lost = entry.answerLost, entry.record == nil {
+            if case .noAccess? = error as? CloudServerClient.Failure, let lost = entry.answerLost {
               changed = true
               self.patch(entry.launchId) {
                 $0.startError = lost
