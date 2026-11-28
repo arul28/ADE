@@ -107,7 +107,13 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
 
   const cell = (row: Row, column: Column) => {
     const milli = column === "ad" ? row.pair.adMilli ?? row.pair.fullMilli : column === "full" ? row.pair.fullMilli : rateNow(row.pair);
-    return milli > 0 ? `${words.count(milli / 1000)} ${row.unit === "hour" ? "an hour" : "a minute"}` : "Free";
+    if (milli <= 0) return "Free";
+    // The long form, and a short one ("8/h") a narrow page shows instead (CSS picks one).
+    const amount = words.count(milli / 1000);
+    const long = `${amount} ${row.unit === "hour" ? "an hour" : "a minute"}`;
+    // The exact number (2.5 stays 2.5), without the noun.
+    const short = `${amount.split(" ")[0]}/${row.unit === "hour" ? "h" : "min"}`;
+    return <><span className="adecd-sizetable-long">{long}</span><span className="adecd-sizetable-short" aria-hidden="true">{short}</span></>;
   };
   const head = (column: Column) => (column === "ad" ? "With ads" : column === "full" ? "No ads" : "Price");
 

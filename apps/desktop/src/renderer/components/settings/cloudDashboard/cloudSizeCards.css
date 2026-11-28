@@ -86,9 +86,11 @@
 @media (prefers-reduced-motion: reduce) {
   .adecd-sizetable[data-swap] [data-lead] { animation: none; }
 }
-/* Narrow: tighter cells; the headers wrap. */
-@container adecd (max-width: 560px) {
+.adecd-sizetable-short { display: none; }
+/* Narrow: tighter cells, the headers wrap, and a price reads "8/h". */
+@container adecd (max-width: 620px) {
   .adecd-sizetable th, .adecd-sizetable td { padding-left: 7px; padding-right: 7px; }
   .adecd-sizetable thead th { white-space: normal; }
-  .adecd-sizetable-num { white-space: normal; }
+  .adecd-sizetable-long { display: none; }
+  .adecd-sizetable-short { display: inline; }
 }
