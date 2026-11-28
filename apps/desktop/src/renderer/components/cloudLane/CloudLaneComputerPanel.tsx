@@ -105,8 +105,8 @@ export function CloudLaneComputerPanel({
           </ManageRow>
         ) : null}
         {mac ? (
-          <ManageRow icon={<Moon size={14} />} title="Stops on its own" hint={cloudMacOfferOf(account)?.keeps ?? "A Mac stops 5 minutes after work ends. Only its drive is kept."}>
-            <span />
+          <ManageRow icon={<Moon size={14} />} title="Stops on its own" hint={cloudMacOfferOf(account)?.keeps ?? "A Mac stops a few minutes after work ends. Only its drive is kept."}>
+            {awake ? <button type="button" className="kit-btn" data-size="sm" onClick={() => void sleepLaneComputer(computer.instanceId, laneName, runningChats, true)}>Stop now</button> : <span />}
           </ManageRow>
         ) : awake ? (
           <ManageRow icon={<Moon size={14} />} title="Sleep" hint="A sleeping computer uses no credits. A message wakes it.">

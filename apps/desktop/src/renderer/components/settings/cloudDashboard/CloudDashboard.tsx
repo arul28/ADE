@@ -688,7 +688,7 @@ function LaneTable({
               onDoubleClick={() => onOpen(lane.key)}
             >
               <span className="adecd-name">
-                {lane.mac ? <AppleLogo size={15} weight="fill" className="adecd-mac-mark" aria-label="Mac" />
+                {lane.isMac ? <AppleLogo size={15} weight="fill" className="adecd-mac-mark" aria-label="Mac" />
                   : lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
                 <span className="adecd-name-text">{lane.name}</span>
                 {/* One mark at most, so the name keeps its room: the idle cleanup's warning, no lane, then unused, then safe to delete. */}
@@ -699,7 +699,7 @@ function LaneTable({
                   : null}
               </span>
               <span className="adecd-tsize">
-                {lane.mac ? <>Mac{lane.rateLabel ? <em className="kit-num">{lane.rateLabel}</em> : null}</>
+                {lane.isMac ? <>Mac{lane.rateLabel ? <em className="kit-num">{lane.rateLabel}</em> : null}</>
                   : lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}
               </span>
               {status ? (

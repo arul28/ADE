@@ -3,6 +3,7 @@ import { Plus, X } from "@phosphor-icons/react";
 import { cloudCatalogOf, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import { withCloudLaneColor } from "../../../shared/cloudLaneLaunch";
+import { cloudLaunchOs, cloudMacOfferOf, type CloudComputerOs } from "../../../shared/cloudMac";
 import { cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { OpenProjectBinding } from "../../../shared/types/core";
@@ -40,6 +41,11 @@ import { BRAND } from "../../../shared/brand";
 export function cloudLaneRestartTier(lane: CloudLaneWithoutComputer, account: CloudAccountState | null, fallback: CloudTierId): CloudTierId {
   const tiers = cloudTiers(cloudCatalogOf(account));
   return tiers.find((tier) => tier.type === lane.type && tier.cpu === lane.cpu && tier.memoryGb === lane.memoryGb)?.id ?? fallback;
+}
+
+/** Mac for a lane whose old computer was a Mac (`type: "mac"`, sent only while the server offers one); Linux otherwise. */
+export function cloudLaneRestartOs(lane: CloudLaneWithoutComputer, account: CloudAccountState | null): CloudComputerOs {
+  return cloudLaunchOs(lane.type === "mac" ? "mac" : "linux", cloudMacOfferOf(account));
 }
 
 /** The lane's branch on GitHub, as a new computer starts from it. */
@@ -84,6 +90,7 @@ export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer | null,
         laneConfig: withCloudLaneColor({ mode: "existing", branchRef: cloudLaneRestartBranchRef(lane.branchRef) }, listedProjectLanesNow(tabLanes), lane.laneId),
       },
       sizeId,
+      os: lane ? cloudLaneRestartOs(lane, account) : "linux",
       originUrl,
       binding,
     });
@@ -93,7 +100,7 @@ export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer | null,
       return false;
     }
     if (outcome === "failed") return false;
-    showToast({ tone: "success", title: `Making a new computer for ${lane.laneName}`, message: "It starts on the same branch. Its steps show under Launches." });
+    showToast({ tone: "success", title: `Making a new ${cloudLaneRestartOs(lane, account) === "mac" ? "Mac" : "computer"} for ${lane.laneName}`, message: "It starts on the same branch. Its steps show under Launches." });
     return true;
   };
   const start = async (): Promise<void> => {
@@ -154,7 +161,7 @@ export function CloudLaneWithoutComputerNotice({
       <div className="adecl-nocomp-actions">
         <button type="button" className="kit-btn adecl-btn-sky" data-size="xs" disabled={Boolean(problem) || busy} aria-describedby={problem ? problemId : undefined} onClick={() => void start()}>
           <Plus size={11} />
-          {starting ? "Starting…" : "New computer on the same branch"}
+          {starting ? "Starting…" : cloudLaneRestartOs(lane, account) === "mac" ? "New Mac on the same branch" : "New computer on the same branch"}
         </button>
         {cloudLaneLifeAvailable() ? (
           <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" disabled={busy} onClick={() => void onForget()} aria-label={`Forget ${lane.laneName}`}>

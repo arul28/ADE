@@ -172,7 +172,7 @@ function CloudLaneStatusMenu({
 
   const sleepNow = () => {
     forgetCloudComputerStatus(computer.instanceId);
-    void sleepLaneComputer(computer.instanceId, name, turnRunning ? 1 : 0);
+    void sleepLaneComputer(computer.instanceId, name, turnRunning ? 1 : 0, mac);
   };
 
   return (
@@ -271,11 +271,11 @@ function CloudLaneStatusMenu({
               Change size
             </button>
           ) : null}
-          {/* A Mac stops on its own 5 minutes after work ends. */}
-          {power === "awake" && !model.changing && !mac ? (
+          {/* A Mac also stops on its own a few minutes after work ends; "Stop now" saves its drive at once. */}
+          {power === "awake" && !model.changing ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(sleepNow)}>
               <span className="ade-cx-menu-icon"><Moon size={13} /></span>
-              Sleep now
+              {mac ? "Stop now" : "Sleep now"}
             </button>
           ) : null}
           <button
@@ -345,15 +345,16 @@ export async function keepLaneComputer(instanceId: string, name: string): Promis
  * Sleep (the chat header, Manage lane): the shared confirm, which asks when
  * chats run there, the IPC call, a toast either way, then the list read again.
  */
-export async function sleepLaneComputer(instanceId: string, name: string, runningChats: number): Promise<void> {
-  if (!(await confirmCloudSleep(`${name}'s computer`, runningChats))) return;
+export async function sleepLaneComputer(instanceId: string, name: string, runningChats: number, mac = false): Promise<void> {
+  // A Mac's sleep is its stop (the server saves its drive and lets the Mac go).
+  if (!(await confirmCloudSleep(mac ? `${name}'s Mac` : `${name}'s computer`, runningChats, mac))) return;
   const result = await callCloudMachineAction({ instanceId, action: "sleep" });
   if (result?.ok) {
-    showToast({ tone: "info", title: `${name}'s computer is going to sleep.` });
+    showToast({ tone: "info", title: mac ? `${name}'s Mac is stopping. Its drive is saved.` : `${name}'s computer is going to sleep.` });
   } else {
     showToast({
       tone: "warning",
-      title: `Couldn't put ${name}'s computer to sleep`,
+      title: mac ? `Couldn't stop ${name}'s Mac` : `Couldn't put ${name}'s computer to sleep`,
       message: result?.message || `This window can't reach ${BRAND.CLOUD_NAME}. Try it from the ${BRAND.NAME} desktop app.`,
     });
   }

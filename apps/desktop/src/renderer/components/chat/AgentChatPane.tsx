@@ -485,7 +485,7 @@ import { CloudLaneDeletingSoonBand } from "../cloudLane/CloudLaneDeletingSoonBan
 import { newerLaunchDefaults, publishLaunchDefaults, readAccountLaunchDefaults } from "./accountLaunchDefaults";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
 import { useChatLaneMoveSource } from "../laneMove/useChatLaneMoveSource";
-import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
+import { cloudLaneRestartBranchRef, cloudLaneRestartOs, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import { cloudLaneStartBlock, withCloudLaneColor } from "../../../shared/cloudLaneLaunch";
@@ -15263,6 +15263,7 @@ export function AgentChatPane({
       () => setError({ message: `This ${BRAND.NAME} can't start a ${BRAND.CLOUD_NAME} lane. Update ${BRAND.NAME}, then send again.`, kind: "status" }),
       {
         sizeId: cloudLaneRestartTier(lane, account, rootAppStoreApi.getState().cloudDefaultTier),
+        os: cloudLaneRestartOs(lane, account),
         originUrl,
         lane: { laneId: lane.laneId, laneName: lane.laneName, branchRef: cloudLaneRestartBranchRef(lane.branchRef) },
       },

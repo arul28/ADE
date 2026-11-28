@@ -67,8 +67,10 @@ export type DashLane = {
   noLane: boolean;
   /** The idle cleanup's warning for its computer (or its kept-after-a-failed-save state), else null. */
   idle: CloudIdleCleanupEntry | null;
-  /** A DAEX Cloud Mac's own state, from the server's `mac` (null on Linux). */
+  /** A DAEX Cloud Mac's own state, from the server's `mac` (null on Linux and for a lane without a computer). */
   mac: DashMac | null;
+  /** A Mac computer, or a lane whose next computer is a Mac (`type: "mac"`, sent only while the server offers one). */
+  isMac: boolean;
 };
 
 /** A Mac row's state: the word, the server's sentence, and its drive as the last stop saved it. */
@@ -160,6 +162,7 @@ export function dashLanes(input: {
         noLane: !machine.lane,
         idle: idle.get(machine.instanceId) ?? null,
         mac,
+        isMac: mac != null,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -187,6 +190,7 @@ export function dashLanes(input: {
         noLane: false,
         idle: null,
         mac: null,
+        isMac: lane.type === "mac" && macOffer != null,
       };
     });
   // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.
