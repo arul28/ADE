@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +40,11 @@ import { BRAND } from "../../../desktop/src/shared/brand";
  * the next one, which runs the newest `ade` on the machine. A brain started by
  * an older template's loop (which always runs the image's `ade`) is refused
  * plainly: an update there cannot take effect.
+ *
+ * A DAEX Cloud Mac has the same shape: a NoMac service runs the drive's loop
+ * (`infra/ade-cloud-mac/drive/supervise.sh`), and its env carries the mark for
+ * every command (`env.sh`). There the process table is read with `ps` (macOS
+ * has no /proc), and a restart must never install launchd's service beside it.
  */
 
 /** Set by the template's entrypoint for the brain it runs (and so for every update helper the brain starts). */
@@ -46,6 +52,8 @@ export const ENTRYPOINT_SUPERVISOR_ENV = "ADE_BRAIN_SUPERVISOR";
 
 /** The entrypoint every ADE the provider template runs; an older one runs it without the env above. */
 const TEMPLATE_ENTRYPOINT = "ade-entrypoint.sh";
+/** The DAEX Cloud Mac's loop, on its drive. */
+const MAC_SUPERVISOR = "drive/.daex/supervise.sh";
 
 /** How long a brain gets to exit on SIGTERM before it is killed. */
 const BRAIN_STOP_GRACE_MS = 10_000;
@@ -67,6 +75,19 @@ export type EntrypointSupervisorDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** The platform whose process table is read; defaults to this host's. */
+  platform?: NodeJS.Platform;
+};
+
+/** What a restart reads of the machine's processes. */
+type ProcessTable = {
+  /** Every process with its command line. */
+  list(): Array<{ pid: number; line: string }>;
+  parentPid(pid: number): number | null;
+  commandLine(pid: number): string | null;
+  executable(pid: number): string | null;
+  /** Whether a process runs with the entrypoint's mark in its environment (unknown: false). */
+  hasMark(pid: number): boolean;
 };
 
 function readCommandLine(procRoot: string, pid: number): string | null {
@@ -107,20 +128,59 @@ function hasSupervisorMark(procRoot: string, pid: number): boolean {
   }
 }
 
+/** Linux: /proc. */
+function procTable(procRoot: string): ProcessTable {
+  return {
+    list() {
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(procRoot);
+      } catch {
+        return [];
+      }
+      return entries.filter((entry) => /^\d+$/.test(entry)).map((entry) => ({ pid: Number(entry), line: readCommandLine(procRoot, Number(entry)) ?? "" }));
+    },
+    parentPid: (pid) => readParentPid(procRoot, pid),
+    commandLine: (pid) => readCommandLine(procRoot, pid),
+    executable: (pid) => readExecutable(procRoot, pid),
+    hasMark: (pid) => hasSupervisorMark(procRoot, pid),
+  };
+}
+
+/**
+ * macOS: one `ps` read per question. Another process's environment isn't
+ * readable here, so the mark comes from this process's own env (`env.sh`
+ * exports it for every command on the Mac). The executable is the command
+ * line's first word, which the loop starts by its full path.
+ */
+function psTable(run: ServiceManagerSpawnSync): ProcessTable {
+  const read = (): Array<{ pid: number; ppid: number; line: string }> => {
+    const out = run("ps", ["-axww", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
+    if (out.status !== 0) return [];
+    return String(out.stdout ?? "").split("\n").flatMap((row) => {
+      const match = row.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), line: match[3] }] : [];
+    });
+  };
+  const find = (pid: number) => read().find((row) => row.pid === pid) ?? null;
+  return {
+    list: () => read().map(({ pid, line }) => ({ pid, line })),
+    parentPid: (pid) => find(pid)?.ppid ?? null,
+    commandLine: (pid) => find(pid)?.line ?? null,
+    executable(pid) {
+      const first = find(pid)?.line.split(/\s+/)[0];
+      if (!first) return null;
+      try { return fs.realpathSync(first); } catch { return first; }
+    },
+    hasMark: () => false,
+  };
+}
+
 /** Every `ade … serve --socket <socketPath>` on the machine, whatever binary runs it. */
-function servePidsOnSocket(procRoot: string, socketPath: string, exclude: ReadonlySet<number>): number[] {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(procRoot);
-  } catch {
-    return [];
-  }
+function servePidsOnSocket(table: ProcessTable, socketPath: string, exclude: ReadonlySet<number>): number[] {
   const pids: number[] = [];
-  for (const entry of entries) {
-    if (!/^\d+$/.test(entry)) continue;
-    const pid = Number(entry);
+  for (const { pid, line } of table.list()) {
     if (exclude.has(pid)) continue;
-    const line = readCommandLine(procRoot, pid);
     if (!line || !/(?:^|\s)serve(?:\s|$)/.test(line)) continue;
     const socket = serveSocketArgument(line);
     if (socket && isSameServeSocketPath(socket, socketPath)) pids.push(pid);
@@ -139,22 +199,26 @@ function result(ok: boolean, scriptPath: string | null, message: string, extra: 
  */
 export async function restartEntrypointSupervisedBrain(deps: EntrypointSupervisorDeps): Promise<ServiceManagerResult | null> {
   const env = deps.env ?? process.env;
-  const procRoot = "/proc";
+  const platform = deps.platform ?? process.platform;
+  const mac = platform === "darwin";
+  const table = mac ? psTable(deps.spawnSync ?? spawnSync) : procTable("/proc");
   const homeDir = deps.homeDir ?? os.homedir();
   const adeHome = deps.command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   const socketPath = path.join(adeHome, "sock", "ade.sock");
   const self = new Set([process.pid]);
-  const running = servePidsOnSocket(procRoot, socketPath, self);
+  const running = servePidsOnSocket(table, socketPath, self);
   // The brain's helpers inherit the mark; a command run another way (the provider
   // exec) reads it from the brain the loop started.
   const marked = env[ENTRYPOINT_SUPERVISOR_ENV]?.trim() === "entrypoint"
-    || running.some((pid) => hasSupervisorMark(procRoot, pid));
+    || running.some((pid) => table.hasMark(pid));
+  const loop = mac ? MAC_SUPERVISOR : TEMPLATE_ENTRYPOINT;
   const underTemplateLoop = running.some((pid) => {
-    const parent = readParentPid(procRoot, pid);
-    return parent != null && (readCommandLine(procRoot, parent) ?? "").includes(TEMPLATE_ENTRYPOINT);
+    const parent = table.parentPid(pid);
+    return parent != null && (table.commandLine(parent) ?? "").includes(loop);
   });
   if (!marked && !underTemplateLoop) return null;
-  const entrypoint = `/usr/local/bin/${TEMPLATE_ENTRYPOINT}`;
+  const entrypoint = mac ? path.join(homeDir, MAC_SUPERVISOR) : `/usr/local/bin/${TEMPLATE_ENTRYPOINT}`;
+  const processPlatform = mac ? "darwin" : "linux";
   if (!marked) {
     // An older template's loop starts the image's `ade` every time, so a
     // restart here would only bring the old version back, and a second
@@ -175,7 +239,7 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
     pids: running,
     env,
     run: deps.spawnSync,
-    platform: "linux",
+    platform: processPlatform,
   });
   if (selfBlock) return selfBlock;
 
@@ -185,13 +249,13 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
     await uninstallDetachedRuntimeService({ env: { ...env, ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1" }, homeDir });
   }
   for (const pid of running) {
-    await terminatePidGracefullyAsync(pid, { platform: "linux", graceTimeoutMs: BRAIN_STOP_GRACE_MS });
+    await terminatePidGracefullyAsync(pid, { platform: processPlatform, graceTimeoutMs: BRAIN_STOP_GRACE_MS });
   }
 
   const gone = new Set([...self, ...running]);
   const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? Math.max(RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS, ENTRYPOINT_HANDOVER_TIMEOUT_MS));
   const handover = await awaitServiceHandover({
-    readSupervisedPid: () => servePidsOnSocket(procRoot, socketPath, gone)[0] ?? null,
+    readSupervisedPid: () => servePidsOnSocket(table, socketPath, gone)[0] ?? null,
     isAlive: isPidAlive,
     probeResponsiveness: deps.responsivenessProbe ?? defaultResponsivenessProbe,
     socketPath,
@@ -210,7 +274,7 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
   const want = (() => {
     try { return fs.realpathSync(deps.command.command); } catch { return deps.command.command; }
   })();
-  const exe = readExecutable(procRoot, pid);
+  const exe = table.executable(pid);
   if (exe && exe !== want) {
     return result(false, entrypoint, `${BRAND.NAME} brain restarted, but the machine's start script ran ${exe} rather than ${want}.`, {
       failureStep: "replacement_pid",
