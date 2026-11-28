@@ -1188,11 +1188,29 @@ describe("createAgentChatService", () => {
           itemId: "cmd-plan-read-outside",
           turnId: "turn-1",
           cwd: path.dirname(path.dirname(tmpRoot)),
-          command: "/bin/zsh -lc 'git status'",
+          command: "/bin/zsh -lc 'ade linear issue ADE-296 --text'",
         },
       });
       await vi.waitFor(() => {
         expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-read-outside")).toMatchObject({
+          result: { decision: "decline" },
+        });
+      });
+
+      // Other reads run inside the sandbox; one asking to leave it was refused
+      // by the sandbox (a managed deny_read), so it is not answered for it.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-plan-read-sandboxed",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-plan-read-sandboxed",
+          turnId: "turn-1",
+          command: "/bin/zsh -lc 'cat src/a.ts'",
+        },
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-read-sandboxed")).toMatchObject({
           result: { decision: "decline" },
         });
       });

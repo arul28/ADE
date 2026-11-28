@@ -154,4 +154,11 @@ describe("shellInvocationIsReadOnly", () => {
   ])("%j is read-only: %s", (command, readOnly) => {
     expect(shellInvocationIsReadOnly(command, "linux")).toBe(readOnly);
   });
+
+  it("narrows to the named programs", () => {
+    const programs = new Set(["ade", "gh", "cd"]);
+    expect(shellInvocationIsReadOnly("bash -lc 'cd x && ade linear issue ADE-296'", "linux", { programs })).toBe(true);
+    expect(shellInvocationIsReadOnly("bash -lc 'cat src/a.ts'", "linux", { programs })).toBe(false);
+    expect(shellInvocationIsReadOnly("bash -lc 'ade linear issue ADE-296 | head -3'", "linux", { programs })).toBe(false);
+  });
 });

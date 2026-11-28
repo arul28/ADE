@@ -19,6 +19,13 @@
 
 export type ReadOnlyShellDialect = "bash" | "powershell";
 
+/**
+ * Narrows a check to commands whose every program is in `programs` (and still
+ * reads). Codex uses it to leave its sandbox only for the programs that need
+ * to (`ade`, `gh`), never for a read the sandbox itself refused.
+ */
+export type ReadOnlyShellOptions = { programs?: ReadonlySet<string> };
+
 /** Programs that only read (their writing options are refused separately). */
 const READ_ONLY_PROGRAMS: ReadonlySet<string> = new Set([
   "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "pwd", "echo", "which", "where",
@@ -353,9 +360,10 @@ function ghCommandIsReadOnly(args: string[]): boolean {
   return Boolean(group && verb && READ_ONLY_GH.has(`${group} ${verb}`));
 }
 
-function segmentIsReadOnly(words: Segment, dialect: ReadOnlyShellDialect): boolean {
+function segmentIsReadOnly(words: Segment, dialect: ReadOnlyShellDialect, options: ReadOnlyShellOptions): boolean {
   const program = programName(words[0]);
   if (!program) return false;
+  if (options.programs && !options.programs.has(program)) return false;
   // An argument the shell would rewrite cannot be judged from its text.
   if (words.slice(1).some((word) => word.unsafe)) return false;
   const args = words.slice(1).map((word) => word.text);
@@ -373,11 +381,15 @@ function segmentIsReadOnly(words: Segment, dialect: ReadOnlyShellDialect): boole
   return dialect === "powershell" && POWERSHELL_READ_ONLY_PROGRAMS.has(program);
 }
 
-export function shellCommandIsReadOnly(command: unknown, dialect: ReadOnlyShellDialect = "bash"): boolean {
+export function shellCommandIsReadOnly(
+  command: unknown,
+  dialect: ReadOnlyShellDialect = "bash",
+  options: ReadOnlyShellOptions = {},
+): boolean {
   if (typeof command !== "string" || !command.trim()) return false;
   const segments = splitCommand(command, dialect);
   if (!segments || segments.length === 0) return false;
-  return segments.every((words) => segmentIsReadOnly(words, dialect));
+  return segments.every((words) => segmentIsReadOnly(words, dialect, options));
 }
 
 /**
@@ -386,9 +398,13 @@ export function shellCommandIsReadOnly(command: unknown, dialect: ReadOnlyShellD
  * shell, and the two split a command differently (`a\;b` is one word to bash
  * and two commands to PowerShell), so the command must read under both.
  */
-export function shellCommandIsReadOnlyOnPlatform(command: unknown, platform: NodeJS.Platform = process.platform): boolean {
-  if (!shellCommandIsReadOnly(command, "bash")) return false;
-  return platform !== "win32" || shellCommandIsReadOnly(command, "powershell");
+export function shellCommandIsReadOnlyOnPlatform(
+  command: unknown,
+  platform: NodeJS.Platform = process.platform,
+  options: ReadOnlyShellOptions = {},
+): boolean {
+  if (!shellCommandIsReadOnly(command, "bash", options)) return false;
+  return platform !== "win32" || shellCommandIsReadOnly(command, "powershell", options);
 }
 
 const POSIX_SHELLS: ReadonlySet<string> = new Set(["bash", "sh", "zsh", "dash"]);
@@ -422,18 +438,22 @@ function powerShellRunsScript(options: string[]): boolean {
  * script is judged in the dialect of the shell that runs it; a command line
  * that is not a shell invocation is judged as `shellCommandIsReadOnlyOnPlatform`.
  */
-export function shellInvocationIsReadOnly(command: unknown, platform: NodeJS.Platform = process.platform): boolean {
+export function shellInvocationIsReadOnly(
+  command: unknown,
+  platform: NodeJS.Platform = process.platform,
+  options: ReadOnlyShellOptions = {},
+): boolean {
   if (typeof command !== "string" || !command.trim()) return false;
   const segments = splitCommand(command, "bash");
   const words = segments?.length === 1 ? segments[0]! : null;
   const shell = words ? programName(words[0], TRUSTED_SHELL_DIRS) ?? "" : "";
   if (words && (POSIX_SHELLS.has(shell) || POWERSHELLS.has(shell))) {
     if (words.slice(1).some((word) => word.unsafe)) return false;
-    const options = words.slice(1, -1).map((word) => word.text);
+    const flags = words.slice(1, -1).map((word) => word.text);
     const script = words[words.length - 1]?.text;
-    if (!script || options.length === 0) return false;
-    if (!(POSIX_SHELLS.has(shell) ? posixShellRunsScript(options) : powerShellRunsScript(options))) return false;
-    return shellCommandIsReadOnly(script, POSIX_SHELLS.has(shell) ? "bash" : "powershell");
+    if (!script || flags.length === 0) return false;
+    if (!(POSIX_SHELLS.has(shell) ? posixShellRunsScript(flags) : powerShellRunsScript(flags))) return false;
+    return shellCommandIsReadOnly(script, POSIX_SHELLS.has(shell) ? "bash" : "powershell", options);
   }
-  return shellCommandIsReadOnlyOnPlatform(command, platform);
+  return shellCommandIsReadOnlyOnPlatform(command, platform, options);
 }

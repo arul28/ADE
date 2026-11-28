@@ -8582,6 +8582,9 @@ function isPlanningApprovalGuarded(
   return managed.session.permissionMode === "plan";
 }
 
+/** The programs a Codex plan may leave its sandbox for: they need ADE's pipe or the network. */
+const CODEX_PLAN_ESCALATION_PROGRAMS: ReadonlySet<string> = new Set(["ade", "gh", "cd"]);
+
 /** An ACP `execute` call's command, when it is one string that only reads. */
 function acpToolCallCommandIsReadOnly(rawInput: unknown): boolean {
   const input = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? rawInput as Record<string, unknown> : null;
@@ -42891,15 +42894,17 @@ export function createAgentChatService(args: {
       if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
         // A plan still reads. Codex asks to leave its sandbox for a command
         // the sandbox blocks — on Windows that is every `ade` command, since
-        // the sandbox user cannot open the brain's pipe — so a command that
-        // only reads (`ade linear issue ADE-296`, `git log`) runs once, no
-        // card. Anything else is refused, unless a host policy says no. The
-        // read still keeps to the containment root, as any auto-answer does.
+        // the sandbox user cannot open the brain's pipe — so an `ade` or `gh`
+        // read (`ade linear issue ADE-296`) runs once, no card. Other reads
+        // already run inside the sandbox; one that asks to leave it was
+        // refused by the sandbox itself (a managed `deny_read`, say), so it is
+        // not answered here. Anything else is refused, unless a host policy
+        // says no, and the read keeps to the containment root.
         const planReadCwd = typeof params.cwd === "string" && params.cwd.trim().length
           ? params.cwd
           : managed.laneWorktreePath;
         if (
-          shellInvocationIsReadOnly(params.command)
+          shellInvocationIsReadOnly(params.command, process.platform, { programs: CODEX_PLAN_ESCALATION_PROGRAMS })
           && !permissionPolicyDeniesByFallback(managed.session)
           && codexCommandApprovalStaysWithinRoot(codexContainmentRoot(managed), planReadCwd, params.additionalPermissions)
         ) {

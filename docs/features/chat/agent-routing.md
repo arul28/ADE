@@ -1135,7 +1135,7 @@ read-only and proposes changes through `ExitPlanMode`.
   | Provider | Where |
   |---|---|
   | Claude | the `canUseTool` fence above |
-  | Codex | the plan guard on `item/commandExecution/requestApproval` accepts a read once. On Windows the sandbox user cannot open the brain's pipe (`connect EPERM`), so every `ade` command must leave the sandbox. |
+  | Codex | the plan guard on `item/commandExecution/requestApproval` accepts a read once when its programs are only `ade`, `gh` and `cd` and it keeps to the containment root. Other reads already run inside the sandbox; one asking to leave it was refused by the sandbox (a managed `deny_read`), so it stays declined. On Windows the sandbox user cannot open the brain's pipe (`connect EPERM`), so every `ade` command must leave the sandbox. |
   | Cursor | plan/ask gets `shell`, `webSearch`, `webFetch`, `semSearch` and `readLints`; the read-only hook allows a shell command that reads |
   | Pi | plan gets `bash` (and `powershell` on Windows) behind `withPiReadOnlyShell`, which refuses any other command without a card |
   | OpenCode | a plan's `permission.asked` for shell is answered `once` when every parsed command reads; web search and skills are no longer denied |
