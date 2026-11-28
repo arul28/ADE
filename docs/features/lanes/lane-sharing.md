@@ -1,6 +1,6 @@
 # Lane sharing
 
-Lane sharing gives another ADE account limited access to one lane on one
+Lane sharing gives another DAEX account limited access to one lane on one
 machine of the owner. The other person (the guest) sees the lane's chats and
 sessions, and can comment, write drafts or run turns when the owner allows
 it. The lane, its worktree, its chats and its provider sign-ins stay on the
@@ -11,13 +11,57 @@ Three parts work together:
 
 | Part | Where | What it holds |
 |------|-------|---------------|
-| Account directory | `apps/account-directory/src/laneShares/` (Worker + D1, migrations 0023–0025) | The index of grants (giver, receiver, lane, machine, preset label, risk label, end date, state), invites, one-use tickets and revocation. No detailed rights. A grant here never opens a machine. |
+| Account directory | `apps/account-directory/src/laneShares/` (Worker + D1, migrations `0023`–`0025`) | The index of grants (giver, receiver, lane, machine, preset label, risk label, end date, state), invites, one-use tickets and revocation. No detailed rights. A grant here never opens a machine. |
 | Host | `apps/ade-cli/src/services/sync/laneShare*.ts` (brain) | The rights of each grant (`laneShareRightsStore.ts`, local only), the guest connection gates, the message counters and the move service. The host is the only authority over what a guest may do. |
 | Clients | `apps/desktop/src/renderer/components/laneShare/**` (desktop and hosted web) | The owner's share sheet and marks, Settings › Sharing, the guest's shelf, page and connection. |
 
 The trust statements of the directory and the host are in
 [`apps/account-directory/README.md`](../../../apps/account-directory/README.md#lane-sharing),
 "Lane sharing". This page explains how the code meets them.
+
+## Source file map
+
+| File | Responsibility |
+|------|----------------|
+| `apps/account-directory/src/laneShares/{routes,contract,invites,tickets,shareRows,clerkAccount}.ts` | Directory routes, shapes, invites and email limits, one-use tickets, grant rows, Clerk verified-address reads. |
+| `apps/desktop/src/shared/laneShareRights.ts` | Rights type, parser, presets, risk, the agent ceiling, display name, daily window, guest state. |
+| `apps/desktop/src/shared/types/laneShare.ts` | Owner and guest contract shapes, `LaneShareEvent`. |
+| `apps/desktop/src/shared/laneShareDirectory.ts`, `laneShareGuestDirectory.ts` | Directory id and ticket shapes, error mapping, the guest's account calls. |
+| `apps/desktop/src/shared/laneShareMove.ts` | Move trust rules, payload parser, consents. |
+| `apps/desktop/src/shared/messageAuthor.ts` | Host-stamped author of messages, drafts and comments. |
+| `apps/ade-cli/src/services/sync/laneShareHostService.ts` | The `lane_share` owner actions on the host. |
+| `apps/ade-cli/src/services/sync/laneShareGrantService.ts` | The host's grant list and ticket redemption. Fail closed. |
+| `apps/ade-cli/src/services/sync/laneShareGuestHost.ts`, `laneShareGuestGates.ts`, `laneShareGuestTypes.ts` | Guest peers, roles and per-envelope gates. |
+| `apps/ade-cli/src/services/sync/laneShareGuestHello.ts` | The guest hello: refusals, the ticket redeem, the hand-off to the lane's project, and admission. |
+| `apps/ade-cli/src/services/sync/laneShareGuestRouter.ts` | Picks the project host for a handed-off guest (registry origin, then live origin; open projects only for an unredeemed socket). |
+| `apps/ade-cli/src/services/sync/laneShareGuestPolicy.ts` | Default-refuse lists of envelopes and commands, locks, file reads, rate limit. |
+| `apps/ade-cli/src/services/sync/laneShareGuestCommandPrep.ts` | Checks that need host services; sets the author. |
+| `apps/ade-cli/src/services/sync/laneShareGuestScrub.ts` | What the host removes from a guest's payload. |
+| `apps/ade-cli/src/services/sync/laneShareGuestQueue.ts` | Re-checks of a guest's queued messages. |
+| `apps/ade-cli/src/services/sync/laneShareMoveService.ts`, `laneShareError.ts` | The move service and the coded service error. |
+| `apps/desktop/src/main/services/lanes/laneShareRightsStore.ts` | The host's local rights and counters. |
+| `apps/desktop/src/main/services/chat/laneShareMoveChat.ts`, `laneShareMoveTransfer.ts` | Landing a moved chat; the bundle bytes. |
+| `apps/desktop/src/main/services/account/accountBridge.ts` | `laneShareGuest()` directory calls with this machine's token. |
+| `apps/desktop/src/renderer/components/laneShare/*.tsx`, `*.ts` | Owner UI, share list store, actions, defaults. |
+| `apps/desktop/src/renderer/components/laneShare/guest/**` | Guest connection, store, shelf, page, view, chat pane and its API, home rows, move. |
+| `apps/desktop/src/renderer/webclient/sync/relayReady.ts` | Relay ready handshake for browser-side sockets. |
+
+## Gotchas
+
+- **The host is the only authority.** The directory stores labels and grants;
+  it never decides access. Every guest envelope and command goes through the
+  default-refuse lists in `laneShareGuestPolicy.ts`. A new guest-reachable
+  command needs a rule there with its scope, kept arguments and right.
+- **Never trust a client's lane id.** Guest commands resolve the session's lane
+  from the host's own database.
+- **Rights can change mid-command.** The host compares the rights object right
+  before running (no await in between) and refuses a stale one, giving back the
+  counted message.
+- **Caller class comes from the session, never from arguments.** Anything that
+  is not exactly `person` is an agent.
+- **Both host tables are local-only** (`LOCAL_ONLY_CRR_EXCLUDED_TABLES`); never
+  let them replicate.
+- **Windows hosts cannot offer CLI typing.** See [Platform notes](#platform-notes).
 
 ## Rights
 
@@ -76,13 +120,13 @@ before a guest or a commit trailer shows it.
 The owner's actions are the `lane_share` action domain on the lane's machine
 (`laneShareHostService.ts`): `create`, `list`, `updateRights`, `revoke`,
 `resendInvite`, `listReceived`, `leave`, and the `move*` actions. A person in
-the ADE app may call all of them. An agent may call only `list`, `create` (a
+the DAEX app may call all of them. An agent may call only `list`, `create` (a
 Watch share) and `revoke`; see [Shares made by an agent](#shares-made-by-an-agent).
 
 - `actionPolicy.ts` keeps every other `lane_share` action user-only
   (`ADE_ACTION_USER_ONLY`) and away from automations.
 - `adeRpcServer.ts` (`mayUseUserOnlyActions`) admits to those only an RPC
-  caller that names itself as an ADE desktop client and carries no agent
+  caller that names itself as a DAEX desktop client and carries no agent
   identity.
 - A guest never reaches the domain. Its connection has no runtime RPC
   channel.
@@ -114,15 +158,15 @@ case a share made by an agent cannot change anything on the host.
   `lane_share` call from its own session, never from the call's arguments
   (`run_ade_action` drops any `callerClass` the caller sent, and refuses
   positional arguments for the domain). A person is
-  `mayUseUserOnlyActions(session)`: an ADE desktop client name with no agent
+  `mayUseUserOnlyActions(session)`: a DAEX desktop client name with no agent
   identity, on this machine or a paired desktop (`ade-desktop-remote`).
-  Everyone else is an agent: the `ade` CLI, an agent's shell, an ADE MCP
+  Everyone else is an agent: the CLI, an agent's shell, a DAEX MCP
   connection, another machine's brain. The action registry passes the class
   to the host service (`laneShareCallerOf`), and anything that is not exactly
   `person` is an agent.
 - **What an agent may do.** `list`; `create` with Watch rights only; `revoke`
   of a share of this machine and project. Every other action answers "Only a
-  person in the ADE app can do this." (`person_only`).
+  person in the DAEX app can do this." (`person_only`).
 - **The ceiling.** `laneShareAgentRightsRefusal` (`laneShareRights.ts`)
   refuses, and never clamps, any switch above the Watch preset: history
   before the share, every Speak, Run, Decide and Tools switch, and any model,
@@ -142,7 +186,7 @@ case a share made by an agent cannot change anything on the host.
 - **No change of a share.** The host refuses an agent's share for a lane and
   email that already have a live share, made by a person or an agent, before
   it calls the directory ("This person already has a share of this lane.
-  Change it in the ADE app."). It checks its own rows (an end date in the
+  Change it in the DAEX app."). It checks its own rows (an end date in the
   past ends a row), the directory's live grants, and a create of the same
   pair still in progress.
 - **Record.** The host's rights row records `created_by` (`person` or
@@ -161,16 +205,16 @@ case a share made by an agent cannot change anything on the host.
   machine, a list the record forgot), only shares made in the last 24 hours
   show, so an old install does not show every share at once. The label stays
   the durable signal.
-- **The CLI.** `ade lanes share --lane <lane>` lists, `--add <email>` makes a
+- **The CLI.** `daex lanes share --lane <lane>` lists, `--add <email>` makes a
   Watch share (`--ends`, `--hide-machines`, `--hide-models`), and `--remove
-  <email|grant id>` stops one. `--access` takes only `watch` (`--preset` is its old spelling). Each meaning has
+  <email|grant id>` stops one. `--access` takes only `watch` (`--preset` still works). Each meaning has
   one flag, and the command refuses a word it does not know.
-- **ADE MCP.** A read-only connection can list shares only. The command
+- **DAEX MCP.** A read-only connection can list shares only. The command
   policy lets `lanes share` through only in its list form (`--lane`,
   `--lane-id`, `--project-root`, `--text`, `--json`, `--pretty`,
   `--compact`); any other flag or word is a write, and so is `actions run`
   of a `lane_share` write. The runtime also refuses `lane_share.create` and
-  `revoke` for a session with an ADE MCP connection id and a role under
+  `revoke` for a session with a DAEX MCP connection id and a role under
   `cto`, which is how a read-only connection runs the CLI. A full-access
   connection can list, make a Watch share and stop a share.
 - **Default rights.** `account_settings.set` or `remove` of
@@ -248,7 +292,7 @@ messages (removed on revoke) and the chats it sent turns into.
    (`accountBridge.ts`, `window.ade.laneShareGuest.connect`). The web client
    does it with the page's account session. `laneShareGuestDirectory.ts`
    checks every id, URL and ticket the directory answers.
-2. The guest dials the host's ADE Relay address only. The directory never
+2. The guest dials the host's DAEX Relay address only. The directory never
    gives out LAN or tailnet addresses. `relayReady.ts` runs the relay's
    ready handshake for both the paired sync connection and the guest
    connection. Desktop allows the relay origins in the renderer CSP
@@ -290,7 +334,7 @@ reaches its lane whatever project is served:
   the project becomes the served one, it closes and its guests reconnect to
   the served host. A share's revoke, pause, rights edit and move reach
   whichever of the two serves the project (`laneShareServingHost`).
-- `lane_share_unavailable` now means no project of the machine could take the
+- `lane_share_unavailable` means no project of the machine could take the
   guest (a project the brain refuses to open, a missing checkout).
 
 While a guest is connected, the host reads its grant list again on a timer
@@ -351,7 +395,7 @@ a guest's queued message again when it starts.
 `laneShareGuestScrub.ts` removes from each payload, before a guest gets it:
 the text of cards only the owner may answer (a guest sees "Waiting for the
 owner"), model and machine names the privacy switches hide, history from
-before the share, and ADE's own files. The history cut checks each item of a
+before the share, and DAEX's own files. The history cut checks each item of a
 list that a fresh event or a summary carries by the item's own time (the
 comment list in `session_meta_updated`, a summary's scheduled work); an item
 with no time of its own loses its text (restored queued messages, the prompt
@@ -389,7 +433,7 @@ refresh. `laneShareGuestGates.ts` applies the policy to each envelope.
 - **Shared lane view** (`LaneShareGuestView.tsx`): the header (lane,
   owner, end date, messages left), the open chat or read-only terminal, and
   Clone this project.
-- **Shared chat** (`LaneShareGuestChatPane.tsx`): ADE's real chat pane
+- **Shared chat** (`LaneShareGuestChatPane.tsx`): DAEX's real chat pane
   (`AgentChatPane`) with a `lane_share_guest` chat scope. Its API
   (`laneShareGuestAgentChatApi.ts`) sends every call through the guest
   connection; history is the connection's chat subscription. The bound
@@ -404,8 +448,9 @@ refresh. `laneShareGuestGates.ts` applies the policy to each envelope.
 - The "Access changed" notice shows only when the rights or the lane state
   differ after the host let the guest back in.
 
-Invite links are `https://ade-app.dev/open?type=lane-share&id=<grant>` and
-`ade://lane-share/<grant>` (`shared/deeplinks.ts`). The grant id
+Invite links are `https://ade-app.dev/open?type=lane-share&id=<grant>` (the
+link host stays on the old domain) and `daex://lane-share/<grant>`
+(`shared/deeplinks.ts`; `ade://` still opens). The grant id
 (`ls_` and 32 hex characters) is an address only.
 
 ## Message author
@@ -474,8 +519,6 @@ Each successful owner mutation records one `ade_feature_used` with
 
 ## Platform notes
 
-- The host refuses guest typing into a CLI session when it runs Windows,
-  where a shell stays after the CLI exits.
 - Move temp folders use `os.tmpdir()` and `rmSync` with retries for Windows
   handles.
 - Phone guests are out of scope. The iOS app decodes the new optional fields
@@ -483,7 +526,7 @@ Each successful owner mutation records one `ade_feature_used` with
   [iOS companion](../sync-and-multi-device/ios-companion.md).
 
 CLI typing (`run.typeInCliSessions`) is a capability of the machine that
-holds the lane, not of the viewer. On Windows, ADE starts a CLI inside a
+holds the lane, not of the viewer. On Windows, DAEX starts a CLI inside a
 shell without exec, so the shell stays when the CLI exits and the host
 cannot tell which program reads the keys. macOS and Linux keep the
 capability. The host computes `cliTyping` (`laneShareCliTypingFor`) and
@@ -495,30 +538,3 @@ first-line field, only the line "Typing into a CLI is not available on this
 computer of <owner>.", which names neither the OS nor the machine. The host
 still refuses each typed line and each first line with
 `lane_share_cli_typing_unavailable`.
-
-## Source file map
-
-| File | Responsibility |
-|------|----------------|
-| `apps/account-directory/src/laneShares/{routes,contract,invites,tickets,shareRows,clerkAccount}.ts` | Directory routes, shapes, invites and email limits, one-use tickets, grant rows, Clerk verified-address reads. |
-| `apps/desktop/src/shared/laneShareRights.ts` | Rights type, parser, presets, risk, the agent ceiling, display name, daily window, guest state. |
-| `apps/desktop/src/shared/types/laneShare.ts` | Owner and guest contract shapes, `LaneShareEvent`. |
-| `apps/desktop/src/shared/laneShareDirectory.ts`, `laneShareGuestDirectory.ts` | Directory id and ticket shapes, error mapping, the guest's account calls. |
-| `apps/desktop/src/shared/laneShareMove.ts` | Move trust rules, payload parser, consents. |
-| `apps/desktop/src/shared/messageAuthor.ts` | Host-stamped author of messages, drafts and comments. |
-| `apps/ade-cli/src/services/sync/laneShareHostService.ts` | The `lane_share` owner actions on the host. |
-| `apps/ade-cli/src/services/sync/laneShareGrantService.ts` | The host's grant list and ticket redemption. Fail closed. |
-| `apps/ade-cli/src/services/sync/laneShareGuestHost.ts`, `laneShareGuestGates.ts`, `laneShareGuestTypes.ts` | Guest peers, roles and per-envelope gates. |
-| `apps/ade-cli/src/services/sync/laneShareGuestHello.ts` | The guest hello: refusals, the ticket redeem, the hand-off to the lane's project, and admission. |
-| `apps/ade-cli/src/services/sync/laneShareGuestRouter.ts` | Picks the project host for a handed-off guest (registry origin, then live origin; open projects only for an unredeemed socket). |
-| `apps/ade-cli/src/services/sync/laneShareGuestPolicy.ts` | Default-refuse lists of envelopes and commands, locks, file reads, rate limit. |
-| `apps/ade-cli/src/services/sync/laneShareGuestCommandPrep.ts` | Checks that need host services; sets the author. |
-| `apps/ade-cli/src/services/sync/laneShareGuestScrub.ts` | What the host removes from a guest's payload. |
-| `apps/ade-cli/src/services/sync/laneShareGuestQueue.ts` | Re-checks of a guest's queued messages. |
-| `apps/ade-cli/src/services/sync/laneShareMoveService.ts`, `laneShareError.ts` | The move service and the coded service error. |
-| `apps/desktop/src/main/services/lanes/laneShareRightsStore.ts` | The host's local rights and counters. |
-| `apps/desktop/src/main/services/chat/laneShareMoveChat.ts`, `laneShareMoveTransfer.ts` | Landing a moved chat; the bundle bytes. |
-| `apps/desktop/src/main/services/account/accountBridge.ts` | `laneShareGuest()` directory calls with this machine's token. |
-| `apps/desktop/src/renderer/components/laneShare/*.tsx`, `*.ts` | Owner UI, share list store, actions, defaults. |
-| `apps/desktop/src/renderer/components/laneShare/guest/**` | Guest connection, store, shelf, page, view, chat pane and its API, home rows, move. |
-| `apps/desktop/src/renderer/webclient/sync/relayReady.ts` | Relay ready handshake for browser-side sockets. |

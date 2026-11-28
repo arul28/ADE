@@ -1,364 +1,131 @@
 # Worktree isolation
 
-Every non-primary lane lives in its own git worktree. This is the
-mechanism that lets ADE hold dozens of branches checked out
-simultaneously without thrashing a single working directory.
-
-Worktree creation, removal, and the `git worktree …` shell-outs that
-back them are owned by the **active ADE runtime** — the local machine runtime
-(`ade serve`) for local-bound windows, or the SSH-attached remote
-runtime for remote-bound windows. The desktop main process exposes
-`apps/desktop/src/main/services/lanes/laneService.ts` as a fallback
-target with the same interface so older callers and tests keep
-working, but the canonical lifecycle lives in the ADE runtime.
-Remote-bound windows therefore create worktrees on the remote
-machine: the desktop UX is identical, but the worktree directory,
-the per-lane state, and every git command for the lane all live on
-the remote host.
+Every lane except the main checkout lives in its own git worktree, so many
+branches can be checked out at once. Worktree creation, removal and every git
+command for a lane run on the machine that holds the lane (the brain for a
+local binding, the remote runtime for a remote one). The code is
+`apps/desktop/src/main/services/lanes/laneService.ts`. Lifecycle steps,
+delete rails and the reconcile are in the [Lanes README](./README.md); this doc
+covers placement, saved work and the per-lane state on disk.
 
 ## Worktree placement
 
-Managed (ADE-created) worktrees live under `.ade/worktrees/<slug>-<laneId[0:8]>/`
-at the repo root. The slug is produced by `slugify(laneName)` in
-`laneWorktreeNaming.ts` and cut to 40 characters at a word boundary
-(`laneWorktreeFolderName`): the folder sits between the project path and
-every file of the checkout, and Windows stops at 260 characters, so a lane
-named after a long issue title made every checkout of a deep repository fail.
-Lane and branch names are not cut. Every git command ADE runs on Windows also
-sets `core.longpaths=true` (`GIT_CONFIG_OVERRIDE_ARGS`). A `worktree add -b`
-that fails after making its branch (a failed checkout) removes that branch,
-unless git refused because the branch or folder already existed.
-
-```
-name → lower-cased → [^a-z0-9]+ replaced by "-" → trim leading/trailing "-"
-empty → "lane"
-```
-
-Collisions are resolved by suffixing `-2`, `-3`, … until unique. The
-final directory is stored as an absolute path in
+Worktrees DAEX makes live at `.ade/worktrees/<slug>-<laneId[0:8]>/` under the
+repo root (`laneWorktreeFolderName` in `laneWorktreeNaming.ts`). The slug is
+`slugify(laneName)` (lower case, `[^a-z0-9]+` → `-`, trimmed, empty → `lane`),
+cut to 40 characters at a word boundary because Windows stops at 260
+characters. The lane id suffix keeps names unique. Lane and branch names are
+not cut. On Windows every git command DAEX runs sets `core.longpaths=true`
+(`GIT_CONFIG_OVERRIDE_ARGS`). The absolute path is stored in
 `lanes.worktree_path`.
 
-A worktree the user created themselves keeps whatever path they put it at.
-Nothing relocates it, and nothing needs to: adoption records the path as-is and
-every lane rail works from `lanes.worktree_path`. Rows left over from the
-removed attach flow (`lane_type = 'attached'`, with the external root in
-`attached_root_path`) are ordinary lanes now — including on delete, which
-removes their worktree like any other. What ADE may remove is decided by the
-path, never by the lane type; see
-[Deleting a worktree](#deleting-a-worktree).
+A worktree you made yourself keeps its path; adoption records it as is.
+Legacy `attached` rows (`attached_root_path`) are ordinary lanes. What DAEX may
+remove is decided by the path, never the lane type.
 
-Primary lanes reuse the repo root itself (no worktree creation); their
-`worktree_path` equals the repo root.
+The main checkout's `worktree_path` is the repo root.
 
 ## Creating a worktree
 
-`laneService.create()` sequence for `lane_type = 'worktree'`:
+`laneService.create()` for a `worktree` lane:
 
-1. Resolve the selected start choice and commit, using saved defaults when omitted.
-2. `normalizeBranchName(baseRef)` — strips `refs/heads/`, `refs/remotes/`,
-   `origin/` prefixes (shared helper in `shared/laneBaseResolution.ts`).
-3. Build the target worktree path under `.ade/worktrees/<slug>` with
-   collision suffixing.
-4. Run `git worktree add -b <branch> <worktree-path> <baseRef>` via
-   `runGitOrThrow`. This creates the new branch and checks it out
-   into the new worktree in one step. In-process callers can pass
-   `LaneCreateRuntimeOptions` (a reserved lane id, a checkout-progress
-   callback fed by git's `Updating files:` stderr lines, and an abort
-   signal); see [Lanes › Reserved ids, checkout progress, and
-   cancellation](./README.md#reserved-ids-checkout-progress-and-cancellation).
-5. Insert the `lanes` row with `lane_type = 'worktree'`,
-   `is_edit_protected = 0`, `status = 'active'`.
-6. Compute initial `LaneStatus`.
-7. Return `LaneSummary`.
+1. Resolve the start choice (saved defaults when omitted); `normalizeBranchName`
+   strips `refs/heads/`, `refs/remotes/`, `origin/` (`shared/laneBaseResolution.ts`).
+2. Build the path from the name and lane id.
+3. `git worktree add -b <branch> <path> <baseRef>`. See
+   [Reserved ids, checkout progress, cancellation](./README.md#reserved-ids-checkout-progress-cancellation).
+4. Insert the `lanes` row (`lane_type = 'worktree'`, `is_edit_protected = 0`,
+   `status = 'active'`), compute status, return `LaneSummary`.
 
-Failure modes handled inline:
+Failures: a failed `worktree add` inserts no row, and removes the branch it
+made unless git refused because the branch or folder already existed. A failed
+insert after the add tears down the worktree and branch (`git worktree remove
+--force --force`, falling back to folder removal plus `unlock` + `prune`). An
+abort mid-checkout kills git's process tree, then removes the half-written
+worktree (locked "initializing", hence the double `--force`) and the new
+branch. An abort before git started removes nothing.
 
-- `git worktree add` fails (branch already exists, path exists, base
-  ref invalid) → no row inserted, error propagated to the IPC caller.
-- SQLite insert fails after worktree creation → worktree and branch are
-  torn down (`git worktree remove --force --force`, falling back to
-  directory removal plus `worktree unlock` + `worktree prune`) to avoid
-  orphaned directories.
-- The caller's abort signal fires mid-checkout → `runGit` kills the git
-  process tree and waits for it to exit, then the half-written worktree
-  (still locked "initializing" by the killed git, which is why removal
-  passes `--force` twice) and the new branch are removed. An abort that
-  lands before git started creates and removes nothing.
+## Unsaved work on delete
 
-## Worktrees you created yourself
+Before deleting, DAEX checks dirtiness only when the saved path still resolves
+to that exact worktree root; otherwise the lane is treated as stale rather than
+reading the main checkout's status. `git/worktreeState.ts` counts as unsaved:
+uncommitted or untracked files (regardless of `status.showUntrackedFiles`), a
+changed submodule, files in an uninitialized submodule folder, and a submodule
+commit no remote-tracking branch has (a tag does not count). A submodule with
+no remote, nested four or more levels, or unreadable also stops the delete.
+Without force the delete stops with the reason; archive-and-reclaim asks for
+`forceDirty`. A batch delete (desktop and phone) skips dirty lanes unless the
+person ticks the box naming them.
 
-There is no attach step. Every git worktree of the repository is a lane:
-`lanes.list()` reconciles against `git worktree list` on each call, adopting
-any registered worktree that no lane row claims yet
-(`recoverManagedWorktreeRows`) and dropping any lane row whose worktree is
-gone from both git and disk (`removeVanishedWorktreeLanes`). A worktree you
-made with `git worktree add` anywhere on disk shows up as a `worktree` lane
-with no user action, and one you remove outside ADE stops being a lane.
+### Saved work
 
-The `attach()` and `adoptAttached()` APIs are gone, along with the
-`attached` lane type as something anything creates. Rows that already carry
-`lane_type = 'attached'` are left alone and behave exactly like `worktree`
-lanes — including delete, which removes the worktree for them too. See
-[Lane types](./README.md#lane-types).
+Right before the first destructive step, `deletedLaneSnapshots.ts` saves what
+the delete would lose: uncommitted and untracked files (not ignored ones),
+commits no other branch, remote or tag holds, and commits only the remote branch
+holds when that is deleted too (fetched first). It writes one commit (HEAD as
+first parent, the working tree as tree) under
+`refs/ade/deleted-lanes/<epochMs>-<laneId>` (ref name kept for compatibility)
+with name, branch and time in trailers. A clean lane with its commits elsewhere
+saves nothing. A failed save stops the delete. Archive-and-reclaim with
+`forceDirty` saves as kind `freed`, and `unarchive` puts the newest freed save
+back.
 
-Adoption is scoped to the project that owns the worktree. When the project
-root is itself a linked worktree (opened with "Open as a separate project
-instead", or grandfathered in), `git worktree list` reports the whole
-repository — the main checkout and every sibling project's worktree. In that
-case ADE adopts only worktrees under this project's own `.ade/worktrees`, and
-the vanished-row reap likewise ignores rows whose path lies outside it, so one
-project can never adopt, delete, or reap another's lanes.
-
-## Deleting a worktree
-
-`laneService.delete()` runs a multi-step teardown rather than deleting
-the directory first:
-
-1. Fetch the row; reject if `is_edit_protected = 1` (primary).
-2. Check worktree dirtiness only when the saved path still resolves to
-   that exact Git worktree root. If the directory is missing, or a stale
-   path under the repo now resolves to the primary checkout, ADE treats
-   the lane as stale instead of reading the primary worktree's status.
-   The check (`git/worktreeState.ts`) counts as unsaved work: an
-   uncommitted or untracked file (whatever `status.showUntrackedFiles` says,
-   because `git worktree remove` would delete it), a changed submodule, files
-   in an uninitialized submodule's folder, and a submodule commit that no
-   remote-tracking branch has (a tag does not count: it may never have been
-   pushed, and it is deleted with the worktree). Git keeps a linked worktree's submodule
-   repositories inside that worktree's admin directory, so removing the
-   worktree removes those commits too. A submodule with no remote, nested four
-   or more levels down, or that ADE cannot read also stops the delete.
-   Without force the delete stops with the reason and "Enable force delete
-   after confirming warnings.". Archive-and-reclaim runs the same check and
-   asks for `forceDirty` instead. A batch delete in the Lanes tab (and the
-   phone's batch sheet) deletes its clean lanes and skips the dirty ones unless
-   the person ticks the box that names them; one Force for the whole batch
-   used to discard work in lanes nobody looked at.
-
-   **Saved work.** Right before the first destructive step (worktree remove,
-   local or remote branch delete), and after chats and terminals stopped,
-   `lanes/deletedLaneSnapshots.ts` keeps what the delete would lose: the
-   worktree's uncommitted and untracked files (ignored ones such as
-   `node_modules` stay out), commits no other branch, remote or tag holds, and
-   commits only the remote branch holds when that is deleted too (it fetches
-   that branch first, so a newer push counts). It writes one
-   commit (the lane's HEAD as first parent, the working tree as its tree,
-   written through a copy of the lane's index) under
-   `refs/ade/deleted-lanes/<epochMs>-<laneId>`, with the lane's name, branch
-   and time in trailers. A clean lane whose commits live elsewhere saves
-   nothing. If the save fails, the delete stops rather than discard the work.
-   Archive-and-reclaim with `forceDirty` saves the same way, as kind `freed`:
-   the lane stays, so `unarchive` puts its newest freed save back when it
-   rebuilds the folder, and Restore goes into that lane instead of a copy.
-   Saves are listed in Settings › Deleted & Archived › Recently deleted, on the
-   phone under Lanes › Archived (each machine's own list, routed to it), and by
-   `ade lanes deleted list`; Restore (`ade lanes deleted restore <id>`) makes a
-   new lane on the old branch name (or `<name>-restored`), at the saved HEAD,
-   never pushed, and applies the uncommitted files back as uncommitted
-   changes. It also reopens the chats the delete put in Recently deleted into
-   the new lane (`reopenedChats` in the result). Commits the lane's branch does not hold (the deleted remote's, or
-   the old branch's when the folder had moved) go on sibling branches such as
-   `<name>-remote`. Saves older than 30 days are pruned after each save and by
-   the lifecycle scan.
-   A save holds the parent repository only, so a delete or reclaim stops, and
-   names it, when a checked-out submodule or an untracked git repository in
-   the lane has uncommitted files or commits no remote of its own holds.
-3. Stop lane runtime work.
-4. Stop PTYs and file watchers for the lane,
-   then run any lane-environment cleanup supplied by the runtime.
-5. Enter the shared worktree-mutation guard and run
-   `git worktree remove --force <path>`. This runs for **every** lane that has
-   a worktree, wherever it lives — there is no lane type that opts out. Windows
-   first tries a fast path: when Git still lists the folder as this worktree,
-   the uncommitted-changes check has already passed (the dirty check runs for
-   every delete, but a forced delete of a dirty tree still takes this path),
-   and there are no submodules unless forced, ADE renames it aside to
-   `.<name>.ade-deleting-<8 hex>` in the same parent directory, runs
-   `git worktree prune`, and hands the folder to a background removal — so
-   a huge `node_modules` does not hold the queue while the virus scanner
-   inspects every file. A rename that fails moved nothing and falls straight
-   through; a worktree Git still lists after the prune is moved back and
-   falls through to `git worktree remove`;
-   renamed folders earlier runs left behind are swept from the same parent
-   unless Git still owns their admin directory. What differs after that is the
-   fallback. Inside `.ade/worktrees`, the storage ADE owns: if
-   Git reports success but residual files remain, ADE removes the directory
-   with the lock-retry removal (`removeWorktreeDirectoryWithRecovery`) and runs
-   `git worktree prune` before continuing; if Git already considers the path
-   unregistered, ADE still prunes the registry and attempts manual residual
-   cleanup; and if manual cleanup or prune fails, the delete completes with
-   warnings so the stale row and lane-owned metadata are still removed, with
-   the warning naming what could not be cleaned up. Failed residual-directory
-   cleanup is recorded in the machine-local `local_worktree_residual_cleanups`
-   table so later `lanes.list` calls can retry it. Outside `.ade/worktrees`
-   nothing is queued, and ADE's own `rm` never touches files it did not create:
-   if Git refuses while still registering the worktree, that is the delete
-   failure — unless Git unregistered it and then failed, in which case the
-   folder is no longer a worktree and is offered through
-   `DeleteLaneResult.leftoverWorktree` instead. Git refuses to remove a
-   worktree with initialized submodules unless forced; because step 2 already
-   checked them, ADE then runs `git worktree remove --force` once (git runs in
-   the C locale so the refusal matches on any language) before any manual
-   cleanup.
-6. If caller requested `deleteBranch`: `git branch -D <branch>`.
-   Optional remote branch cleanup uses `git push <remote> --delete
-   <branch>` and is non-fatal.
-7. Collect lane-owned proof paths while chat/lane ownership rows still exist,
-   resolving each through the realpath-confined `.ade/artifacts` jail. Remove
-   the stored files, remove lane pack artifacts, and delete the lane's database
-   rows in one transaction. An artifact belongs to the lane through
-   `computer_use_artifacts.lane_id` or a legacy explicit lane link; an artifact
-   also owned by a chat in another lane is preserved. Archive does none of this.
-   Stale state in `key_value`, `operations`, `sessions`, etc. that references
-   the lane is either cascaded (via FK ON DELETE) or retained for audit as
-   documented on each table.
-
-Independent lane deletes can run through the pre-removal teardown at
-the same time. The shared guard is scoped to the actual
-`git worktree remove` registry mutation, which prevents concurrent
-Git worktree metadata edits without making lane creation wait for
-unrelated process, PTY, watcher, or environment cleanup.
-
-A worktree that has been manually removed from disk does not leave a row
-behind: the `lanes.list` reconcile reaps it (`removeVanishedWorktreeLanes`,
-described under [Worktrees you created yourself](#worktrees-you-created-yourself))
-once both git and the filesystem agree it is gone. There is no separate
-startup repair for it, and no user action.
-Status/read paths also verify the saved `worktree_path` with
-`git rev-parse --path-format=absolute --show-toplevel` before running
-lane-local Git reads. When the top-level is missing or differs from
-the saved path, ADE returns the default clean lane status and avoids
-probing `git status`, branch detection, stashes, or change inspection
-from the wrong checkout.
+Saves are listed in Settings › Deleted & Archived › Recently deleted, on the
+phone under Lanes › Archived (each machine's own list), and by `daex lanes
+deleted list`. Restore (`daex lanes deleted restore <id>`) makes a new lane on
+the old branch name (or `<name>-restored`) at the saved HEAD, never pushed,
+applies the uncommitted files back, and reopens the chats the delete moved to
+Recently deleted (`reopenedChats`). Commits the branch does not hold go on
+sibling branches such as `<name>-remote`. Saves older than 30 days are pruned.
+A save covers the parent repository only, so a delete stops when a checked-out
+submodule or nested untracked repository has unsaved work.
 
 ## Residual cleanup retry sweep
 
-`worktreeResidualCleanup.ts` is the safety net for managed worktree
-directories that survive a delete after the lane row and lane-owned
-metadata are gone. The cleanup debt is local machine state, not project
-state: `local_worktree_residual_cleanups` stores absolute paths, is
-excluded from CRR replication, and is only interpreted by the runtime
-that owns those paths.
+`worktreeResidualCleanup.ts` retries managed folders that survived a delete.
+`local_worktree_residual_cleanups` is machine-local (not replicated). The sweep
+starts from `laneService.list()` without blocking it, backs off a folder that
+keeps failing (doubling up to an hour), and removes through
+`removeTreeOffProcess.ts`. Before removing anything it rebuilds three guard
+sets: registered worktrees, `lanes.worktree_path` values (archived included),
+and pending creates. Only direct children of `.ade/worktrees/` qualify. Unknown
+folders are removed only when empty and old; unknown non-empty folders are left
+as user data.
 
-The sweep starts from `laneService.list()` with a short TTL so normal lane
-refreshes can clear previous warnings without a dedicated user action. The
-list does not wait for it: removing a leftover folder can take minutes, and
-remote lane lists timed out behind it. A recorded folder that keeps failing
-(another process holds it) is retried at doubling intervals up to an hour,
-and the removal itself retries around the whole tree, never inside `fs.rm`
-(`removeTreeOffProcess.ts`), whose per-folder retries multiplied on a held
-folder deep in the tree and ran for 30 minutes.
-Before removing anything it rebuilds three guard sets:
+Status reads verify `worktree_path` with `git rev-parse --path-format=absolute
+--show-toplevel` first; a missing or different top level returns a clean
+default status instead of reading the wrong checkout. `gitOperationsService`
+does the same check before any mutation or history read.
 
-- registered non-bare paths from `git worktree list --porcelain`
-- `lanes.worktree_path` values still present for the current project,
-  including archived lanes
-- paths currently being created by an in-flight lane create
-
-Only direct children of the managed `.ade/worktrees/` directory are
-eligible. Unsafe records are dropped, registered Git worktrees and
-active lane paths are skipped, and pending creations are left alone.
-Recorded delete failures are retried until they disappear or the row is
-cleared. Unknown directories under `.ade/worktrees/` are removed only
-when they are empty, contain no files or symlinks, and are old enough
-to avoid racing a create; unknown non-empty directories are treated as
-user data and left in place.
-
-## Per-lane state directories
-
-Lanes store lane-local artifacts under a few conventions:
+## Per-lane state on disk
 
 | Path | Contents |
 |------|----------|
-| `<worktree>/.ade/tmp/conflict-proposals/` | Scratch patch files from AI conflict proposals |
-| `.ade/artifacts/packs/conflicts/v2/<laneId>__<peerKey>.md` | Conflict pack v2 markdown for a lane/peer pair (repo-root-relative) |
-| `.ade/artifacts/packs/conflicts/predictions/<laneId>.json` | Prediction summary packs |
-| `.ade/artifacts/packs/external-resolver-runs/<runId>/` | External CLI resolver artifacts |
+| `<worktree>/.ade/tmp/conflict-proposals/` | Scratch patches from AI conflict proposals |
+| `.ade/artifacts/packs/conflicts/v2/<laneId>__<peerKey>.md` | Conflict pack for a lane/peer pair |
+| `.ade/artifacts/packs/conflicts/predictions/<laneId>.json` | Prediction summary |
+| `.ade/artifacts/packs/external-resolver-runs/<runId>/` | External resolver artifacts |
 
-Lane-level environment, port lease, and proxy route state is
-persisted in the SQLite KV/tables, not on disk.
-
-## Worktree interactions with git operations
-
-All git commands run inside the active runtime — not in the Electron
-main process — with `cwd` pinned to the lane's `worktree_path`. The
-runtime spawns `git` directly on the host that owns the worktree
-(local runtime spawns on the desktop machine; the remote runtime spawns
-on the remote machine over SSH). The desktop fallback path uses
-`apps/desktop/src/main/services/git/git.ts` (same shell-out shape) so
-the legacy IPC handlers behave identically when the runtime is not
-present. This matters because:
-
-- Stashes, rebases, merges, and cherry-picks are worktree-local —
-  nothing bleeds into other lanes.
-- Before mutating a lane or reading history/diff metadata for a lane,
-  `gitOperationsService` validates that `worktree_path` is still the
-  Git top-level for that lane. A stale path that now resolves to the
-  primary repo checkout is treated as a missing lane worktree, so ADE
-  does not stage, commit, list commits,
-  inspect branches/stashes/conflicts, or compute sync state from the
-  wrong worktree.
-- `git worktree` detects in-progress merge/rebase state via files in
-  the worktree's gitdir (`rebase-apply/`, `rebase-merge/`,
-  `MERGE_HEAD`). `detectConflictKind` in
-  `src/main/services/git/gitConflictState.ts` inspects these to
-  populate `GitConflictState` for conflict UI.
-- Deleting a worktree while it has an in-progress merge or rebase
-  requires `--force`. `laneService.deleteLane` always forces because
-  the user asked for the delete explicitly.
-
-## Process, port, proxy, and OAuth isolation
-
-Runtime isolation (Phase 5) extends worktree-level isolation with:
-
-- **Ports**: each lane gets a non-overlapping lease range
-  (`portAllocationService`). Lane 0 → 3000–3099, lane 1 → 3100–3199,
-  etc.
-- **Proxy hostname**: `<slug>.localhost:<proxyPort>` routes browser
-  traffic to the lane's dev server via `laneProxyService`. Cookies
-  are naturally isolated per hostname.
-- **OAuth callbacks**: `oauthRedirectService` routes a single callback
-  URL back to the correct lane using an HMAC-signed state parameter.
-  See [`oauth-redirect.md`](./oauth-redirect.md).
-- **Environment**: env files, docker services, dependencies, and
-  mount points are initialized per lane via `laneEnvironmentService`.
-  See [`runtime.md`](./runtime.md).
-
-Together these make a lane a complete isolation unit: not just a
-worktree, but a full parallel development environment.
+Environment, port lease and proxy route state live in SQLite, not on disk.
+Ports, proxy hostnames, OAuth and environment setup are in
+[runtime.md](./runtime.md) and [oauth-redirect.md](./oauth-redirect.md).
 
 ## Gotchas
 
-- **Symlinks**: `laneEnvironmentService` validates all copy-path and
-  mount-point operations with symlink-aware `resolvePathWithinRoot`
-  to prevent escaping the worktree via symlink ladders.
-- **Git lock files**: a stray `.git/index.lock` in one worktree can
-  block operations in that lane but not others. ADE does not auto-
-  remove stale locks — users must.
-- **Stopping a running dev server on delete**: lane-owned PTYs and
-  watchers are stopped before worktree removal, but processes
-  that were launched outside ADE may still hold file handles or keep a
-  port alive briefly. The delete pipeline recovers residual files after
-  a successful `git worktree remove` and runtime diagnostics may lag
-  until the external process exits.
-- **Renaming a worktree directory outside ADE strands the lane**: lane rows
-  store the absolute path the worktree was created or adopted at, and the
-  reconcile does not repair a moved one. Git keeps listing the old path (as
-  prunable), which is enough to stop the reap — it removes a row only when the
-  path is absent from `git worktree list` *and* gone from disk — while the new
-  path is not registered with git at all, so nothing adopts it either. The lane
-  survives pointing at a directory that no longer exists and every git command
-  for it fails. Recovery is `git worktree repair` or removing and re-adding the
-  worktree, not anything in ADE.
-- **Git reports realpaths, ADE stores the user's spelling**: every path
-  comparison in the reconcile, the residual sweep, and the delete rails is done
-  in realpath space, because `/tmp` versus `/private/tmp` is enough to make one
-  directory look like two. A new code path that compares a lane path against
-  git output must canonicalize both sides or it will silently double-adopt and
-  falsely reap.
-- **Primary worktree == repo root**. Operations that would destroy
-  the repo root (delete) are blocked by the edit-protected flag.
-  Creating a lane with `start: { from: "primary", on: "uncommitted" }`
-  (or `from: "branch"` naming the primary's branch) copies the primary's
-  uncommitted changes into the new lane's worktree; the primary's files and
-  index are never changed.
+- **Stashes, rebases and merges are worktree-local.** In-progress state is read
+  from the worktree's gitdir (`rebase-apply/`, `rebase-merge/`, `MERGE_HEAD`)
+  by `detectConflictKind` in `git/gitConflictState.ts`.
+- **Symlinks:** copy paths and mount points go through `resolvePathWithinRoot`.
+- **Git lock files:** a stray `index.lock` blocks only that lane. DAEX does not
+  remove stale locks.
+- **Processes started outside DAEX** may hold files or ports after a delete;
+  lane-owned PTYs and watchers are stopped first.
+- **Moving a worktree folder outside DAEX strands the lane.** Git keeps listing
+  the old path as prunable (so no reap) and the new path is not registered (so
+  no adoption). Fix with `git worktree repair` or re-add the worktree.
+- **Git reports realpaths.** Any new comparison of a lane path against git
+  output must canonicalize both sides, or it double-adopts and falsely reaps.
+- **Main checkout == repo root.** Delete is blocked by the edit-protected flag.
+  Starting a lane with `on: "uncommitted"` from the main checkout's branch
+  copies its changes and never touches its files or index.
