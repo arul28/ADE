@@ -542,12 +542,16 @@ final class AccountCloudLaunchStore: ObservableObject {
     guard catalog == nil else { return }
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return }
+    // Told only after both reads: the bump restarts the suggestion's task,
+    // which would cancel the sign-in read below while it waits on this.
+    var catalogRead = false
+    defer { if catalogRead { WorkModelCatalogRevision.shared.bump() } }
     do {
       let read = try await client.modelCatalog()
       guard generation == accountGeneration else { return }
       catalog = read
       catalogError = nil
-      WorkModelCatalogRevision.shared.bump()
+      catalogRead = true
     } catch {
       guard generation == accountGeneration else { return }
       catalogError = cloudServerFailureMessage(error)

@@ -752,6 +752,9 @@ struct WorkNewChatScreen: View {
   /// An older version picked by hand: its pair is turned down once the
   /// machine's list is read (`refreshModelUpgrade`).
   @State private var modelUpgradeHandPicked: String?
+  /// The machine and mode the offer was read for (`modelUpgradeScope`): a
+  /// suggestion from one list never shows, or switches, on another.
+  @State private var modelUpgradeReadScope: String?
   /// The free model ADE started this chat on because nothing is signed in on
   /// the chosen machine. ADE chose it, not the person, so it is never saved as
   /// the remembered model; any pick here clears it.
@@ -1234,7 +1237,12 @@ struct WorkNewChatScreen: View {
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           modelPickedByPerson = true
           // An older version picked by hand turns its newer-version pair down.
-          noteModelHandPicked(option.id)
+          // The picker also reports effort and Fast changes on the current
+          // model; those are not a pick and decline nothing.
+          if option.id != modelId
+            || ((pickedReasoning ?? "") == reasoningEffort && pickedFastMode == codexFastMode) {
+            noteModelHandPicked(option.id)
+          }
           freeDefaultSelection = nil
           selectedPreset = nil
           selectedModelOption = option
@@ -1324,9 +1332,17 @@ struct WorkNewChatScreen: View {
     [modelId, selectedMachineKey ?? "primary", "\(sessionMode)", selectedPreset?.id ?? ""].joined(separator: "|")
   }
 
-  /// The suggestion while the composer is still on the older version.
+  /// The machine (the primary one, another, ADE Cloud) and mode the
+  /// composer launches on now.
+  private var modelUpgradeScope: String {
+    "\(selectedMachineKey ?? "primary")|\(isCloudSelected ? "cloud" : "local")|\(sessionMode)"
+  }
+
+  /// The suggestion while the composer is still on the older version, read
+  /// from the list of the machine and mode it launches on now.
   private var shownModelUpgrade: WorkModelUpgrade? {
-    guard let modelUpgrade, modelUpgrade.fromModelId == modelId, selectedPreset == nil else { return nil }
+    guard let modelUpgrade, modelUpgrade.fromModelId == modelId, selectedPreset == nil,
+          modelUpgradeReadScope == modelUpgradeScope else { return nil }
     return modelUpgrade
   }
 
@@ -1336,11 +1352,13 @@ struct WorkNewChatScreen: View {
   @MainActor
   private func refreshModelUpgrade() async {
     let from = modelId
+    let scope = modelUpgradeScope
     guard selectedPreset == nil, workModelNewerVersionName(from) != nil else {
       modelUpgrade = nil
       return
     }
-    guard let available = await modelUpgradeCandidates(), !Task.isCancelled, modelId == from else {
+    guard let available = await modelUpgradeCandidates(), !Task.isCancelled,
+          modelId == from, modelUpgradeScope == scope else {
       if !Task.isCancelled { modelUpgrade = nil }
       return
     }
@@ -1350,6 +1368,7 @@ struct WorkNewChatScreen: View {
       modelUpgradeHandPicked = nil
     }
     modelUpgrade = WorkModelUpgradeMemory.suggestion(for: from, available: available)
+    modelUpgradeReadScope = scope
   }
 
   /// A model picked by hand: when it is an older version, its pair is turned
@@ -1379,7 +1398,7 @@ struct WorkNewChatScreen: View {
 
   /// Switch: the same change a pick in the picker makes.
   private func switchToNewerModelVersion(_ upgrade: WorkModelUpgrade) {
-    guard !busy, modelId == upgrade.fromModelId else { return }
+    guard !busy, modelId == upgrade.fromModelId, shownModelUpgrade == upgrade else { return }
     modelPickedByPerson = true
     // A saved Custom harness still loading must not land over the switch.
     restoredPresetId = nil
@@ -1387,11 +1406,18 @@ struct WorkNewChatScreen: View {
     selectedPreset = nil
     selectedModelOption = nil
     modelId = upgrade.toModelId
-    // Keep the thinking level when the newer version has it.
-    if !reasoningEffort.isEmpty,
-       let entry = WorkModelMentionDirectory.shared.entry(for: upgrade.toModelId),
-       !entry.reasoningTiers.isEmpty, !entry.reasoningTiers.contains(reasoningEffort) {
-      reasoningEffort = entry.defaultEffort ?? ""
+    // Keep the thinking level when the newer version has it, read from the
+    // list the successor came from: ADE Cloud's, or the machine's.
+    if !reasoningEffort.isEmpty {
+      if isCloudSelected {
+        if let cloudModel = cloudProviderEntry?.models.first(where: { $0.id == upgrade.toModelId }),
+           !cloudModel.reasoningTiers.contains(reasoningEffort) {
+          reasoningEffort = cloudModel.defaultReasoningEffort ?? ""
+        }
+      } else if let entry = WorkModelMentionDirectory.shared.entry(for: upgrade.toModelId),
+                !entry.reasoningTiers.isEmpty, !entry.reasoningTiers.contains(reasoningEffort) {
+        reasoningEffort = entry.defaultEffort ?? ""
+      }
     }
     modelUpgrade = nil
   }

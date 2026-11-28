@@ -74,7 +74,12 @@
 
 /* Two strips at once (ComposerNoticeStack in ProviderSignInSlot.tsx): one tab
    on the box, each strip a line of it with a hairline between, each keeping
-   its own tint. */
+   its own tint. One strip: the stack draws nothing of its own (the element
+   stays, so a strip keeps its focus when a second one comes or goes). */
+.ade-psi-stack[data-count="1"] {
+  display: contents;
+}
+
 .ade-psi-stack {
   display: flex;
   flex-direction: column;
@@ -82,7 +87,7 @@
   gap: 6px;
 }
 
-[data-composer-above-slot] .ade-psi-stack {
+[data-composer-above-slot] .ade-psi-stack:not([data-count="1"]) {
   gap: 0;
   margin: 0 26px -7px;
   overflow: hidden;
@@ -91,13 +96,13 @@
   border-radius: 12px 12px 0 0;
 }
 
-[data-composer-above-slot] .ade-psi-stack > .ade-psi-strip {
+[data-composer-above-slot] .ade-psi-stack:not([data-count="1"]) > .ade-psi-strip {
   margin: 0;
   border: 0;
   border-radius: 0;
 }
 
-[data-composer-above-slot] .ade-psi-stack > .ade-psi-strip + .ade-psi-strip {
+[data-composer-above-slot] .ade-psi-stack:not([data-count="1"]) > .ade-psi-strip + .ade-psi-strip {
   border-top: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
 }
 

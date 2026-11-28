@@ -66,7 +66,8 @@ const SPELLINGS: ReadonlyArray<(wireId: string) => string> = [
  * segment is the model (`pi/<profile>/<provider>/<model>`: a profile named
  * like a model is not one). It starts the segment or follows `:` or an
  * encoded `/` (OpenRouter's `anthropic%2Fclaude-opus-5`), and is not followed
- * by more version digits (`claude-opus-5` is not inside `claude-opus-5-5`).
+ * by more version digits (`claude-opus-5` is not inside `claude-opus-5-5`,
+ * and `claude-fable-5.1` not inside `claude-fable-5.10`).
  */
 function wireIdIndex(id: string, token: string): number {
   const segmentStart = id.lastIndexOf("/") + 1;
@@ -77,7 +78,7 @@ function wireIdIndex(id: string, token: string): number {
     const startsClean = at === segmentStart
       || id[at - 1] === ":"
       || id.slice(at - 3, at).toUpperCase() === "%2F";
-    const endsClean = !/^[-.]\d/.test(id.slice(at + token.length));
+    const endsClean = !/^[-.]?\d/.test(id.slice(at + token.length));
     if (startsClean && endsClean) return at;
     from = at + 1;
   }

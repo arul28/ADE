@@ -39,6 +39,7 @@ export const ModelUpgradeStrip = memo(function ModelUpgradeStrip({
       short={`${nextName} is out`}
       title={`${nextName} is the newer version of ${currentName}.`}
       testId="model-upgrade-strip"
+      announce
     >
       <button
         type="button"

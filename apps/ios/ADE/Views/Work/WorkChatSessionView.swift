@@ -3650,6 +3650,12 @@ struct WorkChatSessionView: View {
                   // An older version picked by hand turns its newer-version pair down.
                   noteModelHandPicked(option.id)
                   _ = await onSelectModel(option.id)
+                } else if (pickedReasoning ?? "") == chatSummaryContext.reasoningEffort,
+                          pickedFastMode == chatSummaryContext.effectiveFastMode {
+                  // The current older version picked again, no setting changed:
+                  // the same answer, with no model update to send. The picker
+                  // also reports effort and Fast changes; those decline nothing.
+                  dismissModelUpgradeOffer()
                 }
                 guard !Task.isCancelled else { return }
                 let currentReasoning = chatSummaryContext.reasoningEffort

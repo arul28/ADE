@@ -16867,14 +16867,24 @@ final class SyncService: ObservableObject {
       chatModelCatalogCache[cacheKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
       // The composer's `@` menu and model chips name models from this list.
       WorkModelMentionDirectory.shared.record(catalog: catalog)
-      // A fresh list: the composer's newer-version suggestion reads it again.
-      WorkModelCatalogRevision.shared.bump()
       if mode == "force", let refreshProvider {
         let refreshStaleKey = chatModelsCacheKey(
           provider: "catalog:refresh-stale:\(refreshProvider)\(cursorSourceKeySuffix)"
         )
         chatModelCatalogCache[refreshStaleKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
       }
+      if mode != "cached" {
+        // A `cached` read (the newer-version suggestion) must take this
+        // fresher list next: drop this machine's `cached` entries, so it
+        // falls through to the newest list in scope.
+        let scope = cacheKey.firstIndex(of: "\u{1f}").map { cacheKey[$0...] }
+        for key in Array(chatModelCatalogCache.keys)
+        where key.hasPrefix("catalog:cached:") && key.firstIndex(of: "\u{1f}").map({ key[$0...] }) == scope {
+          chatModelCatalogCache[key] = nil
+        }
+      }
+      // A fresh list: the composer's newer-version suggestion reads it again.
+      WorkModelCatalogRevision.shared.bump()
       chatModelCatalogInFlight[cacheKey] = nil
       return catalog
     } catch {

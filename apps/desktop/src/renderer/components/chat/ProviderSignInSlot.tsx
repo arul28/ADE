@@ -35,6 +35,7 @@ export function ComposerStrip({
   title,
   testId,
   dataAttributes,
+  announce = false,
   children,
 }: {
   accent: string;
@@ -46,11 +47,14 @@ export function ComposerStrip({
   title?: string;
   testId: string;
   dataAttributes?: Record<`data-${string}`, string>;
+  /** Read out politely when it appears: a strip that shows up while the person types. */
+  announce?: boolean;
   children: ReactNode;
 }) {
   return (
     <div
       className="ade-psi-strip"
+      {...(announce ? { role: "status", "aria-live": "polite" as const } : {})}
       data-testid={testId}
       {...dataAttributes}
       title={title}
@@ -73,13 +77,18 @@ export function ComposerStrip({
 /**
  * The strips above the prompt box as one tab on it. Two at once (not signed
  * in, and a newer version) stack in one frame, each its own line, rather than
- * two tabs fighting for the box's top edge. Nothing to show renders nothing.
+ * two tabs fighting for the box's top edge. One strip keeps the same element
+ * (CSS draws nothing for it), so a strip is never remounted, and loses no
+ * focus, when another comes or goes. Nothing to show renders nothing.
  */
 export function ComposerNoticeStack({ children }: { children: ReactNode }) {
   const items = Children.toArray(children);
   if (items.length === 0) return null;
-  if (items.length === 1) return <>{items}</>;
-  return <div className="ade-psi-stack" data-testid="composer-notice-stack">{items}</div>;
+  return (
+    <div className="ade-psi-stack" data-count={items.length} data-testid="composer-notice-stack">
+      {items}
+    </div>
+  );
 }
 
 export const ProviderSignInStrip = memo(function ProviderSignInStrip({
