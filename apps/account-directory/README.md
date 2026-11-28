@@ -1190,6 +1190,22 @@ reconcile (`scripts/analytics/reconcile-signups.mjs`,
 `.github/workflows/analytics-reconcile.yml`) are in `docs/logging.md`,
 "Sign-up (server-side)".
 
+### The new-device email
+
+The same webhook takes `email.created` for Clerk's "Sign in from new device"
+template (`newDeviceEmail.ts`); every other email Clerk makes is acknowledged
+and left alone. With that template's "Delivered by Clerk" off, ADE sends the
+notice itself through Resend, and sends none for an ADE Cloud computer's own
+sign-in: a cloud computer's join notes the address it came from
+(`cloud_quiet_sign_ins`, migration 0072), and a sign-in from that address for
+that account in the next 15 minutes (an IPv6 address by its /64) stays quiet,
+once per join. Every other new-device sign-in gets ADE's notice: the device,
+location, address, the time in UTC, and the steps to take in ADE. A failed
+send answers 5xx, so Clerk delivers it again, under Clerk's email id as the
+Resend idempotency key. While Clerk still delivers the template, ADE sends
+nothing and logs whether the sign-in would have stayed quiet
+(`cloud.new_device_email`).
+
 Before its event, a `user.deleted` deletes what the account server keeps for
 the account (`accountErasure.ts`: lane shares, the getting-started email,
 projects, the GitHub App grant, then `cloud/accountDeletion.ts`, which ends

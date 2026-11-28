@@ -142,9 +142,11 @@
   //
   // OPTIONAL SECRETS — CLERK_WEBHOOK_SIGNING_SECRET, POSTHOG_PROJECT_TOKEN
   // `/webhooks/clerk` records one `ade_signed_up` PostHog event per new account
-  // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` and `user.deleted` pointing
+  // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created`, `user.deleted` and `email.created` pointing
   // at https://<this worker>/webhooks/clerk, then set its `whsec_…` signing
   // secret and the public `phc_…` project token. Unset, the route answers 503 (a `user.deleted` needs only the signing secret).
+  // `email.created` carries Clerk's "Sign in from new device" email, which ADE sends itself through RESEND_API_KEY
+  // once that template's "Delivered by Clerk" is off (src/newDeviceEmail.ts).
   //
   // SECRETS — GITHUB_APP_CLIENT_SECRET, GITHUB_APP_TOKEN_KEY (GitHub App sign-in)
   // `/github/app/*` (src/githubApp) keeps each account's ADE GitHub App user
