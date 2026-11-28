@@ -428,8 +428,8 @@ const shortText = (value: unknown, max: number): string | null => {
 const computerName = (value: unknown): string | null => boundedDisplayText(value, 60);
 
 /** The one provider every route holds: Agent 37 for Linux, NoMac for a Mac, by the computer (`createComputerProvider`). */
-function providerFor(env: CloudEnv): CloudProvider | null {
-  return createComputerProvider(env);
+function providerFor(env: CloudEnv, waitUntil?: CloudWaitUntil): CloudProvider | null {
+  return createComputerProvider(env, fetch, { waitUntil });
 }
 
 /** Runs a provider call; its failure becomes the plain sentence the client shows. */
@@ -2197,7 +2197,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     return handleCloudWakeRequest(request, env);
   }
 
-  const provider = providerFor(env);
+  const provider = providerFor(env, waitUntil);
   const now = Date.now();
   const ctx: CloudRequestContext = { now, waitUntil };
   // One free plan per computer (`freePlan.ts`) and per GitHub account (`freePlanGithub.ts`): settled before the request's own hours check.

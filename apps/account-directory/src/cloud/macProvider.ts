@@ -55,6 +55,7 @@ import { readCloudSettings } from "./settings";
 import { MAC_COST_MICROS_PER_MINUTE, MAC_CREDIT_MILLI_PER_MINUTE, cloudSizeFor } from "./plans";
 import { accountWithUnsettledPhones } from "./credits";
 import { failMacLaunchAtBootCap, macBootJoinCode } from "./launches";
+import type { CloudWaitUntil } from "./analytics";
 import { errorOf, nomac, type NomacAnswer } from "./phoneNomac";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudCreateInput, type CloudProvider } from "./provider";
 import { earnedLeftForLimits, extraActiveForLimits, includedMilliOf, logCloud, readSetting, reportCloudFailure, statusChangeStatements, type CloudEnv, type ComputerRow } from "./store";
@@ -719,7 +720,10 @@ function testWorkerAccountEnv(env: CloudEnv): Record<string, string> {
   return { ADE_ACCOUNT_DIRECTORY_URL: directory, ADE_ALLOW_DEVELOPMENT_CLERK: "1", ...clerk };
 }
 
-export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string, now: number): Promise<"booted" | "taken" | "failed"> {
+/** How long a boot started from a client's read waits on its job: inside `waitUntil`'s time; the tick finishes a longer one. */
+const MAC_BOOT_READ_WAIT_S = 20;
+
+export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string, now: number, waitSeconds = 50): Promise<"booted" | "taken" | "failed"> {
   const claimed = await env.DB.prepare("update cloud_computers set mac_booted_session = ? where instance_id = ? and mac_session_id = ? and coalesce(mac_booted_session, '') <> ?")
     .bind(sessionId, row.instance_id, sessionId, sessionId).run();
   if ((claimed.meta?.changes ?? 0) !== 1) return "taken";
@@ -737,11 +741,11 @@ export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string
     if (code) bootEnv.ADE_LAUNCH_JOIN = code;
     else delete bootEnv.ADE_LAUNCH_ID;
   }
-  const answer = await call(env, "POST", `/mac/sessions/${encodeURIComponent(sessionId)}/jobs?wait=50`, {
+  const answer = await call(env, "POST", `/mac/sessions/${encodeURIComponent(sessionId)}/jobs?wait=${waitSeconds}`, {
     argv: ["/bin/bash", "-lc", MAC_BOOT_COMMAND],
     env: bootEnv,
     timeout_seconds: MAC_BOOT_TIMEOUT_S,
-  }, `ade-mac-boot-${sessionId}-${row.mac_boot_failures ?? 0}`, waitTimeoutMs(50));
+  }, `ade-mac-boot-${sessionId}-${row.mac_boot_failures ?? 0}`, waitTimeoutMs(waitSeconds));
   const job = (answer.body?.job ?? answer.body) as BootJob | null;
   if (answer.status >= 400 || (typeof job?.exit_code === "number" && job.exit_code !== 0)) {
     await bootFailed(env, row, sessionId, now, { status: answer.status, exitCode: typeof job?.exit_code === "number" ? job.exit_code : null });
@@ -903,17 +907,30 @@ async function macRowOf(env: CloudEnv, id: string): Promise<ComputerRow | null> 
 /**
  * Reads the Mac a row has now and writes what changed, then boots it when it
  * just became ready. The webhook and the tick both run it; it is safe twice.
+ * `background` is a client read's: undefined (the tick, the webhook) boots
+ * inline; a `waitUntil` starts the boot after the answer, with a short wait
+ * (a job still running then is finished by the tick, `checkBootJob`); null
+ * leaves the boot to the tick. A read never waits on a boot.
  */
-export async function syncMac(env: CloudEnv, row: ComputerRow, now: number, reason: string): Promise<void> {
+export async function syncMac(env: CloudEnv, row: ComputerRow, now: number, reason: string, background?: CloudWaitUntil | null): Promise<void> {
   if (!row.mac_session_id) return;
   const session = await readSession(env, row.mac_session_id);
   if (session === "unreadable") return;
   const statements = macObservedStatements(env, row, session, now, reason);
   if (statements.length) await env.DB.batch(statements);
+  let work: (() => Promise<unknown>) | null = null;
   if (session && session.state === "ready" && row.mac_booted_session !== session.id) {
-    await bootMac(env, { ...row, mac_session_id: session.id }, session.id, now);
+    work = () => bootMac(env, { ...row, mac_session_id: session.id }, session.id, now, background ? MAC_BOOT_READ_WAIT_S : undefined);
   } else if (session && session.state === "ready" && row.mac_boot_job_id) {
-    await checkBootJob(env, row, session.id, now);
+    work = () => checkBootJob(env, row, session.id, now);
+  }
+  if (!work) return;
+  if (background === undefined) {
+    await work();
+  } else if (background) {
+    background(work().catch((error: unknown) => {
+      reportCloudFailure("cloud.mac_boot_from_read_failed", { instanceId: row.instance_id, message: error instanceof Error ? error.message : "unknown" }, "cloud-mac");
+    }));
   }
 }
 
@@ -1191,7 +1208,7 @@ export async function handleMacWebhook(env: CloudEnv, type: string, data: Record
  * says `nomac`; an id of that shape with any other row is Agent 37's). A
  * create goes by its type. Null with neither key set.
  */
-export function createComputerProvider(env: CloudEnv, fetcher: typeof fetch = fetch): CloudProvider | null {
+export function createComputerProvider(env: CloudEnv, fetcher: typeof fetch = fetch, options: { waitUntil?: CloudWaitUntil } = {}): CloudProvider | null {
   const linuxKey = env.AGENT37_API_KEY?.trim();
   const hasMac = Boolean(env.NOMAC_API_KEY?.trim());
   if (!linuxKey && !hasMac) return null;
@@ -1228,7 +1245,8 @@ export function createComputerProvider(env: CloudEnv, fetcher: typeof fetch = fe
     async getInstance(id) {
       const row = await fresh(id);
       if (!row) return L().getInstance(id);
-      await syncMac(env, row, Date.now(), "seen");
+      // A client's read answers with what it has: a boot it finds due runs after the answer, or at the tick.
+      await syncMac(env, row, Date.now(), "seen", options.waitUntil ?? null);
       return macInstanceOf((await fresh(id)) ?? row);
     },
     async createInstance(input) {
