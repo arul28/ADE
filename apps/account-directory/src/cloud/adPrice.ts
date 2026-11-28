@@ -235,11 +235,18 @@ async function targetsOf(env: GravityEnv, targets: readonly string[]): Promise<M
 
 /* ---- Moving a computer between its rates ---- */
 
-/** The rate a computer runs at outside Pricing v3: its size's own (Small keeps its row's, which `sponsoredSmall.ts` owns). */
-function v2RateMilli(computer: ComputerRow): number {
+/**
+ * The rate a computer runs at outside Pricing v3: its size's own; Small by
+ * today's Free rule (`sponsoredSmall.ts` `smallRule`: free off Free, while the
+ * ad switch doesn't reach the account, or with a recent US look), so leaving
+ * Pricing v3 never charges a minute that rule keeps free.
+ */
+function v2RateMilli(computer: ComputerRow, ctx: AdContext, now: number): number {
   const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
   if (!size) return computer.ad_full_milli ?? computer.multiplier_milli;
-  return size.tier === "small" ? computer.ad_full_milli ?? computer.multiplier_milli : size.multiplierMilli;
+  if (size.tier !== "small") return size.multiplierMilli;
+  const free = !ctx.freeRule || !ctx.adsReach || (ctx.smallLookUntil != null && ctx.smallLookUntil >= now);
+  return free ? 0 : SMALL_NO_CARDS_RATE_MILLI;
 }
 
 /**
@@ -273,7 +280,7 @@ export function computerPriceStatements(env: GravityEnv, computer: ComputerRow, 
     const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
     const v3Full = size && size.tier !== "small" && computer.multiplier_milli === v3FullRateMilli(size.multiplierMilli) && computer.multiplier_milli !== size.multiplierMilli;
     if (computer.ad_full_milli == null && !v3Full) return [];
-    return rateMoveStatements(env, computer, v2RateMilli(computer), null, now);
+    return rateMoveStatements(env, computer, v2RateMilli(computer, ctx, now), null, now);
   }
   const rates = computerRatesMilli(computer, ctx);
   const decision = decidePrice(target, ctx, computer.awake_since, now, { smallLook: isChargedSmall(rates) });
@@ -519,19 +526,21 @@ function countProofStatement(env: GravityEnv, day: string, kind: string, userId:
 
 /**
  * Keeps the full-price work a computer's brain reported (`POST .../activity`),
- * and moves the computer to the price it now has. An older brain (no list)
- * writes nothing. Never fails the report.
+ * and moves the computer to the price it now has. Never fails the report.
  */
 export async function noteFullPriceWork(env: GravityEnv, computer: ComputerRow, work: CloudFullPriceWork[] | undefined, now: number): Promise<void> {
-  if (work === undefined) return;
   try {
-    const text = JSON.stringify(work);
-    const saved = await env.DB.prepare(`
+    // An older brain leaves the field out, which means none: it only clears work a newer brain named
+    // (a brain rolled back mid-stretch), and never adds a row.
+    const saved = work === undefined
+      ? await env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, updated_at = ? where target = ? and coalesce(full_work, '[]') <> '[]'")
+        .bind(now, now, computer.instance_id).run()
+      : await env.DB.prepare(`
       insert into cloud_ad_targets (target, user_id, full_work, full_work_at, updated_at) values (?, ?, ?, ?, ?)
       on conflict (target) do update set full_work = excluded.full_work, full_work_at = excluded.full_work_at, updated_at = excluded.updated_at
         where coalesce(cloud_ad_targets.full_work, '[]') <> excluded.full_work or cloud_ad_targets.full_work_at is null
           or cloud_ad_targets.full_work_at < ?
-    `).bind(computer.instance_id, computer.user_id, text, now, now, computer.awake_since ?? now).run();
+    `).bind(computer.instance_id, computer.user_id, JSON.stringify(work), now, now, computer.awake_since ?? now).run();
     if (!saved.meta?.changes) return;
     const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(computer.user_id).first<AccountRow>();
     if (account) await syncAccountPrices(env, account, now, { instanceIds: [computer.instance_id] });

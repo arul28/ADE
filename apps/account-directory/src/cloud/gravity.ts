@@ -812,7 +812,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     }
   } else {
     const switches = await gravitySwitches(env, settings);
-    const blocked = await blockedReason(env, account, who.country, switches, v3);
+    // An older build on a paid plan has no ads under Pricing v3 either (its account state has no `sponsored`).
+    const blocked = await blockedReason(env, account, who.country, switches, v3 && !(legacy && shownPlanIdOf(account) !== "free"));
     if (blocked) return none(blocked);
     // A browser's Global Privacy Control from the US opts the whole account out, not just this card.
     const consent = await honorGpc(env, account, await readConsent(env, userId), who, now);
