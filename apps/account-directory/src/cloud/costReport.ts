@@ -31,7 +31,7 @@ import {
 
 /**
  * What ADE Cloud costs the owner against what it brings in
- * (`docs/plans/ade-cloud-plans-and-disk.md`, "Cost protection for the owner").
+ * (`apps/account-directory/README.md`, "The month's cost").
  *
  * Cost is the provider's public price for the awake time of each computer-day
  * (`cloud_computer_days.cost_micros`) plus each day's peak disk

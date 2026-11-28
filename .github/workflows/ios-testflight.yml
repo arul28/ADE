@@ -3,7 +3,8 @@ name: iOS TestFlight
 # Builds the ADE Beta iPhone app (com.ade.ios.beta) on a GitHub-hosted Mac
 # and gives the build to its TestFlight testers. beta.yml calls it after each
 # real beta is public; it can also be dispatched by hand. See
-# docs/plans/ios-beta-app.md and docs/plans/beta-track.md (work item 8).
+# docs/features/sync-and-multi-device/ios-companion.md ("DAEX and DAEX Beta")
+# and docs/plans/beta-track.md (work item 8).
 # scripts/release-tools/ios-testflight-ci.sh does the work. The normal app
 # (com.ade.ios) gets builds only from stable releases.
 #

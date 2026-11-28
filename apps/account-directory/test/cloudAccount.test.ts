@@ -876,7 +876,7 @@ describe("ADE Cloud account", () => {
     await run();
   });
 
-  // Money: extra disk, plan changes and the owner's limit (docs/plans/ade-cloud-plans-and-disk.md).
+  // Money: extra disk, plan changes and the owner's limit (docs/features/ade-cloud/README.md, "Plans, credits and sizes").
   const MONEY_ENV = { STRIPE_PRO_PRICE_ID: "price_pro" };
   /** Each plan's own extra-hours price (Cloud 7); `price_extra` stays the first, graduated one older subscriptions hold. */
   const EXTRA_PRICES = { STRIPE_MAX_PRICE_ID: "price_max", STRIPE_EXTRA_HOURS_PLUS_PRICE_ID: "price_extra_plus", STRIPE_EXTRA_HOURS_PRO_PRICE_ID: "price_extra_pro", STRIPE_EXTRA_HOURS_MAX_PRICE_ID: "price_extra_max" };

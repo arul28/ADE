@@ -3,10 +3,11 @@ import OSLog
 import SwiftUI
 import UIKit
 
-// Sponsored cards in an ADE Cloud chat (`docs/plans/pricing-v2-and-gravity.md`),
-// the phone's side of the desktop's `SponsoredReplySlot.tsx` and
-// `SponsoredPickCard.tsx`. The account server decides; these only ask at the
-// right moment and show what comes back (`CloudSponsored.swift`).
+// Sponsored cards in an ADE Cloud chat (`docs/features/ade-cloud/README.md`,
+// "Sponsored cards and the Index"), the phone's side of the desktop's
+// `SponsoredReplySlot.tsx` and `SponsoredPickCard.tsx`. The account server
+// decides; these only ask at the right moment and show what comes back
+// (`CloudSponsored.swift`).
 //
 // Only in a chat whose own machine is an ADE Cloud lane computer
 // (`WorkChatSessionView.sponsoredInstanceId`). Never in a subagent view, the

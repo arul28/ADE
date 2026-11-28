@@ -4,9 +4,9 @@ export type { CloudPaidPlanId };
 
 /**
  * Sizes, plans and the arithmetic of hours, disk and cost (Pricing v2,
- * `docs/plans/pricing-v2-and-gravity.md`). Hours are integer thousandths of
- * a Medium-hour, and Small computers use none; money is integer millionths
- * of a dollar ("micros").
+ * `docs/features/ade-cloud/README.md`, "Plans, credits and sizes"). Hours
+ * are integer thousandths of a Medium-hour, and Small computers use none;
+ * money is integer millionths of a dollar ("micros").
  */
 
 export type CloudComputerType = "default" | "vm";

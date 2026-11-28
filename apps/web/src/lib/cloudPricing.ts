@@ -4,9 +4,9 @@
  * own source, the one the server bills with and the desktop shows:
  * `plans.ts` (plans, sizes, hours) and `contract.ts` (the offer's sentences,
  * the free plan's rules, invites, idle cleanup). Nothing here is typed by
- * hand. Pricing v2 (`docs/plans/pricing-v2-and-gravity.md`): Small computers
- * never use hours, bigger ones use Medium-hours, each plan has a number of
- * cloud computers, and no surface shows GB. The site calls those numbers
+ * hand. Pricing v2 (`docs/features/ade-cloud/README.md`, "Plans, credits and
+ * sizes"): Small computers never use hours, bigger ones use Medium-hours,
+ * each plan has a number of cloud computers, and no surface shows GB. The site calls those numbers
  * credits; every unit word comes from `UNIT`.
  *
  * Both files are plain data with no Worker code, so the site bundles only

@@ -573,8 +573,8 @@ it. The daily cost report lists paid iPhone minutes and Revyl's share. Who may u
 var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;
 everyone else reads `off`, and a start answers 403 `phone_not_on_account`),
 `all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
-new phones (503 `phone_paused`) while running ones finish. The launch plan is
-`docs/plans/ade-cloud-iphone-launch.md`.
+new phones (503 `phone_paused`) while running ones finish. The feature doc is
+[`docs/features/apple-device/ade-cloud-iphone.md`](../../docs/features/apple-device/ade-cloud-iphone.md).
 
 - `GET /cloud/phone` answers `CloudPhoneState`: `access` (`on` or `off`; older
   servers sent `soon`),

@@ -19,10 +19,10 @@ import { BRAND } from "../../../../shared/brand";
 
 /**
  * One sponsored card for a finished reply, in a Free-plan chat on an ADE
- * Cloud computer only (`docs/plans/pricing-v2-and-gravity.md`). The server
- * names the format (`CloudSponsoredFormat`): a card under the reply, a card
- * docked above the prompt box, or one linked sentence at the end of the
- * reply. This slot asks for all three; the other two draw into the pane's
+ * Cloud computer only (`docs/features/ade-cloud/README.md`, "Sponsored cards
+ * and the Index"). The server names the format (`CloudSponsoredFormat`): a
+ * card under the reply, a card docked above the prompt box, or one linked
+ * sentence at the end of the reply. This slot asks for all three; the other two draw into the pane's
  * outlets (`sponsoredOutlets.tsx`), and a pane without them gets the card
  * under the reply. Nothing of a card ever reaches the agent.
  *

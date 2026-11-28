@@ -78,7 +78,7 @@ export type {
 export { CLOUD_SPONSORED_MESSAGE_MAX_CHARS, CLOUD_SPONSORED_NEED_MAX_CHARS, isGravityUrl } from "../../../account-directory/src/cloud/contract";
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
 export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence } from "../../../account-directory/src/cloud/contract";
-/** Pricing v2's shared sentences and codes (`docs/plans/pricing-v2-and-gravity.md`): every surface says the same. */
+/** Pricing v2's shared sentences and codes (`docs/features/ade-cloud/README.md`): every surface says the same. */
 export {
   CLOUD_COMPUTER_LIMIT_CODE,
   CLOUD_CREDIT_UNIT_SENTENCE,

@@ -59,7 +59,8 @@ import {
 /**
  * Gravity (trygravity.com): sponsored cards under finished replies, and the
  * Index's service picks for agents, in the Free plan's ADE Cloud chats
- * (`docs/plans/pricing-v2-and-gravity.md`). Account-wide, so it lives here:
+ * (`docs/features/ade-cloud/README.md`, "Sponsored cards and the Index").
+ * Account-wide, so it lives here:
  * this Worker holds the key, decides who sees a card, records the consent and
  * counts the requests. Desktop, web and phone only ask and draw.
  *

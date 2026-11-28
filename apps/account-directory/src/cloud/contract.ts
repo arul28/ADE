@@ -627,7 +627,7 @@ export type CloudPlanId = "free" | "plus" | "pro" | "max";
 export type CloudTierId = "small" | "medium" | "large" | "xlarge";
 
 /**
- * What a plan includes (Pricing v2, `docs/plans/pricing-v2-and-gravity.md`):
+ * What a plan includes (Pricing v2; `docs/features/ade-cloud/README.md`, "Plans, credits and sizes"):
  * how many cloud computers the account may have, asleep or not
  * (`computerLimit`), and a month's hours for the sizes bigger than Small.
  * Small computers never use hours. There is no account-wide disk: each size
@@ -653,7 +653,7 @@ export type CloudPlanFacts = {
   outsideAgents?: boolean;
 };
 
-/** The offer, as every surface says it (`docs/plans/pricing-v2-and-gravity.md`). Never "0 credits". */
+/** The offer, as every surface says it (`docs/features/ade-cloud/README.md`). Never "0 credits". */
 export const CLOUD_SMALL_UNLIMITED_SENTENCE = "Unlimited Small computers. They never use your credits.";
 /** The small print beside it: the owner may act on a rare outlier. */
 export const CLOUD_SMALL_FAIR_USE_SENTENCE = "Small computers are for your own work and fall under fair use.";

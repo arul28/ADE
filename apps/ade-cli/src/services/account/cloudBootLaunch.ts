@@ -1,6 +1,6 @@
 /**
- * A server launch, run by the new computer itself (C6, docs/plans/cloud-6/
- * c6-c8-launcher-spec.md). ADE's server made this computer for a caller with
+ * A server launch, run by the new computer itself (docs/features/ade-cloud/
+ * README.md, "A new lane with no computer of your own"). ADE's server made this computer for a caller with
  * no computer (the web, the phone, an automation) and put two values in its
  * env: the launch id and its join code. At brain start, with no account
  * session yet, this:

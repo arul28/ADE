@@ -46,8 +46,8 @@ import { BRAND } from "../../../shared/brand";
 
 /**
  * The computer half of an ADE Cloud lane launch (`cloudLaneLaunchService.ts`),
- * run by ADE's server launcher (`/cloud/launches`, docs/plans/cloud-6/
- * c6-c8-launcher-spec.md): this app sends the launch, and the server makes
+ * run by ADE's server launcher (`/cloud/launches`, docs/features/ade-cloud/
+ * README.md): this app sends the launch, and the server makes
  * the computer with a one-time join key in its env. The new computer signs
  * itself in to the account, clones the repository, starts the launch on its
  * own brain (same launch id and lane id) and posts its stages. No device

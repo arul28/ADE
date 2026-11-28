@@ -453,7 +453,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
     sponsored = c.lenient(CloudSponsoredState.self, forKey: .sponsored)
   }
 
-  /// The plan's computer limit (`docs/plans/pricing-v2-and-gravity.md`).
+  /// The plan's computer limit (`docs/features/ade-cloud/README.md`, "Plans, credits and sizes").
   var computerLimit: Int? {
     guard let limit = computers?.limit, limit > 0 else { return nil }
     return limit

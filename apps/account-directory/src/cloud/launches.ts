@@ -80,8 +80,9 @@ import {
 } from "./launchMessages";
 
 /**
- * The server launcher (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6): every
- * lane on a new computer of its own. An ADE app or CLI sends it and then
+ * The server launcher (docs/features/ade-cloud/README.md, "A new lane with no
+ * computer of your own"; this package's README, "Launches from the web and
+ * the phone"): every lane on a new computer of its own. An ADE app or CLI sends it and then
  * follows the computer's own launch (`cloudLaneLaunchService.ts`); a caller
  * with no computer (the web, the phone, an automation on ADE Cloud) reads
  * the record here.

@@ -29,7 +29,8 @@ import { CloudProviderError, type CloudProvider } from "./provider";
 import { deleteComputer, logCloud, ownedComputer, reportCloudFailure } from "./store";
 
 /**
- * Automations whose home is ADE Cloud (C9, docs/plans/cloud-6/c9-automations-spec.md).
+ * Automations whose home is ADE Cloud (docs/features/ade-cloud/README.md,
+ * "Automations whose home is DAEX Cloud", and docs/features/automations/README.md).
  *
  * A rule's home is one of the person's computers, or ADE Cloud. For a cloud
  * home no computer starts it (every brain reads the home as "not here"); the

@@ -136,7 +136,7 @@ fi
 
 base_path=$PATH
 delay=2
-# A server launch (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6) sets
+# A server launch (docs/features/ade-cloud/README.md, server launcher) sets
 # ADE_LAUNCH_ID and its ADE_LAUNCH_JOIN code in this machine's env. They
 # reach the brain from here unchanged: it signs the machine in with the code
 # (30 minutes; a brain restarted mid-sign-in may join again with it while the

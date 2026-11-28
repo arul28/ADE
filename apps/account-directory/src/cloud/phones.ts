@@ -14,8 +14,7 @@
  * one phone (it can drive that phone, never start, list or stop one) and a
  * person's window gets a view link signed for their account alone. Revyl has
  * no per-phone token, so its calls go through `POST /cloud/phone/call`. See
- * docs/features/apple-device/ade-cloud-iphone.md and
- * docs/plans/ade-cloud-iphone-launch.md.
+ * docs/features/apple-device/ade-cloud-iphone.md.
  *
  * Who may use it: `CLOUD_PHONE_ACCESS` (`beta`, the default: the owner's list
  * in `cloud_phone_beta`; `all`; `off`). `CLOUD_PHONES_PAUSED=1` refuses new
