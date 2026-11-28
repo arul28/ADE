@@ -1,11 +1,11 @@
 # GitHub stacked pull requests
 
 GitHub is the authority for stacked pull request membership, ordering, review
-requirements, rebases performed on GitHub, merge queue state, and merging. ADE
+requirements, rebases performed on GitHub, merge queue state, and merging. DAEX
 adds local lane and agent context, a fast operational view, native stack
 creation and synchronization, and local conflict repair.
 
-Stacked pull requests are part of GitHub's public preview. ADE uses the
+Stacked pull requests are part of GitHub's public preview. DAEX uses the
 `2026-03-10` REST API contract and treats the repository-scoped GitHub stack
 number as the remote identity.
 
@@ -13,20 +13,20 @@ number as the remote identity.
 
 - Stacks live in the existing PRs tab. There is no separate top-level Stacks
   tab.
-- GitHub remains the authority for reviews, branch rules, and the merge. ADE
+- GitHub remains the authority for reviews, branch rules, and the merge. DAEX
   starts a stack merge through GitHub's async merge API and follows the result;
   it does not recreate GitHub's merge box.
-- ADE may create, extend, merge, unstack, rebase, adopt, and locally repair
+- DAEX may create, extend, merge, unstack, rebase, adopt, and locally repair
   stacks.
 - Existing integration PR workflows remain independent from stacked PRs.
-- Users do not need to install `gh-stack`; ADE uses GitHub's API directly.
-- Authorizing the ADE GitHub App is sufficient for desktop and headless CLI
+- Users do not need to install `gh-stack`; DAEX uses GitHub's API directly.
+- Authorizing the DAEX GitHub App is sufficient for desktop and headless CLI
   stack operations. An explicit environment token remains available as an
   automation override; a separate PAT or `gh` login is not required.
 
 ## Canonical model
 
-ADE persists complete GitHub stack snapshots rather than inferring remote stack
+DAEX persists complete GitHub stack snapshots rather than inferring remote stack
 membership from lane parents or PR base branches.
 
 ```text
@@ -45,8 +45,8 @@ GitHubPrStackEntry
   merged timestamp
 ```
 
-Lane topology remains ADE's local execution model. When lane topology and the
-GitHub stack disagree, GitHub wins for remote membership and ADE presents the
+Lane topology remains DAEX's local execution model. When lane topology and the
+GitHub stack disagree, GitHub wins for remote membership and DAEX presents the
 divergence with an explicit adopt or restructure action.
 
 Whole stack snapshots are replaced transactionally. Webhooks are hints that
@@ -77,7 +77,7 @@ be extended.
 
 ## Operations
 
-ADE exposes the same workflow through desktop, hosted web, CLI actions, and
+DAEX exposes the same workflow through desktop, hosted web, CLI actions, and
 agent tools:
 
 ```text
@@ -97,7 +97,7 @@ open the GitHub review/merge surface
 Structural changes such as reorder, insert, fold, rename, or remove are
 destructive remote/local operations. They require a clean worktree, linear
 history, no queued member, a preview of the resulting chain, and explicit
-confirmation. ADE snapshots the prior branch heads before applying changes.
+confirmation. DAEX snapshots the prior branch heads before applying changes.
 
 ## PRs tab
 
@@ -127,12 +127,12 @@ snapshot. Opening the tab never performs per-row stack requests.
 - Empty, loading, stale, permission, unsupported-host, conflict, queued,
   partially merged, and completed states have distinct copy and actions.
 
-The Merge card for a stacked PR merges the stack from ADE. GitHub merges every
+The Merge card for a stacked PR merges the stack from DAEX. GitHub merges every
 open PR from the stack base up to the selected one, all or none, and runs branch
-rules during the merge; ADE starts it, polls the result, and reports the outcome
+rules during the merge; DAEX starts it, polls the result, and reports the outcome
 in a result banner. The first click arms the button because one merge covers more
 than this PR. **Bypass branch rules** is offered on every layer. GitHub honors a
-bypass only for the bottom open PR, so from higher up ADE merges the covered PRs
+bypass only for the bottom open PR, so from higher up DAEX merges the covered PRs
 one at a time from the bottom, each with the bypass, and waits for GitHub to
 restack the next one first. The stale-head guard still holds: every lower
 layer's head must be inside the top head you confirmed (a stacked branch carries
@@ -141,39 +141,22 @@ layer, whose SHA GitHub
 rewrites when it restacks, must still carry the same commits and leave the same
 files as when you confirmed, or the run stops. If a layer fails, the layers below
 it stay merged and the result names them. iOS offers the same override from its Merge anyway menu above the bottom PR only when the host advertises `prsStackLayeredBypass` in `hello_ok.features`; an older host keeps it on the bottom PR, where GitHub honors it. `GitHub` still opens the review and merge surface in the built-in
-browser, and mutating ADE actions open the inspector and require confirmation.
+browser, and mutating DAEX actions open the inspector and require confirmation.
 
 ## Work card
 
-One stable `pr_stack` card follows an ADE stack plan from proposed layers through
-published GitHub PRs and final merge. Its card id is based on the ADE stack plan
-id and does not change when GitHub assigns a stack number.
-
-```text
-GitHub stacked PR integration                     3 of 5 ready
-│ ✓ #840  API and persistence                     merged
-│ ✓ #841  GitHub synchronization                  approved
-│ ! #842  CLI and agent tools                     checks failed
-│ ● #843  PRs UI                                  agent working
-│ ○ #844  Work card                               planned
-└ main
-
-Blocked at #842 · one required check failed
-```
-
-Desktop renders a graphical rail, and iOS reuses the native stack diagram. The coordinator thread owns the complete card;
-member sessions receive a compact layer card. External stacks do not create
-chat cards until a user adopts them into an ADE work session.
-
-Card actions navigate to the stack inspector, GitHub review surface, or owning
-agent. Rebase, restructure, and unstack never execute directly from transcript
-history.
+There is no stack card while a stack is being built. When every member of a
+GitHub stack is merged, linked Work chats get one stable `pr_stack_land` card
+(`pr-stack-land:{owner}:{repo}:{stackNumber}`, `prChatCards.ts`), anchored to
+the bottom layer so later layers update the same episode. It fans out to every
+linked chat, including chats on another lane. Card actions navigate; rebase,
+restructure and unstack never run from transcript history.
 
 ## Chat linking
 
 Work chats own PRs through hybrid edges (`pull_request_chat_sessions`) plus
-unlink tombstones (`pull_request_chat_session_dismissals`). `selectPrsForChat`
-is edges-first: a chat that linked any PRs shows only those (including
+unlink tombstones (`pull_request_chat_session_dismissals`). `selectPrsForChatInLane`
+(`shared/prChatScope.ts`) is edges-first: a chat that linked any PRs shows only those (including
 cross-lane GitHub stack members); a zero-edge chat may display unedged
 current-branch PRs with no silent write; an unlinked PR never revives as
 fallback. Merge and rebase are not chat-peek actions.
@@ -187,17 +170,12 @@ for that chat+stack. Agents silent-expand the next layer onto parent chats that
 already linked the base instead of emitting an offer. A chat that created a
 layer edges that PR.
 
-When every member of a GitHub stack is merged, linked Work chats receive one
-stable `pr_stack_land` card (`pr-stack-land:{owner}:{repo}:{stackNumber}`) so
-later layers update the same episode. The card fans out to every linked chat,
-including chats on another lane.
-
 ## Agent behavior
 
-Bundled ADE skills teach agents to:
+Bundled DAEX skills teach agents to:
 
 1. Propose dependency-ordered, independently reviewable layers before coding.
-2. Ask whether the user wants one isolated ADE lane and owner per PR, or one
+2. Ask whether the user wants one isolated DAEX lane and owner per PR, or one
    lead coordinating subagents across stable boundaries.
 3. Put foundations below their consumers.
 4. Create and validate one deliberate branch layer at a time.
@@ -206,26 +184,9 @@ Bundled ADE skills teach agents to:
 6. Delegate only work whose dependency boundary is already stable.
 7. Apply feedback to the correct layer, then rebase every layer above it.
 8. Review and report progress bottom-up.
-9. Keep one stack card current instead of emitting repeated status messages.
-10. Send final review and merge decisions to GitHub.
+9. Send final review and merge decisions to GitHub.
 
-## Delivery stack
-
-The implementation is itself delivered as stacked pull requests:
-
-1. Canonical GitHub stack types, persistence, REST reads, and webhook
-   reconciliation.
-2. Stack mutations, ADE actions, typed CLI commands, and bundled agent skills.
-3. Desktop and hosted-web PR list, grouping, routing, and inspector.
-4. Work card protocol plus desktop rendering.
-5. iOS PR and Work parity.
-6. Remove superseded ADE-owned landing machinery and finish analytics and
-   documentation.
-
-Each layer runs focused quality review, contract tests, type checks for touched
-packages, and the normal PR ship loop before the stack is merged.
-
-## Required edge coverage
+## Edge cases to check
 
 - Opened then stacked webhook ordering.
 - Duplicate, replayed, and out-of-order deliveries.

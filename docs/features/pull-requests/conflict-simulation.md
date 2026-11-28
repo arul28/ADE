@@ -1,6 +1,6 @@
 # PR conflict simulation
 
-ADE predicts PR merge conflicts before the user hits Merge by running
+DAEX predicts PR merge conflicts before the user hits Merge by running
 `git merge-tree` locally. This covers two PR-adjacent scenarios:
 
 1. **PR-to-base** — will this PR land cleanly on its base branch?
