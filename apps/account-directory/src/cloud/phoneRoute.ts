@@ -32,6 +32,7 @@ import { fail } from "./http";
 import { NOMAC_PHONE } from "./phoneNomac";
 import type { PhoneProviderServer, PhoneSession } from "./phoneProvider";
 import { REVYL_MICROS_PER_SECOND, REVYL_PHONE } from "./phoneRevyl";
+import { REVYL_BUILD_MAX_SECONDS } from "./phoneRevylBuild";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
 export const PHONE_PROVIDERS: Record<CloudPhoneProvider, PhoneProviderServer> = { nomac: NOMAC_PHONE, revyl: REVYL_PHONE };
@@ -81,15 +82,21 @@ export const phoneBusy = (plan: "free" | "paid" = "free"): Response =>
 export const revylLimitMicros = (priceUsd: number): number => Math.round(priceUsd * 1_000_000);
 
 /**
- * What the account's Revyl phones cost ADE since `periodStart`: each at least
- * for the time it ran (a live one until now, an ended one until it ended),
- * since Revyl's bill fills in only after a later settle read.
+ * What the account's Revyl use cost ADE since `periodStart`: its phones, each
+ * at least for the time it ran (a live one until now, an ended one until it
+ * ended), since Revyl's bill fills in only after a later settle read; and its
+ * builds on Revyl's runners (`cloud_phone_builds`), with a phone up or not,
+ * each for what it ran (a running one until now, never past a build's
+ * longest), at the same rate.
  */
 export async function revylSpentMicros(env: Pick<CloudEnv, "DB">, userId: string, periodStart: number, now: number): Promise<number> {
   const row = await env.DB.prepare(`
-    select coalesce(sum(max(cost_micros, max(0, (case when state = 'live' then ? else coalesce(ended_at, updated_at) end) - created_at) / 1000 * ?)), 0) as spent
-    from cloud_phones where user_id = ? and provider = 'revyl' and created_at >= ?
-  `).bind(now, REVYL_MICROS_PER_SECOND, userId, periodStart).first<{ spent: number }>();
+    select
+      (select coalesce(sum(max(cost_micros, max(0, (case when state = 'live' then ? else coalesce(ended_at, updated_at) end) - created_at) / 1000 * ?)), 0)
+        from cloud_phones where user_id = ? and provider = 'revyl' and created_at >= ?)
+      + (select coalesce(sum(case when ended_at is null then min(?, max(0, ? - started_at) / 1000) else seconds end), 0) * ?
+        from cloud_phone_builds where user_id = ? and provider = 'revyl' and started_at >= ?) as spent
+  `).bind(now, REVYL_MICROS_PER_SECOND, userId, periodStart, REVYL_BUILD_MAX_SECONDS, now, REVYL_MICROS_PER_SECOND, userId, periodStart).first<{ spent: number }>();
   return Math.max(0, Number(row?.spent ?? 0) || 0);
 }
 

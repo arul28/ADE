@@ -11,11 +11,13 @@ from a chat's Tools menu. The launch plan is `docs/plans/ade-cloud-iphone-launch
 
 Server: `apps/account-directory/src/cloud/phones.ts` (routes, credits, the
 guard), one record per provider behind `phoneProvider.ts` (`phoneNomac.ts`,
-`phoneRevyl.ts` for Revyl's workspaces and calls), `phoneRoute.ts` (which
+`phoneRevyl.ts` for Revyl's phones and calls, with `phoneRevylWorkspace.ts`
+for its workspaces and `phoneRevylBuild.ts` for its builds), `phoneRoute.ts` (which
 provider: the lock, the router, failover), `phoneViewerPage.ts` (the
 viewer page for Revyl's stream) and `phoneBeta.ts` (the owner's beta list).
 Brain:
-`apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`, with one driver
+`apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts` (what goes up
+is packed by `cloudPhonePack.ts`), with one driver
 per provider (`cloudPhoneDriver.ts`, `cloudPhoneNomacDriver.ts`,
 `cloudPhoneRevylDriver.ts`, `cloudPhoneScreenText.ts`).
 CLI: `apps/ade-cli/src/cliCloudIphone.ts`. Shapes:
@@ -163,26 +165,91 @@ both used, without changing anything an agent or a person sees.
   per-phone token: the brain calls `POST /cloud/phone/call {action, body?,
   query?}` with its account sign-in, and the server passes Revyl's answer
   back as it is. Actions are `proxy.<name>` (an allowlist of Revyl's device
-  calls) and `build.upload_url|start|status|logs|install`. The driver turns
+  calls), `build.install` (a build's app into the live phone) and the
+  account's builds, `build.upload_url|start|status|logs`, which need no
+  phone (**Builds before the phone**). The driver turns
   the iOS accessibility tree into the same screen text NoMac answers
   (`kind "label" #id state @x,y` in points; `focused` marks the field with the
   keyboard) and runs the same `act` steps with plain taps, swipes and typing;
   it never uses Revyl's AI-priced targeting. `launch` uploads the packed
-  checkout and builds it on Revyl's runners (about 60 s for a small app; the
-  ADE iOS app, about 3 minutes). The runner image is
-  `ios-macos-26-xcode-27.0`: Xcode 27.0, the iOS 27.0 SDK (seen 2026-11-27;
-  whether a build can pick a newer image is a question for Revyl). Xcode 27.0
-  and 27.1 ship the same Swift (6.4), so `#if compiler(>=6.4)` can't keep
-  iOS 27.1 API calls away from it: the ADE iOS app gates those blocks on
-  `!ADE_IOS_SDK_27_0` too, a flag its project sets only for the 27.0 SDKs.
-  A failed build reads Revyl's log (`build.logs`, the tail a page at a time)
-  in 1,000-line pages back to the start, and shows its first
-  `file:line: error:` lines. `installApp` sends a prebuilt `.app` through
-  the same runner. A recording's
+  checkout and builds it on Revyl's runners before any phone starts (about
+  60 s for a small app; the ADE iOS app, about 90 s with its packages cached).
+  Every build names its Xcode image: `REVYL_BUILD_IMAGE` in `phoneRevylBuild.ts`
+  (`ios-macos-26-xcode-27.2`, Revyl's newest; Revyl's own default is 27.0),
+  which the Worker var `CLOUD_PHONE_REVYL_IMAGE` moves without a release, or
+  the version a build names (`--xcode 27.1`, one of `REVYL_XCODE_IMAGES`).
+  Xcode 27.0 and 27.1 ship the same Swift (6.4), so `#if compiler(>=6.4)`
+  can't keep iOS 27.1 API calls away from 27.0: the ADE iOS app gates those
+  blocks on `!ADE_IOS_SDK_27_0` too, a flag its project sets only for the
+  27.0 SDKs. A failed build reads Revyl's log of its build step
+  (`build.logs`, `step_index`, 1,000-line pages back from the tail with
+  `before_id`, Revyl's cursor for older lines, at most 8 pages) and shows its
+  first `file:line: error:` lines, else the lines that say error and Xcode's
+  "The following build commands failed" summary; its id goes with it for
+  `ade apple build-log`. `installApp` sends a prebuilt `.app` through the
+  same runner. Launch arguments and env values (`relaunch -- …`, `--env`)
+  go with Revyl's launch as `launch_arguments` (one token each) and
+  `launch_env`; the app restarts with them for that launch only. NoMac's launch
+  of an installed app takes the arguments (joined) and refuses `--env` with a
+  sentence (it takes env values only with a build). A brain from before this
+  sends no `launchValues` on its start, so a start that needs `launchEnv` never
+  lands it on a Revyl phone it would then refuse: it is told to update ADE. A recording's
   id is kept on the phone row (`recording_ref`), so any brain of the account
   can stop it. Revyl's phone has no time limit or spend cap of its own:
   `stop_at` is set at start, capped at `CLOUD_PHONE_MAX_MINUTES`, and the
   minute tick stops it. Its billed seconds run from `started_at`.
+- **Builds before the phone.** A Revyl build belongs to the account, not to
+  a phone: its claim is a `cloud_phone_builds` row (migration 0074), one
+  running build per account (Revyl's runners bill ADE), claimed in one write.
+  A claim is written as `unknown` just before Revyl is asked (a build may run
+  from then on): a refused start deletes it, an answered one names its job,
+  and one with no job (a lost answer, a Worker that stopped mid-start) holds
+  30 minutes, counted as running till then. A build Revyl took holds until a
+  `build.status` read says it ended (asked when it is in the way; a job Revyl
+  no longer has, 404, ends a claim older than 2 minutes), which writes what it
+  ran (`seconds`), and lapses after two hours when Revyl still can't say. A
+  build counts at most its longest (`REVYL_BUILD_MAX_SECONDS`, 900 s), so no
+  claim holds an account's builds, or grows its Revyl spend, for good. With a Revyl phone up, a build
+  runs as it always did. With none (or a NoMac one), `build.upload_url` and
+  `build.start` are held to what a new phone's start is held to
+  (`buildRefusal` in `phones.ts`: the pause, the credits, the free-use cap,
+  the route with the project's `builds`), and run only where that route's
+  first stop is Revyl; elsewhere they answer 409 `phone_builds_on_phone` and
+  the brain builds on the phone. So a free plan, or a paid plan whose next
+  phone is NoMac's, never reaches Revyl's runners this way; a paid plan's
+  Metal app does once NoMac is known to lack the toolchain. A build costs the
+  person no credits; its runner time counts in the paid plan's Revyl limit
+  (`revylSpentMicros`: phones and builds, at the same rate). The brain
+  (`buildBeforePhone` in `cloudPhoneService.ts`) builds first for `launch`,
+  `install` and `build`, starts the phone only for a build that worked (as
+  its build step passes, while the app is packed), and stops a phone that
+  start made (its own `origin` token: never one already up, one another chat
+  or the person started meanwhile, nor one it found running) when the build
+  then failed or its follow-up threw. It stops it by its id
+  (`DELETE /cloud/phone?phoneId=`, which stops nothing when the live phone is
+  another), so a phone another machine started since keeps running. A failed build's answer says what it
+  cost in phone minutes. With a Revyl phone held, the build keeps it awake, so
+  a long build is never installed on a fresh phone by building again.
+  `build` spends no credits, so it skips the agents' spending guard; a chat in
+  plan mode is still refused (`cloudPhonePlanGuard` in `registry.ts`). A server from before this names no
+  `toolchains` on `GET /cloud/phone`; the brain then builds on the phone, as
+  before. Each project keeps its last build that worked (in the brain's
+  memory, 12 hours, 50 projects, keyed by the source's paths, sizes and
+  change times): a `launch` of the same source installs it without building.
+  NoMac has no build-only tool (`app_run` builds and runs on the phone), so a
+  NoMac build always has the phone up.
+- **Path caches.** Each Revyl build keeps its Swift packages' clones and
+  checkouts (`build/SourcePackages`) in a Revyl path cache, keyed to the
+  project (`spm-<cache_key>`, from the brain: its workspace folder and the
+  folder it builds), and its folder's `Pods` beside a `Podfile.lock`
+  (`pods-<cache_key>`). Revyl restores the newest archive after checkout and
+  saves one only after a build that worked, and only when a lockfile it
+  hashes (`Package.resolved`, `Podfile.lock`) changed. `pod install` runs
+  when `Pods` is missing or its `Manifest.lock` differs from `Podfile.lock`.
+  Measured on the ADE iOS app (Xcode 27.2, 2026-11-28): the 1.24 GiB archive
+  restores in 13 s and package resolution drops from about 35 s to 9 s; a
+  no-change rebuild takes 91 s (23 s preparing the runner, 13 s restoring, 43
+  s building, 9 s packing the app), against 152 s with no cache.
 - **Build tools a provider lacks.** A build tool can be missing from one
   provider's hosts for a while (`CLOUD_PHONE_BUILD_NEEDS`: `metal`, Apple's
   Metal Toolchain). A brain whose build failed for want of it (the build's
@@ -252,8 +319,9 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   token on the beta-list route.
 - **Brain.** `cloudPhoneService.ts` exposes the `cloud_phone` action domain
   (`getStatus`, `start`, `stop`, `look`, `act`, `screenshot`, `launch`,
-  `installApp`, `control`, `logs`, `record`, `runTests`, and `view` and
-  `keepAlive` for the pane). It holds one phone's token in memory and calls
+  `installApp`, `control`, `logs`, `record`, `runTests`, `perf`; `build`
+  and `buildLog`, which start no phone and spend no credits, so agents use
+  them without the spending guard; and `view` and `keepAlive` for the pane). It holds one phone's token in memory and calls
   NoMac's tools directly: the screen as text, input, screenshots, logs,
   recordings, builds and tests. `getStatus` carries `lastActivityAt`, this
   brain's last tool call to the live phone, so the pane can show the idle stop
@@ -381,10 +449,16 @@ action on this machine's brain:
   before the upload, naming `--path`. Revyl's build takes any folder name
   but `..`, an absolute path, a control character or a backslash (`SUB_PATH`).
   Launch arguments after `--` are refused on a build (the phone starts the
-  app without them): build, then `relaunch --bundle-id B -- …`, which a Revyl
-  phone refuses with a sentence (its launch takes no arguments); `launch --no-build --bundle-id B [-- …]`,
+  app without them): build, then `relaunch --bundle-id B -- …` (each token
+  one argument; `--env KEY=VALUE` adds env values; both for that launch
+  only). `launch --no-build --bundle-id B [-- …]`,
   `relaunch --bundle-id B [-- …]` and `terminate --bundle-id B` use an app
-  already on the phone. `install --app <path to a Simulator .app>
+  already on the phone. `build [--path] [--scheme] [--configuration]
+  [--xcode] [--clean]` builds with no phone where builds run before the phone
+  (`status`'s `builds:` line says), and `build-log <build id> [--out <file>]
+  [--grep <pattern>]` saves a build's whole log (no phone either).
+  `appearance dark|light` and `content-size <size>` are the Mac's verbs for
+  `control appearance` and `control text_size`. `install --app <path to a Simulator .app>
   [--no-launch]` uploads and installs an app built elsewhere (Expo/EAS with
   `"simulator": true`, React Native, Flutter `--simulator`); `install` with no
   `--app` builds this checkout like `launch`.
@@ -422,7 +496,10 @@ one sentence. The screen reads as text: one element per line,
   `*.key`, `*.mobileprovision`, `*.provisionprofile`, `*.keystore`, `*.jks`,
   `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519` and their `.pub`, and `.netrc`.
   `Pods/`, `node_modules/`, `DerivedData/`, `build/`, `.build/`, `.swiftpm/`,
-  `.ade/` and the other dependency folders are skipped whole.
+  `.ade/` and the other dependency folders are skipped whole. On Windows the
+  archive is made with System32's bsdtar by its absolute path
+  (`resolveTrustedWindowsTool`): a GNU tar earlier on PATH (Git's) reads the
+  `C:\…` archive path as a remote host and fails.
 
 ## Limits
 
@@ -430,11 +507,17 @@ one sentence. The screen reads as text: one element per line,
   phone, and every lane of an account shares the plan's minutes.
 - A phone stops after 5 minutes with no tool call or person's input, and runs at
   most 2 hours. A new one starts after that; the workspace stays. Those idle
-  minutes count, and every command starts a phone (reads too), so a few
-  short visits cost more than one batch. `GET /cloud/phone` answers this
-  period's phones (`recent`: start, end, minutes, how it ended; NoMac's own
-  idle stop or limit reads `on_its_own`), and `ade apple status --text`
-  lists them, so a person can see where the minutes went.
+  minutes count, and every command but `status`, `build` and `build-log`
+  starts a phone (reads too). A new phone starts in about 10 seconds, so
+  stopping whenever the next look is more than about 2 minutes away costs
+  less than idling (the `ade-apple` skill says so). `GET /cloud/phone`
+  answers this period's phones (`recent`: id, start, end, minutes, how it
+  ended; NoMac's own idle stop or limit reads `on_its_own`) and what builds
+  use (`toolchains`: each stop of the route, its Xcode and SDK, whether it
+  builds before the phone, and a build tool its hosts lack). `ade apple
+  status --text` lists both, and for a chat's call what that chat's phones
+  used this period (`chatUse`, from the server's minutes for the phones the
+  chat drove on this brain); `ade apple stop` prints that line too.
 - Three models: iPhone 17 Pro (default), iPhone 17 Pro Max, and iPad Pro
   11-inch (M5), on iOS 27, on US hosts. iOS only: there is no Android here.
 - The upload is at most 2 GB packed. NoMac keeps the account's workspace for 48
@@ -498,6 +581,23 @@ and its pending invite. NoMac's billing records stay under the label, which is
 an id, never an email. The repeats of the deletion (`accountErasure.ts`) run
 it again.
 
+## Revyl endpoints ADE depends on
+
+Revyl documents its CLI, its MCP tools, the partner API (`/partner/*`) and
+`POST /execution/start_device`. ADE also calls routes Revyl names only as
+families in its error reference, with no request or response shapes, so a
+change there can break the phone without notice:
+
+| ADE call | Revyl route | Documented equivalent |
+|---|---|---|
+| a build's upload, start, status, log | `POST /apps/remote/upload-url`, `POST /apps/remote`, `GET /apps/remote/{job}/status`, `GET /apps/remote/{job}/logs` (`limit`, `before_id`, `step_index`) | `revyl build --remote`, `revyl build status`, `revyl build logs` (CLI only) |
+| the workspace's app and its builds | `POST /apps/`, `GET /apps/builds/{id}` | none |
+| every device call (`proxy.*`) | `/execution/device-proxy/{workflow_run}/{action}` | `revyl device …` and the MCP tools |
+| the phone, its stream | `GET /execution/device-sessions/{id}`, `…/active`, `POST /execution/device/sessions/{id}/stop`, `GET /execution/streaming/worker-connection/{run}` | `revyl device start/stop` |
+
+The partner API is the only fully documented surface ADE uses. Moving the
+rest to supported routes waits on Revyl's answer (asked 2026-11-28).
+
 ## Speed (measured 2026-11-19, from a Mac)
 
 ADE's part is small; the phone's own steps take the time:
@@ -546,8 +646,8 @@ to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
   desktop app. Agents on the web still drive the phone with `ade apple`.
 - The ADE iPhone app's sheet has no Record (the desktop rail has it).
 - **Abilities differ by phone.** Revyl's phone has no app tests, uninstall,
-  StoreKit, locale, time zone or status bar overrides, and passes no launch
-  `env`; NoMac's has no perf, shake or orientation. See **Abilities, not
+  StoreKit, locale, time zone or status bar overrides; NoMac's has no perf,
+  shake or orientation. See **Abilities, not
   names**. Network capture is not offered: Revyl's `network_requests`
   answered an empty list on every partner session we tried.
 - **Older brains.** A brain names the phones it can drive (`providers` on

@@ -251,7 +251,8 @@ export type CloudProvider = {
   phoneStart?(input: { device?: CloudPhoneDevice; attach?: boolean; needs?: readonly CloudPhoneAbility[]; builds?: readonly CloudPhoneBuildNeed[]; missing?: { phoneId: string; need: CloudPhoneBuildNeed } }): Promise<CloudPhoneStart>;
   /** A link that shows the live phone to this account alone. */
   phoneView?(input: { control: boolean }): Promise<CloudPhoneView>;
-  phoneStop?(): Promise<{ stopped: boolean }>;
+  /** Stops the account's live phone; `phoneId`: only that one (a server from before this stops the live one). */
+  phoneStop?(input?: { phoneId?: string }): Promise<{ stopped: boolean }>;
   /**
    * A tester picks who runs their phones (`POST /cloud/phone/provider`).
    * Account-level, so no pin. Anyone not on the beta list is refused
