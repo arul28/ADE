@@ -3961,6 +3961,11 @@ function mockCloudLaneRows(): { lanes: any[]; sessions: any[] } {
   return { lanes: [lane], sessions: session ? [session] : [] };
 }
 
+/** A read addressed to the `?mockCloudLaneMachine=1` lane computer (its pin), not to this machine. */
+function isMockCloudLaneBinding(binding: any): boolean {
+  return BROWSER_MOCK_CLOUD_LANE_MACHINE && binding?.kind === "remote" && binding.targetId === "mock-cloud-lane";
+}
+
 function mockCloudLaneTargets(): any[] {
   if (!BROWSER_MOCK_CLOUD_LANE_MACHINE) return [];
   const target = (id: string, name: string, hostname: string) => ({
@@ -8574,7 +8579,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           checkedAt: new Date().toISOString(),
         };
       },
-      list: resolved(MOCK_LANES),
+      list: async (_args?: any, binding?: any) => (isMockCloudLaneBinding(binding) ? mockCloudLaneRows().lanes : MOCK_LANES),
       listSnapshots: async () =>
         MOCK_LANES.map((lane) => makeLaneSnapshot(lane)),
       create: resolvedArg({ id: "mock", name: "mock" }),
@@ -8850,8 +8855,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     sessions: {
       getLifecycleSettings: resolved({ autoSettleLaneSessionsOnPrMerge: true, releaseLaneResourcesOnSettle: false }),
       updateLifecycleSettings: resolvedArg({ autoSettleLaneSessionsOnPrMerge: true, releaseLaneResourcesOnSettle: false }),
-      list: async (args: any = {}) => {
-        let rows = MOCK_SESSIONS;
+      list: async (args: any = {}, binding?: any) => {
+        // `?mockCloudLaneMachine=1`: the cloud lane computer answers with its own chat, not this machine's.
+        let rows = isMockCloudLaneBinding(binding) ? mockCloudLaneRows().sessions : MOCK_SESSIONS;
         if (typeof args?.laneId === "string" && args.laneId.trim()) {
           rows = rows.filter(
             (session) => session.laneId === args.laneId.trim(),

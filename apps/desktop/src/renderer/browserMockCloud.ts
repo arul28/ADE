@@ -805,11 +805,20 @@ export function applyBrowserMockCloud(ade: any): void {
     deletedInstanceIds: [],
     message: null,
   });
+  // `&mockCloudLatency=400`: each account read answers after this many ms, as the account server does (load timing).
+  const latency = Math.max(0, Number(param("mockCloudLatency")) || 0);
+  const lag = () => (latency ? new Promise<void>((resolve) => window.setTimeout(resolve, latency)) : Promise.resolve());
   const base = ade.cloud ?? {};
   ade.cloud = {
     ...base,
-    getStatus: async () => ({ connected: true, signedOut: false, instanceCount: machines.length, runningCount: result().runningCount, error: null }),
-    listMachines: async () => result(),
+    getStatus: async () => {
+      await lag();
+      return { connected: true, signedOut: false, instanceCount: machines.length, runningCount: result().runningCount, error: null };
+    },
+    listMachines: async () => {
+      await lag();
+      return result();
+    },
     onStatusChanged: (cb: () => void) => {
       statusListeners.add(cb);
       return () => statusListeners.delete(cb);
