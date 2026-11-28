@@ -1847,7 +1847,7 @@ describe("createPushPublisherService flush", () => {
     expect(payload.notifications[0]).toMatchObject({
       title: "PR #42 merged",
       body: "Ship mobile PR view",
-      deepLink: "ade://pr/arul28/ADE/42",
+      deepLink: "daex://pr/arul28/ADE/42",
       threadId: "pr:project-a:repo:arul28:ade:42",
     });
     publisher.dispose();
@@ -2254,7 +2254,7 @@ describe("createPushPublisherService flush", () => {
     expect(payload.notifications[0]).toMatchObject({
       title: "Fix auth race needs you",
       body: "Which account should the e2e test use?",
-      deepLink: "ade://session/cli-ask-1",
+      deepLink: "daex://session/cli-ask-1",
       sessionId: "cli-ask-1",
       dedupeKey: alertDedupeKey("alert:cli-ask-1:question"),
     });

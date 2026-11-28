@@ -563,7 +563,7 @@ describe("multi-project RPC server", () => {
       expect(fromProject).toMatchObject({ sent: true, delivered: 1, remaining: 59 });
       expect(sendCustomNotification).toHaveBeenLastCalledWith(expect.objectContaining({
         title: "Deploy finished",
-        deepLink: "ade://session/abc",
+        deepLink: "daex://session/abc",
         projectId: expect.stringMatching(/^project_/),
       }));
 
