@@ -1624,11 +1624,23 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
 
 /* ---- The minute cron ---- */
 
-/** The computers whose launch is still joining inside its window: the no-check-in sleep leaves them awake. */
+/**
+ * How long after its launch left `joining` a computer is still taken as just signed in: its first check-in can land
+ * after the tick that sees the launch move on (an approval that took longer than the no-check-in limit).
+ */
+const JUST_JOINED_MS = 5 * 60_000;
+
+/**
+ * The computers the no-check-in sleep leaves awake: a launch still joining inside its window, or one that joined
+ * and moved on in the last `JUST_JOINED_MS` (not failed or cancelled).
+ */
 export async function computersJoiningLaunches(env: CloudEnv, now: number): Promise<Set<string>> {
   const rows = (await env.DB.prepare(`
-    select instance_id from cloud_launches where state in ('joining', 'needs_approval') and join_expires_at > ? and instance_id is not null
-  `).bind(now).all<{ instance_id: string }>()).results ?? [];
+    select instance_id from cloud_launches where instance_id is not null and (
+      (state in ('joining', 'needs_approval') and join_expires_at > ?)
+      or (join_used_at is not null and state not in ('joining', 'needs_approval', 'failed', 'cancelled') and updated_at > ?)
+    )
+  `).bind(now, now - JUST_JOINED_MS).all<{ instance_id: string }>()).results ?? [];
   return new Set(rows.map((row) => row.instance_id));
 }
 

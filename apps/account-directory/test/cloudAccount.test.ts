@@ -40,7 +40,8 @@ import { registerBody, request as directoryRequest } from "./helpers";
  */
 
 const NOW = Date.UTC(2026, 10, 9, 12, 0, 0);
-const HOUR = 60 * 60_000;
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const OWNER = "user_owner";
 const OTHER = "user_other";
@@ -466,6 +467,28 @@ describe("ADE Cloud account", () => {
     // The day's record and the account agree, so the daily reconcile can't correct a phantom charge.
     expect(meteredMilli(harness)).toBe(expectedMilli);
     expect(computer(harness).awake_since).toBeNull();
+  });
+
+  // A launch's computer has nothing to check in with until it signed in. A person who approved after the
+  // no-check-in limit gets a computer that is past it the moment the launch moves on: the tick that sees the
+  // launch leave `joining` before the first check-in lands must not sleep it. Linux and Mac alike.
+  it.each<[string, Row, boolean]>([
+    ["still joining in its window", { state: "needs_approval", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE }, false],
+    ["joined and moved on a minute ago", { state: "waiting_for_sign_in", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - MINUTE }, false],
+    ["joined and moved on long ago, still never checked in", { state: "waiting_for_sign_in", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - 15 * MINUTE }, true],
+    ["failed a minute ago", { state: "failed", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - MINUTE }, true],
+  ])("a launch's computer that never checked in, awake 20 minutes, its launch %s", async (_label, launch, slept) => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { awake_since: NOW - 20 * MINUTE });
+    provide(harness);
+    harness.insert("cloud_launches", {
+      launch_id: "4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f70", user_id: OWNER, kind: "chat", instance_id: INSTANCE,
+      created_at: NOW - 20 * MINUTE, updated_at: NOW - 15 * MINUTE, expires_at: NOW + DAY, ...launch,
+    });
+
+    await harness.tick();
+
+    expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/sleep$`))).toHaveLength(slept ? 1 : 0);
   });
 
   // A sleep freezes the computer: a turn it cuts must be stopped and saved first,
