@@ -349,7 +349,7 @@ async function macReportLine(env: CloudEnv, monthStartMs: number, dayEndMs: numb
     select coalesce(sum(case when upkeep = 0 then (billed_seconds + 59) / 60 else 0 end), 0) as minutes,
       coalesce(sum(case when upkeep = 0 then cost_micros else 0 end), 0) as cost,
       coalesce(sum(case when upkeep = 1 and end_reason = 'drive_save' then cost_micros else 0 end), 0) as saves,
-      coalesce(sum(case when upkeep = 1 and coalesce(end_reason, '') <> 'drive_save' then 1 else 0 end), 0) as upkeeps,
+      coalesce(sum(case when upkeep = 1 and coalesce(end_reason, '') <> 'drive_save' and cost_micros > 0 then 1 else 0 end), 0) as upkeeps,
       coalesce(sum(case when upkeep = 1 and coalesce(end_reason, '') <> 'drive_save' then cost_micros else 0 end), 0) as upkeep_cost
     from cloud_mac_sessions where created_at >= ? and created_at < ?
   `).bind(monthStartMs, dayEndMs).first<{ minutes: number; cost: number; saves: number; upkeeps: number; upkeep_cost: number }>();
