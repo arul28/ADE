@@ -24895,6 +24895,16 @@ export function hasHelpFlag(
   return searchable.some((token) => token === "--help" || token === "-h");
 }
 
+/**
+ * `--version` prints `ade X.Y.Z`: a machine token, like the `ade-cli` name.
+ * Released brain updaters (`ade brain update`), DAEX Cloud image entrypoints
+ * and SSH bootstraps parse this line with `^ade ` and would take
+ * `daex X.Y.Z` as the version, so it keeps the old command name.
+ */
+function versionOutput(): string {
+  return `${BRAND.LEGACY_CLI} ${VERSION}\n`;
+}
+
 function buildCliPlan(
   command: string[],
   options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine" | "machineProject" | "machineWorkCopy">> = {
@@ -24904,7 +24914,7 @@ function buildCliPlan(
 ): CliPlan {
   const args = [...command];
   if (args[0] === "--version" || args[0] === "-v") {
-    return { kind: "help", text: `${BRAND.CLI} ${VERSION}\n` };
+    return { kind: "help", text: versionOutput() };
   }
   const primary = firstPositional(args);
   if (!primary) {
@@ -24972,7 +24982,7 @@ function buildCliPlan(
     return buildHelpPlan(text, key ? helpCatalogTopic(helpKey) : null, options);
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
-    return { kind: "help", text: `${BRAND.CLI} ${VERSION}\n` };
+    return { kind: "help", text: versionOutput() };
   }
   if (primary === "__ade-pty-host-worker") {
     return { kind: "pty-host-worker" };
@@ -44812,8 +44822,12 @@ async function runParsedCli(
       // `daex` beside a standalone `ade` in the machine bin folder: a
       // `brain update --foreground` ran in the old process, which only
       // replaced `ade`. Best effort, never throws; never inside an app bundle.
-      if (path.dirname(process.execPath) === path.resolve(resolveMachineAdeLayout().binDir)) {
-        ensureDaexCommandBesideBinary(process.execPath);
+      // A failure goes to the brain's log (stderr), like the notes above.
+      if (pathsEqual(path.dirname(process.execPath), path.resolve(resolveMachineAdeLayout().binDir))) {
+        const alias = ensureDaexCommandBesideBinary(process.execPath);
+        if (alias.error) {
+          process.stderr.write(`${BRAND.NAME}: cli.daex_alias_failed ${JSON.stringify({ binaryPath: process.execPath, error: alias.error })}\n`);
+        }
       }
       const result = await runServe(plan.rest, parsed.options);
       return {

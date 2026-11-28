@@ -302,7 +302,9 @@ function readManifest(manifestPath: string): BrainUpdateManifest {
     return value;
   };
   return {
-    version: stringField("version"),
+    // A manifest written from `--version` output may carry the command name
+    // (`ade 1.2.3`, or `daex 1.2.3` from a build that printed it).
+    version: stringField("version").replace(/^(?:daex|ade)\s+/i, ""),
     repo: stringField("repo"),
     target: stringField("target"),
     adeHome: stringField("adeHome"),

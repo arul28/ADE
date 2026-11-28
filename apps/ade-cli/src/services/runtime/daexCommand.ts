@@ -17,19 +17,19 @@ import path from "node:path";
  *
  * A `daex` that is not one of these (someone else's file, or a symlink to
  * something other than an `ade`) is left alone.
- * Best effort: returns the paths it wrote or confirmed, and never throws, since
- * `ade` works either way.
+ * Best effort: returns the paths it wrote or confirmed and the error that
+ * stopped it, if any, and never throws, since `ade` works either way.
  */
 export function ensureDaexCommandBesideBinary(
   binaryPath: string,
   platform: NodeJS.Platform = process.platform,
-): string[] {
+): { written: string[]; error: string | null } {
   const dir = path.dirname(binaryPath);
   const base = path.basename(binaryPath);
   const written: string[] = [];
   try {
     if (platform === "win32") {
-      if (base.toLowerCase() !== "ade.exe") return written;
+      if (base.toLowerCase() !== "ade.exe") return { written, error: null };
       const cmdPath = path.join(dir, "daex.cmd");
       const cmdBody = [
         "@echo off",
@@ -44,9 +44,9 @@ export function ensureDaexCommandBesideBinary(
       const shPath = path.join(dir, "daex");
       const shBody = '#!/bin/sh\nexec "$(dirname -- "$0")/ade.exe" "$@"\n';
       if (writeOwned(shPath, shBody)) written.push(shPath);
-      return written;
+      return { written, error: null };
     }
-    if (base !== "ade") return written;
+    if (base !== "ade") return { written, error: null };
     const linkPath = path.join(dir, "daex");
     let existing: fs.Stats | null = null;
     try {
@@ -54,20 +54,21 @@ export function ensureDaexCommandBesideBinary(
     } catch {
       existing = null;
     }
-    if (existing && !existing.isSymbolicLink()) return written;
+    if (existing && !existing.isSymbolicLink()) return { written, error: null };
     if (existing) {
       const target = fs.readlinkSync(linkPath);
-      if (target === "ade") return [linkPath];
+      if (target === "ade") return { written: [linkPath], error: null };
       // Only a link to some `ade` (or an empty one) is ours to repoint.
-      if (target !== "" && path.posix.basename(target) !== "ade") return written;
+      if (target !== "" && path.posix.basename(target) !== "ade") return { written, error: null };
       fs.rmSync(linkPath, { force: true });
     }
     fs.symlinkSync("ade", linkPath);
     written.push(linkPath);
-  } catch {
-    // Best effort: `ade` still works.
+  } catch (error) {
+    // Best effort: `ade` still works; the caller logs why.
+    return { written, error: error instanceof Error ? error.message : String(error) };
   }
-  return written;
+  return { written, error: null };
 }
 
 /** Write `body` unless a different file that never names ade.exe is there. */
