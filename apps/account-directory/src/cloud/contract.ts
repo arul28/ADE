@@ -542,7 +542,7 @@ export type CloudMacOffer = {
 /**
  * A Mac's state, beside the computer's `status`:
  * - `queued`: waiting for a free Mac (it can take minutes at busy hours; nothing is charged).
- * - `starting`: a Mac was found and is starting with the lane's drive (about 30 s), then DAEX starts on it.
+ * - `starting`: a Mac was found and is starting with the lane's drive (under a minute), then DAEX starts on it.
  * - `running`: on, and charged by the minute.
  * - `stopping`: work stopped; the Mac saves its drive and goes.
  * - `stopped`: only the drive is kept. The next message or a start makes a new Mac with it.
@@ -576,12 +576,15 @@ export type CloudMacState = {
 };
 
 /** The words for each state. The server sends them in `CloudMacState.message`; clients show the server's. */
+/** How long a Mac takes to start, in every sentence that says it (the catalog's `startSeconds` is the range behind it). */
+export const CLOUD_MAC_START_WORDS = "in under a minute";
+
 export const CLOUD_MAC_STATE_SENTENCES: Readonly<Record<CloudMacStateName, string>> = {
   queued: "Waiting for a free Mac. It starts as soon as one is free, and nothing is charged while it waits.",
-  starting: "Starting the Mac with this lane's drive. This takes about 30 seconds.",
+  starting: `Starting the Mac with this lane's drive. It's ready ${CLOUD_MAC_START_WORDS}.`,
   running: "The Mac is on.",
   stopping: "Work stopped, so the Mac is saving its drive and stopping.",
-  stopped: "The Mac is stopped and its drive is kept. The next message starts it again in about 30 seconds.",
+  stopped: `The Mac is stopped and its drive is kept. The next message starts it again ${CLOUD_MAC_START_WORDS}.`,
 };
 
 /** Why a start ended with no Mac (`CloudMacState.failure`). */
