@@ -75,7 +75,8 @@ export const AD_WINDOW_MINUTES_DEFAULT = 60;
  * Pure: the ad rate of a full rate (thousandths an hour or a minute) at
  * `discountPct`, rounded down to a whole shown credit, so the discount is
  * never less than it says: Medium 1000 -> 800, Large 2500 -> 2000, X-Large
- * 4000 -> 3200, the iPhone and the Mac 500 -> 400 at 20%.
+ * 4000 -> 3200, the iPhone and the Mac 500 -> 400 at 20%. At 0% it is the
+ * full rate, and apps show no second price.
  */
 export function adRateMilli(fullMilli: number, discountPct: number): number {
   const pct = Math.min(100, Math.max(0, discountPct));
@@ -83,11 +84,11 @@ export function adRateMilli(fullMilli: number, discountPct: number): number {
 }
 
 /**
- * Pure: a size's full rate under Pricing v3, a whole shown credit (the four
- * unlisted shapes keep their place in proportion to Medium, rounded:
- * 1650 -> 1700, 1250 -> 1300, 7250 -> 7300). The main four are already whole.
+ * Pure: a size's full rate under Pricing v3, a whole shown credit, rounded
+ * down so nobody pays more than before (the four unlisted shapes: 1650 ->
+ * 1600, 1250 -> 1200, 7250 -> 7200). The main four are already whole.
  */
-export const v3FullRateMilli = (multiplierMilli: number): number => Math.round(multiplierMilli / SHOWN_CREDIT_MILLI) * SHOWN_CREDIT_MILLI;
+export const v3FullRateMilli = (multiplierMilli: number): number => Math.floor(multiplierMilli / SHOWN_CREDIT_MILLI) * SHOWN_CREDIT_MILLI;
 
 /** One product's two prices under Pricing v3, in thousandths an hour (sizes) or a minute (`phone`, `mac`). */
 export type V3Rate = { fullMilli: number; adMilli: number };

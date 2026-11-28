@@ -141,8 +141,9 @@
   //
   // VAR — PRICING_V3 (the ad price, src/cloud/adPrice.ts)
   // The highest the instant `pricing_v3` setting (off | testers | all, starts
-  // off) may go. Unset or `off`: a hard off, every answer is today's. Left
-  // unset in every environment: the owner sets it when Pricing v3 may start.
+  // off) may go. Unset or `off`: a hard off, every answer is today's. `all` in
+  // both environments: the stored setting (off until the owner flips it with
+  // scripts/cloud-owner.mjs) is the lock.
   // `ad_discount_pct` and `ad_window_minutes` are instant settings with no
   // ceiling (scripts/cloud-owner.mjs).
   //
@@ -189,6 +190,9 @@
     // SENTRY_ENVIRONMENT here: this development Worker and `wrangler dev`
     // report as `development`, which src/sentry.ts never sends.
     "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
+    // Pricing v3's ceiling (src/cloud/adPrice.ts); the instant `pricing_v3`
+    // setting starts off and is the lock. Unset or `off`: a hard off.
+    "PRICING_V3": "all",
     // Exact hosted web-client origin allowed to read /account/machines.
     // Set to the production HTTPS origin before deployment.
     "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
@@ -375,6 +379,10 @@
         // ads stay Gravity's free test ads. GRAVITY_API_KEY is a secret.
         "GRAVITY_ADS": "all",
         "GRAVITY_LIVE": "1",
+        // Pricing v3 (src/cloud/adPrice.ts): the ceiling of the instant
+        // `pricing_v3` setting, which starts off (no row reads off). The owner
+        // flips that setting; `off` here (or unset) is the hard off.
+        "PRICING_V3": "all",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.
