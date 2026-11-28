@@ -124,7 +124,8 @@ private let workWireIdSpellings: [(String) -> String] = [
 /// (`pi/<profile>/<provider>/<model>`: a profile named like a model is not
 /// one). It starts that segment or follows `:` or an encoded `/` (OpenRouter's
 /// `anthropic%2Fclaude-opus-5`), and is not followed by more version digits
-/// (`claude-opus-5` is not inside `claude-opus-5-5`).
+/// (`claude-opus-5` is not inside `claude-opus-5-5`, and `claude-fable-5.1`
+/// not inside `claude-fable-5.10`).
 private func workWireIdRange(in id: String, token: String) -> Range<String.Index>? {
   let segmentStart = id.lastIndex(of: "/").map { id.index(after: $0) } ?? id.startIndex
   var searchStart = segmentStart
@@ -135,9 +136,12 @@ private func workWireIdRange(in id: String, token: String) -> Range<String.Index
       || before.uppercased().hasSuffix("%2F")
     let rest = id[range.upperBound...]
     var endsClean = true
-    if let first = rest.first, first == "-" || first == ".",
-       let second = rest.dropFirst().first, second.isNumber {
-      endsClean = false
+    if let first = rest.first {
+      if first.isNumber {
+        endsClean = false
+      } else if first == "-" || first == ".", let second = rest.dropFirst().first, second.isNumber {
+        endsClean = false
+      }
     }
     if startsClean && endsClean { return range }
     searchStart = id.index(after: range.lowerBound)
