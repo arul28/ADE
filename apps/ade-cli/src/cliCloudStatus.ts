@@ -41,11 +41,37 @@ function cloudRateText(value: unknown, words: CloudUnitWords = CLOUD_CREDIT_WORD
   return typeof value === "number" && Number.isFinite(value) ? formatCloudHoursRate(value, words) : "—";
 }
 
-/** The words of `cloud.status`, at the iPhone's rate it sends (`credits.iphonePerMinute`). */
+/** Pricing v3's part of `cloud.status` (`CloudStatusPricing`), or null from an older brain or account. */
+function statusPricing(status: Record<string, unknown>): Record<string, unknown> | null {
+  const pricing = isRecord(status.pricing) ? status.pricing : null;
+  return pricing && typeof pricing.creditScale === "number" && pricing.creditScale > 0 ? pricing : null;
+}
+
+/** The words of `cloud.status`, at the iPhone's rate it sends (`credits.iphonePerMinute`) and Pricing v3's scale. */
 function statusWords(status: Record<string, unknown>): CloudUnitWords {
   const credits = isRecord(status.credits) ? status.credits : null;
   const perMinute = credits && typeof credits.iphonePerMinute === "number" ? credits.iphonePerMinute : null;
-  return cloudUnitWords(perMinute != null ? { credits: { phoneMilliPerMinute: perMinute * 1000 } } : null);
+  const scale = statusPricing(status)?.creditScale as number | undefined;
+  if (perMinute == null && scale == null) return cloudUnitWords(null);
+  return cloudUnitWords({
+    credits: { phoneMilliPerMinute: (perMinute ?? CLOUD_CREDIT_WORDS.phoneMilliPerMinute / 1000) * 1000 },
+    ...(scale != null ? { pricing: { creditScale: scale } } : {}),
+  });
+}
+
+/** "3:40 PM": when a computer's ad price ends, on this machine's clock. */
+function clockText(iso: unknown): string | null {
+  if (typeof iso !== "string") return null;
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? null : at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+/** A Pricing v3 price with its reason, or the ad price's end: "8 credits an hour with ads · 10 with no ads, ad price until 3:40 PM". */
+function priceNowText(entry: Record<string, unknown>): string {
+  const price = typeof entry.price === "string" ? entry.price : "—";
+  if (typeof entry.reason === "string" && entry.reason) return `${price} · ${entry.reason}`;
+  const until = entry.now === "ad" ? clockText(entry.adUntil) : null;
+  return until ? `${price}, ad price until ${until}` : price;
 }
 
 /** "$5", "$1.50": cents as dollars, cents shown only when there are some. */
@@ -55,8 +81,8 @@ function dollarsText(cents: unknown): string {
 }
 
 /** The iPhone row: its rate from the credits and what it used this period. */
-function cloudIphoneText(iphone: Record<string, unknown>, words: CloudUnitWords): string {
-  const used = typeof iphone.creditsUsed === "number" ? ` · ${cloudHoursText(iphone.creditsUsed)} credits used this period` : "";
+function cloudIphoneText(iphone: Record<string, unknown>, words: CloudUnitWords, scale = 1): string {
+  const used = typeof iphone.creditsUsed === "number" ? ` · ${cloudHoursText(iphone.creditsUsed * scale)} credits used this period` : "";
   return `uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute from your credits${used}`;
 }
 
@@ -69,6 +95,14 @@ export function formatCloudStatus(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const status = isRecord(raw) ? raw : {};
   const words = statusWords(status);
+  // Pricing v3: the counts below are Medium-hour units; shown as credits at the server's scale.
+  const pricing = statusPricing(status);
+  const scale = typeof pricing?.creditScale === "number" ? pricing.creditScale : 1;
+  const creditsText = (units: unknown) => cloudHoursText(typeof units === "number" ? units * scale : units);
+  const ads = pricing && isRecord(pricing.ads) ? pricing.ads : null;
+  const priceList = (key: "sizes" | "computers") => (pricing && Array.isArray(pricing[key]) ? (pricing[key] as unknown[]).filter(isRecord) : []);
+  const sizePrices = new Map(priceList("sizes").map((entry) => [String(entry.id), entry]));
+  const computerPrices = new Map(priceList("computers").map((entry) => [String(entry.instanceId), entry]));
   const rows: Array<[string, string]> = [];
   const can = isRecord(status.canStartLane) ? status.canStartLane : {};
   const lines: string[] = [];
@@ -85,12 +119,12 @@ export function formatCloudStatus(value: unknown): string {
     const resetsOn = hours && typeof hours.resetsAt === "string" ? hours.resetsAt.slice(0, 10) : null;
     const planHours = typeof includes.hours === "number"
       ? periodHours != null && periodHours !== includes.hours && resetsOn
-        ? `${cloudHoursText(periodHours)} credits this period, ${cloudHoursText(includes.hours)} from ${resetsOn}`
-        : `${cloudHoursText(includes.hours)} credits`
+        ? `${creditsText(periodHours)} credits this period, ${creditsText(includes.hours)} from ${resetsOn}`
+        : `${creditsText(includes.hours)} credits`
       : null;
     const facts = [
       computers,
-      "unlimited Small computers",
+      pricing ? null : "unlimited Small computers",
       planHours,
       includes.outsideAgents === false ? "no outside agents" : null,
     ].filter(Boolean).join(", ");
@@ -101,12 +135,19 @@ export function formatCloudStatus(value: unknown): string {
     const resets = typeof hours.resetsAt === "string" ? hours.resetsAt.slice(0, 10) : "—";
     const extra = isRecord(hours.extraHours) && hours.extraHours.enabled === true ? ` · ${words.extra.toLowerCase()} on` : "";
     const out = hours.state === "zero" ? " · out: bigger computers and the iPhone stop, Small keeps working" : "";
-    rows.push([words.Noun, `${cloudHoursText(hours.left)} of ${cloudHoursText(hours.included)} left · resets ${resets}${extra}${out}`]);
+    rows.push([words.Noun, `${creditsText(hours.left)} of ${creditsText(hours.included)} left · resets ${resets}${extra}${out}`]);
   }
-  if (typeof status.smallComputers === "string") rows.push(["Small", status.smallComputers]);
+  // Pricing v3: the account's one ads switch (a person changes it in the app, never a terminal).
+  if (ads?.available === true) {
+    rows.push(["Ads", `${ads.on === true ? "on" : "off"} · ${String(ads.sentence ?? "")} Change it in ${String(ads.setting ?? `Settings › ${BRAND.CLOUD_NAME}`)}.`]);
+  }
+  const smallPrice = sizePrices.get("small");
+  if (pricing && typeof smallPrice?.price === "string") rows.push(["Small", smallPrice.price]);
+  else if (typeof status.smallComputers === "string") rows.push(["Small", status.smallComputers]);
   // Only an account that has the ADE Cloud iPhone gets this part.
   const iphone = isRecord(status.iphone) && status.iphone.access === "on" ? status.iphone : null;
-  if (iphone) rows.push(["iPhone", cloudIphoneText(iphone, words)]);
+  const iphonePrice = pricing && isRecord(pricing.iphone) ? pricing.iphone : null;
+  if (iphone) rows.push(["iPhone", iphonePrice ? `costs ${priceNowText(iphonePrice)} now` : cloudIphoneText(iphone, words, scale)]);
   const computers = isRecord(status.computers) ? status.computers : null;
   // Cloud computers asleep or not, of the plan's limit (an older ADE sends no limit: a count only).
   if (computers) {
@@ -140,7 +181,7 @@ export function formatCloudStatus(value: unknown): string {
     return [
       lane ? boxName(box) : `(no lane) ${boxName(box)}`,
       size,
-      cloudRateText(box.hoursRate, words),
+      computerPrices.has(String(box.instanceId)) ? priceNowText(computerPrices.get(String(box.instanceId))!) : cloudRateText(box.hoursRate, words),
       notJoined ? `${String(box.state ?? "")}, not joined to ${BRAND.NAME} yet` : String(box.state ?? ""),
       lane && typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
       notJoined ? "" : cloudUpdateText(box.update),
@@ -151,7 +192,9 @@ export function formatCloudStatus(value: unknown): string {
   const sizeRows = sizes.map((size) => [
     String(size.id ?? ""),
     `${size.kind === "full" ? "full computer" : "standard"} · ${String(size.cpu ?? "?")} CPU · ${String(size.memoryGb ?? "?")} GB`,
-    size.usesHours === false || size.hoursRate === 0 ? `unlimited (never uses ${words.noun})` : cloudRateText(size.hoursRate, words),
+    typeof sizePrices.get(String(size.id))?.price === "string"
+      ? String(sizePrices.get(String(size.id))!.price)
+      : size.usesHours === false || size.hoursRate === 0 ? `unlimited (never uses ${words.noun})` : cloudRateText(size.hoursRate, words),
     size.isDefault === true ? "default" : "",
   ]);
   const table = (cells: string[][]): string[] => {
@@ -182,15 +225,17 @@ export function formatCloudStatus(value: unknown): string {
   if (sizeRows.length) lines.push("", "Sizes (daex chat create --machine cloud --size <id>)", ...table(sizeRows));
   const plans = Array.isArray(status.plans) ? status.plans.filter(isRecord) : [];
   if (plans.length) {
-    lines.push("", `Plans (a month; Small computers are unlimited on every plan; past the plan's ${words.noun})`, ...table(plans.map((plan) => [
+    const smallRule = pricing ? "Small computers are free on paid plans, and on Free with ads" : "Small computers are unlimited on every plan";
+    lines.push("", `Plans (a month; ${smallRule}; past the plan's ${words.noun})`, ...table(plans.map((plan) => [
       `${String(plan.label ?? plan.id)}${plan.current === true ? " (yours)" : ""}`,
       typeof plan.priceUsdMonth === "number" ? `${dollarsText(plan.priceUsdMonth * 100)}` : "?",
       typeof plan.computers === "number" ? `${plan.computers} computers` : "",
-      `${cloudHoursText(plan.hours)} credits${typeof plan.hoursOnSizes === "string" && plan.hoursOnSizes ? ` (${plan.hoursOnSizes})` : ""}`,
-      `${words.extra.toLowerCase()}: ${typeof plan.extraHourCents === "number" ? `${plan.extraHourCents}¢ each` : "none"}`,
+      `${creditsText(plan.hours)} credits${typeof plan.hoursOnSizes === "string" && plan.hoursOnSizes ? ` (${plan.hoursOnSizes})` : ""}`,
+      `${words.extra.toLowerCase()}: ${typeof plan.extraHourCents === "number" ? pricing ? words.extraPrice(plan.extraHourCents) : `${plan.extraHourCents}¢ each` : "none"}`,
       plan.outsideAgents === false ? "no outside agents" : "outside agents ok",
     ])));
-    if (typeof hours?.unit === "string") lines.push(`  ${hours.unit}`);
+    if (pricing) lines.push(`  ${words.unitSentence}`);
+    else if (typeof hours?.unit === "string") lines.push(`  ${hours.unit}`);
   }
   return lines.join("\n");
 }

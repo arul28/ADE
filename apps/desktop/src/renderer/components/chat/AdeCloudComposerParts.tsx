@@ -5,6 +5,7 @@ import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties }
 
 import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudRateText, cloudTierRatePair, type CloudAdsView } from "../../../shared/cloudAdPriceWords";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -50,6 +51,7 @@ export function CloudSizeButton({
   disabled = false,
   hoursLeftMilli = null,
   words = CLOUD_CREDIT_WORDS,
+  priced = null,
 }: {
   tiers: readonly CloudTier[];
   tierId: CloudTierId;
@@ -61,8 +63,11 @@ export function CloudSizeButton({
   hoursLeftMilli?: number | null;
   /** The account's words (`cloudUnitWords`). */
   words?: CloudUnitWords;
+  /** Pricing v3 (the account has `pricing`): each size's two prices under its row. Null shows today's menu. */
+  priced?: { view: CloudAdsView | null } | null;
 }) {
   const [open, setOpen] = useState(false);
+  const priceOf = (tier: CloudTier) => (priced ? cloudRateText(cloudTierRatePair(tier), priced.view, words) : null);
   const portalContainer = usePortalContainer();
   const idBase = useId();
   const current = tiers.find((tier) => tier.id === tierId) ?? null;
@@ -75,7 +80,7 @@ export function CloudSizeButton({
         content={{
           label: `Computer size: ${label}`,
           description: current && currentFacts
-            ? `${currentFacts.specs.join(", ")}. ${currentFacts.rateLine}.`
+            ? `${currentFacts.specs.join(", ")}. ${priceOf(current) ?? currentFacts.rateLine}.`
             : `The size of the new ${BRAND.CLOUD_NAME} computer.`,
         }}
       >
@@ -129,7 +134,8 @@ export function CloudSizeButton({
               // Hours as time at this size (Small reads "Unlimited", never a multiplier); a bigger size waits for the account.
               const usesHours = cloudTierUsesHours(tier);
               const hoursAt = usesHours && hoursLeftMilli == null ? null : cloudTierHoursAt(tier, hoursLeftMilli ?? 0);
-              const about = `${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.${usesHours && hoursAt ? ` Your ${words.noun} last ${hoursAt} here.` : ""}`;
+              const price = priceOf(tier);
+              const about = `${facts.specs.join(", ")}. ${runs}. ${price ?? facts.rateLine}.${usesHours && hoursAt ? ` Your ${words.noun} last ${hoursAt} here.` : ""}`;
               const aboutId = `${idBase}-${tier.id}`;
               return (
                 <DropdownMenu.RadioItem
@@ -138,7 +144,7 @@ export function CloudSizeButton({
                   title={`${tier.label}: ${about}`}
                   aria-label={tier.id === defaultTier ? `${tier.label}, default` : tier.label}
                   aria-describedby={aboutId}
-                  className={cn(MENU_ITEM_CLASS, "min-h-[30px] items-center gap-2 text-[11px]", tier.id === tierId ? "text-fg/90" : "text-fg/70")}
+                  className={cn(MENU_ITEM_CLASS, "min-h-[30px] items-center gap-2 text-[11px]", price && "flex-wrap gap-y-0.5 py-1.5", tier.id === tierId ? "text-fg/90" : "text-fg/70")}
                 >
                   <span id={aboutId} className="sr-only">{about}</span>
                   <span className="inline-flex h-[16px] w-[16px] shrink-0 items-center justify-center"><CloudSizeIcon tier={tier.id} size={15} /></span>
@@ -153,6 +159,10 @@ export function CloudSizeButton({
                       <Check size={11} weight="bold" className="adec-check" aria-hidden />
                     </DropdownMenu.ItemIndicator>
                   </span>
+                  {price ? (
+                    // Pricing v3: both prices, on their own line under the size (the row's first line stays as it was).
+                    <span aria-hidden className="basis-full pl-6 text-[10.5px] leading-snug tabular-nums text-muted-fg/75">{price}</span>
+                  ) : null}
                 </DropdownMenu.RadioItem>
               );
             })}

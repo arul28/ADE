@@ -47,7 +47,26 @@ export function publishCloudPhoneStatus(status: CloudPhoneStatusView, readAt = D
   const lastActivityAt = samePhone
     ? Math.max(live.status?.lastActivityAt ?? 0, status.lastActivityAt ?? 0) || null
     : status.lastActivityAt ?? null;
-  emit({ status: { ...status, lastActivityAt }, readAt, inputAt: samePhone ? live.inputAt : null });
+  // The same for the chat that holds it (Pricing v3): another brain's read (null) or an older brain's (missing) keeps it.
+  const chatSessionId = (samePhone ? status.chatSessionId || live.status?.chatSessionId : status.chatSessionId) ?? null;
+  emit({ status: { ...status, lastActivityAt, chatSessionId }, readAt, inputAt: samePhone ? live.inputAt : null });
+}
+
+/**
+ * The account's live cloud iPhone's id when this chat holds it (Pricing v3):
+ * the phone is up, the brain that drives it says this chat made its latest
+ * call, and the account's pricing names the same phone. Null otherwise (then
+ * the chat gives no phone proof and asks no ad for it). Follows the reads the
+ * phone surfaces already make; no read of its own.
+ */
+export function useCloudPhoneHeldBy(sessionId: string | null, accountPhoneId: string | null): string | null {
+  // A string, not the read: the chat pane re-renders only when the answer changes.
+  const heldBy = () => {
+    const phone = live.status?.phone;
+    if (!sessionId || !accountPhoneId || !phone || phone.state === "ended") return null;
+    return live.status?.chatSessionId === sessionId && phone.id === accountPhoneId ? accountPhoneId : null;
+  };
+  return useSyncExternalStore(subscribe, heldBy, heldBy);
 }
 
 /** The person touched the live phone in this window. Throttled: input arrives per pointer move. */

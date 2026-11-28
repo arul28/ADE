@@ -8,7 +8,6 @@ import {
   cloudReferralOf,
   cloudSmallUsesHours,
   formatCloudDate,
-  formatCloudHours,
   type CloudAccountState,
 } from "../../../shared/adeCloud";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
@@ -55,7 +54,8 @@ function hoursLeftPct(state: CloudAccountState): number {
 /** "ADE Cloud 43.8 of 100 credits left" for the control's title. */
 export function headerCloudTitle(state: CloudAccountState): string {
   const { leftMilli, totalMilli } = hoursOf(state);
-  return `${PRODUCT.CLOUD_NAME} ${formatCloudHours(leftMilli)} of ${formatCloudHours(totalMilli)} credits left`;
+  const words = cloudUnitWords(state);
+  return `${PRODUCT.CLOUD_NAME} ${words.num(leftMilli)} of ${words.num(totalMilli)} credits left`;
 }
 
 /** The ring: credits left in ADE Cloud's violet, amber at 20% left, red at 5%; the pale arc is what's used. */
@@ -122,8 +122,8 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
         <span className={cn("ml-auto text-muted-fg", USAGE_TEXT.micro)}>{state.billing.cancelAtPeriodEnd ? "Plan ends" : "Resets"} {formatCloudDate(state.billing.periodEnd)}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{formatCloudHours(hours.leftMilli)}</span>
-        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>{`of ${formatCloudHours(hours.totalMilli)} credits left`}</span>
+        <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{words.num(hours.leftMilli)}</span>
+        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>{`of ${words.num(hours.totalMilli)} credits left`}</span>
       </div>
       <div className="kit-meter" data-level={usageLeftLevel(pct)}><span style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: usageLeftLevel(pct) == null ? BRAND_FILL : undefined }} /></div>
       <div className={cn("flex flex-wrap gap-x-3 gap-y-1 text-muted-fg", USAGE_TEXT.micro)}>

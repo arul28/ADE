@@ -13,7 +13,7 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus, CloudFreeModelsSeenRequest, CloudFreeModelsState } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudAdProofAnswer, CloudAdSentRequest, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus, CloudFreeModelsSeenRequest, CloudFreeModelsState } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
@@ -5294,7 +5294,13 @@ declare global {
          * The server decides every card; a missing method means no cards.
          */
         /** `confirmed`: a yes the person confirmed a second time (`CloudSponsoredState.confirmYes`). */
-        setSponsoredConsent?: (consent: CloudSponsoredChoice, confirmed?: boolean) => Promise<CloudSponsoredState | null>;
+        /** `noticeSeen` (Pricing v3): the answer came from the ads notice or switch, so the account saw it. */
+        setSponsoredConsent?: (consent: CloudSponsoredChoice, confirmed?: boolean, noticeSeen?: boolean) => Promise<CloudSponsoredState | null>;
+        /**
+         * Pricing v3: a person sent a message in a chat on a cloud computer or
+         * holding the cloud iPhone (account level, no pin). Never throws.
+         */
+        sponsoredSent?: (input: CloudAdSentRequest) => Promise<CloudAdProofAnswer>;
         sponsoredSeen?: (input: CloudSponsoredSeenRequest) => Promise<void>;
         /** The person hid a reply's card: counted for the formats' A/B test. */
         sponsoredHide?: (input: CloudSponsoredHideRequest) => Promise<void>;

@@ -220,3 +220,7 @@
   .adecd-plancard[data-new] { animation: none !important; }
 }
 html[data-motion="reduced"] .adecd-plancard[data-new] { animation: none !important; }
+/* Pricing v3: one column a price; the head names them, the first column is what the person pays now. */
+.adecd-rates[data-columns] thead th { font-size: 10.5px; font-weight: 500; text-align: right; color: var(--kit-text-3); padding-left: 12px; }
+.adecd-rates[data-columns] td { padding-left: 12px; white-space: nowrap; }
+.adecd-rates[data-columns] tbody td:first-of-type { color: var(--kit-text-2); }

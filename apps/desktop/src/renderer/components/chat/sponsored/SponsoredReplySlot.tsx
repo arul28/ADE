@@ -2,13 +2,15 @@ import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowUpRight, Coins, Eye, Megaphone, ShareNetwork, X } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
-import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent, type CloudSponsoredFormat } from "../../../../shared/adeCloud";
+import { isGravityUrl, type CloudAccountState, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent, type CloudSponsoredFormat } from "../../../../shared/adeCloud";
+import { CLOUD_ADS_WORDS, cloudAdsSentence, cloudAdsViewOf, type CloudAdsView } from "../../../../shared/cloudAdPriceWords";
 import { cloudAccountGeneration, noteSponsoredNoticeShown, setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Button } from "../../ui/Button";
+import { keepCloudAds, setCloudAdsOn } from "./cloudAdsAnswer";
 import { holdSponsoredPlace, releaseSponsoredPlace, useOnScreen, useSponsoredPlaceHolder } from "./sponsoredOnScreen";
 import { SponsoredGravityCard, type SponsoredGravityPlace } from "./SponsoredGravityCard";
 import { SponsoredOutletsContext, useSponsoredOutlet } from "./sponsoredOutlets";
@@ -39,9 +41,17 @@ import { BRAND } from "../../../../shared/brand";
  * (`instanceId` null), in the free models' own format, and never shows the
  * Free plan's question or notice (the sheet was the question).
  *
+ * Pricing v3 (the account state carries `pricing`): ads show in chats on a
+ * cloud computer on every plan, and in a chat on the person's own computer
+ * that holds the account's cloud iPhone (`phoneId`). The first finished reply
+ * shows the ads notice instead of an ad (`CloudAdsNotice`); its answer is
+ * saved with `noticeSeen` on the account, so it never shows again on any
+ * device. After that, ads only while `pricing.ads.on`.
+ *
  * Never mounted in a subagent view, a CLI terminal, the Work list, or a
  * notification; on the person's own machine (no ADE Cloud lane for its pin)
- * only for an ADE Free Models chat.
+ * only for an ADE Free Models chat, or under Pricing v3 a chat holding the
+ * cloud iPhone.
  */
 
 const ANSWER_CACHE_LIMIT = 50;
@@ -123,10 +133,12 @@ export type SponsoredReplySlotProps = {
   paneVisible: boolean;
   /** The chat runs on an ADE Free Model: its cards follow that answer, on any machine and plan. */
   freeModelChat?: boolean;
+  /** Pricing v3: the account's live cloud iPhone, when this chat holds it (`useCloudPhoneHeldBy`); else null. */
+  phoneId?: string | null;
 };
 
-export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, paneVisible, freeModelChat = false }: SponsoredReplySlotProps) {
-  const account = useCloudAccount(Boolean((instanceId || freeModelChat) && sessionId));
+export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, paneVisible, freeModelChat = false, phoneId = null }: SponsoredReplySlotProps) {
+  const account = useCloudAccount(Boolean((instanceId || freeModelChat || phoneId) && sessionId));
   const sponsored = account?.sponsored;
   // The Free plan's cards on this ADE Cloud computer: the Index still hears that someone watches it.
   const cloudCardsOn = Boolean(instanceId && sponsored?.ads && sponsored.consent !== "declined");
@@ -150,6 +162,30 @@ export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, 
         confirmYes={false}
         format={freeModels.format ?? "below_reply"}
         pausedRecovery
+      />
+    );
+  }
+  const view = cloudAdsViewOf(account);
+  if (view && account) {
+    // Pricing v3: one notice per account, then ads while the switch is on.
+    if ((!instanceId && !phoneId) || !view.available || (view.noticeSeen && !view.on)) return null;
+    return (
+      <SponsoredReplySlotOn
+        instanceId={instanceId}
+        phoneId={phoneId}
+        viewerInstanceId={instanceId}
+        sessionId={sessionId}
+        events={events}
+        turnActive={turnActive}
+        paneVisible={paneVisible}
+        consent={view.noticeSeen && view.on ? "granted" : null}
+        startsOn={false}
+        test={sponsored?.test === true}
+        smallNeedsCards={false}
+        confirmYes={false}
+        format={sponsored?.format ?? "below_reply"}
+        pricingV3
+        adsNotice={view.noticeSeen ? null : { view, account }}
       />
     );
   }
@@ -186,7 +222,14 @@ function SponsoredReplySlotOn({
   confirmYes,
   format,
   pausedRecovery = false,
+  phoneId = null,
+  pricingV3 = false,
+  adsNotice = null,
 }: Omit<SponsoredReplySlotProps, "instanceId" | "sessionId" | "freeModelChat"> & {
+  /** The account has Pricing v3: no old question or notice, only `adsNotice`. */
+  pricingV3?: boolean;
+  /** Pricing v3, before the account saw the ads notice: the notice shows under the reply instead of the old question. */
+  adsNotice?: { view: CloudAdsView; account: Pick<CloudAccountState, "sponsored"> } | null;
   /** An ADE Free Models chat: a reply refused for no cards still gets its card (`lastFinishedTurn`). */
   pausedRecovery?: boolean;
   /** The ADE Cloud computer the card is asked for; null for an ADE Free Models chat, on any machine. */
@@ -275,7 +318,17 @@ function SponsoredReplySlotOn({
     let timer: number | null = null;
     noteAsked(turnKey, shownFormat);
     const askedFormat = askedFormats.get(turnKey) ?? shownFormat;
-    const input = { instanceId, chatId: sessionId, turnId: turn.turnId, messages: turn.messages, device: sponsoredDevice(), format: askedFormat, surface: "desktop" as const, renderer: "web1" as const };
+    const input = {
+      instanceId,
+      ...(phoneId ? { phoneId } : {}),
+      chatId: sessionId,
+      turnId: turn.turnId,
+      messages: turn.messages,
+      device: sponsoredDevice(),
+      format: askedFormat,
+      surface: "desktop" as const,
+      renderer: "web1" as const,
+    };
     void askOnce(turnKey, () => askAd(input))
       .then((answer) => {
         if (!live) return;
@@ -291,14 +344,15 @@ function SponsoredReplySlotOn({
       live = false;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [consent, notice, wanted, seen, targetReady, placeFree, turn, turnKey, ad?.key, instanceId, sessionId, askAgain, shownFormat]);
+  }, [consent, notice, wanted, seen, targetReady, placeFree, turn, turnKey, ad?.key, instanceId, phoneId, sessionId, askAgain, shownFormat]);
 
   const adShown = ad !== null && ad.key === turnKey && ad.format === shownFormat;
   // Where cards start on, the person is told instead of asked; the notice stays on its reply
   // (after saving it made the answer a yes) until dismissed. A turned-off notice unmounts the slot.
-  const told = startsOn && consent === null;
-  const noticeShowing = notice === undefined ? told : notice === false && (told || consent === "granted");
-  const asking = consent === null && !startsOn && notice !== true;
+  // Pricing v3: the ads notice until the account saw it (on any device); its reply then asks no ad.
+  const told = pricingV3 ? adsNotice !== null : startsOn && consent === null;
+  const noticeShowing = pricingV3 ? told : notice === undefined ? told : notice === false && (told || consent === "granted");
+  const asking = !pricingV3 && consent === null && !startsOn && notice !== true;
   let showing: "consent" | "ad" | null = null;
   // The question and the notice are always under the reply.
   if (wanted && onScreen && (asking || noticeShowing)) showing = "consent";
@@ -321,8 +375,9 @@ function SponsoredReplySlotOn({
       if (noticeTurns.size > ANSWER_CACHE_LIMIT) noticeTurns.delete(noticeTurns.keys().next().value as string);
       setNotice(false);
     }
-    noteSponsoredNoticeShown();
-  }, [holds, showing, told, turnKey]);
+    // Pricing v3 saves only the person's answer (`noticeSeen`), never the showing.
+    if (!pricingV3) noteSponsoredNoticeShown();
+  }, [holds, showing, told, turnKey, pricingV3]);
   const dismissNotice = () => {
     if (!turnKey) return;
     noticeTurns.set(turnKey, true);
@@ -357,7 +412,9 @@ function SponsoredReplySlotOn({
   return (
     <div ref={regionRef} className="w-full max-w-[var(--chat-content-width,52rem)]">
       <div aria-hidden className="h-px w-full" />
-      {holds && showing === "consent" ? (
+      {holds && showing === "consent" && adsNotice ? (
+        <CloudAdsNotice view={adsNotice.view} account={adsNotice.account} />
+      ) : holds && showing === "consent" ? (
         <SponsoredConsentCard smallNeedsCards={smallNeedsCards} confirmYes={confirmYes} format={shownFormat} notice={noticeShowing} onDismiss={dismissNotice} />
       ) : null}
       {card && place && target ? createPortal(card, target) : card}
@@ -436,6 +493,62 @@ function SponsoredConsentCard({ smallNeedsCards, confirmYes, format, notice, onD
           </Button>
           <button type="button" className="ade-sponsored-link" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>
             How it works
+            <ArrowUpRight size={11} weight="bold" aria-hidden />
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Pricing v3's ads notice, once per account under the first finished reply in
+ * a chat that ads can show in. Where ads start on: "Keep ads" (primary) or
+ * "Turn off ads"; elsewhere "Turn on ads" or "No thanks", the same weight (a
+ * yes is consent). Each answer saves `noticeSeen` on the account; off is one
+ * click with no dialog. Words: `CLOUD_ADS_WORDS`, `cloudAdsSentence`.
+ */
+function CloudAdsNotice({ view, account }: { view: CloudAdsView; account: Pick<CloudAccountState, "sponsored"> }) {
+  const [busy, setBusy] = useState(false);
+  // Before the notice is seen the server holds ads off everywhere; where they start on, the notice says they are on.
+  const startsOn = view.noticeSeen ? view.on : view.startsOn;
+  const run = (answer: () => Promise<void>) => {
+    setBusy(true);
+    void answer()
+      .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't save your answer", message: ipcErrorMessage(error) || "Try again in a moment." }))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <section className="ade-sponsored ade-sponsored--consent" aria-label={`Ads in ${BRAND.CLOUD_NAME}`}>
+      <span className="ade-sponsored-consent-icon" aria-hidden><Megaphone size={16} weight="duotone" /></span>
+      <div className="ade-sponsored-consent-body">
+        <p className="ade-sponsored-title">{cloudAdsSentence(view, startsOn ? "on" : "ask")}</p>
+        <ul className="ade-sponsored-facts">
+          <li><Eye size={14} aria-hidden /><span>{CLOUD_ADS_WORDS.fineLine}</span></li>
+          <li data-fine=""><ShareNetwork size={14} aria-hidden /><span>{CLOUD_ADS_WORDS.sends}</span></li>
+        </ul>
+        <div className="ade-sponsored-actions">
+          {startsOn ? (
+            <>
+              <Button size="sm" casing="sentence" variant="primary" disabled={busy} onClick={() => run(() => keepCloudAds(account))}>
+                {CLOUD_ADS_WORDS.keep}
+              </Button>
+              <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => run(() => setCloudAdsOn(false, account))}>
+                {CLOUD_ADS_WORDS.turnOff}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => run(() => setCloudAdsOn(true, account))}>
+                {CLOUD_ADS_WORDS.turnOn}
+              </Button>
+              <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => run(() => setCloudAdsOn(false, account))}>
+                {CLOUD_ADS_WORDS.noThanks}
+              </Button>
+            </>
+          )}
+          <button type="button" className="ade-sponsored-link" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>
+            {CLOUD_ADS_WORDS.howItWorks}
             <ArrowUpRight size={11} weight="bold" aria-hidden />
           </button>
         </div>

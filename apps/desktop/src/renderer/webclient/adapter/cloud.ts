@@ -576,7 +576,12 @@ export function createWebCloudNamespace(
     setExtraHours: (enabled) => billing.setExtraHours(enabled),
     // Sponsored cards: straight from this browser to the account server, which
     // reads the browser's own address and user agent. Account level, no pin.
-    setSponsoredConsent: async (consent, confirmed) => (await accountClient.cloudApi()?.setSponsoredConsent(consent, confirmed === true)) ?? null,
+    setSponsoredConsent: async (consent, confirmed, noticeSeen) => (await accountClient.cloudApi()?.setSponsoredConsent(consent, confirmed === true, noticeSeen === true)) ?? null,
+    sponsoredSent: async (input) => {
+      const api = accountClient.cloudApi();
+      if (!api) return { counted: false };
+      return api.sponsoredSent(input).catch(() => ({ counted: false }));
+    },
     sponsoredSeen: async (input) => {
       await accountClient.cloudApi()?.sponsoredSeen(input).catch(() => undefined);
     },

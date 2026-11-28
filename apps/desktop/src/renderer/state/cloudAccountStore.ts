@@ -83,7 +83,7 @@ export function refreshCloudAccount(): void {
   void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
 }
 
-export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, confirmed = false, since = generation): Promise<void> {
+export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, confirmed = false, since = generation, noticeSeen = false): Promise<void> {
   const set = window.ade?.cloud?.setSponsoredConsent;
   if (!set) throw new Error(`${BRAND.NAME} can't save that here.`);
   // Asked of an account signed out since (a confirm stayed open meanwhile): not this account's answer.
@@ -91,7 +91,7 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, co
   const current = generation;
   let next: Awaited<ReturnType<typeof set>>;
   try {
-    next = await set(consent, confirmed);
+    next = await set(consent, confirmed, noticeSeen);
   } catch (error) {
     // A refusal often means this copy is stale (the answer changed on another device, or a yes
     // now needs the second confirm): read the account again so the next try asks right.
@@ -102,6 +102,21 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, co
   // Another account signed in meanwhile: this answer was the old account's.
   if (current !== generation) return;
   noteCloudSponsoredState(next);
+  // Pricing v3: the server holds the ads switch and every price in `pricing`.
+  // The answer it just took shows at once (the switch, which price leads),
+  // then the account is read again for the computers' prices the server moved.
+  if (account?.pricing) {
+    const ads = account.pricing.ads;
+    publish({
+      ...account,
+      pricing: {
+        ...account.pricing,
+        ads: { ...ads, on: consent === "granted" || (consent === "notice" && ads.startsOn) ? ads.available : consent === "declined" ? false : ads.on, noticeSeen: ads.noticeSeen || noticeSeen },
+      },
+    });
+    refreshCloudAccount();
+    return;
+  }
   // Where Free's Small rule reaches the account, the answer may also have moved
   // Small's rate in the account's catalog (here, or abroad within a week of a
   // US look): read the account again so Small's hours show it.
@@ -231,6 +246,23 @@ const none = () => null;
  * answers. `active` false reads nothing and listens to nothing (a surface that
  * needs the account only in one state, such as a chat whose computer was deleted).
  */
+/** The account as last read, outside React (null while off or unread). For a one-off check at an event, never to render. */
+export function cloudAccountNow(): CloudAccountState | null {
+  return account;
+}
+
+const pricedPhoneId = () => account?.pricing?.phone?.phoneId ?? null;
+
+/**
+ * Pricing v3's live cloud iPhone id from the account (`pricing.phone.phoneId`),
+ * or null. A string, so a big surface (the chat pane) re-renders only when it
+ * changes, not on every account read.
+ */
+export function useCloudAccountPricedPhoneId(active = true): string | null {
+  const enabled = useAdeCloudEnabled() && active;
+  return useSyncExternalStore(enabled ? subscribe : noop, enabled ? pricedPhoneId : none, none);
+}
+
 export function useCloudAccount(active = true): CloudAccountState | null {
   // Inactive, it watches nothing: a picker that may never offer DAEX Free Models costs no subscription.
   const cloudOn = useAdeCloudEnabled(active);

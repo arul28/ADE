@@ -27,6 +27,8 @@ type WorkStartSurfaceProps = {
   lanes: LaneSummary[];
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
+  /** Switch this draft to a chat, keeping its prompt (Pricing v3's CLI notice: "Open as a chat"). */
+  onShowChatDraft?: () => void;
   onImportedSession?: (
     summary: ExternalSessionSummary,
     result: ExternalSessionImportResult,
@@ -53,6 +55,7 @@ export function WorkStartSurface({
   lanes,
   onOpenChatSession,
   onLaunchPtySession,
+  onShowChatDraft,
   onImportedSession,
   onOpenExistingImportedSession,
   onDraftLaneChange,
@@ -224,6 +227,7 @@ export function WorkStartSurface({
           onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
           onSessionCreated={onOpenChatSession}
           onLaunchCliSession={onLaunchPtySession}
+          onShowChatDraft={onShowChatDraft}
           onImportedSession={onImportedSession}
           onOpenExistingImportedSession={onOpenExistingImportedSession}
           onOpenShellSession={launchShell}

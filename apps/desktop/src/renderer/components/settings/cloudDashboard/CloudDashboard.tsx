@@ -19,7 +19,6 @@ import {
   formatCloudCentsPerHour,
   formatCloudDate,
   formatCloudGb,
-  formatCloudHours,
   percentOf,
   planCleanupDoneSentence,
   timedWakesCancelledSentence,
@@ -52,6 +51,7 @@ import { CLOUD_EXTRA_ANCHOR, CloudPlans } from "./CloudPlans";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
+import { CloudAdsBand } from "./CloudAdsBand";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
 import { useHasOwnComputer, useOwnWebComputers } from "../../../state/ownComputers";
@@ -431,7 +431,7 @@ function CloudHero({
   const planTotal = held ? cloudCatalogOf(account).plans.free.includedMilli : hours.includedMilli;
   const barParts = parts.filter((part) => part.milli > 0);
   const barTotal = Math.max(1, hours.includedMilli);
-  const barAria = `${parts.map((part) => `${part.label} ${formatCloudHours(part.shownMilli)}`).join(", ")}, of ${formatCloudHours(hours.includedMilli)} ${words.noun}`;
+  const barAria = `${parts.map((part) => `${part.label} ${words.num(part.shownMilli)}`).join(", ")}, of ${words.num(hours.includedMilli)} ${words.noun}`;
   const extra = account.extraHours;
   const extraCents = cloudExtraHourCentsOf(cloudPlanIdOf(account), catalog) ?? catalog.extraHourCents;
   const keepsGoing = extra.available && extra.enabled;
@@ -459,9 +459,9 @@ function CloudHero({
         <div className="adecd-hero-part adecd-hero-balance" role="group" aria-label={leftLabel} data-level={level}>
           <span className="adecd-label" title={`${cloudSmallHoursSentence(catalog, words)} ${words.unitSentence}`}>{leftLabel}</span>
           <div className="adecd-hours-num">
-            <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
+            <b className="kit-num" data-face="ui">{words.num(hours.leftMilli)}</b>
             {/* Free hours held (GitHub rules, or another account used them here): the plan's own number, on hold, never "of 0". */}
-            <span>{held ? `of ${formatCloudHours(planTotal)}, on hold` : `of ${formatCloudHours(planTotal)}`}</span>
+            <span>{held ? `of ${words.num(planTotal)}, on hold` : `of ${words.num(planTotal)}`}</span>
           </div>
           <div className="adecd-bar" role="img" aria-label={barAria}>
             {barParts.map((part) => (
@@ -470,7 +470,7 @@ function CloudHero({
           </div>
           <ul className="adecd-legend" aria-hidden="true">
             {parts.map((part) => (
-              <li key={part.key} data-part={part.key}><i />{part.label} <b className="kit-num">{formatCloudHours(part.shownMilli)}</b></li>
+              <li key={part.key} data-part={part.key}><i />{part.label} <b className="kit-num">{words.num(part.shownMilli)}</b></li>
             ))}
           </ul>
           <ul className="adecd-hours-notes">
@@ -515,12 +515,13 @@ function CloudHero({
             </div>
             <span className="adecd-part-line">
               {keepsGoing
-                ? `Extra credits at ${formatCloudCentsPerHour(extraCents)} each, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
-                : `${pauseLine}${account.plan === "free" && !held ? ` Paid plans can keep going for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}.` : ""}`}
+                ? `${words.scale === 1 ? `Extra credits at ${formatCloudCentsPerHour(extraCents)} each` : `Extra credits at ${words.extraPrice(extraCents)}`}, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
+                : `${pauseLine}${account.plan === "free" && !held ? ` Paid plans can keep going ${words.scale === 1 ? `for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}` : `at ${words.extraPrice(catalog.extraHourCents)}`}.` : ""}`}
             </span>
           </div>
         </div>
       </div>
+      <CloudAdsBand account={account} />
       {moment ? (
         <Banner
           layout="inline"
@@ -654,9 +655,12 @@ function LaneTable({
     // An unread list says so above the table (`ComputersUnreadNotice`): not "nothing here".
     return computersUnread ? null : <p className="adecd-empty">Nothing here yet. Each cloud lane gets its own computer, and every computer you pay for is listed here.</p>;
   }
+  // Pricing v3: one more column, what each computer costs now.
+  const priced = lanes.some((lane) => lane.price != null);
   return (
     <div
       className="adecd-table"
+      data-priced={priced || undefined}
       role="listbox"
       tabIndex={0}
       aria-label="Lanes and computers. Arrow keys move, Enter looks inside."
@@ -664,7 +668,7 @@ function LaneTable({
       onKeyDown={onKeyDown}
     >
       <div className="adecd-tr adecd-th" aria-hidden="true">
-        <span>Lane</span><span>Size</span><span>State</span><span>Last run</span><span />
+        <span>Lane</span><span>Size</span><span>State</span>{priced ? <span>Costs now</span> : null}<span>Last run</span><span />
       </div>
       {lanes.map((lane) => {
         const open = lane.key === selectedKey;
@@ -697,6 +701,7 @@ function LaneTable({
               ) : (
                 <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
               )}
+              {priced ? <PriceCell lane={lane} /> : null}
               <span className="adecd-when" title={removedReasonText(lane) ?? undefined}>{lastRunText(lane, now)}</span>
               {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
               <span aria-hidden="true" />
@@ -711,6 +716,23 @@ function LaneTable({
         );
       })}
     </div>
+  );
+}
+
+/**
+ * Pricing v3: what a computer costs now, and why it has the full price while
+ * ads are on. Asleep (or no computer), it costs nothing now.
+ */
+function PriceCell({ lane }: { lane: DashLane }) {
+  if (!lane.price) return <span className="adecd-price" data-quiet="">—</span>;
+  if (lane.state === "asleep" || lane.state === "none") {
+    return <span className="adecd-price" data-quiet="" title={lane.price.text}>Nothing while asleep</span>;
+  }
+  return (
+    <span className="adecd-price" title={[lane.price.text, lane.price.reason].filter(Boolean).join(". ")}>
+      <span className="kit-num" data-face="ui">{lane.price.text}</span>
+      {lane.price.reason ? <small data-tone="full">{lane.price.reason}</small> : null}
+    </span>
   );
 }
 

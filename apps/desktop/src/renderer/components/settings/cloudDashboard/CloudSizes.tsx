@@ -3,6 +3,7 @@ import { Cpu } from "@phosphor-icons/react";
 import { cloudCatalogOf, cloudHoursLeftMilli, cloudSmallHoursSentence, cloudSmallRateMilli, type CloudAccountState } from "../../../../shared/adeCloud";
 import { cloudTiers } from "../../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { cloudAdsViewOf, cloudPricingOf } from "../../../../shared/cloudAdPriceWords";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
 import { CloudSizeCards } from "./CloudSizeCards";
@@ -39,6 +40,7 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
           markLabel="Default"
           ariaLabel="Size for new cloud lanes"
           words={words}
+          priced={cloudPricingOf(account) ? { view: cloudAdsViewOf(account) } : null}
         />
       </div>
     </section>

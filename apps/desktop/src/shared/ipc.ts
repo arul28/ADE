@@ -1246,6 +1246,7 @@ export const IPC = {
   cloudSponsoredSeen: "ade.cloud.sponsoredSeen",
   cloudSponsoredHide: "ade.cloud.sponsoredHide",
   cloudSponsoredAd: "ade.cloud.sponsoredAd",
+  cloudSponsoredSent: "ade.cloud.sponsoredSent",
   /** Reports a card's view to Gravity once half of it was on screen (the page itself may not reach outside hosts). */
   cloudSponsoredViewed: "ade.cloud.sponsoredViewed",
   /** ADE Free Models (account level, no pin): the answer to the one-time sheet, and a person's look at a chat that uses them. */

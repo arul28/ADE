@@ -24,12 +24,15 @@ export function InviteCodeBox({
   initialCode = "",
   onDone,
   noun = "credits",
+  scale = 1,
 }: {
   /** Read once: give the box a `key` of the code so a new link fills it again. */
   initialCode?: string;
   onDone?: (referral: CloudReferralSummary | null) => void;
   /** What the reward is called (`cloudUnitWords`). */
   noun?: "credits";
+  /** Shown credits in one Medium-hour unit (`CloudUnitWords.scale`). */
+  scale?: number;
 }) {
   const [code, setCode] = useState(initialCode);
   const [busy, setBusy] = useState(false);
@@ -46,7 +49,7 @@ export function InviteCodeBox({
       const outcome = await redeem(value);
       if (outcome.ok) {
         captureInviteAnalytics({ action: "invite_code_entered", outcome: "accepted" });
-        const reward = formatCloudHours(outcome.referral?.rewardMilli || CLOUD_REFERRAL_REWARD_MILLI);
+        const reward = formatCloudHours(outcome.referral?.rewardMilli || CLOUD_REFERRAL_REWARD_MILLI, scale);
         showToast({
           tone: "success",
           title: outcome.rewarded ? `You both got ${reward} free cloud ${noun}` : "Invite added",
@@ -98,9 +101,9 @@ export function InviteCodeBox({
 export function CloudInviteCard({ account, onChanged }: { account: CloudAccountState; onChanged: () => void }) {
   const referral = cloudReferralOf(account);
   const [copied, setCopied] = useState(false);
-  const { noun, Noun } = cloudUnitWords(account);
+  const { noun, Noun, scale } = cloudUnitWords(account);
   if (!referral) return null;
-  const reward = formatCloudHours(referral.rewardMilli);
+  const reward = formatCloudHours(referral.rewardMilli, scale);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(referral.link);
@@ -131,14 +134,14 @@ export function CloudInviteCard({ account, onChanged }: { account: CloudAccountS
         </div>
         <dl className="adecd-invite-stats">
           <div className="kit-panel"><dt>Friends joined</dt><dd className="kit-num" data-face="ui">{referral.friendsJoined}</dd></div>
-          <div className="kit-panel"><dt>{Noun} earned</dt><dd className="kit-num" data-face="ui">{formatCloudHours(referral.hoursEarnedMilli)}</dd></div>
+          <div className="kit-panel"><dt>{Noun} earned</dt><dd className="kit-num" data-face="ui">{formatCloudHours(referral.hoursEarnedMilli, scale)}</dd></div>
           <div className="kit-panel"><dt>Rewards left</dt><dd className="kit-num" data-face="ui">{referral.rewardsLeft} of {referral.rewardLimit}</dd></div>
         </dl>
         {referral.canEnterCode && !referral.hasReferrer ? (
           <div className="adecd-invite-friend">
             <b>Were you invited?</b>
             <small>{referral.enterCodeUntil ? `Add the link or code by ${formatCloudDate(referral.enterCodeUntil)}.` : "Add the link or code."}</small>
-            <InviteCodeBox onDone={onChanged} noun={noun} />
+            <InviteCodeBox onDone={onChanged} noun={noun} scale={scale} />
           </div>
         ) : referral.hasReferrer ? (
           <p className="adecd-invite-note">
@@ -162,17 +165,17 @@ export function CloudInviteCard({ account, onChanged }: { account: CloudAccountS
 export function AccountInviteFact({ account, inviteParam }: { account: CloudAccountState | null; inviteParam: string | null }) {
   const [done, setDone] = useState(false);
   const referral = cloudReferralOf(account);
-  const { noun } = cloudUnitWords(account);
+  const { noun, scale } = cloudUnitWords(account);
   if (!referral || done || !referral.canEnterCode || referral.hasReferrer) return null;
   return (
     <div className="ade-acct-fact" id="account-invite" data-settings-anchor="account-invite">
       <dt><Gift size={13} weight="bold" />Invite</dt>
       <dd className="adecd-acct-invite">
         <span className="ade-acct-fact-note">
-          Were you invited? You both get {formatCloudHours(referral.rewardMilli)} free cloud {noun}.
+          Were you invited? You both get {formatCloudHours(referral.rewardMilli, scale)} free cloud {noun}.
           {referral.enterCodeUntil ? ` Add it by ${formatCloudDate(referral.enterCodeUntil)}.` : ""}
         </span>
-        <InviteCodeBox key={inviteParam ?? ""} initialCode={inviteParam ?? ""} onDone={() => setDone(true)} noun={noun} />
+        <InviteCodeBox key={inviteParam ?? ""} initialCode={inviteParam ?? ""} onDone={() => setDone(true)} noun={noun} scale={scale} />
       </dd>
     </div>
   );

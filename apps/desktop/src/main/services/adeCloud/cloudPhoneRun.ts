@@ -18,6 +18,12 @@ export type CloudPhoneRun<P> = {
   account: string | null;
   /** The agent chat whose call started it; null when a person, a terminal, or a reuse did. */
   chatSessionId: string | null;
+  /**
+   * Pricing v3: the agent chat of this brain's latest call to the phone (the
+   * chat that holds it now), null before any chat's call. A chat on any
+   * machine that holds the live phone may show an ad and gives its proof.
+   */
+  holderChatSessionId?: string | null;
   readyAt: number | null;
   lastActivityAt: number | null;
   /** When this brain took it: a status read sent before then can't have seen it. */

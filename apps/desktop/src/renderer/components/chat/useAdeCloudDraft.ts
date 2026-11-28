@@ -12,6 +12,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudAdsViewOf, cloudPricingOf } from "../../../shared/cloudAdPriceWords";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -177,6 +178,8 @@ export function useAdeCloudDraft({
   // size a new lane gets and how long those hours last at it.
   const hoursLeftMilli = account ? cloudHoursLeftMilli(account) : null;
   const words = useMemo(() => cloudUnitWords(account), [account]);
+  // Pricing v3: the size menu shows each size's two prices (the account's ads decide which leads).
+  const priced = useMemo(() => (cloudPricingOf(account) ? { view: cloudAdsViewOf(account) } : null), [account]);
   const runOnLine = useMemo(() => {
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
@@ -221,6 +224,8 @@ export function useAdeCloudDraft({
     hoursLeftMilli,
     /** The account's words (`cloudUnitWords`). */
     words,
+    /** Pricing v3's ads for the size menu's two prices; null without Pricing v3. */
+    priced,
     runOnLine,
     refresh: machines.refresh,
   };

@@ -1548,6 +1548,7 @@ export function WorkViewArea({
             lanes={lanes}
             onOpenChatSession={onOpenChatSession}
             onLaunchPtySession={onLaunchPtySession}
+            onShowChatDraft={() => onShowDraftKind("chat")}
             onImportedSession={onImportedSession}
             onOpenExistingImportedSession={onOpenExistingImportedSession}
             onDraftLaneChange={onDraftLaneChange}

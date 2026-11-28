@@ -12,6 +12,8 @@ import { CLOUD_COMPUTER_LIMIT_CODE, readCloudComputerLimitDetail, readCloudPlanC
 import {
   CLOUD_COMPUTER_FEATURES,
   CLOUD_COMPUTER_HEADER,
+  CLOUD_PRICING_HEADER,
+  CLOUD_PRICING_VERSION,
   CLOUD_COMPUTER_PLATFORM_HEADER,
   CLOUD_PATHS,
   CLOUD_PHONE_PROVIDERS,
@@ -209,6 +211,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
           headers: {
             accept: "application/json",
             authorization: `Bearer ${token}`,
+            // This build knows Pricing v3: without it the server answers as to an older build.
+            [CLOUD_PRICING_HEADER]: CLOUD_PRICING_VERSION,
             ...(computer ? { [CLOUD_COMPUTER_HEADER]: computer.id, [CLOUD_COMPUTER_PLATFORM_HEADER]: computer.platform } : {}),
             ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
           },

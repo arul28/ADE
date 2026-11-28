@@ -14,6 +14,16 @@ import {
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../../../../shared/cloudLaneLaunch";
 import { cloudTierHoursAt, cloudTierOfMachine, cloudTierRank, cloudTiers, type CloudTier } from "../../../../shared/cloudTiers";
 import { cloudUnitWords, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
+import {
+  cloudAdsViewOf,
+  cloudComputerPriceOf,
+  cloudFullPriceReasonLine,
+  cloudHoursBothText,
+  cloudPriceNowText,
+  cloudPricingOf,
+  cloudRateText,
+  cloudTierRatePair,
+} from "../../../../shared/cloudAdPriceWords";
 import { formatAgo } from "../../../lib/format";
 
 /**
@@ -42,6 +52,13 @@ export type DashLane = {
   /** 1 (Small) to 4 (X-Large); 1 when the size is unknown. */
   tierRank: number;
   rateLabel: string | null;
+  /**
+   * Pricing v3: what the computer costs now ("8 credits an hour with ads · 10
+   * with no ads") and, at the full price while ads are on, why in one line.
+   * Null without Pricing v3 (the size's rate shows instead) and for a lane
+   * with no computer.
+   */
+  price: { text: string; reason: string | null } | null;
   /** The disk it holds against the plan (its size), or 0 for a lane without a computer. */
   diskGb: number;
   state: DashLaneState;
@@ -92,6 +109,15 @@ export function dashLanes(input: {
   const tiers = cloudTiers(cloudCatalogOf(input.account));
   const words = cloudUnitWords(input.account);
   const idle = new Map((input.account?.dueForDeletion ?? []).map((entry) => [entry.instanceId, entry]));
+  const priced = cloudPricingOf(input.account) != null;
+  const view = cloudAdsViewOf(input.account);
+  // The server lists every computer's price now; one it doesn't list yet shows its size's two prices.
+  const priceOf = (machine: CloudLaneMachine, tier: CloudTier | null): DashLane["price"] => {
+    if (!priced) return null;
+    const now = cloudComputerPriceOf(input.account, machine.instanceId);
+    if (now) return { text: cloudPriceNowText(now, view, words), reason: cloudFullPriceReasonLine(now, view) };
+    return tier ? { text: cloudRateText(cloudTierRatePair(tier), view, words), reason: null } : null;
+  };
   // Every computer the account pays for: a lane's own, and one that holds no lane.
   const withComputer = input.machines
     .map((machine): DashLane => {
@@ -103,7 +129,9 @@ export function dashLanes(input: {
         name: machine.lane?.laneName ?? noLaneName(machine),
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
-        rateLabel: rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
+        // Under Pricing v3 the "Costs now" cell says the price; the size stands alone.
+        rateLabel: priced ? null : rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
+        price: priceOf(machine, tier),
         diskGb: machine.resources?.diskGb ?? 0,
         state: stateOf(machine),
         lastActiveAt,
@@ -130,6 +158,7 @@ export function dashLanes(input: {
         tierRank: tier ? cloudTierRank(tier.id) : 1,
         // No computer, so nothing uses credits: the size is the one its next computer starts at.
         rateLabel: null,
+        price: null,
         diskGb: 0,
         state: "none",
         lastActiveAt: null,
@@ -228,7 +257,12 @@ export function heroCreditsWorth(account: CloudAccountState, words: CloudUnitWor
   const medium = cloudTiers(cloudCatalogOf(account)).find((tier) => tier.id === "medium");
   const mediumHours = medium ? cloudTierHoursAt(medium, left).replace(/ h$/, "") : null;
   // "About 0 hours" says nothing: with (nearly) nothing left the hero's own notice says what stops.
-  const onMedium = mediumHours && mediumHours !== "0" ? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
+  // Pricing v3 with ads on: both times ("up to 54 hours on a Medium with ads · 43 with no ads").
+  const view = cloudAdsViewOf(account);
+  const both = medium && view?.on && view.available && medium.adMultiplierMilli != null && medium.adMultiplierMilli > 0 && medium.adMultiplierMilli < medium.multiplierMilli
+    ? cloudHoursBothText(left, cloudTierRatePair(medium), view, "a Medium")
+    : null;
+  const onMedium = mediumHours && mediumHours !== "0" ? both ?? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
   const minutes = account.phone?.access === "on" ? Math.floor(left / words.phoneMilliPerMinute) : null;
   const onPhone = minutes ? `${minutes.toLocaleString("en-US")} iPhone ${minutes === 1 ? "minute" : "minutes"}` : null;
   if (onPhone && onMedium) return `About ${onPhone}, or ${onMedium}.`;
