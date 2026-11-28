@@ -10,6 +10,7 @@ import { computerIsDown, useCloudComputer } from "../remoteTargets/useCloudCompu
 import { Banner, type BannerModel } from "../ui/notice";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 import { BRAND } from "../../../shared/brand";
+import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_PHASE_LABEL, cloudMacPhaseOf, cloudMacSentence } from "../../../shared/cloudMac";
 
 /**
  * ADE Cloud's half of a Work tool: a person opening a tool that needs the
@@ -99,6 +100,8 @@ export function CloudToolGate({
   const tier = box ? cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account))) : null;
   const outOfHours = cloudOutOfHours(account) && !(tier && !cloudTierUsesHours(tier));
   const instanceId = box?.instanceId ?? null;
+  // A computer the server can't wake now, or a Mac whose drive is lost: no wake to offer, its sentence instead.
+  const unwakeable = box?.unavailable != null || (box?.os === "mac" && cloudMacPhaseOf(box.mac, box.status) === "drive_lost");
   const openedByPerson = opened != null && opened.tool === tool && Date.now() - opened.at < OPENED_BY_PERSON_WINDOW_MS;
   const [waking, setWaking] = useState(false);
   const [wakeError, setWakeError] = useState<string | null>(null);
@@ -124,10 +127,10 @@ export function CloudToolGate({
 
   // A click wakes once; a reopened tab shows the button instead.
   useEffect(() => {
-    if (!down || outOfHours || !openedByPerson || !instanceId || wakeTriedFor.current === instanceId) return;
+    if (!down || outOfHours || unwakeable || !openedByPerson || !instanceId || wakeTriedFor.current === instanceId) return;
     wakeTriedFor.current = instanceId;
     wake();
-  }, [down, instanceId, openedByPerson, outOfHours, wake]);
+  }, [down, instanceId, openedByPerson, outOfHours, unwakeable, wake]);
 
   if (!needsComputer || !box || (!down && !waking && box.state !== "starting")) return <>{children}</>;
   // ADE Cloud is one machine: the lane's computer is "This lane's computer", never its own name.
@@ -140,6 +143,13 @@ export function CloudToolGate({
       {laneId ? <CloudLaneSavedWork laneId={laneId} /> : null}
     </div>
   );
+  if (unwakeable && down) {
+    return restingGate({
+      id: "cloud-tool-unwakeable",
+      title: box.unavailable ? CLOUD_COMPUTER_UNAVAILABLE_LABEL : CLOUD_MAC_PHASE_LABEL.drive_lost,
+      detail: box.unavailable ?? cloudMacSentence(box.mac) ?? undefined,
+    });
+  }
   if (outOfHours && down) {
     return restingGate({
       id: "cloud-tool-out-of-hours",

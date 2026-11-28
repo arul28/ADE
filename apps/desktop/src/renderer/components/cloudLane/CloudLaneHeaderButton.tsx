@@ -192,7 +192,8 @@ function CloudLaneStatusMenu({
       <div ref={menu.menuRef} style={{ display: "contents" }}>
         {mac ? (
           // A Mac starts again with its drive; a lost drive can't (its saved work is in Lanes without a computer).
-          power === "asleep" || macPhase === "start_failed" ? (
+          // A Mac the server can't start now (`unavailable`) offers no start: its line says why.
+          (power === "asleep" || macPhase === "start_failed") && !box?.unavailable && !computer.unavailable ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onWake)}>
               <span className="ade-cx-menu-icon"><SunHorizon size={13} /></span>
               {macPhase === "start_failed" ? "Couldn't start · Try again" : "Stopped · Start the Mac"}

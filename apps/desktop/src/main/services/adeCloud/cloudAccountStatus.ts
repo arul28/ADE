@@ -313,6 +313,7 @@ export function buildCloudAccountStatus(input: {
         disk: { sizeGb: box.mac?.drive?.sizeGb ?? null, full: box.diskFull, usage: box.diskUsage ?? null },
         update: null,
         mac: { phase, label: CLOUD_MAC_PHASE_LABEL[phase], sentence: cloudMacSentence(box.mac), drive: cloudMacDriveText(box.mac), unsupported: [...(box.unsupported ?? [])] },
+        ...(box.unavailable ? { unavailable: box.unavailable } : {}),
       };
     }
     const tier = cloudTierOfMachine(box, tiers);

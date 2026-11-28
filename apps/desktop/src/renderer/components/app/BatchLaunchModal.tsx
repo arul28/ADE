@@ -862,7 +862,9 @@ export function BatchLaunchModal({
               <span>
                 {adeCloud.os === "mac" && adeCloud.macOffer
                   // Macs run by the minute: say what the whole batch uses before it starts.
-                  ? `A new Mac for each lane: ${launchCount} ${launchCount === 1 ? "Mac" : "Macs"} at ${cloudMacRateText(adeCloud.macOffer, adeCloud.words)} each while they run, ${cloudMacRateText({ creditMilliPerMinute: adeCloud.macOffer.creditMilliPerMinute * launchCount }, adeCloud.words)} together.`
+                  ? launchCount === 1
+                    ? `A new Mac for this lane, at ${cloudMacRateText(adeCloud.macOffer, adeCloud.words)} while it runs.`
+                    : `A new Mac for each lane: ${launchCount} Macs at ${cloudMacRateText(adeCloud.macOffer, adeCloud.words)} each while they run, ${cloudMacRateText({ creditMilliPerMinute: adeCloud.macOffer.creditMilliPerMinute * launchCount }, adeCloud.words)} together.`
                   : `A new ${adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for each lane.`}
               </span>
             </div>
