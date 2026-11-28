@@ -777,8 +777,9 @@ callers must keep the path inside the project.
 Controllers never run agents. State-only writes replicate as changesets;
 execution (worktrees, terminals, PRs, chat sends) goes as a `command` the
 runtime runs. Each action has a `SyncRemoteCommandPolicy` (`viewerAllowed`,
-`requiresApproval`, `localOnly`, `queueable`) and a scope; clients read the
-runtime's descriptors and gate on them.
+`controllerAllowed`, `runtimeHostOnly`, `requiresApproval`, `localOnly`,
+`queueable`) and a scope; clients read the runtime's descriptors and gate on
+them.
 
 `viewerAllowed: false` covers anything that hands out or mints a credential
 (`sync.getWebPairingInfo`, `sync.getDesktopPairingInfo`,
