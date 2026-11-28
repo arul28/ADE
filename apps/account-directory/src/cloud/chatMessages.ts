@@ -1,3 +1,5 @@
+import { noteOutsideAgentWork } from "./adPrice";
+import type { GravityEnv } from "./gravity";
 import {
   CLOUD_CHAT_MESSAGE_MAX_CHARS,
   CLOUD_CHAT_MESSAGE_PRUNE_MS,
@@ -688,6 +690,8 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
     // The chat moved to another machine since it was read: nothing is queued, and a send again reaches it there.
     if (!inserted) return fail("chat_moved", "This chat moved to another machine just as the message was sent. Send it again.", 409);
     const { row, created } = inserted;
+    // Pricing v3: an outside agent's work gives the computer the full price (`adPrice.ts`).
+    if (input.outsideAgent && created) await noteOutsideAgentWork(env as GravityEnv, computer, now);
     // A move holds it: nothing wakes the old computer or asks it to send, and the move hands it on.
     const askTo = held ? await computerAfterHold(env, userId, chat, computer, now) : computer;
     if (askTo) {

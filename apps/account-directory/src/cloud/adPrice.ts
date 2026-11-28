@@ -57,6 +57,8 @@ export type AdTargetRow = {
   unverified_at: number | null;
   full_work: string | null;
   full_work_at: number | null;
+  /** An outside agent sent one of its chats a message through the account server (`chatMessages.ts`); cleared at the brain's next idle report. */
+  outside_at?: number | null;
 };
 
 /** What the rules read for one account, read once. */
@@ -127,6 +129,9 @@ export function readFullPriceWork(value: unknown): CloudFullPriceWork[] {
   return CLOUD_FULL_PRICE_WORK.filter((kind) => list.includes(kind));
 }
 
+/** An outside agent's message holds the full price at most this long with no idle report (a brain that never sent one). */
+const OUTSIDE_AGENT_HOLD_MS = 6 * 60 * 60_000;
+
 export type PriceDecision = { now: "ad" | "full"; reason: CloudFullPriceReason | null; adUntil: number | null };
 
 /**
@@ -135,7 +140,7 @@ export type PriceDecision = { now: "ad" | "full"; reason: CloudFullPriceReason |
  * and no longer counts (null: a phone, or a resting computer).
  */
 export function decidePrice(
-  target: Pick<AdTargetRow, "proof_at" | "fm_proof_at" | "unverified_at" | "full_work" | "full_work_at"> | null,
+  target: Pick<AdTargetRow, "proof_at" | "fm_proof_at" | "unverified_at" | "full_work" | "full_work_at" | "outside_at"> | null,
   ctx: AdContext,
   awakeSince: number | null,
   now: number,
@@ -149,6 +154,8 @@ export function decidePrice(
   if (!live && !(ctx.adsOn && ctx.adsReach)) return { now: "full", reason: "ads_off", adUntil: null };
   const work = target?.full_work_at != null && awakeSince != null && target.full_work_at >= awakeSince ? readFullPriceWork(target.full_work) : [];
   if (work.length) return { now: "full", reason: work[0]!, adUntil: null };
+  // An outside agent's message through the account server, until the brain says it is idle again.
+  if (target?.outside_at != null && awakeSince != null && now - target.outside_at < OUTSIDE_AGENT_HOLD_MS) return { now: "full", reason: "outside_agent", adUntil: null };
   if (live) return { now: "ad", reason: null, adUntil: until };
   const unverified = target?.unverified_at != null && target.unverified_at >= (Number.isFinite(proof) ? proof : 0) && target.unverified_at + ctx.windowMs > now;
   return { now: "full", reason: unverified ? "unverified" : "not_in_use", adUntil: null };
@@ -221,7 +228,7 @@ export async function adContextFor(env: GravityEnv, account: AccountRow, switche
 
 async function targetsOf(env: GravityEnv, targets: readonly string[]): Promise<Map<string, AdTargetRow>> {
   if (targets.length === 0) return new Map();
-  const rows = await env.DB.prepare("select target, user_id, proof_at, fm_proof_at, unverified_at, full_work, full_work_at from cloud_ad_targets where target in (select value from json_each(?))")
+  const rows = await env.DB.prepare("select target, user_id, proof_at, fm_proof_at, unverified_at, full_work, full_work_at, outside_at from cloud_ad_targets where target in (select value from json_each(?))")
     .bind(JSON.stringify(targets)).all<AdTargetRow>();
   return new Map((rows.results ?? []).map((row) => [row.target, row]));
 }
@@ -530,6 +537,38 @@ export async function noteFullPriceWork(env: GravityEnv, computer: ComputerRow, 
     if (account) await syncAccountPrices(env, account, now, { instanceIds: [computer.instance_id] });
   } catch (error) {
     reportCloudFailure("cloud.ad_price.work_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
+/**
+ * An outside agent (ADE MCP) sent a message to a chat on this computer
+ * through the account server (`origin: "mcp"`): the computer has the full
+ * price until its brain next reports it idle (`noteComputerIdle`). Never
+ * fails the send.
+ */
+export async function noteOutsideAgentWork(env: GravityEnv, computer: ComputerRow, now: number): Promise<void> {
+  try {
+    await env.DB.prepare(`
+      insert into cloud_ad_targets (target, user_id, outside_at, updated_at) values (?, ?, ?, ?)
+      on conflict (target) do update set outside_at = excluded.outside_at, updated_at = excluded.updated_at
+    `).bind(computer.instance_id, computer.user_id, now, now).run();
+    const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(computer.user_id).first<AccountRow>();
+    if (account) await syncAccountPrices(env, account, now, { instanceIds: [computer.instance_id] });
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.outside_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
+/** The brain reported the computer idle: an outside agent's turn is over. Never fails the report. */
+export async function noteComputerIdle(env: GravityEnv, computer: ComputerRow, now: number): Promise<void> {
+  try {
+    const cleared = await env.DB.prepare("update cloud_ad_targets set outside_at = null, updated_at = ? where target = ? and outside_at is not null and outside_at < ?")
+      .bind(now, computer.instance_id, now).run();
+    if (!cleared.meta?.changes) return;
+    const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(computer.user_id).first<AccountRow>();
+    if (account) await syncAccountPrices(env, account, now, { instanceIds: [computer.instance_id] });
+  } catch (error) {
+    reportCloudFailure("cloud.ad_price.idle_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
 }
 

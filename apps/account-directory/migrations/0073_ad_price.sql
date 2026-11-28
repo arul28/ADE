@@ -32,6 +32,9 @@ create table if not exists cloud_ad_targets (
   unverified_at integer,
   full_work text,
   full_work_at integer,
+  -- An outside agent (ADE MCP) sent a message to one of its chats through the
+  -- account server; cleared when its brain next reports it idle.
+  outside_at integer,
   updated_at integer not null
 );
 create index if not exists idx_cloud_ad_targets_user on cloud_ad_targets (user_id);
