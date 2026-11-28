@@ -4316,6 +4316,14 @@ export type AgentChatModelCatalogArgs = {
   mode?: AgentChatModelCatalogMode;
   refreshProvider?: AgentChatModelCatalogRefreshProvider;
   cursorSource?: AgentChatCursorModelSource;
+  /**
+   * A person pressed Refresh (or Retry) for `refreshProvider`. Only then does
+   * the host check a cached "not signed in" verdict again and ask the agent
+   * past its failure backoff; a `force` the host or the picker schedules
+   * itself (a stale catalog) does neither. A host that does not know it
+   * ignores it.
+   */
+  userRefresh?: boolean;
 };
 
 /**

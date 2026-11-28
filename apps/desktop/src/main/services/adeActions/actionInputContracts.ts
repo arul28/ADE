@@ -920,7 +920,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     modelCatalog: {
       description: "Read the provider/model catalog, including reasoning tiers and fast service tiers.",
-      input: "object { mode?: \"cached\" | \"refresh-stale\" | \"force\", refreshProvider?: string, cursorSource?: string }",
+      input: "object { mode?: \"cached\" | \"refresh-stale\" | \"force\", refreshProvider?: string, cursorSource?: string, userRefresh?: boolean }",
       example: "ade actions run chat.modelCatalog --input-json '{\"mode\":\"cached\"}' --json",
     },
     resolveSmartLinkPreview: {

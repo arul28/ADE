@@ -321,6 +321,7 @@ export const ModelPicker = memo(function ModelPicker({
   const loadRuntimeCatalog = useCallback(async (args: {
     mode: "cached" | "refresh-stale" | "force";
     refreshProvider?: AgentChatModelCatalogRefreshProvider;
+    userRefresh?: boolean;
   }): Promise<AgentChatModelCatalog | null> => {
     const cursorFlavor = args.refreshProvider === "cursor" ? cursorSource : undefined;
     const shared = getSharedRuntimeCatalog(catalogScopeKey);
@@ -344,6 +345,7 @@ export const ModelPicker = memo(function ModelPicker({
       mode: args.mode,
       ...(args.refreshProvider ? { refreshProvider: args.refreshProvider } : {}),
       ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
+      ...(args.userRefresh ? { userRefresh: true } : {}),
       pin: runtimePinRef.current,
     });
     if (result.status === "unavailable") return null;
@@ -394,7 +396,11 @@ export const ModelPicker = memo(function ModelPicker({
         setRefreshErrorProvider((current) => current === refreshProvider ? null : current);
         setRefreshingProvider(refreshProvider);
         try {
-          const immediate = await loadRuntimeCatalog({ mode: force ? "force" : "refresh-stale", refreshProvider });
+          // `force` is a person's Refresh or Retry; the forced read that
+          // follows a stale answer below is not, so it does not say so.
+          const immediate = await loadRuntimeCatalog(force
+            ? { mode: "force", refreshProvider, userRefresh: true }
+            : { mode: "refresh-stale", refreshProvider });
           if (!immediate) return;
           if (!force && immediate.stale === true) {
             const forced = await loadRuntimeCatalog({ mode: "force", refreshProvider });

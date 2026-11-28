@@ -452,9 +452,15 @@ export function warmAcpModelCatalog(
   // One warm at a time, and none in the first seconds of a launch: each one
   // starts the provider's CLI (`launchQuiet.ts`).
   queue = queue.then(() => runAfterLaunchQuiet(async () => {
-    // A chat or a refresh may have renewed the list while this warm waited its turn.
+    // A chat or a refresh may have renewed the list while this warm waited its
+    // turn, or failed or answered empty, which backs the provider off: check
+    // again so a queued warm does not start the agent right after it.
     const latest = readFile().providers[provider];
     if (latest && Date.now() - latest.savedAt < CATALOG_TTL_MS) return;
+    if (!runningDiscovery.has(provider)) {
+      if (!providerFailureBackoff(provider).canAttempt()) return;
+      if (Date.now() - (lastEmptyAt.get(provider) ?? 0) < CATALOG_TTL_MS) return;
+    }
     await runDiscovery(provider, options);
   })).finally(() => {
     inFlight.delete(provider);

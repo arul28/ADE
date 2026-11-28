@@ -85,6 +85,22 @@ function unwrapPersonalChatResult<T>(response: PersonalChatCallResponse | T): T 
  * reads the hidden machine chat runtime; every other surface reads the bound
  * project runtime (optionally via a foreign pin).
  */
+type PersonalCatalogReader = (args: AgentChatModelCatalogArgs) => Promise<AgentChatModelCatalog>;
+const personalCatalogReaders = new Map<string, PersonalCatalogReader>();
+
+/**
+ * A personal chat pane on a chosen machine reads its catalog through that
+ * machine. Registered under the pane's catalog bucket, so a read or a Refresh
+ * any surface starts for that bucket (the picker) goes to the same machine,
+ * not the window's. Returns the unregister function.
+ */
+export function registerPersonalCatalogReader(scopeKey: string, reader: PersonalCatalogReader): () => void {
+  personalCatalogReaders.set(scopeKey, reader);
+  return () => {
+    if (personalCatalogReaders.get(scopeKey) === reader) personalCatalogReaders.delete(scopeKey);
+  };
+}
+
 export async function requestModelCatalog(
   args: AgentChatModelCatalogArgs,
   options: {
@@ -93,6 +109,10 @@ export async function requestModelCatalog(
   },
 ): Promise<AgentChatModelCatalog> {
   if (isPersonalChatCatalogScopeKey(options.catalogScopeKey)) {
+    // A pane bound to a machine names its reader; that machine's directory is
+    // not adopted, the same rule as a pinned machine below.
+    const reader = personalCatalogReaders.get(options.catalogScopeKey);
+    if (reader) return await reader(args ?? {});
     const bridge = window.ade?.personalChats?.call;
     if (typeof bridge !== "function") {
       throw new Error("Personal chats are not available in this ADE runtime.");

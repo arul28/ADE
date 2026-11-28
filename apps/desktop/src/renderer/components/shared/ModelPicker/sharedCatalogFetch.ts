@@ -38,6 +38,8 @@ export type SharedCatalogFetchArgs = {
   refreshProvider?: AgentChatModelCatalogRefreshProvider;
   cursorSource?: "cli" | "sdk";
   pin?: OpenProjectBinding | null;
+  /** A person pressed Refresh for `refreshProvider` (see `AgentChatModelCatalogArgs`). */
+  userRefresh?: boolean;
 };
 
 /** The host bridge this scope reads through, or null when the host has none. */
@@ -60,12 +62,13 @@ export async function fetchSharedRuntimeCatalog(
   args: SharedCatalogFetchArgs,
 ): Promise<SharedCatalogFetchResult> {
   const { scopeKey, mode, refreshProvider, cursorSource, pin } = args;
+  const userRefresh = args.userRefresh === true && refreshProvider != null && mode === "force";
   if (!catalogBridgeAvailable(scopeKey)) return { status: "unavailable" };
 
   // A read started before the machine's last change is not joined: its
   // answer may predate the change (`rememberRuntimeCatalog` drops it).
   const invalidationGeneration = runtimeCatalogScopeInvalidationGeneration(scopeKey);
-  const requestKey = `${scopeKey}|${mode}:${refreshProvider ?? "all"}:${cursorSource ?? "all"}#${invalidationGeneration}`;
+  const requestKey = `${scopeKey}|${mode}:${refreshProvider ?? "all"}:${cursorSource ?? "all"}${userRefresh ? ":user" : ""}#${invalidationGeneration}`;
   const existing = getRuntimeCatalogRequest(requestKey);
   if (existing) return await existing;
 
@@ -75,6 +78,7 @@ export async function fetchSharedRuntimeCatalog(
     mode,
     ...(refreshProvider ? { refreshProvider } : {}),
     ...(cursorSource ? { cursorSource } : {}),
+    ...(userRefresh ? { userRefresh: true } : {}),
   };
   const request: Promise<SharedCatalogFetchResult> = (async () => {
     try {

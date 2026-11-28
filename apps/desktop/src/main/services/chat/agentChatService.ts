@@ -79120,6 +79120,7 @@ export function createAgentChatService(args: {
     "droid",
     "kimi",
     "qwen",
+    "devin",
     "antigravity",
   ] as const satisfies readonly AgentChatProvider[];
 
@@ -79180,7 +79181,8 @@ export function createAgentChatService(args: {
   const modelCatalogRequestKey = (catalogArgs?: AgentChatModelCatalogArgs): string => {
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
-    return `${mode}:${refreshProvider ?? "all"}:${catalogArgs?.cursorSource ?? "all"}`;
+    const userRefresh = catalogArgs?.userRefresh === true && refreshProvider ? ":user" : "";
+    return `${mode}:${refreshProvider ?? "all"}:${catalogArgs?.cursorSource ?? "all"}${userRefresh}`;
   };
 
   const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
@@ -79216,6 +79218,7 @@ export function createAgentChatService(args: {
       "muse",
       "kimi",
       "qwen",
+      "devin",
       "antigravity",
     ] as ModelProviderGroup[]).filter((provider) => !providerIsDisabled(provider));
     const modelsByProvider = await Promise.all(
@@ -79231,9 +79234,11 @@ export function createAgentChatService(args: {
                 || (provider === "muse" && shouldRefreshProvider("muse"))
                 || (provider === "pi" && shouldRefreshPi)
                 || (isAcpChatProvider(provider) && shouldRefreshProvider(provider)),
-              // Only Refresh (force, this provider) checks a cached sign-in
-              // verdict again; a rail click keeps the cached one.
+              // Only a person's Refresh for this provider checks a cached
+              // sign-in verdict again and skips the backoff; a `force` read
+              // the host or the picker schedules for a stale catalog does not.
               ...(isAcpChatProvider(provider) && mode === "force" && refreshProvider === provider
+                && catalogArgs?.userRefresh === true
                 ? { recheckAuth: true }
                 : {}),
               ...(provider === "cursor" && catalogArgs?.cursorSource
