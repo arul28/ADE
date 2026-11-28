@@ -927,7 +927,7 @@ device, its state and what it may do, without reading source. The
 user-only verbs (`APPLE_USER_ONLY_ACTIONS`) are added to the allowlist but
 never to `capabilities`.
 
-Agents often see only a skill index, not the `ade-apple` skill body. So when a
+Agents often see only a skill index, not the `daex-apple` skill body. So when a
 lane holds a device, the chat service adds a short hint to the
 provider-bound prompt (`laneAppleDeviceDirective.ts`). The hint names the
 device and points the agent at `daex apple`, not at `simctl` or

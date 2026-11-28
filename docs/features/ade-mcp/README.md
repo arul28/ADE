@@ -286,7 +286,7 @@ answers a question or approval, `chat_send` messages or steers a chat,
 as a project (`daex projects clone`). A read-only connection that calls one
 anyway is refused with the reason, before anything runs.
 
-**Outside clients.** The bundled `ade-mcp-client` skill, also an MCP prompt, is
+**Outside clients.** The bundled `daex-mcp-client` skill, also an MCP prompt, is
 the walkthrough for a bot. What it relies on:
 
 - **Knowing a chat finished.** `chat_events` (`daex chat events`,
@@ -794,8 +794,8 @@ hide them whenever `ADE_REMOTE_MCP_CONNECTION_ID` is set. The check compares
 real paths, so a project folder linked to `~/.agents/skills` stays hidden too.
 
 DAEX Cloud guidance reaches an app this way: the instructions say "Before a
-DAEX Cloud lane, run `cloud status` and follow the `ade-cloud` prompt", and the
-`ade-cloud` prompt is the bundled skill a DAEX chat's agent reads, word for
+DAEX Cloud lane, run `cloud status` and follow the `daex-cloud` prompt", and the
+`daex-cloud` prompt is the bundled skill a DAEX chat's agent reads, word for
 word (shown only to an account with DAEX Cloud access). `cloud status` is a
 read, so a read-only connection can see why a lane can't start. `--machine`
 on the command line is refused for DAEX MCP, with one reviewed exception:

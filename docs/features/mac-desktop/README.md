@@ -102,7 +102,7 @@ proof and streaming: see [Windows Desktop](../windows-desktop/README.md). The
 | `apps/ios/ADE/Views/Work/MacDesktopLiveMount.swift` | The one live-subscription mount the card and the full-screen viewer share, plus the shared Start helper. |
 | `apps/ios/ADE/Views/Work/MacDesktopLiveView.swift`, `MacDesktopViewer.swift`, `MacDesktopViewerSupport.swift` | The phone's live view and full-screen viewer. |
 | `apps/ios/ADE/Views/Work/MacDesktopStreamMath.swift` | Annex-B to AVCC, letterbox hit testing, and watch-mode zoom (1×–4×, double-tap 2.5×). |
-| `apps/desktop/resources/agent-skills/daex-computer-use/SKILL.md` | The bundled agent skill: the one computer-use entry point, which picks the surface and then covers lane screens (old name `ade-computer-use` still resolves). |
+| `apps/desktop/resources/agent-skills/daex-computer-use/SKILL.md` | The bundled agent skill: the one computer-use entry point, which picks the surface and then covers lane screens (old name `daex-computer-use` still resolves). |
 
 ## Gotchas / fragile areas
 
