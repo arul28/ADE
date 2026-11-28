@@ -150,6 +150,7 @@ import {
 } from "./store";
 import {
   CloudUpdateInProgressError,
+  MAC_TEMPLATE_VERSION,
   automaticTemplate,
   channelOfComputer,
   channelTemplate,
@@ -752,7 +753,8 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   }
 
   const targets = await readUpdateTargets(env);
-  const templateVersion = channelTemplate(targets, channel);
+  // A Mac has no image: its drive brings its own DAEX, so no Linux template is needed.
+  const templateVersion = size.type === "mac" ? MAC_TEMPLATE_VERSION : channelTemplate(targets, channel);
   if (!templateVersion) {
     reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
     return refused(fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503));
@@ -827,7 +829,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
     // A block that landed while the provider made it (a launch mid-create): stopped now, cut off the internet.
     await enforceBlockAfterCreate(env, provider, userId, instance.id, Date.now());
     track({ action, tier: tierOf(size) });
-    return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets) };
+    return { kind: "made", instance, answer: withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null, provider: size.type === "mac" ? "nomac" : null }, targets) };
   } catch (error) {
     if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     if (error instanceof CloudProviderError && (error.code === "not_found" || error.code === "invalid_request")) {
