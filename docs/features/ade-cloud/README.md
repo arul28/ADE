@@ -159,9 +159,12 @@ NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
   'queued'`, an hour at most, retried by the tick). A ready Mac is booted once
   per session by a NoMac job running `~/drive/.daex/boot.sh` with the join
   code worked out again from the launch; three failed boots stop the Mac and
-  fail its launch with what to do. A client's read never waits on a boot: it
-  answers at once and starts a due boot after the answer (`waitUntil`, 20 s),
-  and the tick or the webhook finishes it. The tick also extends a session near
+  fail its launch with what to do. A client's read answers with the Mac's last state
+  and writes none: only the tick and the webhook move a Mac to running and
+  start its charge. Whoever polls, one client read of a Mac in 10 s asks
+  NoMac (`mac_read_at`), for 1.5 s at most (NoMac takes seconds at the moment
+  a Mac turns ready); it starts a boot that is due after its answer
+  (`waitUntil`, 20 s), and the tick or the webhook finishes it. The tick also extends a session near
   its time limit, and stops NoMac sessions no row holds. Webhooks (`mac.*`,
   `drive.*`) re-read the Mac rather than trust the delivery. A channel with
   no template drive uses stable's; with none at all, no Mac is made or

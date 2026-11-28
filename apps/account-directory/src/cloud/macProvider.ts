@@ -728,6 +728,8 @@ const MAC_BOOT_READ_WAIT_S = 20;
  * past this answers with the row, and the tick or the next read catches up.
  */
 const MAC_SESSION_READ_CLIENT_MS = 1_500;
+/** At most one client read of a Mac reaches NoMac in this time, whoever polls. */
+const MAC_CLIENT_READ_HOLD_MS = 10_000;
 
 export async function bootMac(env: CloudEnv, row: ComputerRow, sessionId: string, now: number, waitSeconds = 50): Promise<"booted" | "taken" | "failed"> {
   const claimed = await env.DB.prepare("update cloud_computers set mac_booted_session = ? where instance_id = ? and mac_session_id = ? and coalesce(mac_booted_session, '') <> ?")
@@ -913,18 +915,33 @@ async function macRowOf(env: CloudEnv, id: string): Promise<ComputerRow | null> 
 /**
  * Reads the Mac a row has now and writes what changed, then boots it when it
  * just became ready. The webhook and the tick both run it; it is safe twice.
- * `background` is a client read's: undefined (the tick, the webhook) boots
- * inline; a `waitUntil` starts the boot after the answer, with a short wait
- * (a job still running then is finished by the tick, `checkBootJob`); null
- * leaves the boot to the tick. A read never waits on a boot, nor long on
- * NoMac (`MAC_SESSION_READ_CLIENT_MS`).
+ *
+ * `background` marks a client's read, which writes no state: the tick and the
+ * webhook alone move a Mac (to running, and so its charge). A client's read
+ * only starts a boot that is due, and it reaches NoMac at most once per Mac in
+ * `MAC_CLIENT_READ_HOLD_MS` (every app on every device polls the same Mac), for
+ * at most `MAC_SESSION_READ_CLIENT_MS`. With a `waitUntil` the boot runs after
+ * the answer, with a short wait (a job still running then is finished by the
+ * tick, `checkBootJob`); null leaves the boot to the tick. Undefined (the tick,
+ * the webhook) writes what changed and boots inline.
  */
 export async function syncMac(env: CloudEnv, row: ComputerRow, now: number, reason: string, background?: CloudWaitUntil | null): Promise<void> {
   if (!row.mac_session_id) return;
-  const session = await readSession(env, row.mac_session_id, background === undefined ? undefined : MAC_SESSION_READ_CLIENT_MS);
+  const client = background !== undefined;
+  if (client) {
+    if (!background) return;
+    const held = await env.DB.prepare("update cloud_computers set mac_read_at = ? where instance_id = ? and coalesce(mac_read_at, 0) <= ?")
+      .bind(now, row.instance_id, now - MAC_CLIENT_READ_HOLD_MS).run();
+    if ((held.meta?.changes ?? 0) !== 1) return;
+  }
+  const session = await readSession(env, row.mac_session_id, client ? MAC_SESSION_READ_CLIENT_MS : undefined);
   if (session === "unreadable") return;
-  const statements = macObservedStatements(env, row, session, now, reason);
-  if (statements.length) await env.DB.batch(statements);
+  if (client) {
+    if (session?.id !== row.mac_session_id) return;
+  } else {
+    const statements = macObservedStatements(env, row, session, now, reason);
+    if (statements.length) await env.DB.batch(statements);
+  }
   let work: (() => Promise<unknown>) | null = null;
   if (session && session.state === "ready" && row.mac_booted_session !== session.id) {
     work = () => bootMac(env, { ...row, mac_session_id: session.id }, session.id, now, background ? MAC_BOOT_READ_WAIT_S : undefined);
@@ -1252,7 +1269,7 @@ export function createComputerProvider(env: CloudEnv, fetcher: typeof fetch = fe
     async getInstance(id) {
       const row = await fresh(id);
       if (!row) return L().getInstance(id);
-      // A client's read answers with what it has: a boot it finds due runs after the answer, or at the tick.
+      // A client's read answers with the row (the tick's state); a boot it finds due runs after the answer, or at the tick.
       await syncMac(env, row, Date.now(), "seen", options.waitUntil ?? null);
       return macInstanceOf((await fresh(id)) ?? row);
     },
