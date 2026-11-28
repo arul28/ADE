@@ -1915,6 +1915,7 @@ import {
   withholdCallerMcpHeaderValues,
   type CallerMcpDeliveryProblem,
   type CallerMcpServers,
+  CTO_MCP_SERVER_NAME,
 } from "../../../shared/callerMcpServers";
 import type { AcpMcpServer } from "./acpHost/acpProtocolTypes";
 import { acpMcpServersFromCaller } from "./acpHost/acpMcpServers";
@@ -11473,7 +11474,6 @@ function collectSpawnLineageFields(
   return out;
 }
 
-const CTO_MCP_SERVER_NAME = "daex-cto";
 const CTO_CODEX_TOOL_NAMESPACE = "daex_cto";
 
 /** A started HTTP MCP server bound to one session and one tool set. */

@@ -433,23 +433,26 @@ export function resolveCallerMcpCapability(
   };
 }
 
+/** The MCP server DAEX injects into a CTO chat (`agentChatService.ts`). */
+export const CTO_MCP_SERVER_NAME = "daex-cto";
+/**
+ * The CTO server's name before the DAEX rename. It stays reserved: permission
+ * policies still match it as an alias of `daex-cto` (permissionPolicy.ts).
+ */
+export const LEGACY_CTO_MCP_SERVER_NAME = "ade-cto";
+
 /**
  * Server names ADE injects itself. A caller reusing one would either shadow an
  * ADE-managed server or be shadowed by it depending on the adapter's merge
  * order — silently, and differently per provider. Rejecting the collision is
  * the only outcome that behaves the same everywhere.
  *
- * Mirrors CTO_MCP_SERVER_NAME in agentChatService.ts and the `computer_use`
- * key in codexComputerUse.ts. `ade-cto`, the CTO server's name before the
- * DAEX rename, stays reserved: permission policies still match it as an alias
- * of `daex-cto` (permissionPolicy.ts). Kept
- * here rather than imported because this module is shared and must not pull in
- * the 49k-line service.
+ * `computer_use` mirrors the key in codexComputerUse.ts.
  */
 export const ADE_RESERVED_MCP_SERVER_NAMES: readonly string[] = [
   "computer_use",
-  "daex-cto",
-  "ade-cto",
+  CTO_MCP_SERVER_NAME,
+  LEGACY_CTO_MCP_SERVER_NAME,
 ];
 
 // ---------------------------------------------------------------------------
