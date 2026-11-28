@@ -44,6 +44,9 @@ import { launchFileName } from "./cloudLaunchFileCopies";
 import type { CloudProvider } from "./cloudProvider";
 import { BRAND } from "../../../shared/brand";
 
+/** The server's stage for the provider sign-in step (`SIGN_IN_STAGE` in the computer's ade-cli); the card has no row for it. */
+const SIGN_IN_STAGE_ID = "sign_in";
+
 /**
  * The computer half of an ADE Cloud lane launch (`cloudLaneLaunchService.ts`),
  * run by ADE's server launcher (`/cloud/launches`, docs/features/ade-cloud/
@@ -392,12 +395,12 @@ export function createCloudLaneComputerStages(
   };
 
   /** The sentence for a launch the server or its computer ended, from the computer's own words when it has them. */
-  const serverFailure = (server: CloudLaunchRecord): LaunchStepError => {
+  const serverFailure = (server: CloudLaunchRecord, onSignIn: boolean): LaunchStepError => {
     // A launch that ended in its sign-in step says whether its wait was charged (the server's `endNote`).
     const note = server.endNote ? ` ${server.endNote}` : "";
-    if (server.state === "cancelled") return new LaunchStepError(`This launch was cancelled on ${BRAND.CLOUD_NAME}.${note}`);
+    if (server.state === "cancelled") return new LaunchStepError(`This launch was cancelled on ${BRAND.CLOUD_NAME}.${note}`, null, onSignIn);
     const failed = server.stages.find((stage) => stage.status === "failed");
-    return new LaunchStepError(`${clip(server.error ?? failed?.error ?? "The new computer couldn't start the lane.", 400)}${note}`);
+    return new LaunchStepError(`${clip(server.error ?? failed?.error ?? "The new computer couldn't start the lane.", 400)}${note}`, null, onSignIn);
   };
 
   /** Pairs and connects, retrying while the computer's account row and relay route come up. */
@@ -524,6 +527,9 @@ export function createCloudLaneComputerStages(
           logger.info("cloud_lane_launch.computer_created", { launchId, instanceId: server.instanceId, tier: record.tier?.id ?? null });
           persist(record);
         }
+        // Read before the record is shown: a launch the server ended clears its sign-in.
+        const endedOnSignIn = record.snapshot.cloud.signIn != null
+          || server.stages.some((stage) => stage.id === SIGN_IN_STAGE_ID && (stage.status === "running" || stage.status === "failed"));
         showServerRecord(record, server);
         if (server.state === "failed" && record.snapshot.cloud.instanceId && server.stages.some((stage) => stage.id === "agent" && stage.status !== "pending")) {
           // The computer's own launch failed after its agent began: that launch
@@ -540,7 +546,7 @@ export function createCloudLaneComputerStages(
           assertActive(record, signal);
           if (snapshot) return snapshot;
         }
-        if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server);
+        if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server, endedOnSignIn);
         // A provider sign-in waits on a person: the time to find the launch starts again after it.
         if (server.state === "waiting_for_sign_in") clonedAt = null;
         const signedIn = server.state === "joined" || server.state === "running" || server.state === "done";
