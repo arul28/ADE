@@ -275,8 +275,9 @@ otherwise the status line asks the user to update DAEX.
 ### Devin fall-forward (deleted pin)
 
 Devin's CDN keeps only its current release; an older archive answers HTTP 403.
-When the on-demand download of the pin (`onDemand.ts`, every chat, CLI,
-launch prefetch and Retry) fails with HTTP 403 or 404, and only then (never a
+When a tracked download of the pin (`trackPinnedToolFetch` in `onDemand.ts`:
+a chat, a CLI, a Retry, and the launch and `daex serve` prefetches) fails
+with HTTP 403 or 404, and only then (never a
 network error or a 5xx; `isDeletedPinFailure`), the registered
 `DeletedPinFallback` (`ai/devinFallForward.ts`) reads
 `static.devin.ai/cli/current/manifest.json` (the pin's own source), takes this
@@ -287,7 +288,7 @@ record stands in for the pin: `lookupCachedTool`, `resolveCurrentPinnedTool`,
 the status (`ready`, `runningVersion` the new build) and
 `pinnedToolFetchPending` all take it once the pin itself is not on disk
 (`resolveDeletedPinReplacement`). The person sees nothing new. The switch logs
-`ai.devin_fall_forward` and sends one Sentry warning per process (fingerprint
+`ai.devin_fall_forward` and sends one Sentry warning per install (fingerprint
 `tool-pin-deleted/devin/<pin>`, versions only) so the pin gets moved. A failed
 attempt keeps the download failure; the next start tries again.
 
