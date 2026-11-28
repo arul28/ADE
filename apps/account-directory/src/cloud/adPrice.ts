@@ -455,12 +455,14 @@ const phoneMoveStatement = (env: GravityEnv, phone: PhonePriceRow, move: PhoneMo
 
 /**
  * The live v3 phones (`rate_milli` set) of these accounts (null: all), each
- * on its price now. Ad minutes go into `ad_saved_milli` a whole minute at a
+ * on its price now. Only a ready one: a phone bills from `ready_at`, so one
+ * still starting takes no minute off (and gets no mark, so its end and the
+ * switch's off change nothing). Ad minutes go into `ad_saved_milli` a whole minute at a
  * time from `ad_mark_at`; a window that ended stops them at its end. One
  * write per phone that moved.
  */
 async function syncPhonePrices(env: GravityEnv, userIds: readonly string[] | null, known: Map<string, AdContext> | null, now: number, switches?: PricingSwitches): Promise<number> {
-  const rows = await env.DB.prepare(`select ${PHONE_PRICE_COLUMNS} from cloud_phones where state = 'live' and credits = 1 and rate_milli is not null${userIds ? " and user_id in (select value from json_each(?))" : ""}`)
+  const rows = await env.DB.prepare(`select ${PHONE_PRICE_COLUMNS} from cloud_phones where state = 'live' and credits = 1 and rate_milli is not null and ready_at is not null${userIds ? " and user_id in (select value from json_each(?))" : ""}`)
     .bind(...(userIds ? [JSON.stringify(userIds)] : [])).all<PhonePriceRow>();
   const phones = rows.results ?? [];
   if (phones.length === 0) return 0;
