@@ -1652,8 +1652,6 @@ import {
   warmAcpModelCatalog,
 } from "./acpHost/acpModelDiscovery";
 
-/** How long a Refresh waits for an ACP agent's sign-in check. */
-const ACP_REFRESH_AUTH_LIMIT_MS = 30_000;
 /**
  * The ceiling on waiting for an ACP agent's model list. The list request has
  * its own limits (the handshake's minute, then `session/new`), so this only
@@ -78953,12 +78951,22 @@ export function createAgentChatService(args: {
         // asked for checks again even over a cached "not ready", which can be
         // a check that failed for a moment or landed after the sign-in.
         if (!authReady && args.activateRuntime && cli.installed && (!health || args.recheckAuth)) {
+          // A Refresh's re-check gets the agent's own limits (the handshake's
+          // minute): a slow start must not read as "not signed in". Its
+          // verdict, a failure included, is published as the provider's
+          // health, so the status says why the list did not come back.
           const probe = await probeAcpProviderAuth({
             provider,
             cwd: projectRoot,
             logger,
-            ...(args.recheckAuth ? { force: true, limitMs: ACP_REFRESH_AUTH_LIMIT_MS } : {}),
-          }).catch(() => null);
+            ...(args.recheckAuth ? { force: true } : {}),
+          }).catch((error: unknown) => {
+            logger.warn("agent_chat.acp_refresh_auth_check_failed", {
+              provider,
+              error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+            });
+            return null;
+          });
           health = getProviderRuntimeHealth(provider);
           authReady = probe?.state === "ready" || health?.state === "ready";
         }

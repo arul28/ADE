@@ -147,6 +147,8 @@ export function usePersonalChatPaneScope(
 
   // A Refresh in the picker lands in the shared bucket for this machine; take
   // it, so the models it found are in this pane's list and can be picked.
+  // Only a fresh list is taken, and taking it drops this pane's own load
+  // still in flight: an older answer landing later must not undo it.
   const sharedCatalogVersion = useRuntimeCatalogVersion(personalCatalogScopeKey);
   const seenSharedVersionRef = useRef(sharedCatalogVersion);
   useEffect(() => {
@@ -154,7 +156,9 @@ export function usePersonalChatPaneScope(
     seenSharedVersionRef.current = sharedCatalogVersion;
     if (!enabled) return;
     const shared = getSharedRuntimeCatalog(personalCatalogScopeKey);
-    if (shared) setCatalog(shared);
+    if (!shared || shared.stale === true) return;
+    requestSeqRef.current += 1;
+    setCatalog(shared);
   }, [enabled, personalCatalogScopeKey, sharedCatalogVersion]);
 
   const availableModelIds = useMemo(
