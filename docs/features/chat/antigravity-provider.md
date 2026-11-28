@@ -24,6 +24,22 @@ into the CLI at 1.5.0, so DAEX pins the CLI.
 | Terminal launch lines | `apps/desktop/src/shared/cliLaunch.ts` (`antigravity` profile), `apps/desktop/src/main/services/pty/pinnedProviderCli.ts` |
 | Pin (tool `antigravity`) | `apps/ade-cli/scripts/pins/antigravity.json`, tools manifest |
 
+## Gotchas / fragile areas
+
+- **The login is the user's own.** DAEX never passes `--gemini-dir` or
+  `--app-data-dir`; conversations and sign-in are shared with `agy` in a
+  terminal.
+- **Ambient Google keys never pick the account.** Credential variables are
+  stripped and only the recorded method's come back
+  (`antigravityCredentialEnv`).
+- **MCP is stdio only** (no `mcpCapabilities`); servers in its own
+  `mcp_config.json` also load, and a same-named one there wins.
+- **PDF resources never reach the model**, so binary attachments go by path
+  (`readsBinaryAttachments`).
+- **The status check never reads the secret or prompts** (keyring attributes
+  only), and the ACP auth probe never sends `authenticate`.
+- **Capabilities below were verified on 1.5.6**; re-verify when the pin moves.
+
 ## The pinned copy
 
 The tools cache entry `antigravity` is the CLI from GitHub releases of
@@ -57,7 +73,7 @@ bytes are the ones that run.
 - DAEX never passes `--gemini-dir` or `--app-data-dir`: the login and the
   conversations are the user's own, the same as `agy` in their terminal.
 
-## Capabilities (verified 2026-11-11, 1.5.6, Windows x64)
+## Capabilities (verified on 1.5.6)
 
 - ACP v1. `authMethods`: `oauth-personal`, `oauth-business`, `gemini-api-key`,
   `agent-platform`. Unauthenticated `session/new` is `-32000 Authentication

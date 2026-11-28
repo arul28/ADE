@@ -34,15 +34,20 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 | `apps/desktop/src/main/services/usage/extraProviderQuota.ts`, `providerQuotaParsers.ts` | Premium-request quota. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` (Copilot branch) | Open, send, steer, queue, interrupt, resume, close, permissions, goals, MCP, rewind and fork. |
 
-## What changed from ACP
+## Gotchas / fragile areas
 
-- DAEX no longer starts `copilot --acp`. There is no Copilot dialect in the ACP
-  host, and Copilot is not in the ACP provider list.
-- Existing Copilot chats keep working. When a chat opens, DAEX reads its saved
-  `copilotSdkSessionId`, or the older `acpSessionId`, as the SDK session id and
-  resumes that session. Nothing on disk is migrated.
-- Model list, events, usage and quota now come from the SDK and its account
-  calls, not from ACP `session/update` messages or the CLI's session store.
+- **Copilot is not an ACP provider.** DAEX never starts `copilot --acp`; there
+  is no Copilot dialect in the ACP host.
+- **Old chats resume by id.** A chat's saved `copilotSdkSessionId`, or the
+  older `acpSessionId`, is the SDK session id; nothing on disk is migrated. If
+  Copilot lost the session, DAEX opens a new one and says so.
+- **Background tasks never start user MCP servers.** Title and summary sessions
+  set `disabledMcpServers` to every server in the user's Copilot config (and
+  fail closed if they cannot list them), no tools, no instructions.
+- **The CTO's MCP header must be a plain record** (`leaseHeaderRecord`); an
+  array made Copilot drop the whole config and the turn silently.
+- **Every turn must consume the staged context**
+  (`consumePendingTurnContextPrefix`), or a CTO on Copilot runs with no memory.
 
 ## Requirements
 
