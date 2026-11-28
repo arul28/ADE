@@ -269,6 +269,9 @@ enum CloudPreviews {
     return json
       .replacingOccurrences(of: #""machines":["#, with: #""machines":[\#(machines),"#)
       .replacingOccurrences(of: #""diskStepGb":10"#, with: offer + #""diskStepGb":10"#)
+      // A Mac counts as one of the plan's computers, and an On Mac as awake (the server's `computers`).
+      .replacingOccurrences(of: #""computers":{"total":4,"awake":1"#, with: #""computers":{"total":9,"awake":2"#)
+      .replacingOccurrences(of: #""runningCount":1"#, with: #""runningCount":2"#)
   }
 
   static func signInsFixture() -> ProviderLoginsPhoneStatus? {
