@@ -28,7 +28,7 @@
  * `&mockPhoneProvider=auto|nomac|revyl` makes the account a tester with that pick.
  * `&mockMac=1` offers the DAEX Cloud Mac (`catalog.mac`) and adds a Mac lane in
  * each state (waiting, starting, on, stopping, stopped, a failed start, a lost
- * drive); `&mockMac=offer` offers it with no Mac lane yet.
+ * drive); `&mockMac=offer` offers it with no Mac lane yet; `&mockMac=broke` offers it at zero credits.
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
@@ -661,12 +661,15 @@ export function applyBrowserMockCloud(ade: any): void {
   // Read once: the app routes away from the first URL and drops its query.
   const savedParam = param("mockCloudSaved");
   const now = Date.now();
-  const fix = fixture(scenario);
   const macParam = param("mockMac");
+  // `&mockMac=broke`: the Mac offered, no credits left and no extra credits (the pick's zero-credit notice).
+  const fix = macParam === "broke"
+    ? { ...fixture(scenario), usedMilli: 1_000_000_000, extraHours: false, earnedMilli: undefined }
+    : fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
   if (macParam === "1") machines.push(...mockMacMachines(now));
   let state = account(fix, machines, now);
-  if (macParam === "1" || macParam === "offer") state = { ...state, catalog: { ...state.catalog, mac: MOCK_MAC_OFFER } };
+  if (macParam === "1" || macParam === "offer" || macParam === "broke") state = { ...state, catalog: { ...state.catalog, mac: MOCK_MAC_OFFER } };
   // Credits: the iPhone has used some of the balance.
   const withCredits = (next: CloudAccountState): CloudAccountState => {
     let out = next;
