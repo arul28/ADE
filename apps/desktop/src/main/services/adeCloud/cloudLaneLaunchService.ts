@@ -680,6 +680,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       record.snapshot.phase = "running";
       record.snapshot.error = null;
       delete record.snapshot.cloud.refusal;
+      // A new try has no end note yet; one from an earlier cancel doesn't speak for this one.
+      delete record.snapshot.cloud.endNote;
       if (record.via !== "server") await startOverOnServer(record);
       assertActive(record, signal);
       const brain = await runServerLaunch(record, signal);
