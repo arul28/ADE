@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { revylSpentMicros } from "../src/cloud/phoneRoute";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord, type CloudIdleHeldKind } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
@@ -2394,7 +2394,7 @@ describe("ADE Cloud idle cleanup", () => {
     if (!held) expect(emails()).toEqual([]);
     if (held) {
       expect(String(computer(harness).idle_held_reason)).toContain("DAEX couldn't save this lane's work.");
-      expect(emails().map((email) => email.subject)).toEqual(["DAEX Cloud didn't delete pricing-page: its work couldn't be saved"]);
+      expect(emails().map((email) => email.subject)).toEqual(["DAEX didn't delete pricing-page's computer because it couldn't save its work"]);
       // A day later it reads again, and still deletes and wakes nothing.
       clock = NOW + DAY;
       await run();
@@ -2407,6 +2407,20 @@ describe("ADE Cloud idle cleanup", () => {
       expect(wakes()).toEqual([]);
       expect(deletes()).toHaveLength(1);
     }
+  });
+
+  // The kind reaches the desktop and the phone: read from the stored reason
+  // with the product name ignored, so what an older computer stored as "ADE …" maps the same.
+  it.each<[string, string, CloudIdleHeldKind]>([
+    ["a reason that names what to fix", "DAEX couldn't save this lane's work. pricing-page: Git LFS files can't travel; push them first. DAEX can't save this lane's work until then.", "fix_named"],
+    ["a reason stored before the rename that the person can't act on", "ADE couldn't save this lane's work. pricing-page: ADE couldn't reach GitHub to check this lane's work. It checks again at the next rest.", "none"],
+    ["a reason it doesn't know", "DAEX couldn't save this lane's work. pricing-page: something new went wrong.", "open_once"],
+  ])("a held computer's kind on the account: %s", async (_label, reason, kind) => {
+    seedIdle(3 * DAY + HOUR, { ...dueRow, idle_held_at: NOW - HOUR, idle_held_reason: reason, idle_held_count: 1 });
+
+    const account = (await (await harness.send(OWNER, "GET", "/cloud/account")).json()) as CloudAccountState;
+
+    expect(account.dueForDeletion?.map((entry) => entry.held?.kind)).toEqual([kind]);
   });
 
   it("a person who starts the computer while the cleanup reads it keeps it, awake", async () => {

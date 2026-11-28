@@ -250,30 +250,32 @@ export function createCloudLaneAccount(deps: CloudLaneAccountDeps) {
    * chats go too, unless `keepChats`: then they stay readable from ADE Cloud.
    * `onlyChats` deletes only those (a move's), and keeps the rest.
    */
-  const deleteLane = async (args: { instanceId: string; skipCheck?: boolean; keepChats?: boolean; onlyChats?: readonly string[] }): Promise<CloudLaneDeleteResult> => {
+  const deleteLane = async (args: { instanceId: string; skipCheck?: boolean; keepChats?: boolean; onlyChats?: readonly string[]; keepLane?: boolean }): Promise<CloudLaneDeleteResult> => {
     if (busy(args.instanceId)) {
       // A tier change mid-way would make a computer the delete doesn't know.
       return { ok: false, message: "This lane is changing size. Wait for it to finish, or cancel it, then delete.", unpushed: null, unpushedLanes: [], chatsKept: true };
     }
     const instance = await readInstance(args.instanceId);
     const machineKey = instance?.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
-    const state = args.skipCheck || !instance ? null : await workState({ instanceId: args.instanceId, instance });
-    const result = await deps.machines.run({ action: "delete", instanceId: args.instanceId, machineKey });
+    // "Delete anyway" keeps the lane and its chats, and checks, saves and pushes nothing.
+    const keepLane = args.keepLane === true;
+    const state = args.skipCheck || keepLane || !instance ? null : await workState({ instanceId: args.instanceId, instance });
+    const result = await deps.machines.run({ action: "delete", instanceId: args.instanceId, machineKey, ...(keepLane ? { keepLane: { branchRef: null } } : {}) });
     // The chats go after the computer, so a turn that saves a last part can't bring one back.
-    const chatsDeleted = result.ok && !args.keepChats && machineKey
+    const chatsDeleted = result.ok && !args.keepChats && !keepLane && machineKey
       ? await deleteSavedChatsOf({ machineKey, formerMachineKeys: formerMachineKeysOf(instance?.metadata), onlyChats: args.onlyChats ? new Set(args.onlyChats) : null })
       : null;
     if (result.ok) {
       forgetConnections(machineKey, args.instanceId);
       deps.changed();
     }
-    logger.info?.("cloud.lane_deleted", { instanceId: args.instanceId, ok: result.ok, unpushed: state?.unpushed ?? null, keepChats: args.keepChats === true, chatsDeleted });
+    logger.info?.("cloud.lane_deleted", { instanceId: args.instanceId, ok: result.ok, unpushed: state?.unpushed ?? null, keepChats: args.keepChats === true, keepLane, chatsDeleted });
     return {
       ok: result.ok,
       message: result.message,
       unpushed: state?.unpushed ?? null,
       unpushedLanes: state?.unpushedLanes ?? [],
-      chatsKept: result.ok ? args.keepChats === true || chatsDeleted == null : true,
+      chatsKept: result.ok ? args.keepChats === true || keepLane || chatsDeleted == null : true,
     };
   };
 

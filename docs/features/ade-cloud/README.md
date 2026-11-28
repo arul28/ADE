@@ -309,6 +309,20 @@ and re-read with a doubling wait. The lane stays (reason `idle_cleanup`) and the
 next message makes a new computer. The warning lists ignored files that would be
 lost (`cloudIgnoredFiles.ts`).
 
+A held computer's notice, lane band, cloud menu, Computer tab and email share
+one word builder, `idleHeldWords` (`contract.ts`): what happened, the one
+action that ends the hold, and "Why?". The server tags each entry with
+`held.kind` (`idleHeldKindOf`, read from the stored reason with the product
+name ignored, so a reason stored as "ADE …" still matches; no column). The
+account read sends the reason with each sentence DAEX writes in today's words
+(`idleHeldReasonNow`); a lane name, a path or an unknown sentence stays as
+stored. **Delete
+anyway** (desktop and web, never the email) is one confirm, then
+`DELETE /cloud/instances/:id` with `keepLane`: only the computer goes, the lane
+and its chats stay, and nothing is checked, saved, pushed or woken. A held
+computer with no lane gets a plain delete that keeps its saved chats (the
+server refuses `keepLane` there with `no_lane`).
+
 ### Lane backups at rest
 
 Server `laneBackups.ts`, computer `cloudLaneBackup.ts`. Before every rest, each

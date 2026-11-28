@@ -3,8 +3,8 @@ import { Clock } from "@phosphor-icons/react";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { Banner } from "../ui/notice";
-import { idleHeldDetail } from "../settings/cloudDashboard/CloudIdleCleanupNotice";
 import { keepLaneComputer } from "./CloudLaneHeaderButton";
+import { CloudIdleHeldBanner, heldIdleEntry } from "./cloudIdleHeld";
 import { cloudQueueSizeLabel } from "./cloudLanesWithoutComputer";
 import { BRAND } from "../../../shared/brand";
 
@@ -32,7 +32,9 @@ function deletingSoonWords(deletesAt: number, now: number, sizeLabel: string): {
  * computer, with Keep it. Read from the account the chat header already reads
  * (`useCloudAccount().dueForDeletion`), so there is no read of its own. The
  * Work and Lanes rows of the lane say "Deleting soon" (`useCloudLaneRowNotes`).
- * Keep it is account level, by the computer's ADE Cloud id: no pin.
+ * A computer kept after a failed save gets the shared hold banner, with "Why?"
+ * and "Delete anyway". Keep it and the delete are account level, by the
+ * computer's ADE Cloud id: no pin.
  */
 export function CloudLaneDeletingSoonBand({ laneId, style }: { laneId: string | null; style?: CSSProperties }) {
   const { computers } = useAdeCloudLaneComputers();
@@ -48,19 +50,26 @@ export function CloudLaneDeletingSoonBand({ laneId, style }: { laneId: string | 
     void keepLaneComputer(computer.instanceId, computer.laneName || "this lane").finally(() => setKeeping(false));
   };
   const now = Date.now();
-  const words = due.held
-    ? {
-      title: `This lane's computer wasn't deleted: ${BRAND.NAME} couldn't save its work`,
-      detail: idleHeldDetail({ ...due, held: due.held }, now),
-    }
-    : deletingSoonWords(due.deletesAt, now, cloudQueueSizeLabel(account));
+  const held = heldIdleEntry(due);
+  if (held) {
+    return (
+      <CloudIdleHeldBanner
+        id="cloud-lane-deleting-soon"
+        entry={held}
+        now={now}
+        icon={<Clock size={13} weight="bold" />}
+        style={style}
+        keep={canKeep ? { busy: keeping, onClick: keep } : null}
+      />
+    );
+  }
+  const words = deletingSoonWords(due.deletesAt, now, cloudQueueSizeLabel(account));
   return (
     <Banner
       layout="inline"
       style={style}
       model={{
         id: "cloud-lane-deleting-soon",
-        // Held is at risk too (the work is saved nowhere else), as Settings and the iPhone say it.
         tone: "warning",
         icon: <Clock size={13} weight="bold" />,
         title: words.title,

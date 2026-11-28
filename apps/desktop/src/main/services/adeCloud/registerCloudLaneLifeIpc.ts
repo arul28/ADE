@@ -91,7 +91,8 @@ export function registerCloudLaneLifeIpc(args: {
         const onlyChats = Array.isArray(callArgs.onlyChats)
           ? callArgs.onlyChats.filter((id): id is string => typeof id === "string" && id.trim().length > 0).map((id) => id.trim())
           : undefined;
-        const deleted = await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true, keepChats, onlyChats }).catch((error: unknown) => {
+        const keepLane = callArgs.keepLane === true;
+        const deleted = await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true, keepChats, onlyChats, keepLane }).catch((error: unknown) => {
           captureCloudLaneAnalytics(args.analytics, "desktop", "cloud_lane_deleted", "failed");
           throw error;
         });

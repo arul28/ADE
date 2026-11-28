@@ -10,7 +10,7 @@ import {
   type CloudPlanCleanupPick,
   type CloudPlanId,
 } from "./contract";
-import { CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_COMPUTER_COMMANDS, type CloudSaveForRestReport } from "./contract";
+import { CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_COMPUTER_COMMANDS, CLOUD_SAVE_ADE_TOO_OLD_SENTENCE, CLOUD_SAVE_PREPARE_FAILED_SENTENCE, type CloudSaveForRestReport } from "./contract";
 import { backupNotSavedReason } from "./laneBackups";
 import { sendCloudEmail } from "./email";
 import { isCloudBlocked, notBlockedSql } from "./blocks";
@@ -761,7 +761,7 @@ export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, c
   if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) {
     // A readable answer that is not confirmed: the computer ended its own freeze. Any other answer may hide one.
     if (freezes && (prepared.exitCode !== 0 || readResult(prepared.stdout) == null)) await unfreezeComputer(provider, computer.instance_id);
-    return { ok: false, reason: "DAEX on the computer couldn't stop its agents and save its chats.", code: "prepare_stop_failed" };
+    return { ok: false, reason: CLOUD_SAVE_PREPARE_FAILED_SENTENCE, code: "prepare_stop_failed" };
   }
   const kept = async (outcome: SaveBeforeDeleteOutcome): Promise<SaveBeforeDeleteOutcome> => {
     if (freezes) await unfreezeComputer(provider, computer.instance_id);
@@ -779,7 +779,7 @@ export async function saveBeforeDelete(env: CloudEnv, provider: CloudProvider, c
     git: Number(report?.git) || 0,
     backups: report?.backups?.state ?? "none",
   });
-  if (!reportId) return await kept({ ok: false, reason: "This computer's DAEX is too old to save its lanes' work. It saves them after it updates, the next time it rests.", code: "backup_unsupported" });
+  if (!reportId) return await kept({ ok: false, reason: CLOUD_SAVE_ADE_TOO_OLD_SENTENCE, code: "backup_unsupported" });
   const row = await backupRestRow(env, computer.instance_id);
   if (row?.backup_report_id === reportId && row.backup_report_state === "current") return { ok: true, metadata: instance.metadata, resting: false };
   return await kept({ ok: false, reason: backupNotSavedReason(row ?? {}), code: "backup_not_current" });
