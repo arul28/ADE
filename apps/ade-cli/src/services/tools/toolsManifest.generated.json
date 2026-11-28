@@ -616,7 +616,7 @@
         "darwin-arm64": {
           "format": "npm-tree",
           "package": "pi-coding-agent-darwin-arm64",
-          "version": "1.4.0",
+          "version": "1.7.0",
           "packages": [
             {
               "path": "node_modules/@anthropic-ai/sdk",
@@ -632,92 +632,104 @@
             },
             {
               "path": "node_modules/@aws-sdk/core",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.978.5.tgz",
-              "integrity": "sha512-ruI0AWqcrfL20XDS6SwZIJFPOBZ6N0ADa9nLzWlBhxk1aoUjbUX3JkTR9vEmk7o35XpAHi68ahZ4T6RE2U9XyA==",
-              "size": 83246
+              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.2.tgz",
+              "integrity": "sha512-N3XKZdfa+Dcm7Kl8NJnaaHLx860Ts3QYHOraj/wuKOYHqqCApQBIKwzSxrpwZdwrqfbPt7BvJdYVhVMPpsRoGA==",
+              "size": 84105
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-env",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.76.tgz",
-              "integrity": "sha512-YxmL1Ar7bV9ZkJvtv+lj+MF6le76NnZnbmgySyZuxpZaCv0/1lZ3KxKy6RIj1h9ui2hWnVjZxbmTMeO0y/NrQA==",
-              "size": 6297
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.86.tgz",
+              "integrity": "sha512-ZFIkIzLAiOLOakfrzUuOz938+AF+q4nc/MYINYwFlgBbl8CsI8ofJ8Ueh0/Pp7hXMJfpq10eJdnQ7aaE6kfikQ==",
+              "size": 6299
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-http",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.78.tgz",
-              "integrity": "sha512-3VHknDRngoebsaqyT1iR75b5cBT2zfEtODK6yYmYltljkK1HEAQLs2FEd1IpWqAeOYdMGaG9wikngWLTufY7RA==",
-              "size": 5166
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.88.tgz",
+              "integrity": "sha512-92dpM3lwCyDjcDI3R+olUI2IG8R+qfUdnMQgxWZB4XM37P+N+oBaRd5xGc7uOH7FqMQY03XsrVKQeuWbPfIrKg==",
+              "size": 5169
+            },
+            {
+              "path": "node_modules/@aws-sdk/credential-provider-http/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-ini",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.21.tgz",
-              "integrity": "sha512-aLx9hbCX6mGAyv4ZZd8UagJ4RASHVJw6BFDSIyuKmLkqNL6H47EjBPK6qaJ4B5TDV6mc+vMa0SJFYyo4mkvVQg==",
-              "size": 11283
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.32.tgz",
+              "integrity": "sha512-MdIAf70d701Hj04Yo7AKqI1RfjTW5dFf+tEvUirYFMbs3NRHWiwqQj/C9wGFptZtmX+z/c57H3gQfzTt5Bsn8A==",
+              "size": 11284
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-login",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.83.tgz",
-              "integrity": "sha512-9bJU6FjRacF4FK/QHf8Dyxhur7B1grRj8C1Yh4IkpoFW2exQflPdCv0VrbemLW9ZctLNle+AE7TETs9KNvuLYg==",
-              "size": 6362
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.94.tgz",
+              "integrity": "sha512-sSq1PxdXT1kqR11/dRvE5AC2dEWMbYJCXzRU03Ulu4stu6vv08zju8uUNhVdqiIX+OrMIcEHHT1maLrUZDBGDA==",
+              "size": 6503
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.88.tgz",
-              "integrity": "sha512-AG0KID5qhQPzrFkh5b0Cws1Amytvzo0L0Xj6hMgJXEwD6ZXAqninDhSNAWJiN5zU4YVVZnuidnqwPwYJ04IamA==",
-              "size": 9823
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.82.tgz",
+              "integrity": "sha512-znDkEOGXB8W3kG1LJUKP3foBZY/9qLM0eil/DxWXSp37XsdsRLQHE/d/OaCGGVgKpA6znR38h/+INk8do1FjiA==",
+              "size": 9828
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-process",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.76.tgz",
-              "integrity": "sha512-pdhKFTXv1zPYhh92MTlp0jVbLWvUEV9v+rziuEkoskGGQ2iJskxHTO38nA8UAbT/N4IM3n8OZJ9rIY5IBO15/A==",
-              "size": 7119
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.86.tgz",
+              "integrity": "sha512-9x/+gtSDNxMQrRXgwIdwdNCVGxzUZtTZArjEeLfsn9xDvyXdsgs4my1g7JN5wKxT61ZLx4bKPREaDXnO8j7gkg==",
+              "size": 7122
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.20.tgz",
-              "integrity": "sha512-DlxrAB3MnjNLx/da7b89W+3DyJQYso/q7Ns15MsST2IV2nkAYQOYTUCaffNSjgrpMP99Dm2mV2jxzcbyF94ZfA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.30.tgz",
+              "integrity": "sha512-sMvwUIaKQEeprbMT5LXrI6nhM1IUEBDRpJAydEkAMrI7brrsRl7pxnOAJ6nweg/Hn5pJOVS7JgieJIv6CvJ7Sw==",
+              "size": 9080
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso/node_modules/@aws-sdk/token-providers",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1155.0.tgz",
-              "integrity": "sha512-iIcQnYLhWuq9qOLQbIWFrxF3PF0svVeZvHnUS4DUnO4zUFmFHIyGyjqrntXG+e/5PUgfavV0pYfDIKHxTzN2LA==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1177.0.tgz",
+              "integrity": "sha512-KFQ/2YqE7OIGNu05hys6y9ZUyoNxxLJVHM7NCvjfyjV0Mki0u0Euwjduj5M/HMurdbZJfBV0NjMNQQkGlJEQqg==",
               "size": 10173
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-web-identity",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.82.tgz",
-              "integrity": "sha512-LUo46IqPTJ4xKBsrLuoaxiv/D2GTBCcFDMD1y3jKIqPR/p7Rw14RJFZ0iRWftqZtyLPQX9JMGnSi3mBu4y/pNA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.92.tgz",
+              "integrity": "sha512-AKaUwpy1wPN3B/byFWuvL6v+Qk8Gm840InZJw/bA1A+ciCL3zkzBUyEgxdeghJPEe79VKLs6BvbME74MQa3YKg==",
+              "size": 9075
             },
             {
               "path": "node_modules/@aws-sdk/eventstream-handler-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.38.tgz",
-              "integrity": "sha512-K7vPKNstDlavHFZgbmcFdJOFIyowsevjddycRziRBbtXH/D9z+i9juCnH17liwSX9T8fJiDQzlEYkRtxkR+1vA==",
-              "size": 7495
+              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.43.tgz",
+              "integrity": "sha512-q7r2UxyaGdDf+//7esWvC95JLz9oEFljL2sKCZlkHa22HhEiIE4xwaP1CbWSxSPua/P2h2sgTHOgywuw8mVJRQ==",
+              "size": 7494
             },
             {
               "path": "node_modules/@aws-sdk/middleware-eventstream",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.33.tgz",
-              "integrity": "sha512-8QUt39D/dk5tdV7rLvIfMMI/ilQff4zth7mkMKpVOLM+M5AQ9W3nPxFVuHQANevmVWi4T5MlxqfKV4Q2drYeBA==",
-              "size": 6635
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.39.tgz",
+              "integrity": "sha512-FZiEHXudprvzex41hoFZecbVmqYhbrOGsCm2W8C+xBPhKtk4DCkvnCIohh1WfmXPcphoHICeLcdR3sVQClMNUw==",
+              "size": 6636
             },
             {
               "path": "node_modules/@aws-sdk/middleware-websocket",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.58.tgz",
-              "integrity": "sha512-/BvocdloKozx/zFr4benH+9J1ywB/2dYFHPWNUdo0CBCe00gTm0HPflOq8MH6cuCTbnywSrscGq0/LheN59teQ==",
-              "size": 12787
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.68.tgz",
+              "integrity": "sha512-Jm9R6LtSw8IeolnhInwcUaAUOO74kKTpy+URWthFrCBQKbd5ZulLtePYoGwiRBkao1UiIjvU1vfDjksOJFP1Vw==",
+              "size": 12788
             },
             {
               "path": "node_modules/@aws-sdk/nested-clients",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.997.50.tgz",
-              "integrity": "sha512-nKb8qu4QsnpZTq/6JIXc72mzuzfh7BK4sUQkpQznPec2z4W7Ob2xYkcM4i5e1yGTBnbJVeFv/0sf3jcz85hclA==",
-              "size": 93282
+              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.5.tgz",
+              "integrity": "sha512-9w5mkwVLOuGqlJkPR1uhod6ZP+TOtaxrKtvK2pY9G/+FEx0e8wYRLIDeg30dYQjFDx27jHGSzEA+OaMqxeyTPg==",
+              "size": 95324
+            },
+            {
+              "path": "node_modules/@aws-sdk/nested-clients/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/signature-v4-multi-region",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.49.tgz",
-              "integrity": "sha512-nvuAZNRrRRVCiARRKsYlQ0VnXiEQiq7vXPH+UA+LSo+kN3Djl9eo/V2r0udkw85PnsNshmv2Em1clld5M3j67w==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.52.tgz",
+              "integrity": "sha512-6W6SjGc8OXUhMzNxU1X922ghD+PP1XvzmCk5Scui0jaYsLezycMYR1RaLp5xTIOUrhTXyb4DnAbPr3fBgmdnzg==",
               "size": 8367
             },
             {
@@ -728,15 +740,15 @@
             },
             {
               "path": "node_modules/@aws-sdk/types",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.0.tgz",
-              "integrity": "sha512-WQlhs6juByzWOzj5fwxOx0mPJaEqMcG/sDpl3Id61B3XhKE63xY+0QWcnG+sWR/sCfprmreyUo1lM7IKZmHMzw==",
-              "size": 15155
+              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.1.tgz",
+              "integrity": "sha512-7rGxUkCB2QPoQOeJmonmAICTN2zrH+fpmi1p4Iwu72lnxNaMhOgqcbpyddifnM1DBb19TWQ1u6z/XjkaFNEDWw==",
+              "size": 15154
             },
             {
               "path": "node_modules/@aws-sdk/xml-builder",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.41.tgz",
-              "integrity": "sha512-ctjVSyCMegrWfXlx6VqzSBFI6UqmQ5ZlnfMhdLIiWmhoH8UAQxSCP5N3OpG7X3k4LnS7ou74C4mt20+bfTW2aQ==",
-              "size": 9760
+              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.43.tgz",
+              "integrity": "sha512-rG8QVx4DOrJWptsogu1Aq+CDsnPKaBrAlJpKLxrJrIDXAq1ElnW0yQjjBnlWSXll0cDakCG6UDvaqwz0A9d9Og==",
+              "size": 9758
             },
             {
               "path": "node_modules/@aws/lambda-invoke-store",
@@ -746,57 +758,69 @@
             },
             {
               "path": "node_modules/@babel/runtime",
-              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.10.tgz",
-              "integrity": "sha512-NpugTzbKgGrNe45Ui32cN8vCFFMxVtP/9rtfwv0nP5FRDAjvYBxJcLVpYA9mr1jxP6cnIT7x9LUzuDTbWYYNRA==",
-              "size": 55269
+              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.16.tgz",
+              "integrity": "sha512-LKBjGopxrQE0aFucNL69OyyyF143MOWUULEOftU3oCgyD35Sy84UUpVnt/sNvTb7ZmCyALSt7om+fojlW35zYQ==",
+              "size": 55629
             },
             {
               "path": "node_modules/@earendil-works/pi-agent-core",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.4.0.tgz",
-              "integrity": "sha512-PoKY84SKUwnt7S5QBZaGUqfNO1kjP3KHpHUA9QpFTj4cOjaVWMYIcBPJ6FDRCdE8Zen9OSECQUd0uUfVgtSmgA==",
-              "size": 62440
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.7.0.tgz",
+              "integrity": "sha512-pLs/wTAcrUnKDILPHjnd7RiDZSotAhJ965LwVc8x37TeWF+k+vKPMmAW6Z1T8XMQuICbIYusjkT7K0lmjgQwrg==",
+              "size": 63442
             },
             {
               "path": "node_modules/@earendil-works/pi-ai",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.4.0.tgz",
-              "integrity": "sha512-hQM/C4+1w8rHYACzDDf+0vQMnEnpzIop1tptIERVgR3ZeT/hHSzBNG8PaWPgxWQjqSeKCyBZSyp8uTT6eKK1pQ==",
-              "size": 836597
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.7.0.tgz",
+              "integrity": "sha512-iKryMlUYniwWbU7YU0uS7W0+cGd9c6oJ6PzRLOn8j4+1njG4c+BQq1cNawctx/npDqGeOx8ME7Gkgl6K6arPuw==",
+              "size": 929576
             },
             {
               "path": "node_modules/@earendil-works/pi-codemode",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
-              "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
-              "size": 106267
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.7.0.tgz",
+              "integrity": "sha512-fhCoh8TLxhdRTOWSEplwp39Uv+JTsu9pCqtgu9gorO8zcaw92vsbVI/G89yFs92csTo2+yB7EsJq/+725Vj+eA==",
+              "size": 106951
             },
             {
               "path": "node_modules/@earendil-works/pi-coding-agent",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.4.0.tgz",
-              "integrity": "sha512-Z41LpZ3yYHSC/UUps6Mr39UMFPwH8elhJBG9DY1P7kuzsE5qSK/6eMj2EHzO5evJRQWLbKSqUMw+4nCNtIyiQg==",
-              "size": 7612554
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.7.0.tgz",
+              "integrity": "sha512-opRelA1oqV/o+cByICMYU87oiHuICeCkghHMqsZsDwDz9F6qo8HFhoH4J/wZkr6tBeFor7ryOSwEmpZsusYrbA==",
+              "size": 8016090
             },
             {
               "path": "node_modules/@earendil-works/pi-mcp",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.4.0.tgz",
-              "integrity": "sha512-92aZmmGsUpHHknYuKXZHRINQfahntw5hU9If0I0ZM49GojOaFHpkl5/GF3/aatqpt7v7GjZbBfpfSygGKW+pnw==",
-              "size": 93722
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.7.0.tgz",
+              "integrity": "sha512-ScsDjuFXjT9eKioD5oyZqofDXtaWCMhCBa+1aDSh7WmRACLsohfGQJtAX1rv5OmEbaerrRPgyD5jgwJFBjTFNw==",
+              "size": 158733
+            },
+            {
+              "path": "node_modules/@earendil-works/pi-schema",
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.7.0.tgz",
+              "integrity": "sha512-skji4McLg9jum3NFWzFa/4QRGEZhMGnSi3QL8b9VljJkc/QopH2/BFuGKI+VcEwYzKGwsd0I8RzvXGnZGfGltQ==",
+              "size": 145254
             },
             {
               "path": "node_modules/@earendil-works/pi-telemetry",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.4.0.tgz",
-              "integrity": "sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w==",
-              "size": 49115
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.7.0.tgz",
+              "integrity": "sha512-QZkngqktohuFZ2TZuJSXDuUntld4sCMW1tkUPaD4moMEX/z1lwcjycXnd9ChO9HNxm/Jfo+UTiC+N2hkAF9b0w==",
+              "size": 51971
             },
             {
               "path": "node_modules/@earendil-works/pi-tui",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.4.0.tgz",
-              "integrity": "sha512-4obPOjgOD7g4mGSlngIvxyujC1UPdmyI9zdVthbr8GufacFEX+Ce0+scPgHg++k2xj5+QjESM2d5TxvIuzCVmg==",
-              "size": 527191
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.7.0.tgz",
+              "integrity": "sha512-C6vkUYGTeDdl/cMIbFOabSEPMRy9HuaUV76PS2BhvSmWifO5y8Rz8/LgFWqGIIFS7RMqu0gdeEpdXfH8jIp05g==",
+              "size": 557785
             },
             {
               "path": "node_modules/@google/genai",
-              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-2.21.0.tgz",
-              "integrity": "sha512-+PDtco2/Z0ONdzCGekCoCT+O1VJS9xJQNN4XzQpXG/t3El/SWWMkCWlFRO1KmivOHPa4Q0VjUYu1HBKCZ/v33Q==",
-              "size": 1635618
+              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-3.6.1.tgz",
+              "integrity": "sha512-DQIkZkl+VoZc+RUSaJ41vRuywjQDpP0t/oUf5/ddQhNW6JsPjVULW2EgHmuJ1mrr6ACtrmUdPlqtNXF1yfKySg==",
+              "size": 2005050
+            },
+            {
+              "path": "node_modules/@isaacs/nonrecursive-glob-match",
+              "tarball": "https://registry.npmjs.org/@isaacs/nonrecursive-glob-match/-/nonrecursive-glob-match-1.1.0.tgz",
+              "integrity": "sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==",
+              "size": 106359
             },
             {
               "path": "node_modules/@protobufjs/aspromise",
@@ -860,9 +884,9 @@
             },
             {
               "path": "node_modules/@smithy/core",
-              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.36.2.tgz",
-              "integrity": "sha512-oRw0rB9QSUiCZfEs23G5F4Af+b2rQt1lItIICWu5IejFNd+uPM8SWqiKLMpQ6bX1Q7slsLbjuoE2niErFtkVPQ==",
-              "size": 413139
+              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.41.1.tgz",
+              "integrity": "sha512-24LyiHSY0R/MLcbTylurWXU6Uy4lzI6KJgsdzxkNnjT9/OLWc2zGPb/3k5AM1f0vcgCGrExanUG339t+TBiIrA==",
+              "size": 424825
             },
             {
               "path": "node_modules/@smithy/credential-provider-imds",
@@ -872,9 +896,9 @@
             },
             {
               "path": "node_modules/@smithy/fetch-http-handler",
-              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.0.tgz",
-              "integrity": "sha512-ycSJu3tFAQ4v04CBB0agqFMVsSQ1iG3yw+SpgxRqKfaURpQD4CZ8Wn0zPMmSnOuTpTh65Vz+EA0rMrw089wvkA==",
-              "size": 12024
+              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.1.tgz",
+              "integrity": "sha512-h8BdMUrUBhMhMaeK7QqAdINRZezCGuYOCpcOZZ1ewxbHST9rdTd09xwNpvLTYfzDRehxQiReK4SKbdYZxBA+ew==",
+              "size": 12370
             },
             {
               "path": "node_modules/@smithy/node-http-handler",
@@ -884,15 +908,15 @@
             },
             {
               "path": "node_modules/@smithy/signature-v4",
-              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.4.tgz",
-              "integrity": "sha512-tHy0K0VtqNd5Y7Y41h0a0Lhh0L1GzC08dTWg0F7vRJWFtTENg7IZikf3wQkanYIRdb7ngoIPMTmqgUi401fEeQ==",
-              "size": 21171
+              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.5.tgz",
+              "integrity": "sha512-WPjdr5oWOk1LArpI4pavu+fSo+/evi0Re1olxGvqwuZopd4gYR1UGCi+Soyn/IjmafqbWs+ZC+3AKxJS3ZpwUg==",
+              "size": 21353
             },
             {
               "path": "node_modules/@smithy/types",
-              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.19.0.tgz",
-              "integrity": "sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==",
-              "size": 82447
+              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.20.0.tgz",
+              "integrity": "sha512-lCA6QG22dPk9ecHbv91jDQZsmtPUjdS1aE2Il6NNPqe7DrYc0dZQi6DhcESk2KYXH2sp5xbAcGdYMZDFnuzA2A==",
+              "size": 82635
             },
             {
               "path": "node_modules/@stablelib/base64",
@@ -902,9 +926,9 @@
             },
             {
               "path": "node_modules/@types/node",
-              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.5.tgz",
-              "integrity": "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==",
-              "size": 471079
+              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.11.tgz",
+              "integrity": "sha512-uUyQ2XLEz+EXh34lmS3GhKrkqn/8FU7KUiKRpk347At2bmnMVWss45yz8b4FG/tUtmV1tV/+TVkITItPROyeeQ==",
+              "size": 480430
             },
             {
               "path": "node_modules/@types/retry",
@@ -938,9 +962,9 @@
             },
             {
               "path": "node_modules/bowser",
-              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.14.1.tgz",
-              "integrity": "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==",
-              "size": 64403
+              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.15.1.tgz",
+              "integrity": "sha512-ma47ABeUiTsmG4McKDtGCgQSiTCatM97Mlbn13K42N1kPSFE14oN3WFMjtyL4KubhGvQTqYheKl4Qx2bJtMXLQ==",
+              "size": 89524
             },
             {
               "path": "node_modules/brace-expansion",
@@ -1058,15 +1082,9 @@
             },
             {
               "path": "node_modules/graceful-fs",
-              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
-              "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
-              "size": 9804
-            },
-            {
-              "path": "node_modules/grok-mermaid",
-              "tarball": "https://registry.npmjs.org/grok-mermaid/-/grok-mermaid-0.2.3.tgz",
-              "integrity": "sha512-/4KopAbsjvuRP9MdPtlDjOHUmUVEohOX73JNcsWpzAtFxh+bq5+Dhb6gzvRieLDwIPQIR3/vy8V1NNTuz4Zsmg==",
-              "size": 111286
+              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.12.tgz",
+              "integrity": "sha512-iuyGF2E4oafQfPsRrG2wtY2ILupMhvtdrhzrxB+0VcjsPpSPttpfYdjnGFGsTi5MaJFjI1jOKHPQ6UTbTj9TAw==",
+              "size": 9935
             },
             {
               "path": "node_modules/highlight.js",
@@ -1141,6 +1159,12 @@
               "size": 26736
             },
             {
+              "path": "node_modules/lovely-mermaid",
+              "tarball": "https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-0.3.3.tgz",
+              "integrity": "sha512-EMLJS934qwt2MLO/a5o+T/89HGbuXZPwmCpHIhHO+DVrm+y5tHlEHgpZzlC2o4yW/rFPHRFO9xSMafzqH4wH5A==",
+              "size": 182094
+            },
+            {
               "path": "node_modules/lru-cache",
               "tarball": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz",
               "integrity": "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==",
@@ -1160,9 +1184,9 @@
             },
             {
               "path": "node_modules/minimatch",
-              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-10.2.6.tgz",
-              "integrity": "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==",
-              "size": 117068
+              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-11.0.3.tgz",
+              "integrity": "sha512-iny/40PEGkNJQ5/Pv6z3nm6FbRAby32GeZRjCUJk2WnNDbgPSTcdI+DDvLqsgBdD4cD5sMtMheqPPnehCCa8Nw==",
+              "size": 102745
             },
             {
               "path": "node_modules/ms",
@@ -1184,9 +1208,9 @@
             },
             {
               "path": "node_modules/openai",
-              "tarball": "https://registry.npmjs.org/openai/-/openai-7.19.0.tgz",
-              "integrity": "sha512-MX2s3u2L5racTO0CC/SWpCOasJQBCJrqLKXK+l82cAhdeF8mPMBEe/gxMm0ZFa2xpKpOFLRjxv5afYEZbBXmbQ==",
-              "size": 2781465
+              "tarball": "https://registry.npmjs.org/openai/-/openai-7.59.0.tgz",
+              "integrity": "sha512-wPYKJkLPFEdNJ2tThSg4jE1Ptsv4X3u8g8LIvu0Qz/UIhsKeCzl73rl48PtQsDVrJL/ku0liXOsbyd2TsRsPJw==",
+              "size": 3733234
             },
             {
               "path": "node_modules/p-retry",
@@ -1274,9 +1298,9 @@
             },
             {
               "path": "node_modules/standardwebhooks",
-              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz",
-              "integrity": "sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==",
-              "size": 4109
+              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.3.0.tgz",
+              "integrity": "sha512-5W9skHjqAm2dlA9wWvglTP+oX47JX4lFXVk1aJV7+TG1snvTR4QXaVgPscEzvOw9GRreeavMwbqEeL+MGhZHCg==",
+              "size": 4738
             },
             {
               "path": "node_modules/ts-algebra",
@@ -1286,9 +1310,9 @@
             },
             {
               "path": "node_modules/tslib",
-              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
-              "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
-              "size": 18477
+              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz",
+              "integrity": "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==",
+              "size": 19229
             },
             {
               "path": "node_modules/typebox",
@@ -1298,9 +1322,9 @@
             },
             {
               "path": "node_modules/undici",
-              "tarball": "https://registry.npmjs.org/undici/-/undici-8.10.2.tgz",
-              "integrity": "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==",
-              "size": 463831
+              "tarball": "https://registry.npmjs.org/undici/-/undici-8.12.4.tgz",
+              "integrity": "sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA==",
+              "size": 547266
             },
             {
               "path": "node_modules/undici-types",
@@ -1322,9 +1346,9 @@
             },
             {
               "path": "node_modules/ws",
-              "tarball": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz",
-              "integrity": "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==",
-              "size": 35094
+              "tarball": "https://registry.npmjs.org/ws/-/ws-8.23.1.tgz",
+              "integrity": "sha512-1rzWDSN0NOi3tpwgHsQExjWRoKUGtjCkJ2gZRaaRtzhYLboMytOI9pj9PU7yCgY37auqdd4OyLofZDbkeuZmPA==",
+              "size": 35940
             },
             {
               "path": "node_modules/yaml",
@@ -1333,12 +1357,12 @@
               "size": 112086
             }
           ],
-          "unpackedSize": 111867932
+          "unpackedSize": 124123299
         },
         "darwin-x64": {
           "format": "npm-tree",
           "package": "pi-coding-agent-darwin-x64",
-          "version": "1.4.0",
+          "version": "1.7.0",
           "packages": [
             {
               "path": "node_modules/@anthropic-ai/sdk",
@@ -1354,92 +1378,104 @@
             },
             {
               "path": "node_modules/@aws-sdk/core",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.978.5.tgz",
-              "integrity": "sha512-ruI0AWqcrfL20XDS6SwZIJFPOBZ6N0ADa9nLzWlBhxk1aoUjbUX3JkTR9vEmk7o35XpAHi68ahZ4T6RE2U9XyA==",
-              "size": 83246
+              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.2.tgz",
+              "integrity": "sha512-N3XKZdfa+Dcm7Kl8NJnaaHLx860Ts3QYHOraj/wuKOYHqqCApQBIKwzSxrpwZdwrqfbPt7BvJdYVhVMPpsRoGA==",
+              "size": 84105
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-env",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.76.tgz",
-              "integrity": "sha512-YxmL1Ar7bV9ZkJvtv+lj+MF6le76NnZnbmgySyZuxpZaCv0/1lZ3KxKy6RIj1h9ui2hWnVjZxbmTMeO0y/NrQA==",
-              "size": 6297
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.86.tgz",
+              "integrity": "sha512-ZFIkIzLAiOLOakfrzUuOz938+AF+q4nc/MYINYwFlgBbl8CsI8ofJ8Ueh0/Pp7hXMJfpq10eJdnQ7aaE6kfikQ==",
+              "size": 6299
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-http",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.78.tgz",
-              "integrity": "sha512-3VHknDRngoebsaqyT1iR75b5cBT2zfEtODK6yYmYltljkK1HEAQLs2FEd1IpWqAeOYdMGaG9wikngWLTufY7RA==",
-              "size": 5166
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.88.tgz",
+              "integrity": "sha512-92dpM3lwCyDjcDI3R+olUI2IG8R+qfUdnMQgxWZB4XM37P+N+oBaRd5xGc7uOH7FqMQY03XsrVKQeuWbPfIrKg==",
+              "size": 5169
+            },
+            {
+              "path": "node_modules/@aws-sdk/credential-provider-http/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-ini",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.21.tgz",
-              "integrity": "sha512-aLx9hbCX6mGAyv4ZZd8UagJ4RASHVJw6BFDSIyuKmLkqNL6H47EjBPK6qaJ4B5TDV6mc+vMa0SJFYyo4mkvVQg==",
-              "size": 11283
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.32.tgz",
+              "integrity": "sha512-MdIAf70d701Hj04Yo7AKqI1RfjTW5dFf+tEvUirYFMbs3NRHWiwqQj/C9wGFptZtmX+z/c57H3gQfzTt5Bsn8A==",
+              "size": 11284
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-login",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.83.tgz",
-              "integrity": "sha512-9bJU6FjRacF4FK/QHf8Dyxhur7B1grRj8C1Yh4IkpoFW2exQflPdCv0VrbemLW9ZctLNle+AE7TETs9KNvuLYg==",
-              "size": 6362
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.94.tgz",
+              "integrity": "sha512-sSq1PxdXT1kqR11/dRvE5AC2dEWMbYJCXzRU03Ulu4stu6vv08zju8uUNhVdqiIX+OrMIcEHHT1maLrUZDBGDA==",
+              "size": 6503
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.88.tgz",
-              "integrity": "sha512-AG0KID5qhQPzrFkh5b0Cws1Amytvzo0L0Xj6hMgJXEwD6ZXAqninDhSNAWJiN5zU4YVVZnuidnqwPwYJ04IamA==",
-              "size": 9823
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.82.tgz",
+              "integrity": "sha512-znDkEOGXB8W3kG1LJUKP3foBZY/9qLM0eil/DxWXSp37XsdsRLQHE/d/OaCGGVgKpA6znR38h/+INk8do1FjiA==",
+              "size": 9828
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-process",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.76.tgz",
-              "integrity": "sha512-pdhKFTXv1zPYhh92MTlp0jVbLWvUEV9v+rziuEkoskGGQ2iJskxHTO38nA8UAbT/N4IM3n8OZJ9rIY5IBO15/A==",
-              "size": 7119
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.86.tgz",
+              "integrity": "sha512-9x/+gtSDNxMQrRXgwIdwdNCVGxzUZtTZArjEeLfsn9xDvyXdsgs4my1g7JN5wKxT61ZLx4bKPREaDXnO8j7gkg==",
+              "size": 7122
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.20.tgz",
-              "integrity": "sha512-DlxrAB3MnjNLx/da7b89W+3DyJQYso/q7Ns15MsST2IV2nkAYQOYTUCaffNSjgrpMP99Dm2mV2jxzcbyF94ZfA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.30.tgz",
+              "integrity": "sha512-sMvwUIaKQEeprbMT5LXrI6nhM1IUEBDRpJAydEkAMrI7brrsRl7pxnOAJ6nweg/Hn5pJOVS7JgieJIv6CvJ7Sw==",
+              "size": 9080
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso/node_modules/@aws-sdk/token-providers",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1155.0.tgz",
-              "integrity": "sha512-iIcQnYLhWuq9qOLQbIWFrxF3PF0svVeZvHnUS4DUnO4zUFmFHIyGyjqrntXG+e/5PUgfavV0pYfDIKHxTzN2LA==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1177.0.tgz",
+              "integrity": "sha512-KFQ/2YqE7OIGNu05hys6y9ZUyoNxxLJVHM7NCvjfyjV0Mki0u0Euwjduj5M/HMurdbZJfBV0NjMNQQkGlJEQqg==",
               "size": 10173
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-web-identity",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.82.tgz",
-              "integrity": "sha512-LUo46IqPTJ4xKBsrLuoaxiv/D2GTBCcFDMD1y3jKIqPR/p7Rw14RJFZ0iRWftqZtyLPQX9JMGnSi3mBu4y/pNA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.92.tgz",
+              "integrity": "sha512-AKaUwpy1wPN3B/byFWuvL6v+Qk8Gm840InZJw/bA1A+ciCL3zkzBUyEgxdeghJPEe79VKLs6BvbME74MQa3YKg==",
+              "size": 9075
             },
             {
               "path": "node_modules/@aws-sdk/eventstream-handler-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.38.tgz",
-              "integrity": "sha512-K7vPKNstDlavHFZgbmcFdJOFIyowsevjddycRziRBbtXH/D9z+i9juCnH17liwSX9T8fJiDQzlEYkRtxkR+1vA==",
-              "size": 7495
+              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.43.tgz",
+              "integrity": "sha512-q7r2UxyaGdDf+//7esWvC95JLz9oEFljL2sKCZlkHa22HhEiIE4xwaP1CbWSxSPua/P2h2sgTHOgywuw8mVJRQ==",
+              "size": 7494
             },
             {
               "path": "node_modules/@aws-sdk/middleware-eventstream",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.33.tgz",
-              "integrity": "sha512-8QUt39D/dk5tdV7rLvIfMMI/ilQff4zth7mkMKpVOLM+M5AQ9W3nPxFVuHQANevmVWi4T5MlxqfKV4Q2drYeBA==",
-              "size": 6635
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.39.tgz",
+              "integrity": "sha512-FZiEHXudprvzex41hoFZecbVmqYhbrOGsCm2W8C+xBPhKtk4DCkvnCIohh1WfmXPcphoHICeLcdR3sVQClMNUw==",
+              "size": 6636
             },
             {
               "path": "node_modules/@aws-sdk/middleware-websocket",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.58.tgz",
-              "integrity": "sha512-/BvocdloKozx/zFr4benH+9J1ywB/2dYFHPWNUdo0CBCe00gTm0HPflOq8MH6cuCTbnywSrscGq0/LheN59teQ==",
-              "size": 12787
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.68.tgz",
+              "integrity": "sha512-Jm9R6LtSw8IeolnhInwcUaAUOO74kKTpy+URWthFrCBQKbd5ZulLtePYoGwiRBkao1UiIjvU1vfDjksOJFP1Vw==",
+              "size": 12788
             },
             {
               "path": "node_modules/@aws-sdk/nested-clients",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.997.50.tgz",
-              "integrity": "sha512-nKb8qu4QsnpZTq/6JIXc72mzuzfh7BK4sUQkpQznPec2z4W7Ob2xYkcM4i5e1yGTBnbJVeFv/0sf3jcz85hclA==",
-              "size": 93282
+              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.5.tgz",
+              "integrity": "sha512-9w5mkwVLOuGqlJkPR1uhod6ZP+TOtaxrKtvK2pY9G/+FEx0e8wYRLIDeg30dYQjFDx27jHGSzEA+OaMqxeyTPg==",
+              "size": 95324
+            },
+            {
+              "path": "node_modules/@aws-sdk/nested-clients/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/signature-v4-multi-region",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.49.tgz",
-              "integrity": "sha512-nvuAZNRrRRVCiARRKsYlQ0VnXiEQiq7vXPH+UA+LSo+kN3Djl9eo/V2r0udkw85PnsNshmv2Em1clld5M3j67w==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.52.tgz",
+              "integrity": "sha512-6W6SjGc8OXUhMzNxU1X922ghD+PP1XvzmCk5Scui0jaYsLezycMYR1RaLp5xTIOUrhTXyb4DnAbPr3fBgmdnzg==",
               "size": 8367
             },
             {
@@ -1450,15 +1486,15 @@
             },
             {
               "path": "node_modules/@aws-sdk/types",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.0.tgz",
-              "integrity": "sha512-WQlhs6juByzWOzj5fwxOx0mPJaEqMcG/sDpl3Id61B3XhKE63xY+0QWcnG+sWR/sCfprmreyUo1lM7IKZmHMzw==",
-              "size": 15155
+              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.1.tgz",
+              "integrity": "sha512-7rGxUkCB2QPoQOeJmonmAICTN2zrH+fpmi1p4Iwu72lnxNaMhOgqcbpyddifnM1DBb19TWQ1u6z/XjkaFNEDWw==",
+              "size": 15154
             },
             {
               "path": "node_modules/@aws-sdk/xml-builder",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.41.tgz",
-              "integrity": "sha512-ctjVSyCMegrWfXlx6VqzSBFI6UqmQ5ZlnfMhdLIiWmhoH8UAQxSCP5N3OpG7X3k4LnS7ou74C4mt20+bfTW2aQ==",
-              "size": 9760
+              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.43.tgz",
+              "integrity": "sha512-rG8QVx4DOrJWptsogu1Aq+CDsnPKaBrAlJpKLxrJrIDXAq1ElnW0yQjjBnlWSXll0cDakCG6UDvaqwz0A9d9Og==",
+              "size": 9758
             },
             {
               "path": "node_modules/@aws/lambda-invoke-store",
@@ -1468,57 +1504,69 @@
             },
             {
               "path": "node_modules/@babel/runtime",
-              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.10.tgz",
-              "integrity": "sha512-NpugTzbKgGrNe45Ui32cN8vCFFMxVtP/9rtfwv0nP5FRDAjvYBxJcLVpYA9mr1jxP6cnIT7x9LUzuDTbWYYNRA==",
-              "size": 55269
+              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.16.tgz",
+              "integrity": "sha512-LKBjGopxrQE0aFucNL69OyyyF143MOWUULEOftU3oCgyD35Sy84UUpVnt/sNvTb7ZmCyALSt7om+fojlW35zYQ==",
+              "size": 55629
             },
             {
               "path": "node_modules/@earendil-works/pi-agent-core",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.4.0.tgz",
-              "integrity": "sha512-PoKY84SKUwnt7S5QBZaGUqfNO1kjP3KHpHUA9QpFTj4cOjaVWMYIcBPJ6FDRCdE8Zen9OSECQUd0uUfVgtSmgA==",
-              "size": 62440
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.7.0.tgz",
+              "integrity": "sha512-pLs/wTAcrUnKDILPHjnd7RiDZSotAhJ965LwVc8x37TeWF+k+vKPMmAW6Z1T8XMQuICbIYusjkT7K0lmjgQwrg==",
+              "size": 63442
             },
             {
               "path": "node_modules/@earendil-works/pi-ai",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.4.0.tgz",
-              "integrity": "sha512-hQM/C4+1w8rHYACzDDf+0vQMnEnpzIop1tptIERVgR3ZeT/hHSzBNG8PaWPgxWQjqSeKCyBZSyp8uTT6eKK1pQ==",
-              "size": 836597
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.7.0.tgz",
+              "integrity": "sha512-iKryMlUYniwWbU7YU0uS7W0+cGd9c6oJ6PzRLOn8j4+1njG4c+BQq1cNawctx/npDqGeOx8ME7Gkgl6K6arPuw==",
+              "size": 929576
             },
             {
               "path": "node_modules/@earendil-works/pi-codemode",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
-              "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
-              "size": 106267
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.7.0.tgz",
+              "integrity": "sha512-fhCoh8TLxhdRTOWSEplwp39Uv+JTsu9pCqtgu9gorO8zcaw92vsbVI/G89yFs92csTo2+yB7EsJq/+725Vj+eA==",
+              "size": 106951
             },
             {
               "path": "node_modules/@earendil-works/pi-coding-agent",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.4.0.tgz",
-              "integrity": "sha512-Z41LpZ3yYHSC/UUps6Mr39UMFPwH8elhJBG9DY1P7kuzsE5qSK/6eMj2EHzO5evJRQWLbKSqUMw+4nCNtIyiQg==",
-              "size": 7612554
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.7.0.tgz",
+              "integrity": "sha512-opRelA1oqV/o+cByICMYU87oiHuICeCkghHMqsZsDwDz9F6qo8HFhoH4J/wZkr6tBeFor7ryOSwEmpZsusYrbA==",
+              "size": 8016090
             },
             {
               "path": "node_modules/@earendil-works/pi-mcp",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.4.0.tgz",
-              "integrity": "sha512-92aZmmGsUpHHknYuKXZHRINQfahntw5hU9If0I0ZM49GojOaFHpkl5/GF3/aatqpt7v7GjZbBfpfSygGKW+pnw==",
-              "size": 93722
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.7.0.tgz",
+              "integrity": "sha512-ScsDjuFXjT9eKioD5oyZqofDXtaWCMhCBa+1aDSh7WmRACLsohfGQJtAX1rv5OmEbaerrRPgyD5jgwJFBjTFNw==",
+              "size": 158733
+            },
+            {
+              "path": "node_modules/@earendil-works/pi-schema",
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.7.0.tgz",
+              "integrity": "sha512-skji4McLg9jum3NFWzFa/4QRGEZhMGnSi3QL8b9VljJkc/QopH2/BFuGKI+VcEwYzKGwsd0I8RzvXGnZGfGltQ==",
+              "size": 145254
             },
             {
               "path": "node_modules/@earendil-works/pi-telemetry",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.4.0.tgz",
-              "integrity": "sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w==",
-              "size": 49115
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.7.0.tgz",
+              "integrity": "sha512-QZkngqktohuFZ2TZuJSXDuUntld4sCMW1tkUPaD4moMEX/z1lwcjycXnd9ChO9HNxm/Jfo+UTiC+N2hkAF9b0w==",
+              "size": 51971
             },
             {
               "path": "node_modules/@earendil-works/pi-tui",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.4.0.tgz",
-              "integrity": "sha512-4obPOjgOD7g4mGSlngIvxyujC1UPdmyI9zdVthbr8GufacFEX+Ce0+scPgHg++k2xj5+QjESM2d5TxvIuzCVmg==",
-              "size": 527191
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.7.0.tgz",
+              "integrity": "sha512-C6vkUYGTeDdl/cMIbFOabSEPMRy9HuaUV76PS2BhvSmWifO5y8Rz8/LgFWqGIIFS7RMqu0gdeEpdXfH8jIp05g==",
+              "size": 557785
             },
             {
               "path": "node_modules/@google/genai",
-              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-2.21.0.tgz",
-              "integrity": "sha512-+PDtco2/Z0ONdzCGekCoCT+O1VJS9xJQNN4XzQpXG/t3El/SWWMkCWlFRO1KmivOHPa4Q0VjUYu1HBKCZ/v33Q==",
-              "size": 1635618
+              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-3.6.1.tgz",
+              "integrity": "sha512-DQIkZkl+VoZc+RUSaJ41vRuywjQDpP0t/oUf5/ddQhNW6JsPjVULW2EgHmuJ1mrr6ACtrmUdPlqtNXF1yfKySg==",
+              "size": 2005050
+            },
+            {
+              "path": "node_modules/@isaacs/nonrecursive-glob-match",
+              "tarball": "https://registry.npmjs.org/@isaacs/nonrecursive-glob-match/-/nonrecursive-glob-match-1.1.0.tgz",
+              "integrity": "sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==",
+              "size": 106359
             },
             {
               "path": "node_modules/@protobufjs/aspromise",
@@ -1582,9 +1630,9 @@
             },
             {
               "path": "node_modules/@smithy/core",
-              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.36.2.tgz",
-              "integrity": "sha512-oRw0rB9QSUiCZfEs23G5F4Af+b2rQt1lItIICWu5IejFNd+uPM8SWqiKLMpQ6bX1Q7slsLbjuoE2niErFtkVPQ==",
-              "size": 413139
+              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.41.1.tgz",
+              "integrity": "sha512-24LyiHSY0R/MLcbTylurWXU6Uy4lzI6KJgsdzxkNnjT9/OLWc2zGPb/3k5AM1f0vcgCGrExanUG339t+TBiIrA==",
+              "size": 424825
             },
             {
               "path": "node_modules/@smithy/credential-provider-imds",
@@ -1594,9 +1642,9 @@
             },
             {
               "path": "node_modules/@smithy/fetch-http-handler",
-              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.0.tgz",
-              "integrity": "sha512-ycSJu3tFAQ4v04CBB0agqFMVsSQ1iG3yw+SpgxRqKfaURpQD4CZ8Wn0zPMmSnOuTpTh65Vz+EA0rMrw089wvkA==",
-              "size": 12024
+              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.1.tgz",
+              "integrity": "sha512-h8BdMUrUBhMhMaeK7QqAdINRZezCGuYOCpcOZZ1ewxbHST9rdTd09xwNpvLTYfzDRehxQiReK4SKbdYZxBA+ew==",
+              "size": 12370
             },
             {
               "path": "node_modules/@smithy/node-http-handler",
@@ -1606,15 +1654,15 @@
             },
             {
               "path": "node_modules/@smithy/signature-v4",
-              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.4.tgz",
-              "integrity": "sha512-tHy0K0VtqNd5Y7Y41h0a0Lhh0L1GzC08dTWg0F7vRJWFtTENg7IZikf3wQkanYIRdb7ngoIPMTmqgUi401fEeQ==",
-              "size": 21171
+              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.5.tgz",
+              "integrity": "sha512-WPjdr5oWOk1LArpI4pavu+fSo+/evi0Re1olxGvqwuZopd4gYR1UGCi+Soyn/IjmafqbWs+ZC+3AKxJS3ZpwUg==",
+              "size": 21353
             },
             {
               "path": "node_modules/@smithy/types",
-              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.19.0.tgz",
-              "integrity": "sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==",
-              "size": 82447
+              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.20.0.tgz",
+              "integrity": "sha512-lCA6QG22dPk9ecHbv91jDQZsmtPUjdS1aE2Il6NNPqe7DrYc0dZQi6DhcESk2KYXH2sp5xbAcGdYMZDFnuzA2A==",
+              "size": 82635
             },
             {
               "path": "node_modules/@stablelib/base64",
@@ -1624,9 +1672,9 @@
             },
             {
               "path": "node_modules/@types/node",
-              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.5.tgz",
-              "integrity": "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==",
-              "size": 471079
+              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.11.tgz",
+              "integrity": "sha512-uUyQ2XLEz+EXh34lmS3GhKrkqn/8FU7KUiKRpk347At2bmnMVWss45yz8b4FG/tUtmV1tV/+TVkITItPROyeeQ==",
+              "size": 480430
             },
             {
               "path": "node_modules/@types/retry",
@@ -1660,9 +1708,9 @@
             },
             {
               "path": "node_modules/bowser",
-              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.14.1.tgz",
-              "integrity": "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==",
-              "size": 64403
+              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.15.1.tgz",
+              "integrity": "sha512-ma47ABeUiTsmG4McKDtGCgQSiTCatM97Mlbn13K42N1kPSFE14oN3WFMjtyL4KubhGvQTqYheKl4Qx2bJtMXLQ==",
+              "size": 89524
             },
             {
               "path": "node_modules/brace-expansion",
@@ -1780,15 +1828,9 @@
             },
             {
               "path": "node_modules/graceful-fs",
-              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
-              "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
-              "size": 9804
-            },
-            {
-              "path": "node_modules/grok-mermaid",
-              "tarball": "https://registry.npmjs.org/grok-mermaid/-/grok-mermaid-0.2.3.tgz",
-              "integrity": "sha512-/4KopAbsjvuRP9MdPtlDjOHUmUVEohOX73JNcsWpzAtFxh+bq5+Dhb6gzvRieLDwIPQIR3/vy8V1NNTuz4Zsmg==",
-              "size": 111286
+              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.12.tgz",
+              "integrity": "sha512-iuyGF2E4oafQfPsRrG2wtY2ILupMhvtdrhzrxB+0VcjsPpSPttpfYdjnGFGsTi5MaJFjI1jOKHPQ6UTbTj9TAw==",
+              "size": 9935
             },
             {
               "path": "node_modules/highlight.js",
@@ -1863,6 +1905,12 @@
               "size": 26736
             },
             {
+              "path": "node_modules/lovely-mermaid",
+              "tarball": "https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-0.3.3.tgz",
+              "integrity": "sha512-EMLJS934qwt2MLO/a5o+T/89HGbuXZPwmCpHIhHO+DVrm+y5tHlEHgpZzlC2o4yW/rFPHRFO9xSMafzqH4wH5A==",
+              "size": 182094
+            },
+            {
               "path": "node_modules/lru-cache",
               "tarball": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz",
               "integrity": "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==",
@@ -1882,9 +1930,9 @@
             },
             {
               "path": "node_modules/minimatch",
-              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-10.2.6.tgz",
-              "integrity": "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==",
-              "size": 117068
+              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-11.0.3.tgz",
+              "integrity": "sha512-iny/40PEGkNJQ5/Pv6z3nm6FbRAby32GeZRjCUJk2WnNDbgPSTcdI+DDvLqsgBdD4cD5sMtMheqPPnehCCa8Nw==",
+              "size": 102745
             },
             {
               "path": "node_modules/ms",
@@ -1906,9 +1954,9 @@
             },
             {
               "path": "node_modules/openai",
-              "tarball": "https://registry.npmjs.org/openai/-/openai-7.19.0.tgz",
-              "integrity": "sha512-MX2s3u2L5racTO0CC/SWpCOasJQBCJrqLKXK+l82cAhdeF8mPMBEe/gxMm0ZFa2xpKpOFLRjxv5afYEZbBXmbQ==",
-              "size": 2781465
+              "tarball": "https://registry.npmjs.org/openai/-/openai-7.59.0.tgz",
+              "integrity": "sha512-wPYKJkLPFEdNJ2tThSg4jE1Ptsv4X3u8g8LIvu0Qz/UIhsKeCzl73rl48PtQsDVrJL/ku0liXOsbyd2TsRsPJw==",
+              "size": 3733234
             },
             {
               "path": "node_modules/p-retry",
@@ -1996,9 +2044,9 @@
             },
             {
               "path": "node_modules/standardwebhooks",
-              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz",
-              "integrity": "sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==",
-              "size": 4109
+              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.3.0.tgz",
+              "integrity": "sha512-5W9skHjqAm2dlA9wWvglTP+oX47JX4lFXVk1aJV7+TG1snvTR4QXaVgPscEzvOw9GRreeavMwbqEeL+MGhZHCg==",
+              "size": 4738
             },
             {
               "path": "node_modules/ts-algebra",
@@ -2008,9 +2056,9 @@
             },
             {
               "path": "node_modules/tslib",
-              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
-              "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
-              "size": 18477
+              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz",
+              "integrity": "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==",
+              "size": 19229
             },
             {
               "path": "node_modules/typebox",
@@ -2020,9 +2068,9 @@
             },
             {
               "path": "node_modules/undici",
-              "tarball": "https://registry.npmjs.org/undici/-/undici-8.10.2.tgz",
-              "integrity": "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==",
-              "size": 463831
+              "tarball": "https://registry.npmjs.org/undici/-/undici-8.12.4.tgz",
+              "integrity": "sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA==",
+              "size": 547266
             },
             {
               "path": "node_modules/undici-types",
@@ -2044,9 +2092,9 @@
             },
             {
               "path": "node_modules/ws",
-              "tarball": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz",
-              "integrity": "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==",
-              "size": 35094
+              "tarball": "https://registry.npmjs.org/ws/-/ws-8.23.1.tgz",
+              "integrity": "sha512-1rzWDSN0NOi3tpwgHsQExjWRoKUGtjCkJ2gZRaaRtzhYLboMytOI9pj9PU7yCgY37auqdd4OyLofZDbkeuZmPA==",
+              "size": 35940
             },
             {
               "path": "node_modules/yaml",
@@ -2055,12 +2103,12 @@
               "size": 112086
             }
           ],
-          "unpackedSize": 111867932
+          "unpackedSize": 124123299
         },
         "linux-arm64": {
           "format": "npm-tree",
           "package": "pi-coding-agent-linux-arm64",
-          "version": "1.4.0",
+          "version": "1.7.0",
           "packages": [
             {
               "path": "node_modules/@anthropic-ai/sdk",
@@ -2076,92 +2124,104 @@
             },
             {
               "path": "node_modules/@aws-sdk/core",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.978.5.tgz",
-              "integrity": "sha512-ruI0AWqcrfL20XDS6SwZIJFPOBZ6N0ADa9nLzWlBhxk1aoUjbUX3JkTR9vEmk7o35XpAHi68ahZ4T6RE2U9XyA==",
-              "size": 83246
+              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.2.tgz",
+              "integrity": "sha512-N3XKZdfa+Dcm7Kl8NJnaaHLx860Ts3QYHOraj/wuKOYHqqCApQBIKwzSxrpwZdwrqfbPt7BvJdYVhVMPpsRoGA==",
+              "size": 84105
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-env",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.76.tgz",
-              "integrity": "sha512-YxmL1Ar7bV9ZkJvtv+lj+MF6le76NnZnbmgySyZuxpZaCv0/1lZ3KxKy6RIj1h9ui2hWnVjZxbmTMeO0y/NrQA==",
-              "size": 6297
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.86.tgz",
+              "integrity": "sha512-ZFIkIzLAiOLOakfrzUuOz938+AF+q4nc/MYINYwFlgBbl8CsI8ofJ8Ueh0/Pp7hXMJfpq10eJdnQ7aaE6kfikQ==",
+              "size": 6299
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-http",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.78.tgz",
-              "integrity": "sha512-3VHknDRngoebsaqyT1iR75b5cBT2zfEtODK6yYmYltljkK1HEAQLs2FEd1IpWqAeOYdMGaG9wikngWLTufY7RA==",
-              "size": 5166
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.88.tgz",
+              "integrity": "sha512-92dpM3lwCyDjcDI3R+olUI2IG8R+qfUdnMQgxWZB4XM37P+N+oBaRd5xGc7uOH7FqMQY03XsrVKQeuWbPfIrKg==",
+              "size": 5169
+            },
+            {
+              "path": "node_modules/@aws-sdk/credential-provider-http/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-ini",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.21.tgz",
-              "integrity": "sha512-aLx9hbCX6mGAyv4ZZd8UagJ4RASHVJw6BFDSIyuKmLkqNL6H47EjBPK6qaJ4B5TDV6mc+vMa0SJFYyo4mkvVQg==",
-              "size": 11283
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.32.tgz",
+              "integrity": "sha512-MdIAf70d701Hj04Yo7AKqI1RfjTW5dFf+tEvUirYFMbs3NRHWiwqQj/C9wGFptZtmX+z/c57H3gQfzTt5Bsn8A==",
+              "size": 11284
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-login",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.83.tgz",
-              "integrity": "sha512-9bJU6FjRacF4FK/QHf8Dyxhur7B1grRj8C1Yh4IkpoFW2exQflPdCv0VrbemLW9ZctLNle+AE7TETs9KNvuLYg==",
-              "size": 6362
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.94.tgz",
+              "integrity": "sha512-sSq1PxdXT1kqR11/dRvE5AC2dEWMbYJCXzRU03Ulu4stu6vv08zju8uUNhVdqiIX+OrMIcEHHT1maLrUZDBGDA==",
+              "size": 6503
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.88.tgz",
-              "integrity": "sha512-AG0KID5qhQPzrFkh5b0Cws1Amytvzo0L0Xj6hMgJXEwD6ZXAqninDhSNAWJiN5zU4YVVZnuidnqwPwYJ04IamA==",
-              "size": 9823
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.82.tgz",
+              "integrity": "sha512-znDkEOGXB8W3kG1LJUKP3foBZY/9qLM0eil/DxWXSp37XsdsRLQHE/d/OaCGGVgKpA6znR38h/+INk8do1FjiA==",
+              "size": 9828
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-process",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.76.tgz",
-              "integrity": "sha512-pdhKFTXv1zPYhh92MTlp0jVbLWvUEV9v+rziuEkoskGGQ2iJskxHTO38nA8UAbT/N4IM3n8OZJ9rIY5IBO15/A==",
-              "size": 7119
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.86.tgz",
+              "integrity": "sha512-9x/+gtSDNxMQrRXgwIdwdNCVGxzUZtTZArjEeLfsn9xDvyXdsgs4my1g7JN5wKxT61ZLx4bKPREaDXnO8j7gkg==",
+              "size": 7122
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.20.tgz",
-              "integrity": "sha512-DlxrAB3MnjNLx/da7b89W+3DyJQYso/q7Ns15MsST2IV2nkAYQOYTUCaffNSjgrpMP99Dm2mV2jxzcbyF94ZfA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.30.tgz",
+              "integrity": "sha512-sMvwUIaKQEeprbMT5LXrI6nhM1IUEBDRpJAydEkAMrI7brrsRl7pxnOAJ6nweg/Hn5pJOVS7JgieJIv6CvJ7Sw==",
+              "size": 9080
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso/node_modules/@aws-sdk/token-providers",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1155.0.tgz",
-              "integrity": "sha512-iIcQnYLhWuq9qOLQbIWFrxF3PF0svVeZvHnUS4DUnO4zUFmFHIyGyjqrntXG+e/5PUgfavV0pYfDIKHxTzN2LA==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1177.0.tgz",
+              "integrity": "sha512-KFQ/2YqE7OIGNu05hys6y9ZUyoNxxLJVHM7NCvjfyjV0Mki0u0Euwjduj5M/HMurdbZJfBV0NjMNQQkGlJEQqg==",
               "size": 10173
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-web-identity",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.82.tgz",
-              "integrity": "sha512-LUo46IqPTJ4xKBsrLuoaxiv/D2GTBCcFDMD1y3jKIqPR/p7Rw14RJFZ0iRWftqZtyLPQX9JMGnSi3mBu4y/pNA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.92.tgz",
+              "integrity": "sha512-AKaUwpy1wPN3B/byFWuvL6v+Qk8Gm840InZJw/bA1A+ciCL3zkzBUyEgxdeghJPEe79VKLs6BvbME74MQa3YKg==",
+              "size": 9075
             },
             {
               "path": "node_modules/@aws-sdk/eventstream-handler-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.38.tgz",
-              "integrity": "sha512-K7vPKNstDlavHFZgbmcFdJOFIyowsevjddycRziRBbtXH/D9z+i9juCnH17liwSX9T8fJiDQzlEYkRtxkR+1vA==",
-              "size": 7495
+              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.43.tgz",
+              "integrity": "sha512-q7r2UxyaGdDf+//7esWvC95JLz9oEFljL2sKCZlkHa22HhEiIE4xwaP1CbWSxSPua/P2h2sgTHOgywuw8mVJRQ==",
+              "size": 7494
             },
             {
               "path": "node_modules/@aws-sdk/middleware-eventstream",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.33.tgz",
-              "integrity": "sha512-8QUt39D/dk5tdV7rLvIfMMI/ilQff4zth7mkMKpVOLM+M5AQ9W3nPxFVuHQANevmVWi4T5MlxqfKV4Q2drYeBA==",
-              "size": 6635
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.39.tgz",
+              "integrity": "sha512-FZiEHXudprvzex41hoFZecbVmqYhbrOGsCm2W8C+xBPhKtk4DCkvnCIohh1WfmXPcphoHICeLcdR3sVQClMNUw==",
+              "size": 6636
             },
             {
               "path": "node_modules/@aws-sdk/middleware-websocket",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.58.tgz",
-              "integrity": "sha512-/BvocdloKozx/zFr4benH+9J1ywB/2dYFHPWNUdo0CBCe00gTm0HPflOq8MH6cuCTbnywSrscGq0/LheN59teQ==",
-              "size": 12787
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.68.tgz",
+              "integrity": "sha512-Jm9R6LtSw8IeolnhInwcUaAUOO74kKTpy+URWthFrCBQKbd5ZulLtePYoGwiRBkao1UiIjvU1vfDjksOJFP1Vw==",
+              "size": 12788
             },
             {
               "path": "node_modules/@aws-sdk/nested-clients",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.997.50.tgz",
-              "integrity": "sha512-nKb8qu4QsnpZTq/6JIXc72mzuzfh7BK4sUQkpQznPec2z4W7Ob2xYkcM4i5e1yGTBnbJVeFv/0sf3jcz85hclA==",
-              "size": 93282
+              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.5.tgz",
+              "integrity": "sha512-9w5mkwVLOuGqlJkPR1uhod6ZP+TOtaxrKtvK2pY9G/+FEx0e8wYRLIDeg30dYQjFDx27jHGSzEA+OaMqxeyTPg==",
+              "size": 95324
+            },
+            {
+              "path": "node_modules/@aws-sdk/nested-clients/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/signature-v4-multi-region",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.49.tgz",
-              "integrity": "sha512-nvuAZNRrRRVCiARRKsYlQ0VnXiEQiq7vXPH+UA+LSo+kN3Djl9eo/V2r0udkw85PnsNshmv2Em1clld5M3j67w==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.52.tgz",
+              "integrity": "sha512-6W6SjGc8OXUhMzNxU1X922ghD+PP1XvzmCk5Scui0jaYsLezycMYR1RaLp5xTIOUrhTXyb4DnAbPr3fBgmdnzg==",
               "size": 8367
             },
             {
@@ -2172,15 +2232,15 @@
             },
             {
               "path": "node_modules/@aws-sdk/types",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.0.tgz",
-              "integrity": "sha512-WQlhs6juByzWOzj5fwxOx0mPJaEqMcG/sDpl3Id61B3XhKE63xY+0QWcnG+sWR/sCfprmreyUo1lM7IKZmHMzw==",
-              "size": 15155
+              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.1.tgz",
+              "integrity": "sha512-7rGxUkCB2QPoQOeJmonmAICTN2zrH+fpmi1p4Iwu72lnxNaMhOgqcbpyddifnM1DBb19TWQ1u6z/XjkaFNEDWw==",
+              "size": 15154
             },
             {
               "path": "node_modules/@aws-sdk/xml-builder",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.41.tgz",
-              "integrity": "sha512-ctjVSyCMegrWfXlx6VqzSBFI6UqmQ5ZlnfMhdLIiWmhoH8UAQxSCP5N3OpG7X3k4LnS7ou74C4mt20+bfTW2aQ==",
-              "size": 9760
+              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.43.tgz",
+              "integrity": "sha512-rG8QVx4DOrJWptsogu1Aq+CDsnPKaBrAlJpKLxrJrIDXAq1ElnW0yQjjBnlWSXll0cDakCG6UDvaqwz0A9d9Og==",
+              "size": 9758
             },
             {
               "path": "node_modules/@aws/lambda-invoke-store",
@@ -2190,57 +2250,69 @@
             },
             {
               "path": "node_modules/@babel/runtime",
-              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.10.tgz",
-              "integrity": "sha512-NpugTzbKgGrNe45Ui32cN8vCFFMxVtP/9rtfwv0nP5FRDAjvYBxJcLVpYA9mr1jxP6cnIT7x9LUzuDTbWYYNRA==",
-              "size": 55269
+              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.16.tgz",
+              "integrity": "sha512-LKBjGopxrQE0aFucNL69OyyyF143MOWUULEOftU3oCgyD35Sy84UUpVnt/sNvTb7ZmCyALSt7om+fojlW35zYQ==",
+              "size": 55629
             },
             {
               "path": "node_modules/@earendil-works/pi-agent-core",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.4.0.tgz",
-              "integrity": "sha512-PoKY84SKUwnt7S5QBZaGUqfNO1kjP3KHpHUA9QpFTj4cOjaVWMYIcBPJ6FDRCdE8Zen9OSECQUd0uUfVgtSmgA==",
-              "size": 62440
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.7.0.tgz",
+              "integrity": "sha512-pLs/wTAcrUnKDILPHjnd7RiDZSotAhJ965LwVc8x37TeWF+k+vKPMmAW6Z1T8XMQuICbIYusjkT7K0lmjgQwrg==",
+              "size": 63442
             },
             {
               "path": "node_modules/@earendil-works/pi-ai",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.4.0.tgz",
-              "integrity": "sha512-hQM/C4+1w8rHYACzDDf+0vQMnEnpzIop1tptIERVgR3ZeT/hHSzBNG8PaWPgxWQjqSeKCyBZSyp8uTT6eKK1pQ==",
-              "size": 836597
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.7.0.tgz",
+              "integrity": "sha512-iKryMlUYniwWbU7YU0uS7W0+cGd9c6oJ6PzRLOn8j4+1njG4c+BQq1cNawctx/npDqGeOx8ME7Gkgl6K6arPuw==",
+              "size": 929576
             },
             {
               "path": "node_modules/@earendil-works/pi-codemode",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
-              "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
-              "size": 106267
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.7.0.tgz",
+              "integrity": "sha512-fhCoh8TLxhdRTOWSEplwp39Uv+JTsu9pCqtgu9gorO8zcaw92vsbVI/G89yFs92csTo2+yB7EsJq/+725Vj+eA==",
+              "size": 106951
             },
             {
               "path": "node_modules/@earendil-works/pi-coding-agent",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.4.0.tgz",
-              "integrity": "sha512-Z41LpZ3yYHSC/UUps6Mr39UMFPwH8elhJBG9DY1P7kuzsE5qSK/6eMj2EHzO5evJRQWLbKSqUMw+4nCNtIyiQg==",
-              "size": 7612554
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.7.0.tgz",
+              "integrity": "sha512-opRelA1oqV/o+cByICMYU87oiHuICeCkghHMqsZsDwDz9F6qo8HFhoH4J/wZkr6tBeFor7ryOSwEmpZsusYrbA==",
+              "size": 8016090
             },
             {
               "path": "node_modules/@earendil-works/pi-mcp",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.4.0.tgz",
-              "integrity": "sha512-92aZmmGsUpHHknYuKXZHRINQfahntw5hU9If0I0ZM49GojOaFHpkl5/GF3/aatqpt7v7GjZbBfpfSygGKW+pnw==",
-              "size": 93722
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.7.0.tgz",
+              "integrity": "sha512-ScsDjuFXjT9eKioD5oyZqofDXtaWCMhCBa+1aDSh7WmRACLsohfGQJtAX1rv5OmEbaerrRPgyD5jgwJFBjTFNw==",
+              "size": 158733
+            },
+            {
+              "path": "node_modules/@earendil-works/pi-schema",
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.7.0.tgz",
+              "integrity": "sha512-skji4McLg9jum3NFWzFa/4QRGEZhMGnSi3QL8b9VljJkc/QopH2/BFuGKI+VcEwYzKGwsd0I8RzvXGnZGfGltQ==",
+              "size": 145254
             },
             {
               "path": "node_modules/@earendil-works/pi-telemetry",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.4.0.tgz",
-              "integrity": "sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w==",
-              "size": 49115
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.7.0.tgz",
+              "integrity": "sha512-QZkngqktohuFZ2TZuJSXDuUntld4sCMW1tkUPaD4moMEX/z1lwcjycXnd9ChO9HNxm/Jfo+UTiC+N2hkAF9b0w==",
+              "size": 51971
             },
             {
               "path": "node_modules/@earendil-works/pi-tui",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.4.0.tgz",
-              "integrity": "sha512-4obPOjgOD7g4mGSlngIvxyujC1UPdmyI9zdVthbr8GufacFEX+Ce0+scPgHg++k2xj5+QjESM2d5TxvIuzCVmg==",
-              "size": 527191
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.7.0.tgz",
+              "integrity": "sha512-C6vkUYGTeDdl/cMIbFOabSEPMRy9HuaUV76PS2BhvSmWifO5y8Rz8/LgFWqGIIFS7RMqu0gdeEpdXfH8jIp05g==",
+              "size": 557785
             },
             {
               "path": "node_modules/@google/genai",
-              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-2.21.0.tgz",
-              "integrity": "sha512-+PDtco2/Z0ONdzCGekCoCT+O1VJS9xJQNN4XzQpXG/t3El/SWWMkCWlFRO1KmivOHPa4Q0VjUYu1HBKCZ/v33Q==",
-              "size": 1635618
+              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-3.6.1.tgz",
+              "integrity": "sha512-DQIkZkl+VoZc+RUSaJ41vRuywjQDpP0t/oUf5/ddQhNW6JsPjVULW2EgHmuJ1mrr6ACtrmUdPlqtNXF1yfKySg==",
+              "size": 2005050
+            },
+            {
+              "path": "node_modules/@isaacs/nonrecursive-glob-match",
+              "tarball": "https://registry.npmjs.org/@isaacs/nonrecursive-glob-match/-/nonrecursive-glob-match-1.1.0.tgz",
+              "integrity": "sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==",
+              "size": 106359
             },
             {
               "path": "node_modules/@protobufjs/aspromise",
@@ -2304,9 +2376,9 @@
             },
             {
               "path": "node_modules/@smithy/core",
-              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.36.2.tgz",
-              "integrity": "sha512-oRw0rB9QSUiCZfEs23G5F4Af+b2rQt1lItIICWu5IejFNd+uPM8SWqiKLMpQ6bX1Q7slsLbjuoE2niErFtkVPQ==",
-              "size": 413139
+              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.41.1.tgz",
+              "integrity": "sha512-24LyiHSY0R/MLcbTylurWXU6Uy4lzI6KJgsdzxkNnjT9/OLWc2zGPb/3k5AM1f0vcgCGrExanUG339t+TBiIrA==",
+              "size": 424825
             },
             {
               "path": "node_modules/@smithy/credential-provider-imds",
@@ -2316,9 +2388,9 @@
             },
             {
               "path": "node_modules/@smithy/fetch-http-handler",
-              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.0.tgz",
-              "integrity": "sha512-ycSJu3tFAQ4v04CBB0agqFMVsSQ1iG3yw+SpgxRqKfaURpQD4CZ8Wn0zPMmSnOuTpTh65Vz+EA0rMrw089wvkA==",
-              "size": 12024
+              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.1.tgz",
+              "integrity": "sha512-h8BdMUrUBhMhMaeK7QqAdINRZezCGuYOCpcOZZ1ewxbHST9rdTd09xwNpvLTYfzDRehxQiReK4SKbdYZxBA+ew==",
+              "size": 12370
             },
             {
               "path": "node_modules/@smithy/node-http-handler",
@@ -2328,15 +2400,15 @@
             },
             {
               "path": "node_modules/@smithy/signature-v4",
-              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.4.tgz",
-              "integrity": "sha512-tHy0K0VtqNd5Y7Y41h0a0Lhh0L1GzC08dTWg0F7vRJWFtTENg7IZikf3wQkanYIRdb7ngoIPMTmqgUi401fEeQ==",
-              "size": 21171
+              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.5.tgz",
+              "integrity": "sha512-WPjdr5oWOk1LArpI4pavu+fSo+/evi0Re1olxGvqwuZopd4gYR1UGCi+Soyn/IjmafqbWs+ZC+3AKxJS3ZpwUg==",
+              "size": 21353
             },
             {
               "path": "node_modules/@smithy/types",
-              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.19.0.tgz",
-              "integrity": "sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==",
-              "size": 82447
+              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.20.0.tgz",
+              "integrity": "sha512-lCA6QG22dPk9ecHbv91jDQZsmtPUjdS1aE2Il6NNPqe7DrYc0dZQi6DhcESk2KYXH2sp5xbAcGdYMZDFnuzA2A==",
+              "size": 82635
             },
             {
               "path": "node_modules/@stablelib/base64",
@@ -2346,9 +2418,9 @@
             },
             {
               "path": "node_modules/@types/node",
-              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.5.tgz",
-              "integrity": "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==",
-              "size": 471079
+              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.11.tgz",
+              "integrity": "sha512-uUyQ2XLEz+EXh34lmS3GhKrkqn/8FU7KUiKRpk347At2bmnMVWss45yz8b4FG/tUtmV1tV/+TVkITItPROyeeQ==",
+              "size": 480430
             },
             {
               "path": "node_modules/@types/retry",
@@ -2382,9 +2454,9 @@
             },
             {
               "path": "node_modules/bowser",
-              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.14.1.tgz",
-              "integrity": "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==",
-              "size": 64403
+              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.15.1.tgz",
+              "integrity": "sha512-ma47ABeUiTsmG4McKDtGCgQSiTCatM97Mlbn13K42N1kPSFE14oN3WFMjtyL4KubhGvQTqYheKl4Qx2bJtMXLQ==",
+              "size": 89524
             },
             {
               "path": "node_modules/brace-expansion",
@@ -2502,15 +2574,9 @@
             },
             {
               "path": "node_modules/graceful-fs",
-              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
-              "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
-              "size": 9804
-            },
-            {
-              "path": "node_modules/grok-mermaid",
-              "tarball": "https://registry.npmjs.org/grok-mermaid/-/grok-mermaid-0.2.3.tgz",
-              "integrity": "sha512-/4KopAbsjvuRP9MdPtlDjOHUmUVEohOX73JNcsWpzAtFxh+bq5+Dhb6gzvRieLDwIPQIR3/vy8V1NNTuz4Zsmg==",
-              "size": 111286
+              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.12.tgz",
+              "integrity": "sha512-iuyGF2E4oafQfPsRrG2wtY2ILupMhvtdrhzrxB+0VcjsPpSPttpfYdjnGFGsTi5MaJFjI1jOKHPQ6UTbTj9TAw==",
+              "size": 9935
             },
             {
               "path": "node_modules/highlight.js",
@@ -2585,6 +2651,12 @@
               "size": 26736
             },
             {
+              "path": "node_modules/lovely-mermaid",
+              "tarball": "https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-0.3.3.tgz",
+              "integrity": "sha512-EMLJS934qwt2MLO/a5o+T/89HGbuXZPwmCpHIhHO+DVrm+y5tHlEHgpZzlC2o4yW/rFPHRFO9xSMafzqH4wH5A==",
+              "size": 182094
+            },
+            {
               "path": "node_modules/lru-cache",
               "tarball": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz",
               "integrity": "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==",
@@ -2604,9 +2676,9 @@
             },
             {
               "path": "node_modules/minimatch",
-              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-10.2.6.tgz",
-              "integrity": "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==",
-              "size": 117068
+              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-11.0.3.tgz",
+              "integrity": "sha512-iny/40PEGkNJQ5/Pv6z3nm6FbRAby32GeZRjCUJk2WnNDbgPSTcdI+DDvLqsgBdD4cD5sMtMheqPPnehCCa8Nw==",
+              "size": 102745
             },
             {
               "path": "node_modules/ms",
@@ -2628,9 +2700,9 @@
             },
             {
               "path": "node_modules/openai",
-              "tarball": "https://registry.npmjs.org/openai/-/openai-7.19.0.tgz",
-              "integrity": "sha512-MX2s3u2L5racTO0CC/SWpCOasJQBCJrqLKXK+l82cAhdeF8mPMBEe/gxMm0ZFa2xpKpOFLRjxv5afYEZbBXmbQ==",
-              "size": 2781465
+              "tarball": "https://registry.npmjs.org/openai/-/openai-7.59.0.tgz",
+              "integrity": "sha512-wPYKJkLPFEdNJ2tThSg4jE1Ptsv4X3u8g8LIvu0Qz/UIhsKeCzl73rl48PtQsDVrJL/ku0liXOsbyd2TsRsPJw==",
+              "size": 3733234
             },
             {
               "path": "node_modules/p-retry",
@@ -2718,9 +2790,9 @@
             },
             {
               "path": "node_modules/standardwebhooks",
-              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz",
-              "integrity": "sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==",
-              "size": 4109
+              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.3.0.tgz",
+              "integrity": "sha512-5W9skHjqAm2dlA9wWvglTP+oX47JX4lFXVk1aJV7+TG1snvTR4QXaVgPscEzvOw9GRreeavMwbqEeL+MGhZHCg==",
+              "size": 4738
             },
             {
               "path": "node_modules/ts-algebra",
@@ -2730,9 +2802,9 @@
             },
             {
               "path": "node_modules/tslib",
-              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
-              "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
-              "size": 18477
+              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz",
+              "integrity": "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==",
+              "size": 19229
             },
             {
               "path": "node_modules/typebox",
@@ -2742,9 +2814,9 @@
             },
             {
               "path": "node_modules/undici",
-              "tarball": "https://registry.npmjs.org/undici/-/undici-8.10.2.tgz",
-              "integrity": "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==",
-              "size": 463831
+              "tarball": "https://registry.npmjs.org/undici/-/undici-8.12.4.tgz",
+              "integrity": "sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA==",
+              "size": 547266
             },
             {
               "path": "node_modules/undici-types",
@@ -2766,9 +2838,9 @@
             },
             {
               "path": "node_modules/ws",
-              "tarball": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz",
-              "integrity": "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==",
-              "size": 35094
+              "tarball": "https://registry.npmjs.org/ws/-/ws-8.23.1.tgz",
+              "integrity": "sha512-1rzWDSN0NOi3tpwgHsQExjWRoKUGtjCkJ2gZRaaRtzhYLboMytOI9pj9PU7yCgY37auqdd4OyLofZDbkeuZmPA==",
+              "size": 35940
             },
             {
               "path": "node_modules/yaml",
@@ -2777,12 +2849,12 @@
               "size": 112086
             }
           ],
-          "unpackedSize": 111867932
+          "unpackedSize": 124123299
         },
         "linux-x64": {
           "format": "npm-tree",
           "package": "pi-coding-agent-linux-x64",
-          "version": "1.4.0",
+          "version": "1.7.0",
           "packages": [
             {
               "path": "node_modules/@anthropic-ai/sdk",
@@ -2798,92 +2870,104 @@
             },
             {
               "path": "node_modules/@aws-sdk/core",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.978.5.tgz",
-              "integrity": "sha512-ruI0AWqcrfL20XDS6SwZIJFPOBZ6N0ADa9nLzWlBhxk1aoUjbUX3JkTR9vEmk7o35XpAHi68ahZ4T6RE2U9XyA==",
-              "size": 83246
+              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.2.tgz",
+              "integrity": "sha512-N3XKZdfa+Dcm7Kl8NJnaaHLx860Ts3QYHOraj/wuKOYHqqCApQBIKwzSxrpwZdwrqfbPt7BvJdYVhVMPpsRoGA==",
+              "size": 84105
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-env",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.76.tgz",
-              "integrity": "sha512-YxmL1Ar7bV9ZkJvtv+lj+MF6le76NnZnbmgySyZuxpZaCv0/1lZ3KxKy6RIj1h9ui2hWnVjZxbmTMeO0y/NrQA==",
-              "size": 6297
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.86.tgz",
+              "integrity": "sha512-ZFIkIzLAiOLOakfrzUuOz938+AF+q4nc/MYINYwFlgBbl8CsI8ofJ8Ueh0/Pp7hXMJfpq10eJdnQ7aaE6kfikQ==",
+              "size": 6299
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-http",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.78.tgz",
-              "integrity": "sha512-3VHknDRngoebsaqyT1iR75b5cBT2zfEtODK6yYmYltljkK1HEAQLs2FEd1IpWqAeOYdMGaG9wikngWLTufY7RA==",
-              "size": 5166
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.88.tgz",
+              "integrity": "sha512-92dpM3lwCyDjcDI3R+olUI2IG8R+qfUdnMQgxWZB4XM37P+N+oBaRd5xGc7uOH7FqMQY03XsrVKQeuWbPfIrKg==",
+              "size": 5169
+            },
+            {
+              "path": "node_modules/@aws-sdk/credential-provider-http/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-ini",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.21.tgz",
-              "integrity": "sha512-aLx9hbCX6mGAyv4ZZd8UagJ4RASHVJw6BFDSIyuKmLkqNL6H47EjBPK6qaJ4B5TDV6mc+vMa0SJFYyo4mkvVQg==",
-              "size": 11283
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.32.tgz",
+              "integrity": "sha512-MdIAf70d701Hj04Yo7AKqI1RfjTW5dFf+tEvUirYFMbs3NRHWiwqQj/C9wGFptZtmX+z/c57H3gQfzTt5Bsn8A==",
+              "size": 11284
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-login",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.83.tgz",
-              "integrity": "sha512-9bJU6FjRacF4FK/QHf8Dyxhur7B1grRj8C1Yh4IkpoFW2exQflPdCv0VrbemLW9ZctLNle+AE7TETs9KNvuLYg==",
-              "size": 6362
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.94.tgz",
+              "integrity": "sha512-sSq1PxdXT1kqR11/dRvE5AC2dEWMbYJCXzRU03Ulu4stu6vv08zju8uUNhVdqiIX+OrMIcEHHT1maLrUZDBGDA==",
+              "size": 6503
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.88.tgz",
-              "integrity": "sha512-AG0KID5qhQPzrFkh5b0Cws1Amytvzo0L0Xj6hMgJXEwD6ZXAqninDhSNAWJiN5zU4YVVZnuidnqwPwYJ04IamA==",
-              "size": 9823
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.82.tgz",
+              "integrity": "sha512-znDkEOGXB8W3kG1LJUKP3foBZY/9qLM0eil/DxWXSp37XsdsRLQHE/d/OaCGGVgKpA6znR38h/+INk8do1FjiA==",
+              "size": 9828
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-process",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.76.tgz",
-              "integrity": "sha512-pdhKFTXv1zPYhh92MTlp0jVbLWvUEV9v+rziuEkoskGGQ2iJskxHTO38nA8UAbT/N4IM3n8OZJ9rIY5IBO15/A==",
-              "size": 7119
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.86.tgz",
+              "integrity": "sha512-9x/+gtSDNxMQrRXgwIdwdNCVGxzUZtTZArjEeLfsn9xDvyXdsgs4my1g7JN5wKxT61ZLx4bKPREaDXnO8j7gkg==",
+              "size": 7122
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.20.tgz",
-              "integrity": "sha512-DlxrAB3MnjNLx/da7b89W+3DyJQYso/q7Ns15MsST2IV2nkAYQOYTUCaffNSjgrpMP99Dm2mV2jxzcbyF94ZfA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.30.tgz",
+              "integrity": "sha512-sMvwUIaKQEeprbMT5LXrI6nhM1IUEBDRpJAydEkAMrI7brrsRl7pxnOAJ6nweg/Hn5pJOVS7JgieJIv6CvJ7Sw==",
+              "size": 9080
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso/node_modules/@aws-sdk/token-providers",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1155.0.tgz",
-              "integrity": "sha512-iIcQnYLhWuq9qOLQbIWFrxF3PF0svVeZvHnUS4DUnO4zUFmFHIyGyjqrntXG+e/5PUgfavV0pYfDIKHxTzN2LA==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1177.0.tgz",
+              "integrity": "sha512-KFQ/2YqE7OIGNu05hys6y9ZUyoNxxLJVHM7NCvjfyjV0Mki0u0Euwjduj5M/HMurdbZJfBV0NjMNQQkGlJEQqg==",
               "size": 10173
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-web-identity",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.82.tgz",
-              "integrity": "sha512-LUo46IqPTJ4xKBsrLuoaxiv/D2GTBCcFDMD1y3jKIqPR/p7Rw14RJFZ0iRWftqZtyLPQX9JMGnSi3mBu4y/pNA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.92.tgz",
+              "integrity": "sha512-AKaUwpy1wPN3B/byFWuvL6v+Qk8Gm840InZJw/bA1A+ciCL3zkzBUyEgxdeghJPEe79VKLs6BvbME74MQa3YKg==",
+              "size": 9075
             },
             {
               "path": "node_modules/@aws-sdk/eventstream-handler-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.38.tgz",
-              "integrity": "sha512-K7vPKNstDlavHFZgbmcFdJOFIyowsevjddycRziRBbtXH/D9z+i9juCnH17liwSX9T8fJiDQzlEYkRtxkR+1vA==",
-              "size": 7495
+              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.43.tgz",
+              "integrity": "sha512-q7r2UxyaGdDf+//7esWvC95JLz9oEFljL2sKCZlkHa22HhEiIE4xwaP1CbWSxSPua/P2h2sgTHOgywuw8mVJRQ==",
+              "size": 7494
             },
             {
               "path": "node_modules/@aws-sdk/middleware-eventstream",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.33.tgz",
-              "integrity": "sha512-8QUt39D/dk5tdV7rLvIfMMI/ilQff4zth7mkMKpVOLM+M5AQ9W3nPxFVuHQANevmVWi4T5MlxqfKV4Q2drYeBA==",
-              "size": 6635
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.39.tgz",
+              "integrity": "sha512-FZiEHXudprvzex41hoFZecbVmqYhbrOGsCm2W8C+xBPhKtk4DCkvnCIohh1WfmXPcphoHICeLcdR3sVQClMNUw==",
+              "size": 6636
             },
             {
               "path": "node_modules/@aws-sdk/middleware-websocket",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.58.tgz",
-              "integrity": "sha512-/BvocdloKozx/zFr4benH+9J1ywB/2dYFHPWNUdo0CBCe00gTm0HPflOq8MH6cuCTbnywSrscGq0/LheN59teQ==",
-              "size": 12787
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.68.tgz",
+              "integrity": "sha512-Jm9R6LtSw8IeolnhInwcUaAUOO74kKTpy+URWthFrCBQKbd5ZulLtePYoGwiRBkao1UiIjvU1vfDjksOJFP1Vw==",
+              "size": 12788
             },
             {
               "path": "node_modules/@aws-sdk/nested-clients",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.997.50.tgz",
-              "integrity": "sha512-nKb8qu4QsnpZTq/6JIXc72mzuzfh7BK4sUQkpQznPec2z4W7Ob2xYkcM4i5e1yGTBnbJVeFv/0sf3jcz85hclA==",
-              "size": 93282
+              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.5.tgz",
+              "integrity": "sha512-9w5mkwVLOuGqlJkPR1uhod6ZP+TOtaxrKtvK2pY9G/+FEx0e8wYRLIDeg30dYQjFDx27jHGSzEA+OaMqxeyTPg==",
+              "size": 95324
+            },
+            {
+              "path": "node_modules/@aws-sdk/nested-clients/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/signature-v4-multi-region",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.49.tgz",
-              "integrity": "sha512-nvuAZNRrRRVCiARRKsYlQ0VnXiEQiq7vXPH+UA+LSo+kN3Djl9eo/V2r0udkw85PnsNshmv2Em1clld5M3j67w==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.52.tgz",
+              "integrity": "sha512-6W6SjGc8OXUhMzNxU1X922ghD+PP1XvzmCk5Scui0jaYsLezycMYR1RaLp5xTIOUrhTXyb4DnAbPr3fBgmdnzg==",
               "size": 8367
             },
             {
@@ -2894,15 +2978,15 @@
             },
             {
               "path": "node_modules/@aws-sdk/types",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.0.tgz",
-              "integrity": "sha512-WQlhs6juByzWOzj5fwxOx0mPJaEqMcG/sDpl3Id61B3XhKE63xY+0QWcnG+sWR/sCfprmreyUo1lM7IKZmHMzw==",
-              "size": 15155
+              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.1.tgz",
+              "integrity": "sha512-7rGxUkCB2QPoQOeJmonmAICTN2zrH+fpmi1p4Iwu72lnxNaMhOgqcbpyddifnM1DBb19TWQ1u6z/XjkaFNEDWw==",
+              "size": 15154
             },
             {
               "path": "node_modules/@aws-sdk/xml-builder",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.41.tgz",
-              "integrity": "sha512-ctjVSyCMegrWfXlx6VqzSBFI6UqmQ5ZlnfMhdLIiWmhoH8UAQxSCP5N3OpG7X3k4LnS7ou74C4mt20+bfTW2aQ==",
-              "size": 9760
+              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.43.tgz",
+              "integrity": "sha512-rG8QVx4DOrJWptsogu1Aq+CDsnPKaBrAlJpKLxrJrIDXAq1ElnW0yQjjBnlWSXll0cDakCG6UDvaqwz0A9d9Og==",
+              "size": 9758
             },
             {
               "path": "node_modules/@aws/lambda-invoke-store",
@@ -2912,57 +2996,69 @@
             },
             {
               "path": "node_modules/@babel/runtime",
-              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.10.tgz",
-              "integrity": "sha512-NpugTzbKgGrNe45Ui32cN8vCFFMxVtP/9rtfwv0nP5FRDAjvYBxJcLVpYA9mr1jxP6cnIT7x9LUzuDTbWYYNRA==",
-              "size": 55269
+              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.16.tgz",
+              "integrity": "sha512-LKBjGopxrQE0aFucNL69OyyyF143MOWUULEOftU3oCgyD35Sy84UUpVnt/sNvTb7ZmCyALSt7om+fojlW35zYQ==",
+              "size": 55629
             },
             {
               "path": "node_modules/@earendil-works/pi-agent-core",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.4.0.tgz",
-              "integrity": "sha512-PoKY84SKUwnt7S5QBZaGUqfNO1kjP3KHpHUA9QpFTj4cOjaVWMYIcBPJ6FDRCdE8Zen9OSECQUd0uUfVgtSmgA==",
-              "size": 62440
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.7.0.tgz",
+              "integrity": "sha512-pLs/wTAcrUnKDILPHjnd7RiDZSotAhJ965LwVc8x37TeWF+k+vKPMmAW6Z1T8XMQuICbIYusjkT7K0lmjgQwrg==",
+              "size": 63442
             },
             {
               "path": "node_modules/@earendil-works/pi-ai",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.4.0.tgz",
-              "integrity": "sha512-hQM/C4+1w8rHYACzDDf+0vQMnEnpzIop1tptIERVgR3ZeT/hHSzBNG8PaWPgxWQjqSeKCyBZSyp8uTT6eKK1pQ==",
-              "size": 836597
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.7.0.tgz",
+              "integrity": "sha512-iKryMlUYniwWbU7YU0uS7W0+cGd9c6oJ6PzRLOn8j4+1njG4c+BQq1cNawctx/npDqGeOx8ME7Gkgl6K6arPuw==",
+              "size": 929576
             },
             {
               "path": "node_modules/@earendil-works/pi-codemode",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
-              "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
-              "size": 106267
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.7.0.tgz",
+              "integrity": "sha512-fhCoh8TLxhdRTOWSEplwp39Uv+JTsu9pCqtgu9gorO8zcaw92vsbVI/G89yFs92csTo2+yB7EsJq/+725Vj+eA==",
+              "size": 106951
             },
             {
               "path": "node_modules/@earendil-works/pi-coding-agent",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.4.0.tgz",
-              "integrity": "sha512-Z41LpZ3yYHSC/UUps6Mr39UMFPwH8elhJBG9DY1P7kuzsE5qSK/6eMj2EHzO5evJRQWLbKSqUMw+4nCNtIyiQg==",
-              "size": 7612554
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.7.0.tgz",
+              "integrity": "sha512-opRelA1oqV/o+cByICMYU87oiHuICeCkghHMqsZsDwDz9F6qo8HFhoH4J/wZkr6tBeFor7ryOSwEmpZsusYrbA==",
+              "size": 8016090
             },
             {
               "path": "node_modules/@earendil-works/pi-mcp",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.4.0.tgz",
-              "integrity": "sha512-92aZmmGsUpHHknYuKXZHRINQfahntw5hU9If0I0ZM49GojOaFHpkl5/GF3/aatqpt7v7GjZbBfpfSygGKW+pnw==",
-              "size": 93722
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.7.0.tgz",
+              "integrity": "sha512-ScsDjuFXjT9eKioD5oyZqofDXtaWCMhCBa+1aDSh7WmRACLsohfGQJtAX1rv5OmEbaerrRPgyD5jgwJFBjTFNw==",
+              "size": 158733
+            },
+            {
+              "path": "node_modules/@earendil-works/pi-schema",
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.7.0.tgz",
+              "integrity": "sha512-skji4McLg9jum3NFWzFa/4QRGEZhMGnSi3QL8b9VljJkc/QopH2/BFuGKI+VcEwYzKGwsd0I8RzvXGnZGfGltQ==",
+              "size": 145254
             },
             {
               "path": "node_modules/@earendil-works/pi-telemetry",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.4.0.tgz",
-              "integrity": "sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w==",
-              "size": 49115
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.7.0.tgz",
+              "integrity": "sha512-QZkngqktohuFZ2TZuJSXDuUntld4sCMW1tkUPaD4moMEX/z1lwcjycXnd9ChO9HNxm/Jfo+UTiC+N2hkAF9b0w==",
+              "size": 51971
             },
             {
               "path": "node_modules/@earendil-works/pi-tui",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.4.0.tgz",
-              "integrity": "sha512-4obPOjgOD7g4mGSlngIvxyujC1UPdmyI9zdVthbr8GufacFEX+Ce0+scPgHg++k2xj5+QjESM2d5TxvIuzCVmg==",
-              "size": 527191
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.7.0.tgz",
+              "integrity": "sha512-C6vkUYGTeDdl/cMIbFOabSEPMRy9HuaUV76PS2BhvSmWifO5y8Rz8/LgFWqGIIFS7RMqu0gdeEpdXfH8jIp05g==",
+              "size": 557785
             },
             {
               "path": "node_modules/@google/genai",
-              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-2.21.0.tgz",
-              "integrity": "sha512-+PDtco2/Z0ONdzCGekCoCT+O1VJS9xJQNN4XzQpXG/t3El/SWWMkCWlFRO1KmivOHPa4Q0VjUYu1HBKCZ/v33Q==",
-              "size": 1635618
+              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-3.6.1.tgz",
+              "integrity": "sha512-DQIkZkl+VoZc+RUSaJ41vRuywjQDpP0t/oUf5/ddQhNW6JsPjVULW2EgHmuJ1mrr6ACtrmUdPlqtNXF1yfKySg==",
+              "size": 2005050
+            },
+            {
+              "path": "node_modules/@isaacs/nonrecursive-glob-match",
+              "tarball": "https://registry.npmjs.org/@isaacs/nonrecursive-glob-match/-/nonrecursive-glob-match-1.1.0.tgz",
+              "integrity": "sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==",
+              "size": 106359
             },
             {
               "path": "node_modules/@protobufjs/aspromise",
@@ -3026,9 +3122,9 @@
             },
             {
               "path": "node_modules/@smithy/core",
-              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.36.2.tgz",
-              "integrity": "sha512-oRw0rB9QSUiCZfEs23G5F4Af+b2rQt1lItIICWu5IejFNd+uPM8SWqiKLMpQ6bX1Q7slsLbjuoE2niErFtkVPQ==",
-              "size": 413139
+              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.41.1.tgz",
+              "integrity": "sha512-24LyiHSY0R/MLcbTylurWXU6Uy4lzI6KJgsdzxkNnjT9/OLWc2zGPb/3k5AM1f0vcgCGrExanUG339t+TBiIrA==",
+              "size": 424825
             },
             {
               "path": "node_modules/@smithy/credential-provider-imds",
@@ -3038,9 +3134,9 @@
             },
             {
               "path": "node_modules/@smithy/fetch-http-handler",
-              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.0.tgz",
-              "integrity": "sha512-ycSJu3tFAQ4v04CBB0agqFMVsSQ1iG3yw+SpgxRqKfaURpQD4CZ8Wn0zPMmSnOuTpTh65Vz+EA0rMrw089wvkA==",
-              "size": 12024
+              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.1.tgz",
+              "integrity": "sha512-h8BdMUrUBhMhMaeK7QqAdINRZezCGuYOCpcOZZ1ewxbHST9rdTd09xwNpvLTYfzDRehxQiReK4SKbdYZxBA+ew==",
+              "size": 12370
             },
             {
               "path": "node_modules/@smithy/node-http-handler",
@@ -3050,15 +3146,15 @@
             },
             {
               "path": "node_modules/@smithy/signature-v4",
-              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.4.tgz",
-              "integrity": "sha512-tHy0K0VtqNd5Y7Y41h0a0Lhh0L1GzC08dTWg0F7vRJWFtTENg7IZikf3wQkanYIRdb7ngoIPMTmqgUi401fEeQ==",
-              "size": 21171
+              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.5.tgz",
+              "integrity": "sha512-WPjdr5oWOk1LArpI4pavu+fSo+/evi0Re1olxGvqwuZopd4gYR1UGCi+Soyn/IjmafqbWs+ZC+3AKxJS3ZpwUg==",
+              "size": 21353
             },
             {
               "path": "node_modules/@smithy/types",
-              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.19.0.tgz",
-              "integrity": "sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==",
-              "size": 82447
+              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.20.0.tgz",
+              "integrity": "sha512-lCA6QG22dPk9ecHbv91jDQZsmtPUjdS1aE2Il6NNPqe7DrYc0dZQi6DhcESk2KYXH2sp5xbAcGdYMZDFnuzA2A==",
+              "size": 82635
             },
             {
               "path": "node_modules/@stablelib/base64",
@@ -3068,9 +3164,9 @@
             },
             {
               "path": "node_modules/@types/node",
-              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.5.tgz",
-              "integrity": "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==",
-              "size": 471079
+              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.11.tgz",
+              "integrity": "sha512-uUyQ2XLEz+EXh34lmS3GhKrkqn/8FU7KUiKRpk347At2bmnMVWss45yz8b4FG/tUtmV1tV/+TVkITItPROyeeQ==",
+              "size": 480430
             },
             {
               "path": "node_modules/@types/retry",
@@ -3104,9 +3200,9 @@
             },
             {
               "path": "node_modules/bowser",
-              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.14.1.tgz",
-              "integrity": "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==",
-              "size": 64403
+              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.15.1.tgz",
+              "integrity": "sha512-ma47ABeUiTsmG4McKDtGCgQSiTCatM97Mlbn13K42N1kPSFE14oN3WFMjtyL4KubhGvQTqYheKl4Qx2bJtMXLQ==",
+              "size": 89524
             },
             {
               "path": "node_modules/brace-expansion",
@@ -3224,15 +3320,9 @@
             },
             {
               "path": "node_modules/graceful-fs",
-              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
-              "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
-              "size": 9804
-            },
-            {
-              "path": "node_modules/grok-mermaid",
-              "tarball": "https://registry.npmjs.org/grok-mermaid/-/grok-mermaid-0.2.3.tgz",
-              "integrity": "sha512-/4KopAbsjvuRP9MdPtlDjOHUmUVEohOX73JNcsWpzAtFxh+bq5+Dhb6gzvRieLDwIPQIR3/vy8V1NNTuz4Zsmg==",
-              "size": 111286
+              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.12.tgz",
+              "integrity": "sha512-iuyGF2E4oafQfPsRrG2wtY2ILupMhvtdrhzrxB+0VcjsPpSPttpfYdjnGFGsTi5MaJFjI1jOKHPQ6UTbTj9TAw==",
+              "size": 9935
             },
             {
               "path": "node_modules/highlight.js",
@@ -3307,6 +3397,12 @@
               "size": 26736
             },
             {
+              "path": "node_modules/lovely-mermaid",
+              "tarball": "https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-0.3.3.tgz",
+              "integrity": "sha512-EMLJS934qwt2MLO/a5o+T/89HGbuXZPwmCpHIhHO+DVrm+y5tHlEHgpZzlC2o4yW/rFPHRFO9xSMafzqH4wH5A==",
+              "size": 182094
+            },
+            {
               "path": "node_modules/lru-cache",
               "tarball": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz",
               "integrity": "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==",
@@ -3326,9 +3422,9 @@
             },
             {
               "path": "node_modules/minimatch",
-              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-10.2.6.tgz",
-              "integrity": "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==",
-              "size": 117068
+              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-11.0.3.tgz",
+              "integrity": "sha512-iny/40PEGkNJQ5/Pv6z3nm6FbRAby32GeZRjCUJk2WnNDbgPSTcdI+DDvLqsgBdD4cD5sMtMheqPPnehCCa8Nw==",
+              "size": 102745
             },
             {
               "path": "node_modules/ms",
@@ -3350,9 +3446,9 @@
             },
             {
               "path": "node_modules/openai",
-              "tarball": "https://registry.npmjs.org/openai/-/openai-7.19.0.tgz",
-              "integrity": "sha512-MX2s3u2L5racTO0CC/SWpCOasJQBCJrqLKXK+l82cAhdeF8mPMBEe/gxMm0ZFa2xpKpOFLRjxv5afYEZbBXmbQ==",
-              "size": 2781465
+              "tarball": "https://registry.npmjs.org/openai/-/openai-7.59.0.tgz",
+              "integrity": "sha512-wPYKJkLPFEdNJ2tThSg4jE1Ptsv4X3u8g8LIvu0Qz/UIhsKeCzl73rl48PtQsDVrJL/ku0liXOsbyd2TsRsPJw==",
+              "size": 3733234
             },
             {
               "path": "node_modules/p-retry",
@@ -3440,9 +3536,9 @@
             },
             {
               "path": "node_modules/standardwebhooks",
-              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz",
-              "integrity": "sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==",
-              "size": 4109
+              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.3.0.tgz",
+              "integrity": "sha512-5W9skHjqAm2dlA9wWvglTP+oX47JX4lFXVk1aJV7+TG1snvTR4QXaVgPscEzvOw9GRreeavMwbqEeL+MGhZHCg==",
+              "size": 4738
             },
             {
               "path": "node_modules/ts-algebra",
@@ -3452,9 +3548,9 @@
             },
             {
               "path": "node_modules/tslib",
-              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
-              "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
-              "size": 18477
+              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz",
+              "integrity": "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==",
+              "size": 19229
             },
             {
               "path": "node_modules/typebox",
@@ -3464,9 +3560,9 @@
             },
             {
               "path": "node_modules/undici",
-              "tarball": "https://registry.npmjs.org/undici/-/undici-8.10.2.tgz",
-              "integrity": "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==",
-              "size": 463831
+              "tarball": "https://registry.npmjs.org/undici/-/undici-8.12.4.tgz",
+              "integrity": "sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA==",
+              "size": 547266
             },
             {
               "path": "node_modules/undici-types",
@@ -3488,9 +3584,9 @@
             },
             {
               "path": "node_modules/ws",
-              "tarball": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz",
-              "integrity": "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==",
-              "size": 35094
+              "tarball": "https://registry.npmjs.org/ws/-/ws-8.23.1.tgz",
+              "integrity": "sha512-1rzWDSN0NOi3tpwgHsQExjWRoKUGtjCkJ2gZRaaRtzhYLboMytOI9pj9PU7yCgY37auqdd4OyLofZDbkeuZmPA==",
+              "size": 35940
             },
             {
               "path": "node_modules/yaml",
@@ -3499,12 +3595,12 @@
               "size": 112086
             }
           ],
-          "unpackedSize": 111867932
+          "unpackedSize": 124123299
         },
         "win32-x64": {
           "format": "npm-tree",
           "package": "pi-coding-agent-win32-x64",
-          "version": "1.4.0",
+          "version": "1.7.0",
           "packages": [
             {
               "path": "node_modules/@anthropic-ai/sdk",
@@ -3520,92 +3616,104 @@
             },
             {
               "path": "node_modules/@aws-sdk/core",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.978.5.tgz",
-              "integrity": "sha512-ruI0AWqcrfL20XDS6SwZIJFPOBZ6N0ADa9nLzWlBhxk1aoUjbUX3JkTR9vEmk7o35XpAHi68ahZ4T6RE2U9XyA==",
-              "size": 83246
+              "tarball": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.2.tgz",
+              "integrity": "sha512-N3XKZdfa+Dcm7Kl8NJnaaHLx860Ts3QYHOraj/wuKOYHqqCApQBIKwzSxrpwZdwrqfbPt7BvJdYVhVMPpsRoGA==",
+              "size": 84105
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-env",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.76.tgz",
-              "integrity": "sha512-YxmL1Ar7bV9ZkJvtv+lj+MF6le76NnZnbmgySyZuxpZaCv0/1lZ3KxKy6RIj1h9ui2hWnVjZxbmTMeO0y/NrQA==",
-              "size": 6297
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.86.tgz",
+              "integrity": "sha512-ZFIkIzLAiOLOakfrzUuOz938+AF+q4nc/MYINYwFlgBbl8CsI8ofJ8Ueh0/Pp7hXMJfpq10eJdnQ7aaE6kfikQ==",
+              "size": 6299
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-http",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.78.tgz",
-              "integrity": "sha512-3VHknDRngoebsaqyT1iR75b5cBT2zfEtODK6yYmYltljkK1HEAQLs2FEd1IpWqAeOYdMGaG9wikngWLTufY7RA==",
-              "size": 5166
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.88.tgz",
+              "integrity": "sha512-92dpM3lwCyDjcDI3R+olUI2IG8R+qfUdnMQgxWZB4XM37P+N+oBaRd5xGc7uOH7FqMQY03XsrVKQeuWbPfIrKg==",
+              "size": 5169
+            },
+            {
+              "path": "node_modules/@aws-sdk/credential-provider-http/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-ini",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.21.tgz",
-              "integrity": "sha512-aLx9hbCX6mGAyv4ZZd8UagJ4RASHVJw6BFDSIyuKmLkqNL6H47EjBPK6qaJ4B5TDV6mc+vMa0SJFYyo4mkvVQg==",
-              "size": 11283
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.32.tgz",
+              "integrity": "sha512-MdIAf70d701Hj04Yo7AKqI1RfjTW5dFf+tEvUirYFMbs3NRHWiwqQj/C9wGFptZtmX+z/c57H3gQfzTt5Bsn8A==",
+              "size": 11284
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-login",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.83.tgz",
-              "integrity": "sha512-9bJU6FjRacF4FK/QHf8Dyxhur7B1grRj8C1Yh4IkpoFW2exQflPdCv0VrbemLW9ZctLNle+AE7TETs9KNvuLYg==",
-              "size": 6362
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.94.tgz",
+              "integrity": "sha512-sSq1PxdXT1kqR11/dRvE5AC2dEWMbYJCXzRU03Ulu4stu6vv08zju8uUNhVdqiIX+OrMIcEHHT1maLrUZDBGDA==",
+              "size": 6503
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.88.tgz",
-              "integrity": "sha512-AG0KID5qhQPzrFkh5b0Cws1Amytvzo0L0Xj6hMgJXEwD6ZXAqninDhSNAWJiN5zU4YVVZnuidnqwPwYJ04IamA==",
-              "size": 9823
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.82.tgz",
+              "integrity": "sha512-znDkEOGXB8W3kG1LJUKP3foBZY/9qLM0eil/DxWXSp37XsdsRLQHE/d/OaCGGVgKpA6znR38h/+INk8do1FjiA==",
+              "size": 9828
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-process",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.76.tgz",
-              "integrity": "sha512-pdhKFTXv1zPYhh92MTlp0jVbLWvUEV9v+rziuEkoskGGQ2iJskxHTO38nA8UAbT/N4IM3n8OZJ9rIY5IBO15/A==",
-              "size": 7119
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.86.tgz",
+              "integrity": "sha512-9x/+gtSDNxMQrRXgwIdwdNCVGxzUZtTZArjEeLfsn9xDvyXdsgs4my1g7JN5wKxT61ZLx4bKPREaDXnO8j7gkg==",
+              "size": 7122
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.20.tgz",
-              "integrity": "sha512-DlxrAB3MnjNLx/da7b89W+3DyJQYso/q7Ns15MsST2IV2nkAYQOYTUCaffNSjgrpMP99Dm2mV2jxzcbyF94ZfA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.30.tgz",
+              "integrity": "sha512-sMvwUIaKQEeprbMT5LXrI6nhM1IUEBDRpJAydEkAMrI7brrsRl7pxnOAJ6nweg/Hn5pJOVS7JgieJIv6CvJ7Sw==",
+              "size": 9080
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-sso/node_modules/@aws-sdk/token-providers",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1155.0.tgz",
-              "integrity": "sha512-iIcQnYLhWuq9qOLQbIWFrxF3PF0svVeZvHnUS4DUnO4zUFmFHIyGyjqrntXG+e/5PUgfavV0pYfDIKHxTzN2LA==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1177.0.tgz",
+              "integrity": "sha512-KFQ/2YqE7OIGNu05hys6y9ZUyoNxxLJVHM7NCvjfyjV0Mki0u0Euwjduj5M/HMurdbZJfBV0NjMNQQkGlJEQqg==",
               "size": 10173
             },
             {
               "path": "node_modules/@aws-sdk/credential-provider-web-identity",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.82.tgz",
-              "integrity": "sha512-LUo46IqPTJ4xKBsrLuoaxiv/D2GTBCcFDMD1y3jKIqPR/p7Rw14RJFZ0iRWftqZtyLPQX9JMGnSi3mBu4y/pNA==",
-              "size": 9077
+              "tarball": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.92.tgz",
+              "integrity": "sha512-AKaUwpy1wPN3B/byFWuvL6v+Qk8Gm840InZJw/bA1A+ciCL3zkzBUyEgxdeghJPEe79VKLs6BvbME74MQa3YKg==",
+              "size": 9075
             },
             {
               "path": "node_modules/@aws-sdk/eventstream-handler-node",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.38.tgz",
-              "integrity": "sha512-K7vPKNstDlavHFZgbmcFdJOFIyowsevjddycRziRBbtXH/D9z+i9juCnH17liwSX9T8fJiDQzlEYkRtxkR+1vA==",
-              "size": 7495
+              "tarball": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.43.tgz",
+              "integrity": "sha512-q7r2UxyaGdDf+//7esWvC95JLz9oEFljL2sKCZlkHa22HhEiIE4xwaP1CbWSxSPua/P2h2sgTHOgywuw8mVJRQ==",
+              "size": 7494
             },
             {
               "path": "node_modules/@aws-sdk/middleware-eventstream",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.33.tgz",
-              "integrity": "sha512-8QUt39D/dk5tdV7rLvIfMMI/ilQff4zth7mkMKpVOLM+M5AQ9W3nPxFVuHQANevmVWi4T5MlxqfKV4Q2drYeBA==",
-              "size": 6635
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.39.tgz",
+              "integrity": "sha512-FZiEHXudprvzex41hoFZecbVmqYhbrOGsCm2W8C+xBPhKtk4DCkvnCIohh1WfmXPcphoHICeLcdR3sVQClMNUw==",
+              "size": 6636
             },
             {
               "path": "node_modules/@aws-sdk/middleware-websocket",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.58.tgz",
-              "integrity": "sha512-/BvocdloKozx/zFr4benH+9J1ywB/2dYFHPWNUdo0CBCe00gTm0HPflOq8MH6cuCTbnywSrscGq0/LheN59teQ==",
-              "size": 12787
+              "tarball": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.68.tgz",
+              "integrity": "sha512-Jm9R6LtSw8IeolnhInwcUaAUOO74kKTpy+URWthFrCBQKbd5ZulLtePYoGwiRBkao1UiIjvU1vfDjksOJFP1Vw==",
+              "size": 12788
             },
             {
               "path": "node_modules/@aws-sdk/nested-clients",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.997.50.tgz",
-              "integrity": "sha512-nKb8qu4QsnpZTq/6JIXc72mzuzfh7BK4sUQkpQznPec2z4W7Ob2xYkcM4i5e1yGTBnbJVeFv/0sf3jcz85hclA==",
-              "size": 93282
+              "tarball": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.5.tgz",
+              "integrity": "sha512-9w5mkwVLOuGqlJkPR1uhod6ZP+TOtaxrKtvK2pY9G/+FEx0e8wYRLIDeg30dYQjFDx27jHGSzEA+OaMqxeyTPg==",
+              "size": 95324
+            },
+            {
+              "path": "node_modules/@aws-sdk/nested-clients/node_modules/@smithy/node-http-handler",
+              "tarball": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+              "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+              "size": 29107
             },
             {
               "path": "node_modules/@aws-sdk/signature-v4-multi-region",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.49.tgz",
-              "integrity": "sha512-nvuAZNRrRRVCiARRKsYlQ0VnXiEQiq7vXPH+UA+LSo+kN3Djl9eo/V2r0udkw85PnsNshmv2Em1clld5M3j67w==",
+              "tarball": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.52.tgz",
+              "integrity": "sha512-6W6SjGc8OXUhMzNxU1X922ghD+PP1XvzmCk5Scui0jaYsLezycMYR1RaLp5xTIOUrhTXyb4DnAbPr3fBgmdnzg==",
               "size": 8367
             },
             {
@@ -3616,15 +3724,15 @@
             },
             {
               "path": "node_modules/@aws-sdk/types",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.0.tgz",
-              "integrity": "sha512-WQlhs6juByzWOzj5fwxOx0mPJaEqMcG/sDpl3Id61B3XhKE63xY+0QWcnG+sWR/sCfprmreyUo1lM7IKZmHMzw==",
-              "size": 15155
+              "tarball": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.1.tgz",
+              "integrity": "sha512-7rGxUkCB2QPoQOeJmonmAICTN2zrH+fpmi1p4Iwu72lnxNaMhOgqcbpyddifnM1DBb19TWQ1u6z/XjkaFNEDWw==",
+              "size": 15154
             },
             {
               "path": "node_modules/@aws-sdk/xml-builder",
-              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.41.tgz",
-              "integrity": "sha512-ctjVSyCMegrWfXlx6VqzSBFI6UqmQ5ZlnfMhdLIiWmhoH8UAQxSCP5N3OpG7X3k4LnS7ou74C4mt20+bfTW2aQ==",
-              "size": 9760
+              "tarball": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.43.tgz",
+              "integrity": "sha512-rG8QVx4DOrJWptsogu1Aq+CDsnPKaBrAlJpKLxrJrIDXAq1ElnW0yQjjBnlWSXll0cDakCG6UDvaqwz0A9d9Og==",
+              "size": 9758
             },
             {
               "path": "node_modules/@aws/lambda-invoke-store",
@@ -3634,57 +3742,69 @@
             },
             {
               "path": "node_modules/@babel/runtime",
-              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.10.tgz",
-              "integrity": "sha512-NpugTzbKgGrNe45Ui32cN8vCFFMxVtP/9rtfwv0nP5FRDAjvYBxJcLVpYA9mr1jxP6cnIT7x9LUzuDTbWYYNRA==",
-              "size": 55269
+              "tarball": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.16.tgz",
+              "integrity": "sha512-LKBjGopxrQE0aFucNL69OyyyF143MOWUULEOftU3oCgyD35Sy84UUpVnt/sNvTb7ZmCyALSt7om+fojlW35zYQ==",
+              "size": 55629
             },
             {
               "path": "node_modules/@earendil-works/pi-agent-core",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.4.0.tgz",
-              "integrity": "sha512-PoKY84SKUwnt7S5QBZaGUqfNO1kjP3KHpHUA9QpFTj4cOjaVWMYIcBPJ6FDRCdE8Zen9OSECQUd0uUfVgtSmgA==",
-              "size": 62440
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.7.0.tgz",
+              "integrity": "sha512-pLs/wTAcrUnKDILPHjnd7RiDZSotAhJ965LwVc8x37TeWF+k+vKPMmAW6Z1T8XMQuICbIYusjkT7K0lmjgQwrg==",
+              "size": 63442
             },
             {
               "path": "node_modules/@earendil-works/pi-ai",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.4.0.tgz",
-              "integrity": "sha512-hQM/C4+1w8rHYACzDDf+0vQMnEnpzIop1tptIERVgR3ZeT/hHSzBNG8PaWPgxWQjqSeKCyBZSyp8uTT6eKK1pQ==",
-              "size": 836597
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.7.0.tgz",
+              "integrity": "sha512-iKryMlUYniwWbU7YU0uS7W0+cGd9c6oJ6PzRLOn8j4+1njG4c+BQq1cNawctx/npDqGeOx8ME7Gkgl6K6arPuw==",
+              "size": 929576
             },
             {
               "path": "node_modules/@earendil-works/pi-codemode",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
-              "integrity": "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
-              "size": 106267
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.7.0.tgz",
+              "integrity": "sha512-fhCoh8TLxhdRTOWSEplwp39Uv+JTsu9pCqtgu9gorO8zcaw92vsbVI/G89yFs92csTo2+yB7EsJq/+725Vj+eA==",
+              "size": 106951
             },
             {
               "path": "node_modules/@earendil-works/pi-coding-agent",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.4.0.tgz",
-              "integrity": "sha512-Z41LpZ3yYHSC/UUps6Mr39UMFPwH8elhJBG9DY1P7kuzsE5qSK/6eMj2EHzO5evJRQWLbKSqUMw+4nCNtIyiQg==",
-              "size": 7612554
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.7.0.tgz",
+              "integrity": "sha512-opRelA1oqV/o+cByICMYU87oiHuICeCkghHMqsZsDwDz9F6qo8HFhoH4J/wZkr6tBeFor7ryOSwEmpZsusYrbA==",
+              "size": 8016090
             },
             {
               "path": "node_modules/@earendil-works/pi-mcp",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.4.0.tgz",
-              "integrity": "sha512-92aZmmGsUpHHknYuKXZHRINQfahntw5hU9If0I0ZM49GojOaFHpkl5/GF3/aatqpt7v7GjZbBfpfSygGKW+pnw==",
-              "size": 93722
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.7.0.tgz",
+              "integrity": "sha512-ScsDjuFXjT9eKioD5oyZqofDXtaWCMhCBa+1aDSh7WmRACLsohfGQJtAX1rv5OmEbaerrRPgyD5jgwJFBjTFNw==",
+              "size": 158733
+            },
+            {
+              "path": "node_modules/@earendil-works/pi-schema",
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.7.0.tgz",
+              "integrity": "sha512-skji4McLg9jum3NFWzFa/4QRGEZhMGnSi3QL8b9VljJkc/QopH2/BFuGKI+VcEwYzKGwsd0I8RzvXGnZGfGltQ==",
+              "size": 145254
             },
             {
               "path": "node_modules/@earendil-works/pi-telemetry",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.4.0.tgz",
-              "integrity": "sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w==",
-              "size": 49115
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.7.0.tgz",
+              "integrity": "sha512-QZkngqktohuFZ2TZuJSXDuUntld4sCMW1tkUPaD4moMEX/z1lwcjycXnd9ChO9HNxm/Jfo+UTiC+N2hkAF9b0w==",
+              "size": 51971
             },
             {
               "path": "node_modules/@earendil-works/pi-tui",
-              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.4.0.tgz",
-              "integrity": "sha512-4obPOjgOD7g4mGSlngIvxyujC1UPdmyI9zdVthbr8GufacFEX+Ce0+scPgHg++k2xj5+QjESM2d5TxvIuzCVmg==",
-              "size": 527191
+              "tarball": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.7.0.tgz",
+              "integrity": "sha512-C6vkUYGTeDdl/cMIbFOabSEPMRy9HuaUV76PS2BhvSmWifO5y8Rz8/LgFWqGIIFS7RMqu0gdeEpdXfH8jIp05g==",
+              "size": 557785
             },
             {
               "path": "node_modules/@google/genai",
-              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-2.21.0.tgz",
-              "integrity": "sha512-+PDtco2/Z0ONdzCGekCoCT+O1VJS9xJQNN4XzQpXG/t3El/SWWMkCWlFRO1KmivOHPa4Q0VjUYu1HBKCZ/v33Q==",
-              "size": 1635618
+              "tarball": "https://registry.npmjs.org/@google/genai/-/genai-3.6.1.tgz",
+              "integrity": "sha512-DQIkZkl+VoZc+RUSaJ41vRuywjQDpP0t/oUf5/ddQhNW6JsPjVULW2EgHmuJ1mrr6ACtrmUdPlqtNXF1yfKySg==",
+              "size": 2005050
+            },
+            {
+              "path": "node_modules/@isaacs/nonrecursive-glob-match",
+              "tarball": "https://registry.npmjs.org/@isaacs/nonrecursive-glob-match/-/nonrecursive-glob-match-1.1.0.tgz",
+              "integrity": "sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==",
+              "size": 106359
             },
             {
               "path": "node_modules/@protobufjs/aspromise",
@@ -3748,9 +3868,9 @@
             },
             {
               "path": "node_modules/@smithy/core",
-              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.36.2.tgz",
-              "integrity": "sha512-oRw0rB9QSUiCZfEs23G5F4Af+b2rQt1lItIICWu5IejFNd+uPM8SWqiKLMpQ6bX1Q7slsLbjuoE2niErFtkVPQ==",
-              "size": 413139
+              "tarball": "https://registry.npmjs.org/@smithy/core/-/core-3.41.1.tgz",
+              "integrity": "sha512-24LyiHSY0R/MLcbTylurWXU6Uy4lzI6KJgsdzxkNnjT9/OLWc2zGPb/3k5AM1f0vcgCGrExanUG339t+TBiIrA==",
+              "size": 424825
             },
             {
               "path": "node_modules/@smithy/credential-provider-imds",
@@ -3760,9 +3880,9 @@
             },
             {
               "path": "node_modules/@smithy/fetch-http-handler",
-              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.0.tgz",
-              "integrity": "sha512-ycSJu3tFAQ4v04CBB0agqFMVsSQ1iG3yw+SpgxRqKfaURpQD4CZ8Wn0zPMmSnOuTpTh65Vz+EA0rMrw089wvkA==",
-              "size": 12024
+              "tarball": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.1.tgz",
+              "integrity": "sha512-h8BdMUrUBhMhMaeK7QqAdINRZezCGuYOCpcOZZ1ewxbHST9rdTd09xwNpvLTYfzDRehxQiReK4SKbdYZxBA+ew==",
+              "size": 12370
             },
             {
               "path": "node_modules/@smithy/node-http-handler",
@@ -3772,15 +3892,15 @@
             },
             {
               "path": "node_modules/@smithy/signature-v4",
-              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.4.tgz",
-              "integrity": "sha512-tHy0K0VtqNd5Y7Y41h0a0Lhh0L1GzC08dTWg0F7vRJWFtTENg7IZikf3wQkanYIRdb7ngoIPMTmqgUi401fEeQ==",
-              "size": 21171
+              "tarball": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.5.tgz",
+              "integrity": "sha512-WPjdr5oWOk1LArpI4pavu+fSo+/evi0Re1olxGvqwuZopd4gYR1UGCi+Soyn/IjmafqbWs+ZC+3AKxJS3ZpwUg==",
+              "size": 21353
             },
             {
               "path": "node_modules/@smithy/types",
-              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.19.0.tgz",
-              "integrity": "sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==",
-              "size": 82447
+              "tarball": "https://registry.npmjs.org/@smithy/types/-/types-4.20.0.tgz",
+              "integrity": "sha512-lCA6QG22dPk9ecHbv91jDQZsmtPUjdS1aE2Il6NNPqe7DrYc0dZQi6DhcESk2KYXH2sp5xbAcGdYMZDFnuzA2A==",
+              "size": 82635
             },
             {
               "path": "node_modules/@stablelib/base64",
@@ -3790,9 +3910,9 @@
             },
             {
               "path": "node_modules/@types/node",
-              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.5.tgz",
-              "integrity": "sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==",
-              "size": 471079
+              "tarball": "https://registry.npmjs.org/@types/node/-/node-26.6.11.tgz",
+              "integrity": "sha512-uUyQ2XLEz+EXh34lmS3GhKrkqn/8FU7KUiKRpk347At2bmnMVWss45yz8b4FG/tUtmV1tV/+TVkITItPROyeeQ==",
+              "size": 480430
             },
             {
               "path": "node_modules/@types/retry",
@@ -3826,9 +3946,9 @@
             },
             {
               "path": "node_modules/bowser",
-              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.14.1.tgz",
-              "integrity": "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==",
-              "size": 64403
+              "tarball": "https://registry.npmjs.org/bowser/-/bowser-2.15.1.tgz",
+              "integrity": "sha512-ma47ABeUiTsmG4McKDtGCgQSiTCatM97Mlbn13K42N1kPSFE14oN3WFMjtyL4KubhGvQTqYheKl4Qx2bJtMXLQ==",
+              "size": 89524
             },
             {
               "path": "node_modules/brace-expansion",
@@ -3946,15 +4066,9 @@
             },
             {
               "path": "node_modules/graceful-fs",
-              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.11.tgz",
-              "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==",
-              "size": 9804
-            },
-            {
-              "path": "node_modules/grok-mermaid",
-              "tarball": "https://registry.npmjs.org/grok-mermaid/-/grok-mermaid-0.2.3.tgz",
-              "integrity": "sha512-/4KopAbsjvuRP9MdPtlDjOHUmUVEohOX73JNcsWpzAtFxh+bq5+Dhb6gzvRieLDwIPQIR3/vy8V1NNTuz4Zsmg==",
-              "size": 111286
+              "tarball": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.12.tgz",
+              "integrity": "sha512-iuyGF2E4oafQfPsRrG2wtY2ILupMhvtdrhzrxB+0VcjsPpSPttpfYdjnGFGsTi5MaJFjI1jOKHPQ6UTbTj9TAw==",
+              "size": 9935
             },
             {
               "path": "node_modules/highlight.js",
@@ -4029,6 +4143,12 @@
               "size": 26736
             },
             {
+              "path": "node_modules/lovely-mermaid",
+              "tarball": "https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-0.3.3.tgz",
+              "integrity": "sha512-EMLJS934qwt2MLO/a5o+T/89HGbuXZPwmCpHIhHO+DVrm+y5tHlEHgpZzlC2o4yW/rFPHRFO9xSMafzqH4wH5A==",
+              "size": 182094
+            },
+            {
               "path": "node_modules/lru-cache",
               "tarball": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz",
               "integrity": "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==",
@@ -4048,9 +4168,9 @@
             },
             {
               "path": "node_modules/minimatch",
-              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-10.2.6.tgz",
-              "integrity": "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==",
-              "size": 117068
+              "tarball": "https://registry.npmjs.org/minimatch/-/minimatch-11.0.3.tgz",
+              "integrity": "sha512-iny/40PEGkNJQ5/Pv6z3nm6FbRAby32GeZRjCUJk2WnNDbgPSTcdI+DDvLqsgBdD4cD5sMtMheqPPnehCCa8Nw==",
+              "size": 102745
             },
             {
               "path": "node_modules/ms",
@@ -4072,9 +4192,9 @@
             },
             {
               "path": "node_modules/openai",
-              "tarball": "https://registry.npmjs.org/openai/-/openai-7.19.0.tgz",
-              "integrity": "sha512-MX2s3u2L5racTO0CC/SWpCOasJQBCJrqLKXK+l82cAhdeF8mPMBEe/gxMm0ZFa2xpKpOFLRjxv5afYEZbBXmbQ==",
-              "size": 2781465
+              "tarball": "https://registry.npmjs.org/openai/-/openai-7.59.0.tgz",
+              "integrity": "sha512-wPYKJkLPFEdNJ2tThSg4jE1Ptsv4X3u8g8LIvu0Qz/UIhsKeCzl73rl48PtQsDVrJL/ku0liXOsbyd2TsRsPJw==",
+              "size": 3733234
             },
             {
               "path": "node_modules/p-retry",
@@ -4162,9 +4282,9 @@
             },
             {
               "path": "node_modules/standardwebhooks",
-              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz",
-              "integrity": "sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==",
-              "size": 4109
+              "tarball": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.3.0.tgz",
+              "integrity": "sha512-5W9skHjqAm2dlA9wWvglTP+oX47JX4lFXVk1aJV7+TG1snvTR4QXaVgPscEzvOw9GRreeavMwbqEeL+MGhZHCg==",
+              "size": 4738
             },
             {
               "path": "node_modules/ts-algebra",
@@ -4174,9 +4294,9 @@
             },
             {
               "path": "node_modules/tslib",
-              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
-              "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
-              "size": 18477
+              "tarball": "https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz",
+              "integrity": "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==",
+              "size": 19229
             },
             {
               "path": "node_modules/typebox",
@@ -4186,9 +4306,9 @@
             },
             {
               "path": "node_modules/undici",
-              "tarball": "https://registry.npmjs.org/undici/-/undici-8.10.2.tgz",
-              "integrity": "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==",
-              "size": 463831
+              "tarball": "https://registry.npmjs.org/undici/-/undici-8.12.4.tgz",
+              "integrity": "sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA==",
+              "size": 547266
             },
             {
               "path": "node_modules/undici-types",
@@ -4210,9 +4330,9 @@
             },
             {
               "path": "node_modules/ws",
-              "tarball": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz",
-              "integrity": "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==",
-              "size": 35094
+              "tarball": "https://registry.npmjs.org/ws/-/ws-8.23.1.tgz",
+              "integrity": "sha512-1rzWDSN0NOi3tpwgHsQExjWRoKUGtjCkJ2gZRaaRtzhYLboMytOI9pj9PU7yCgY37auqdd4OyLofZDbkeuZmPA==",
+              "size": 35940
             },
             {
               "path": "node_modules/yaml",
@@ -4221,7 +4341,7 @@
               "size": 112086
             }
           ],
-          "unpackedSize": 111867932
+          "unpackedSize": 124123299
         }
       }
     },
