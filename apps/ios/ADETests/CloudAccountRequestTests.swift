@@ -11,6 +11,7 @@ import XCTest
 ///   instead" are account calls by the launch's ids, with no pin, so they
 ///   reach the launch whichever machine the phone is bound to. A refused code
 ///   must read as refused, never "Code sent".
+/// - The setup steps of a launch that ended: a cancelled one shows no failed step.
 /// - "Delete anyway" on a computer the idle cleanup kept (ADE-223): it must
 ///   keep the lane (the server takes its branch from its own row), or the
 ///   lane and its chats are lost with the computer.
@@ -132,6 +133,29 @@ extension CloudAccountRequestTests {
     let body = try XCTUnwrap(CloudAccountStubProtocol.deleteBody)
     let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? NSDictionary)
     XCTAssertEqual(json, ["reason": "freed", "keepLane": ["branchRef": NSNull()]] as NSDictionary)
+  }
+}
+
+extension CloudAccountRequestTests {
+  /// The setup card of a launch that ended: a cancel is the person's choice,
+  /// never a failed step, and nothing still runs. A failure shows on its step.
+  func testSetupStepsOfAnEndedLaunch() throws {
+    let cases: [(name: String, state: String, stages: String, expected: CloudSetupStepStates)] = [
+      ("cancelled in the sign-in step: no failed step, no running step", "cancelled",
+       #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"},{"id":"agent","status":"pending"}]"#,
+       CloudSetupStepStates(computer: .done, repo: .done, signIn: .todo, send: .todo)),
+      ("cancelled while cloning: the clone reads as not done", "cancelled",
+       #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"running"}]"#,
+       CloudSetupStepStates(computer: .done, repo: .todo, signIn: .todo, send: .todo)),
+      ("failed in the sign-in step: the sign-in failed", "failed",
+       #"[{"id":"computer","status":"done"},{"id":"join","status":"done"},{"id":"clone","status":"done"},{"id":"agent","status":"pending"}]"#,
+       CloudSetupStepStates(computer: .done, repo: .done, signIn: .failed, send: .todo)),
+    ]
+    for c in cases {
+      let json = #"{"launchId":"launch-1","state":"\#(c.state)","stages":\#(c.stages)}"#
+      let record = try JSONDecoder().decode(CloudLaunchRecord.self, from: Data(json.utf8))
+      XCTAssertEqual(cloudSetupStepStates(record), c.expected, c.name)
+    }
   }
 }
 

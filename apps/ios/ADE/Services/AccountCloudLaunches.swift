@@ -461,7 +461,9 @@ struct CloudSetupStepStates: Equatable {
 }
 
 /// Pure: the setup card's four steps from a launch record, the same rules as
-/// the web card (`cloudSetupStepStates` in `CloudSetupCard.tsx`).
+/// the web card (`cloudSetupStepStates` in `CloudSetupCard.tsx`). A launch the
+/// person cancelled marks no step failed: its running or waiting steps read as
+/// not done.
 func cloudSetupStepStates(_ record: CloudLaunchRecord?) -> CloudSetupStepStates {
   guard let record else { return CloudSetupStepStates(computer: .running, repo: .todo, signIn: .todo, send: .todo) }
   func stagesState(_ ids: [String]) -> CloudSetupStepState? {
@@ -473,7 +475,8 @@ func cloudSetupStepStates(_ record: CloudLaunchRecord?) -> CloudSetupStepStates 
     return .todo
   }
   let afterJoin: Set<String> = ["joined", "waiting_for_sign_in", "running", "done"]
-  let failed = record.failed
+  // Only a launch that failed: a cancel is not a failure (`record.failed` counts both).
+  let failed = record.state == "failed"
   let computer = stagesState(["computer", "join"])
     ?? (afterJoin.contains(record.state) ? .done : record.state == "needs_approval" ? .waiting : failed ? .failed : .running)
   let agent = record.stages.first { $0.id == "agent" }?.status
@@ -486,12 +489,18 @@ func cloudSetupStepStates(_ record: CloudLaunchRecord?) -> CloudSetupStepStates 
   let send: CloudSetupStepState = record.sessionId != nil || record.state == "done" || agent == "done"
     ? .done
     : agentStarted ? .running : (failed && signIn == .done ? .failed : .todo)
-  return CloudSetupStepStates(
+  let steps = CloudSetupStepStates(
     computer: failed && computer != .done ? .failed : computer,
     repo: failed && computer == .done && repo != .done ? .failed : repo,
     signIn: signIn,
     send: send
   )
+  guard record.cancelled else { return steps }
+  // The person cancelled it: nothing failed, and nothing runs any more.
+  func stopped(_ step: CloudSetupStepState) -> CloudSetupStepState {
+    step == .running || step == .waiting ? .todo : step
+  }
+  return CloudSetupStepStates(computer: stopped(steps.computer), repo: stopped(steps.repo), signIn: stopped(steps.signIn), send: stopped(steps.send))
 }
 
 // MARK: - Store
