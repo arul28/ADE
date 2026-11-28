@@ -29,6 +29,8 @@
  * `&mockMac=1` offers the DAEX Cloud Mac (`catalog.mac`) and adds a Mac lane in
  * each state (waiting, starting, on, stopping, stopped, a failed start, a lost
  * drive); `&mockMac=offer` offers it with no Mac lane yet; `&mockMac=broke` offers it at zero credits.
+ * `&mockMacLane=running|queued|starting|stopped` (with `mockCloudLaneMachine=1`) makes the chat's
+ * lane computer (checkout-redesign) a Mac in that state.
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
@@ -216,28 +218,38 @@ function mockMacMachines(now: number): CloudLaneMachine[] {
     { id: "mac-f1", lane: "testflight-fix", state: "stopped", status: "stopped", failure: "queue_expired", usedGb: 4.0, agoMs: 70 * 60_000 },
     { id: "mac-l1", lane: "old-mac-lane", state: "stopped", status: "stopped", failure: "drive_lost", usedGb: null, agoMs: 2 * DAY },
   ];
-  return specs.map((spec) => {
-    const base = machine({ id: spec.id, lane: spec.lane, tier: "medium", diskGb: 20, state: spec.status === "running" ? "running" : spec.status === "starting" ? "starting" : "stopped", lastActiveAgoMs: spec.agoMs, createdAgoMs: 4 * DAY }, now);
-    return {
-      ...base,
-      status: spec.status,
-      type: "box",
-      resources: { cpu: CLOUD_MAC_SHAPE.cpu, memoryGb: CLOUD_MAC_SHAPE.memoryGb, diskGb: CLOUD_MAC_SHAPE.driveGb },
-      shapeId: null,
-      hoursRate: null,
-      diskUsage: null,
-      awakeSinceMs: spec.state === "running" ? now - spec.agoMs : null,
-      os: "mac",
-      unsupported: [...CLOUD_MAC_UNSUPPORTED],
-      mac: {
-        state: spec.state,
-        since: now - spec.agoMs,
-        message: spec.failure ? CLOUD_MAC_START_FAILED_SENTENCES[spec.failure] : CLOUD_MAC_STATE_SENTENCES[spec.state],
-        ...(spec.failure ? { startFailed: true, failure: spec.failure } : {}),
-        drive: { sizeGb: CLOUD_MAC_SHAPE.driveGb, usedGb: spec.usedGb, savedAt: spec.usedGb == null ? null : now - spec.agoMs },
-      },
-    };
-  });
+  return specs.map((spec) => asMockMac(
+    machine({ id: spec.id, lane: spec.lane, tier: "medium", diskGb: 20, state: spec.status === "running" ? "running" : spec.status === "starting" ? "starting" : "stopped", lastActiveAgoMs: spec.agoMs, createdAgoMs: 4 * DAY }, now),
+    spec,
+    now,
+  ));
+}
+
+/** A mock computer as a DAEX Cloud Mac in one state (`mac` as the server sends it). */
+function asMockMac(
+  base: CloudLaneMachine,
+  spec: { state: CloudMacStateName; status: string; failure?: CloudMacStartFailure; usedGb: number | null; agoMs: number },
+  now: number,
+): CloudLaneMachine {
+  return {
+    ...base,
+    status: spec.status,
+    type: "box",
+    resources: { cpu: CLOUD_MAC_SHAPE.cpu, memoryGb: CLOUD_MAC_SHAPE.memoryGb, diskGb: CLOUD_MAC_SHAPE.driveGb },
+    shapeId: null,
+    hoursRate: null,
+    diskUsage: null,
+    awakeSinceMs: spec.state === "running" ? now - spec.agoMs : null,
+    os: "mac",
+    unsupported: [...CLOUD_MAC_UNSUPPORTED],
+    mac: {
+      state: spec.state,
+      since: now - spec.agoMs,
+      message: spec.failure ? CLOUD_MAC_START_FAILED_SENTENCES[spec.failure] : CLOUD_MAC_STATE_SENTENCES[spec.state],
+      ...(spec.failure ? { startFailed: true, failure: spec.failure } : {}),
+      drive: { sizeGb: CLOUD_MAC_SHAPE.driveGb, usedGb: spec.usedGb, savedAt: spec.usedGb == null ? null : now - spec.agoMs },
+    },
+  };
 }
 
 type Fixture = {
@@ -666,10 +678,18 @@ export function applyBrowserMockCloud(ade: any): void {
   const fix = macParam === "broke"
     ? { ...fixture(scenario), usedMilli: 1_000_000_000, extraHours: false, earnedMilli: undefined }
     : fixture(scenario);
-  const machines = fix.lanes.map((spec) => machine(spec, now));
+  // `&mockMacLane=running|queued|starting|stopped`: the computer of the `mockCloudLaneMachine=1` chat (checkout-redesign) is a Mac.
+  const macLaneParam = param("mockMacLane") as CloudMacStateName | null;
+  const macLaneState = macLaneParam && macLaneParam in CLOUD_MAC_STATE_SENTENCES ? macLaneParam : null;
+  const machines = fix.lanes.map((spec) => {
+    const box = machine(spec, now);
+    if (!macLaneState || spec.lane !== "checkout-redesign") return box;
+    const status = macLaneState === "running" ? "running" : macLaneState === "queued" || macLaneState === "starting" ? "starting" : "stopped";
+    return asMockMac({ ...box, state: status === "running" ? "running" : status === "starting" ? "starting" : "stopped" }, { state: macLaneState, status, usedGb: 7.4, agoMs: 3 * 60_000 }, now);
+  });
   if (macParam === "1") machines.push(...mockMacMachines(now));
   let state = account(fix, machines, now);
-  if (macParam === "1" || macParam === "offer" || macParam === "broke") state = { ...state, catalog: { ...state.catalog, mac: MOCK_MAC_OFFER } };
+  if (macParam === "1" || macParam === "offer" || macParam === "broke" || macLaneState) state = { ...state, catalog: { ...state.catalog, mac: MOCK_MAC_OFFER } };
   // Credits: the iPhone has used some of the balance.
   const withCredits = (next: CloudAccountState): CloudAccountState => {
     let out = next;
