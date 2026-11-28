@@ -1,142 +1,99 @@
 # Antigravity provider
 
-DAEX runs Google's Antigravity CLI, `agy`, in two ways: chats run `agy acp` on
-the shared ACP host ([acp-providers-spec.md](acp-providers-spec.md)), and
-terminals run the `agy` TUI. Google stopped the standalone ACP server
-(`agy_acp_server`, ACP registry id `antigravity-acp`) at 1.4.5 and moved ACP
-into the CLI at 1.5.0, so DAEX pins the CLI.
+DAEX runs Google's Antigravity CLI, `agy`, two ways: chats run `agy acp` on the
+shared ACP host ([acp-providers-spec.md](acp-providers-spec.md)); terminals run
+the `agy` TUI. ACP lives in the CLI since 1.5.0 (the old standalone
+`agy_acp_server` is gone), so DAEX pins the CLI (tool `antigravity`, currently
+1.5.6). Facts below were verified on 1.5.6; re-verify when the pin moves.
 
 ## Source file map
 
-| Piece | File |
+| Path | Role |
 |---|---|
-| Dialect (spawn plan, capabilities, mode mapping, system prompt, account tier) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravity.ts` |
-| A turn's real outcome (quota and API errors from the session log) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravityTurnOutcome.ts` |
-| Tool-call fixes (edit paths and hunks, new-file text, command output) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravitySessionUpdates.ts` |
-| Read-only session-log reader (steps, conversation metadata) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravitySessionLog.ts` |
-| Background subagents (cards, progress, results, agy's reply) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravityChildWork.ts` |
-| Import of past agy conversations | `apps/desktop/src/main/services/externalSessions/discoverAntigravity.ts`, `externalSessions/events/antigravity.ts` |
-| Captured `initialize` (1.5.6) | `apps/desktop/src/main/services/chat/acpHost/fixtures/antigravity.initialize.json` |
-| Per-launch temp directories | `apps/desktop/src/main/services/chat/acpHost/acpScratchDirs.ts` |
-| Signed-in check, credential environment, DAEX's own settings | `apps/desktop/src/main/services/ai/antigravityAuth.ts` |
-| Sign-in runner (`agy acp --login`, paste-back code, `authenticate` for the other methods) | `apps/desktop/src/main/services/ai/antigravitySignIn.ts` |
-| Settings sign-in panel | `apps/desktop/src/renderer/components/settings/providers/bodies/AntigravitySignIn.tsx` |
-| Terminal launch lines | `apps/desktop/src/shared/cliLaunch.ts` (`antigravity` profile), `apps/desktop/src/main/services/pty/pinnedProviderCli.ts` |
-| Pin (tool `antigravity`) | `apps/ade-cli/scripts/pins/antigravity.json`, tools manifest |
+| `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravity.ts` | Dialect: spawn plan, capabilities, mode mapping, system prompt meta, account tier, usage fix. |
+| `…/acpDialects/antigravityTurnOutcome.ts` | A turn's real outcome (quota and API errors) from the session log. |
+| `…/acpDialects/antigravitySessionUpdates.ts` | Tool-call fixes: edit paths and hunks, new-file text, command output. |
+| `…/acpDialects/antigravitySessionLog.ts` | Read-only, bounded reader of the SQLite session log. |
+| `…/acpDialects/antigravityChildWork.ts` | Background subagents read from the logs. |
+| `apps/desktop/src/main/services/chat/acpHost/fixtures/antigravity.initialize.json` | Captured `initialize`. |
+| `apps/desktop/src/main/services/chat/acpHost/acpScratchDirs.ts` | Per-launch temp dirs. |
+| `apps/desktop/src/main/services/externalSessions/discoverAntigravity.ts`, `externalSessions/events/antigravity.ts` | Import of past agy conversations. |
+| `apps/desktop/src/main/services/ai/antigravityAuth.ts` | Signed-in check, credential env, DAEX's own settings. |
+| `apps/desktop/src/main/services/ai/antigravitySignIn.ts` | Sign-in runner. |
+| `apps/desktop/src/renderer/components/settings/providers/bodies/AntigravitySignIn.tsx` | Settings sign-in panel. |
+| `apps/desktop/src/shared/cliLaunch.ts` (`antigravity`), `apps/desktop/src/main/services/pty/pinnedProviderCli.ts` | Terminal launch lines. |
+| `apps/ade-cli/scripts/pins/antigravity.json` | The pin. |
 
-## Gotchas / fragile areas
+## Gotchas
 
 - **The login is the user's own.** DAEX never passes `--gemini-dir` or
-  `--app-data-dir`; conversations and sign-in are shared with `agy` in a
+  `--app-data-dir`; sign-in and conversations are shared with `agy` in a
   terminal.
-- **Ambient Google keys never pick the account.** Credential variables are
-  stripped and only the recorded method's come back
+- **Ambient Google keys never pick the account.** Google credential variables
+  are stripped; only the recorded method's come back
   (`antigravityCredentialEnv`).
-- **MCP is stdio only** (no `mcpCapabilities`); servers in its own
-  `mcp_config.json` also load, and a same-named one there wins.
-- **PDF resources never reach the model**, so binary attachments go by path
-  (`readsBinaryAttachments`).
-- **The status check never reads the secret or prompts** (keyring attributes
-  only), and the ACP auth probe never sends `authenticate`.
-- **Capabilities below were verified on 1.5.6**; re-verify when the pin moves.
+- **MCP is stdio only** (no `mcpCapabilities`; `REGISTRY_ONLY_MCP_SUPPORT` in
+  `callerMcpServers.ts`). Servers in agy's own `mcp_config.json` also load, and a
+  same-named one there wins.
+- **PDF resources never reach the model**; binary attachments go by path
+  (`readsBinaryAttachments`), which agy's `read_file` can read.
+- **Failed turns look like answers** over ACP; the session log is the truth
+  (below).
+- **The status check never reads the secret or prompts**, and the ACP auth probe
+  never sends `authenticate`.
+- `/logout` is hidden from the slash picker: it signs out every client on the
+  machine.
 
-## The pinned copy
+## Pinned copy and spawn
 
-The tools cache entry `antigravity` is the CLI from GitHub releases of
-`google-antigravity/antigravity-cli` (`agy_cli_<os>_<arch>.tar.gz`, a zip on
-Windows). Each archive holds one binary, `antigravity` (`antigravity.exe`).
-`tools:pin` takes GitHub's sha256 digest for each asset and checks it against a
-full download. Resolution is the same as every ACP provider (env override
-`ANTIGRAVITY_CLI_EXECUTABLE`, or the old `ANTIGRAVITY_ACP_EXECUTABLE`, for
-development, then the current pin, then the previous pin); a miss starts the
-download and shows "Downloading Antigravity for this machine…". The status row
-and Download/Retry come from the generic pinned-tool actions
-(`ai.pinnedToolStatus` / `ai.pinnedToolDownload`).
+- From GitHub releases of `google-antigravity/antigravity-cli`; one binary per
+  archive. Resolution: `ANTIGRAVITY_CLI_EXECUTABLE` (or old
+  `ANTIGRAVITY_ACP_EXECUTABLE`), then current pin, then previous pin; a miss
+  downloads. Status and Download/Retry use `ai.pinnedToolStatus` /
+  `ai.pinnedToolDownload`.
+- Every spawn gets `AGY_CLI_DISABLE_AUTO_UPDATE=1` (`pinnedToolSpawnEnv.ts`).
+- Chat command: `acp --disable-telemetry`. `TMPDIR`/`TEMP`/`TMP` point at a
+  per-launch dir removed on exit. `BROWSER` is a no-op command.
 
-The CLI updates itself unless told not to. Every spawn, chat and terminal,
-gets `AGY_CLI_DISABLE_AUTO_UPDATE=1` (`pinnedToolSpawnEnv.ts`), so DAEX's pinned
-bytes are the ones that run.
+## Capabilities
 
-## Chat spawn
-
-- Command: the pin's binary with `acp --disable-telemetry`.
-- `TMPDIR` (`TEMP` and `TMP` on Windows) = `<os temp>/ade-agent-tmp/<ADE pid>-antigravity-<random>`,
-  created before the spawn and removed when the process exits (a force-killed
-  DAEX's leftovers are swept later).
-- `BROWSER` = a command that exits 0 and opens nothing (`/usr/bin/true`;
-  `cmd.exe /d /c exit 0` on Windows).
-- Google credential variables (`GEMINI_API_KEY`, `GOOGLE_API_KEY`,
-  `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`/`LOCATION`, …) are
-  removed, and only the recorded method gets its variables back
-  (`antigravityCredentialEnv`). An ambient key cannot decide which account a
-  chat bills.
-- DAEX never passes `--gemini-dir` or `--app-data-dir`: the login and the
-  conversations are the user's own, the same as `agy` in their terminal.
-
-## Capabilities (verified on 1.5.6)
-
-- ACP v1. `authMethods`: `oauth-personal`, `oauth-business`, `gemini-api-key`,
-  `agent-platform`. Unauthenticated `session/new` is `-32000 Authentication
-  required`.
-- `loadSession`, and `sessionCapabilities` `resume`, `close`, `load`, `list`,
-  `additionalDirectories`. With `session/close`, chats in one lane share one
-  process (`close_request`); rejoin is resume-preferred.
-- Image prompts and embedded context; no audio.
-- No `mcpCapabilities`: MCP servers reach it over stdio only. DAEX hands it the
-  registry's stdio servers (`REGISTRY_ONLY_MCP_SUPPORT` in
-  `callerMcpServers.ts`); its own `~/.gemini/config/mcp_config.json` also
-  loads, and a same-named server there wins.
-- `_meta.antigravity.systemPrompt.append`: DAEX's lane guidance goes into the
-  system prompt on `session/new`, `session/resume` and `session/load` (the
-  agent keeps none of it, so it is sent on each), instead of riding the first
-  user turn (`systemPromptMeta` on the dialect).
-- `auth.logout` is advertised; DAEX hides the agent's `/logout` from the slash
-  picker because it signs out every client on the machine.
-- Models are the `model` config option (signed in on a Google account:
-  Gemini, Claude and GPT-OSS models); `thought_level` (low, medium, high)
-  carries reasoning effort. From 1.5.1 every model on the account is offered
-  to every ACP client.
-- `session/new` names the account tier in `_meta.antigravity.tier`
-  (`{ name, id, upgradeUri }`; "Antigravity Starter Quota" on a Google
-  account). Its name is the turn account's plan.
-- Usage comes on the prompt result. agy's `inputTokens` leaves out the cached
-  tokens (`totalTokens` = input + cachedRead + output), so the dialect adds
-  them back before DAEX's reader splits them off (`antigravityUsage`). There is
-  no `usage_update`.
+- `authMethods`: `oauth-personal`, `oauth-business`, `gemini-api-key`,
+  `agent-platform`. Unauthenticated `session/new` → `-32000`.
+- `loadSession`; session `resume`, `close`, `load`, `list`,
+  `additionalDirectories`. With close, chats in one lane share a process.
+- Images and embedded context; no audio.
+- `_meta.antigravity.systemPrompt.append` carries DAEX's lane guidance on every
+  `session/new`, `resume` and `load` (`systemPromptMeta`).
+- Models are the `model` config option; `thought_level` carries effort. A chat
+  started without a model takes agy's current one from `session/new`.
+- `session/new` returns `_meta.antigravity.tier` (`{ name, id, upgradeUri }`);
+  its name is the turn account's plan.
+- Usage arrives on the prompt result. agy's `inputTokens` excludes cached
+  tokens, so `antigravityUsage` adds them back. No `usage_update`.
+- Gaps: no rewind or edit of earlier turns; no usage-limit meter (the quota API
+  needs the OAuth token, which DAEX does not read in the background).
 
 ### Failed turns
 
-agy reports a quota, a rate limit or a Google API error as a chat message and
-`end_turn`. Its session log says otherwise: every session is a SQLite file,
-`~/.gemini/antigravity-cli/conversations/<sessionId>.db`, and a failed turn
-ends with an error step (`step_type` 17) whose text is the API error
-(`Error 429, Message: …, Status: RESOURCE_EXHAUSTED`, plus `quotaResetDelay`,
-`quotaResetTimeStamp` or `retryDelay`). An exhausted quota can also come back
-as `stopReason: "refusal"`. Before each prompt DAEX notes the log's last step;
-after it, it reads only the newest new step, read-only, and a bounded prefix of
-its text (`dialect.turnOutcome`). A quota or a 429 fails the turn with a
-usage-limit card, and the reset time it names arms auto-resume; any other API
-error fails the turn with the agent's message. A log that is missing,
-unreadable or not a plain file leaves the turn as the agent answered it.
+agy reports quota, rate-limit and API errors as a chat message plus `end_turn`
+(an exhausted quota can also be `stopReason: "refusal"`). Every session is a
+SQLite file, `~/.gemini/antigravity-cli/conversations/<sessionId>.db`; a failed
+turn ends with an error step (`step_type` 17). DAEX notes the last step before
+each prompt and reads only the newest new step after it (`dialect.turnOutcome`).
+Quota / 429 → usage-limit card, and the named reset time arms auto-resume. Other
+API errors fail the turn with the agent's message. An unreadable log leaves the
+turn as answered.
 
-### Tool calls (verified 1.5.6, Windows)
+### Tool calls
 
-- Permission requests offer only `allow` (`allow_once`) and `deny`
-  (`reject_once`).
-- An edit's finished update names its file `/C:/Users/…`; DAEX drops the
-  slash before a drive letter. A finished snippet edit is placed on its real
-  lines when the new snippet occurs once in the file (512 KB or less).
-- `write_file`'s finished diff has one newline more than the file; the new
-  file's text comes from its `Content` argument.
-- `run_command` output loses agy's "Created At / Completed At / Command
-  exited" header, and the exit code (`rawOutput.exit_code`) goes on the row.
-- A PDF sent as a resource (link or blob) never reaches the model, but agy's
-  `read_file` reads one from a path, so binary attachments are handed over by
-  path (`readsBinaryAttachments`).
-- `ask_question` (`{ questions: [{ question, options, is_multi_select }] }`,
-  an option may start "(Recommended) ") ends the turn and writes the question
-  as text. DAEX raises a question card from the tool call
-  (`dialect.asyncQuestions`); the answer goes back as the next message.
+- Permission options are only `allow_once` and `reject_once`.
+- Edit paths like `/C:/Users/…` lose the leading slash. A snippet edit is placed
+  on its real lines when the snippet occurs once (files ≤ 512 KB).
+- `write_file`: new-file text comes from the `Content` argument (the diff has an
+  extra newline).
+- `run_command`: agy's header is stripped; `rawOutput.exit_code` goes on the row.
+- `ask_question` ends the turn; DAEX raises a question card from the tool call
+  (`dialect.asyncQuestions`) and sends the answer as the next message.
 
 ### Modes
 
@@ -145,178 +102,99 @@ unreadable or not a plain file leaves the turn as the agent answered it.
 | Plan | `plan` |
 | Ask | `default` |
 | Accept edits | `accept-edits` |
-| Auto | `auto` (1.5.4+; not for Gemini Enterprise accounts, which then stay in `default`) |
-| Full access | `default`, and DAEX answers every permission request (`hostAnswersFullAccess`) |
-
-The CLI has no full-access mode over ACP, so Full access is DAEX approving each
-request and recording it in the transcript.
+| Auto | `auto` (not for Gemini Enterprise accounts, which stay `default`) |
+| Full access | `default`, with DAEX answering every request (`hostAnswersFullAccess`) |
 
 ### Subagents
 
-`invoke_subagent` (`{ Prompt, Role, TypeName, Model, Workspace }`) returns at
-once, and the turn ends while the subagent runs on in agy's process with its
-own conversation log. Its result goes to agy as a message, and agy writes a
-reply, but none of that comes over ACP. DAEX reads it from the logs instead
-(`dialect.backgroundWork`, `antigravityChildWork.ts`):
+`invoke_subagent` returns at once; the child runs on in agy's process with its
+own log, and its result and agy's reply never come over ACP. DAEX reads them
+from the logs (`dialect.backgroundWork`, `antigravityChildWork.ts`):
 
-- When a turn ends, each launch in the steps it added becomes a subagent card.
-  The child's conversation id is in the launch's result.
-- While a child is open, a 2-second poll reads the child's log for progress
-  and the parent's for the result and what agy did next. It runs only then,
-  and skips a log whose size and time have not changed. agy's thinking, text
-  and finished tool calls (with their output) show as a turn of their own, or
-  in the running turn when the user has already sent another message. A tool
-  still running is read again until it finishes.
-- A tool that needs approval is held, not asked for: agy sends nothing until
-  the next `session/prompt`, which opens with that tool call and its
-  `session/request_permission`. DAEX shows a note ("Antigravity is waiting to
-  run …") and the approval card comes with the user's next message.
-- A chat with an open subagent, a running background tool, or a held tool is
-  not closed for idling. Closing agy's process cancels a held tool (verified).
-  A held tool keeps the chat open for at most 30 minutes. A child that writes
-  nothing for 30 minutes is reported stopped, and so is every open child when
-  the chat's agy process exits.
-
-A step's status is in the `steps.status` column: 3 done, 6 cancelled, 7 failed
-or denied, 9 waiting for approval, anything else running.
-
-Cost (measured on Windows against real agy logs, 1.5.6): an idle tick is two
-`stat` calls (about 25 µs); a tick after a change, and the read at each turn's
-end, open the SQLite log and read the new steps (1–3 ms, mostly the open;
-each payload is capped at 256 KB).
-
-A chat started without a model (from the CLI, say) takes agy's current model
-from `session/new`'s config options, so the composer shows the real model.
+- At turn end, each launch in the new steps becomes a subagent card (child id in
+  the launch's result).
+- While a child is open, a 2 s poll reads the child's and parent's logs,
+  skipping unchanged files. agy's follow-up shows as its own turn, or inside the
+  running turn if the user already sent another message.
+- A tool needing approval is held: agy sends nothing until the next
+  `session/prompt`. DAEX shows "Antigravity is waiting to run …"; the approval
+  card arrives with the user's next message.
+- Open children, running background tools and held tools keep the chat from
+  idling out (held tool: max 30 min). A child silent for 30 min, or every open
+  child when agy exits, is reported stopped.
+- `steps.status`: 3 done, 6 cancelled, 7 failed/denied, 9 awaiting approval,
+  else running.
 
 ### Session log
 
-Every agy conversation, from the TUI or ACP, is
-`~/.gemini/antigravity-cli/conversations/<id>.db` (SQLite, with a WAL while
-agy has it open). `antigravitySessionLog.ts` reads it read-only and bounded
-(`busy_timeout` 50 ms, payloads capped), and never throws: a field it cannot
-read is left out. The `steps` table holds protobuf payloads. The fields DAEX
-reads (1.5.6) are listed in the file's header: the user's text, the reply's
-text, thinking and tool calls, a tool's result (`140.2.1`), a message from
-another conversation, and the step's time. `trajectory_metadata_blob` holds
-the workspace (`file://` URL), the creation time, and the system prompt an
-ACP client opened the conversation with.
+`antigravitySessionLog.ts` reads the `.db` read-only (`busy_timeout` 50 ms,
+payloads ≤ 256 KB) and never throws. The protobuf fields it reads are listed in
+its header; `trajectory_metadata_blob` holds the workspace, creation time and an
+ACP client's system prompt.
 
 ### Import
 
-Past agy conversations list in the session importer as "Antigravity". A
-conversation's folder is its recorded workspace; one with none (a TUI started
-outside a workspace) lists only when the import is not scoped to a project.
-Left out: subagents (their log opens with the parent's message), and
-conversations a DAEX chat opened (their system prompt is DAEX's `## ADE`
-guidance; a live DAEX chat is also matched by its `acpSessionId`).
-Each log's metadata, message window and record are kept while the log's
-mtime and size hold, and a cold list gives the event loop a turn every ten
-reads (macOS numbers in `docs/perf/macos-baseline.md`).
-
-- CLI continue runs `agy --conversation <id>` in the conversation's folder.
-  agy has no fork, so there is no CLI copy.
-- Chat copy replays the conversation into a new DAEX chat. The preview and the
-  copy page backwards through the steps (user messages, replies, thinking,
-  tool calls and their results). Chat continue is off, as for the other ACP
-  providers.
-
-### Gaps
-
-- **No rewind or edit of earlier turns.** Continue with a follow-up or start a
-  new chat.
-- **No usage limits.** Google's quota API needs the account's OAuth token,
-  which DAEX does not read in the background.
+The importer lists conversations as "Antigravity" by recorded workspace (none →
+only in an unscoped import). It skips subagents and conversations a DAEX chat
+opened (DAEX system prompt, or a live chat's `acpSessionId`). CLI continue runs
+`agy --conversation <id>`; agy has no fork, so no CLI copy. Chat copy replays
+into a new DAEX chat; chat continue is off, as for other ACP providers.
 
 ## Terminals
 
-The `antigravity` terminal profile runs the TUI from the same pin. DAEX's
-permission maps to `--mode plan`, `--mode accept-edits`, `--mode auto` or
-`--dangerously-skip-permissions` (Full access); the model and effort go in
-`--model` and `--effort`; a prompt goes in `-i`. Resume is `--conversation
-<id>` when ADE knows the id, else `--continue`. The TUI prints
-`agy --conversation=<id>` when it exits, and DAEX reads the id from the
-terminal's output (`terminalSessionSignals.ts`), so a closed Antigravity
-terminal resumes its own conversation on every OS. DAEX has no default resume
-line for it: `agy -c` is the latest conversation on the machine, which can be
-a chat's. The TUI has no telemetry flag (it exits on `--disable-telemetry`;
-only `agy acp` takes one). In a plain shell only `agy` is
-swapped for the pinned binary; `antigravity` is left alone because it is also
-the Antigravity editor's launcher.
+The `antigravity` profile runs the TUI from the same pin. Permission →
+`--mode plan|accept-edits|auto` or `--dangerously-skip-permissions`; model and
+effort → `--model`, `--effort`; prompt → `-i`. Resume is `--conversation <id>`
+when known (read from the TUI's exit line by `terminalSessionSignals.ts`), else
+`--continue`. There is no default resume line (`agy -c` may pick a chat's
+conversation). The TUI rejects `--disable-telemetry`. In a plain shell only
+`agy` is swapped for the pinned binary (`antigravity` is also the editor's
+launcher).
 
 ## Sign-in
 
-Sign-in is an explicit action in Settings > Providers > Antigravity (also the
-chat's sign-in card and the first-run rail) and runs on the machine the page
-shows. The runtime actions `ai.antigravitySignInStatus`,
-`ai.antigravitySignInStart`, `ai.antigravitySignInComplete` and
-`ai.antigravitySignInCancel` are reachable remotely (action domain `ai`,
-`actionPolicy` remote list, `adeActionAccess` tiers); preload methods take
-`pin` and go through `callPinnedOrBoundRuntimeActionOr`; the panel passes
-`useSettingsMachineScope().pin`. Start, status reads, the pasted code and
-cancel all go to that one machine. Every method ends with one `session/new`
-that proves the login. A flow times out after five minutes; Cancel ends it
-and the process.
+Settings › Providers › Antigravity (also the chat sign-in card and first-run
+rail), on the machine the page shows. Actions `ai.antigravitySignInStatus`,
+`…Start`, `…Complete`, `…Cancel` are remote-reachable; preload takes `pin` via
+`callPinnedOrBoundRuntimeActionOr`; the panel passes
+`useSettingsMachineScope().pin`. Every method ends with a `session/new` that
+proves the login; a flow times out after 5 min.
 
 | Method | What DAEX does |
 |---|---|
-| Google account (`oauth-personal`, default) | Runs `agy acp --login`. The CLI prints a Google link whose `redirect_uri` is `https://antigravity.google/oauth-callback`, a page that shows a code once the person approves, and reads the code (or that page's full address) from stdin. Nothing listens on the machine, so the same paste works from any computer, the phone, the web client and DAEX Cloud. DAEX checks the link (Google's auth endpoint, that redirect, one `state`, `response_type=code`) and the pasted value (a bare code, or a landing address with the same `state` and one `code`) before writing it to the CLI's stdin. |
-| Gemini Enterprise (`oauth-business`) | The ACP `authenticate` request. The CLI opens the OS browser itself (it ignores `BROWSER`) and waits on a `localhost` listener without printing the link, so this finishes only in a browser on the machine that runs the agent (`agy acp --login` is Google-account only). Google's docs: the account needs a GE-Standard or GE-Plus license seat, and the project needs the Gemini Enterprise API (`aiplatform.googleapis.com`). When agy cannot find the license by itself it asks for `"gcp": { "project", "location" }` in its `settings.json`, with a multi-region location (`global`, `us` or `eu`). DAEX does not write that block; it turns agy's licence errors into what to set (`enterpriseFailureSentence`). Not yet run against a real Enterprise account. The documented headless route is Application Default Credentials (`AGY_ADC_AUTH=true`), which DAEX passes only to Agent Platform. |
-| Gemini API key (`gemini-api-key`) | `GEMINI_API_KEY` from DAEX's key store (the key sheet on the Antigravity page, slot `antigravity-gemini`), passed only for this method. In agy's TUI the key mode is `modelProvider: "gemini"` in `settings.json`; it outranks `auth.type` (verified 1.5.6), so DAEX reads it as this method, and a Google sign-in then says to remove it rather than editing it. |
-| Agent Platform (`agent-platform`) | `GOOGLE_API_KEY` from DAEX's key store (slot `antigravity-agent-platform`), or the machine's ADC variables plus a project and location DAEX keeps in `<ADE home>/providers/antigravity.json`. |
+| Google account (`oauth-personal`, default) | Runs `agy acp --login`. The link's redirect is `https://antigravity.google/oauth-callback`, which shows a code; the user pastes the code (or that page's address). Nothing listens locally, so it works from any machine, phone, web or DAEX Cloud. DAEX validates the link and pasted value before writing to stdin. |
+| Gemini Enterprise (`oauth-business`) | ACP `authenticate`. agy opens the OS browser itself and waits on a `localhost` listener, so it completes only in a browser on the agent's machine. Licence errors become guidance (`enterpriseFailureSentence`); DAEX does not write agy's `gcp` settings block. Not yet run against a real Enterprise account. |
+| Gemini API key (`gemini-api-key`) | `GEMINI_API_KEY` from DAEX's key store (slot `antigravity-gemini`), passed only for this method. agy's `modelProvider: "gemini"` setting outranks `auth.type`, so DAEX reads it as this method. |
+| Agent Platform (`agent-platform`) | `GOOGLE_API_KEY` (slot `antigravity-agent-platform`), or ADC variables plus a project and location kept in `<ADE home>/providers/antigravity.json`. |
 
 The link, `state`, code and tokens are never logged.
 
-## Where the login lives
+### Where the login lives
 
-The CLI keeps its state in `~/.gemini/antigravity-cli/` (GEMINI_HOME does not
-move it), and a sign-in writes no `settings.json`. The stored sign-in is one
-JSON value, `{ token: { access_token, refresh_token, expiry, … }, auth_method,
-id_token_email }` (`auth_method` is `consumer` for a Google account; agy 1.4.7 on macOS keeps `id_token` instead of `id_token_email`, and the carry takes the address from its claims). It is in the OS keyring (go-keyring service `gemini`,
-user `antigravity`: the Keychain on macOS, the generic credential
-`gemini:antigravity` in Windows Credential Manager, Secret Service on Linux). On macOS the value is stored as `go-keyring-base64:<base64>`. Verified 2026-11-12 on a MacBook (macOS 27, agy 1.4.7) with DAEX's own reader: the presence check took 27 ms (a missing item exits 44), the Allow read took 36 ms with no Keychain prompt, and the carry parser produced one personal login with its account address.
-Where no keyring works, a slow one times out, or the CLI runs in a container or
-WSL, it uses the file `~/.gemini/antigravity-cli/antigravity-oauth-token`
-instead (verified on Linux 1.5.6). DAEX Cloud computers are containers, so a
-login there is that file. Verified 2026-11-12 on a real DAEX Cloud computer
-(Debian 12 container): the pinned 1.5.6 refused `session/new` signed out, and
-with the carried login (the Windows keyring item, written as that file) it
-opened a session in 1.9 s and finished a turn in 3.3 s. agy rewrites the file
-as it refreshes the access token.
+- State is in `~/.gemini/antigravity-cli/`. The sign-in is one JSON value in the
+  OS keyring (go-keyring service `gemini`, user `antigravity`; macOS stores
+  `go-keyring-base64:<base64>`). Without a working keyring (containers, WSL,
+  DAEX Cloud computers) it is the file
+  `~/.gemini/antigravity-cli/antigravity-oauth-token`, which agy rewrites on
+  refresh.
+- agy records the method in `settings.json` `auth.type` and in
+  `cache/acp-auth-state.json`; the setting wins, and a stale key method makes a
+  Google login fail. So a Google sign-in sets `auth.type` to `oauth-personal`
+  (`pointAntigravitySettingsAtGoogle`), the only write DAEX makes to agy's
+  settings. Both read `settings.json` as strict JSON.
 
-agy records the sign-in method twice: `settings.json` `auth.type` (written by
-`authenticate` for a key method) and `cache/acp-auth-state.json` (written by
-`agy acp --login`). The setting wins: a key method left there from an earlier
-sign-in makes agy refuse a fresh Google login with "Authentication required"
-(verified 1.5.6). So a Google sign-in in DAEX changes that one value to
-`oauth-personal` (`pointAntigravitySettingsAtGoogle`), the only time DAEX writes
-agy's settings; when it cannot, the sign-in fails with what to change. agy reads
-`settings.json` as strict JSON and ignores a file with a comment or a trailing
-comma, so DAEX reads it strictly too.
+### Status without a spawn
 
-Users of the old standalone server sign in again: its
-`~/.gemini/antigravity-acp/` login is neither read nor migrated.
-
-## Signed-in status without a spawn
-
-`inspectAntigravityCredentials` reads the CLI's `settings.json`
-(mtime-cached), then:
-
-- Google account / Gemini Enterprise: the token file, else whether the OS
-  keyring has the item. The check reads attributes only, never the secret, and
-  never prompts: `security find-generic-password` without `-w` on macOS,
-  `cmdkey /list:gemini:antigravity` on Windows, Secret Service `SearchItems`
-  through `gdbus` on Linux. It runs asynchronously and is cached for 30
-  seconds (10 minutes after a timeout, which means an unlock dialog).
-- Gemini API key: a key in DAEX's store or the environment.
-- Agent Platform: a key, or a project and location from any source.
-
-The ACP auth probe runs only when the pin is on disk. It checks `session/new`
-and never sends `authenticate`.
+`inspectAntigravityCredentials` reads `settings.json` (mtime-cached), then:
+Google/Enterprise → the token file, else keyring presence by attributes only
+(`security find-generic-password` without `-w`, `cmdkey /list:gemini:antigravity`,
+Secret Service via `gdbus`), async, cached 30 s (10 min after a timeout). Key
+methods → a key in DAEX's store or env; Agent Platform → a key or a
+project/location. The ACP auth probe runs only when the pin is on disk.
 
 ## Surfaces
 
-Settings descriptor and logo (LobeHub's Antigravity mark), model picker rail,
-`daex chat models --provider antigravity`, terminals and `ade` CLI sessions
-(`start_cli_session` provider `antigravity`), the web client (through the same
-actions), and iOS (`WorkModelCatalog.swift` group and label, provider
+Settings descriptor and logo, model picker, `daex chat models --provider
+antigravity`, terminals and CLI sessions (`start_cli_session` provider
+`antigravity`), web client, iOS (`WorkModelCatalog.swift`, provider
 label/color, CLI launches).
