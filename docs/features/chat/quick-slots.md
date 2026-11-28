@@ -15,6 +15,63 @@ The panel appears after a 70 ms hold, so a fast tap never flashes it. It never
 takes focus: the caret stays in the composer, which is what makes the model
 profile rule work.
 
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/desktop/src/shared/quickSlots.ts` | Slot/profile types, defaults, normalisation, leader and digit grammar, profile→mention token. Pure; no React. |
+| `apps/desktop/src/renderer/quickSlots/commands.ts` | The renderer command catalogue, target checks, safety classes, and the model-profile runner. |
+| `apps/desktop/src/renderer/quickSlots/composerTarget.ts` | Registry of active composers; answers with the newest one on screen and not parked, plus the functions a slot may call. |
+| `apps/desktop/src/renderer/quickSlots/useQuickSlotComposerTarget.ts` | The hook a composer calls to publish itself; the permission cycles follow the pickers' own option lists. |
+| `apps/desktop/src/renderer/quickSlots/QuickSlotsHost.tsx` | The chord dispatcher, target resolution, and the HUD. Mounted once in `AppShell`. |
+| `apps/desktop/src/renderer/quickSlots/quickSlotsStore.ts` | The nine slots and profiles, persisted to `ade.quickSlots.v1`. |
+| `apps/desktop/src/renderer/quickSlots/useQuickSlotsAccountSync.ts` | Keeps the slots in step with the account's `quickSlots.v1`. |
+| `apps/desktop/src/renderer/quickSlots/quickSlots.css` | HUD and settings styling, including reduced-motion behavior. |
+| `apps/desktop/src/renderer/components/settings/keyboard/QuickSlotsCards.tsx` | The Settings surface: grid, action picker, profiles, leader, sticky mode. |
+| `apps/desktop/src/renderer/components/settings/keyboard/KeyboardPage.tsx` | Settings › Keyboard, the This-computer page that hosts the cards. |
+| `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Calls `useQuickSlotComposerTarget` while the pane is active, handing it the model, thinking, permission, fast, picker and stop state. |
+| `apps/desktop/src/renderer/components/app/AppShell.tsx` | Hosts `QuickSlotsHost` once for the whole window. |
+| `apps/desktop/src/renderer/components/ui/zLayers.ts` | The `quickSlots` layer (130): above sheets, below dialogs. |
+
+## Gotchas / fragile areas
+
+`AgentChatComposer` publishes itself through `useQuickSlotComposerTarget`
+while its pane is the active tile. Every function reads the live props through a
+ref, so a slot never acts on a stale model. Work pages and other project tabs
+stay mounted (parked) while another page shows, so several composers can be
+registered at once: `getQuickSlotComposer()` returns the newest one that is on
+screen and not inside a parked surface, and a slot or prompt-box shortcut
+pressed with none on screen says "Open a chat first" instead of changing,
+stopping or pushing a chat the user cannot see.
+
+A quick tap (no panel) that a slot refuses shows the reason as a toast, so a
+refused chord is never a dead key. Slots, profiles and the leader follow a save
+made in another DAEX window on this computer (`storage` event), as shortcuts do.
+
+- **Draft:** model, thinking and fast mode are composer state only; nothing
+  reaches the runtime before the first send.
+- **Running chat:** the model change is deferred to the next send by the
+  pane (`deferredComposerSessionIdRef`). Thinking and fast are local until then.
+- **Mid-turn:** model and thinking are locked. The slot refuses and says "wait
+  for this turn to end" instead of writing a value the next sync would overwrite.
+- **Catalog not loaded / model not offered here:** the pane's
+  `handleComposerModelChange` returns `false`, the target reports it, and the
+  toast names the consequence. It does not claim success.
+- **No thinking tiers:** "This model has no thinking levels". The slot does not
+  write a value the model cannot use.
+- **Cycle thinking** walks the model's own tiers, starts from the *displayed*
+  value, and clamps at the top; it never wraps and never treats `ultrathink`
+  (draft text, not a tier) as a level.
+- **Cycle permission** walks the provider's own list and clamps. Claude's plan
+  mode is an interaction mode, so leaving plan returns to Manual. Codex and
+  Cursor cycle through the modes their composer control exposes. A dangerous
+  rung (`Bypass`, `Full auto`, `allowAll`) gets a warning tone; the control is
+  always available to undo it.
+- **Fast mode** is refused when the model advertises no fast tier; Cursor Cloud
+  uses a service tier, so it is not offered there.
+- **Harness change:** the pane rebinds the runtime and records `modelHandoff`.
+  The toast says the thread's runtime context ends; there is no silent switch.
+
 ## The caret rule
 
 A **model profile** slot has two meanings, chosen by where the caret was when
@@ -88,45 +145,6 @@ A profile stores a model id and a thinking level, not a harness preset. A model
 that is reachable only through a Custom provider must still be picked from the
 composer's own picker; capturing a preset into a profile is a follow-up.
 
-## Model action edge cases
-
-`AgentChatComposer` publishes itself through `useQuickSlotComposerTarget`
-while its pane is the active tile. Every function reads the live props through a
-ref, so a slot never acts on a stale model. Work pages and other project tabs
-stay mounted (parked) while another page shows, so several composers can be
-registered at once: `getQuickSlotComposer()` returns the newest one that is on
-screen and not inside a parked surface, and a slot or prompt-box shortcut
-pressed with none on screen says "Open a chat first" instead of changing,
-stopping or pushing a chat the user cannot see.
-
-A quick tap (no panel) that a slot refuses shows the reason as a toast, so a
-refused chord is never a dead key. Slots, profiles and the leader follow a save
-made in another ADE window on this computer (`storage` event), as shortcuts do.
-
-- **Draft:** model, thinking and fast mode are composer state only; nothing
-  reaches the runtime before the first send.
-- **Running chat:** the model change is deferred to the next send by the
-  pane (`deferredComposerSessionIdRef`). Thinking and fast are local until then.
-- **Mid-turn:** model and thinking are locked. The slot refuses and says "wait
-  for this turn to end" instead of writing a value the next sync would overwrite.
-- **Catalog not loaded / model not offered here:** the pane's
-  `handleComposerModelChange` returns `false`, the target reports it, and the
-  toast names the consequence. It does not claim success.
-- **No thinking tiers:** "This model has no thinking levels". The slot does not
-  write a value the model cannot use.
-- **Cycle thinking** walks the model's own tiers, starts from the *displayed*
-  value, and clamps at the top; it never wraps and never treats `ultrathink`
-  (draft text, not a tier) as a level.
-- **Cycle permission** walks the provider's own list and clamps. Claude's plan
-  mode is an interaction mode, so leaving plan returns to Manual. Codex and
-  Cursor cycle through the modes their composer control exposes. A dangerous
-  rung (`Bypass`, `Full auto`, `allowAll`) gets a warning tone; the control is
-  always available to undo it.
-- **Fast mode** is refused when the model advertises no fast tier; Cursor Cloud
-  uses a service tier, so it is not offered there.
-- **Harness change:** the pane rebinds the runtime and records `modelHandoff`.
-  The toast says the thread's runtime context ends; there is no silent switch.
-
 ## Settings
 
 Settings › **Keyboard** › **Quick slots** (anchor `quick-slots`) shows the 3×3 grid, the
@@ -139,24 +157,6 @@ profiles and can add one by model id. The faster path is the
 
 The action picker shares the catalogue and searches titles, hints and keywords.
 A prompt slot asks for its text when it is assigned.
-
-## Source file map
-
-| Path | Role |
-|---|---|
-| `apps/desktop/src/shared/quickSlots.ts` | Slot/profile types, defaults, normalisation, leader and digit grammar, profile→mention token. Pure; no React. |
-| `apps/desktop/src/renderer/quickSlots/commands.ts` | The renderer command catalogue, target checks, safety classes, and the model-profile runner. |
-| `apps/desktop/src/renderer/quickSlots/composerTarget.ts` | Registry of active composers; answers with the newest one on screen and not parked, plus the functions a slot may call. |
-| `apps/desktop/src/renderer/quickSlots/useQuickSlotComposerTarget.ts` | The hook a composer calls to publish itself; the permission cycles follow the pickers' own option lists. |
-| `apps/desktop/src/renderer/quickSlots/QuickSlotsHost.tsx` | The chord dispatcher, target resolution, and the HUD. Mounted once in `AppShell`. |
-| `apps/desktop/src/renderer/quickSlots/quickSlotsStore.ts` | The nine slots and profiles, persisted to `ade.quickSlots.v1`. |
-| `apps/desktop/src/renderer/quickSlots/useQuickSlotsAccountSync.ts` | Keeps the slots in step with the account's `quickSlots.v1`. |
-| `apps/desktop/src/renderer/quickSlots/quickSlots.css` | HUD and settings styling, including reduced-motion behavior. |
-| `apps/desktop/src/renderer/components/settings/keyboard/QuickSlotsCards.tsx` | The Settings surface: grid, action picker, profiles, leader, sticky mode. |
-| `apps/desktop/src/renderer/components/settings/keyboard/KeyboardPage.tsx` | Settings › Keyboard, the This-computer page that hosts the cards. |
-| `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Calls `useQuickSlotComposerTarget` while the pane is active, handing it the model, thinking, permission, fast, picker and stop state. |
-| `apps/desktop/src/renderer/components/app/AppShell.tsx` | Hosts `QuickSlotsHost` once for the whole window. |
-| `apps/desktop/src/renderer/components/ui/zLayers.ts` | The `quickSlots` layer (130): above sheets, below dialogs. |
 
 ## Scope
 

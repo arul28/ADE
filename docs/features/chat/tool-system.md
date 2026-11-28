@@ -14,12 +14,47 @@ its names were ever callable and which were not.
 | `apps/desktop/src/main/services/ai/tools/executableTool.ts` | Thin wrapper around Zod + a handler function. Produces the common tool interface the Claude/Codex/OpenCode adapters consume. |
 | `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Read, write, bash, todo, web fetch/search, ask-user. Available to every agent. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `remember` / `forget` / `trackWork` / `finishWork` / `readHistory` memory tools. Git reads default their lane (`resolveReadLaneId`); git mutations require an explicit one (`requireMutationLaneId`) and are refused for the CTO. |
-| `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on available tools and the runtime-specific native-subagent versus ADE-child routing contract. |
-| `apps/desktop/src/main/services/ai/toolExposurePolicy.ts` | Filters tools by context (e.g., frontend-repo discovery tools). |
+| `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on available tools and the runtime-specific native-subagent versus DAEX-child routing contract. |
 | `apps/desktop/src/main/services/ai/tools/readFileRange.ts` / `grepSearch.ts` / `globSearch.ts` | Primitive file/search tools used by every agent. |
 | `apps/desktop/src/main/services/ai/tools/webFetch.ts` / `webSearch.ts` | Web access tools. |
-| `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Pi's custom-tool surface: ADE's `ask_user` tool definition (`createPiAskUserTool`), the per-tool-call approval gate (`createPiApprovalGate`), and the `withPiApproval` wrapper that rebuilds a Pi built-in behind that gate. |
+| `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Pi's custom-tool surface: DAEX's `ask_user` tool definition (`createPiAskUserTool`), the per-tool-call approval gate (`createPiApprovalGate`), and the `withPiApproval` wrapper that rebuilds a Pi built-in behind that gate. |
 | `apps/desktop/src/shared/cliLaunch.ts` | `piToolsForPermissionMode` (tracked Pi CLI, allowlist only) and `piSdkToolPolicyForPermissionMode` (Pi chat: allowlist + approval-tool list + an explicit `readOnly` flag). |
+
+## Gotchas / fragile areas
+
+- **System-prompt name-detection.** `buildCodingAgentSystemPrompt` branches on
+  exact tool-name matches (including `createLane`, `createPrFromLane`,
+  `TodoWrite`, `TodoRead`, and the fourteen entries of `PR_ISSUE_TOOL_NAMES` —
+  seven camelCase spellings and their seven snake_case counterparts). Renaming
+  any of these silently strips the corresponding prompt guidance. Keep name
+  changes synchronized. Note the two kinds of branch are not equally risky: the
+  PR section *filters* names the caller already passed and echoes the result, so
+  a dead entry in that Set is inert. An `includes(X)` gate that emits a bullet
+  describing a capability is the dangerous shape — that is how the prompt came
+  to advertise `captureScreenshot` and `reportCompletion`, neither of which
+  existed. Note that all **six** live callers in `agentChatService`
+  (`:7678` codex-app-server, `:7718` opencode, `:13117` pi-sdk, `:24653`
+  claude-code-cli, `:32675` claude-agent-sdk-query, `:42167` droid-sdk) pass no
+  `toolNames` at all, so every one of these branches is inert in a real
+  session — they fire only where a caller supplies the list.
+- **Tool name normalisation.** DAEX CLI-exposed tools appear as
+  `ade.<server>__<tool>`. `normalizeToolName` in `systemPrompt.ts`
+  unwraps that form; new tools that should appear in the prompt must be
+  detectable after normalisation.
+- **Approval callback and UI wiring.** `onApprovalRequest` is provided
+  by `agentChatService` and funnels into the pending-input system.
+  Unwired callbacks default to "approve" on `full-auto`, "decline"
+  otherwise; unexpected defaults happen when the session's permission
+  mode is `default` (Claude-native behavior) and the callback is
+  omitted.
+- **Ask-user input schema.** Claude SDK `AskUserQuestion` inputs are
+  coerced to `AskUserToolInput` shape inside `agentChatService`. Codex
+  elicitations arrive through the `codex app-server` JSON-RPC stream
+  and are normalized inline in the Codex adapter; Claude MCP
+  elicitations arrive through the SDK's `onElicitation` callback
+  (`buildClaudeElicitationHandler`). Both reuse
+  `codexMcpElicitation.ts` for the questions and answer coercion, but
+  do not assume a common request shape across providers.
 
 ## Tier 1: universal tools
 
@@ -39,13 +74,13 @@ Built by `createUniversalToolSet()` in `universalTools.ts`.
 
 ### Structured SDK tool results
 
-Claude user/replay messages may carry the full SDK `tool_use_result`. ADE
+Claude user/replay messages may carry the full SDK `tool_use_result`. DAEX
 preserves that value as `tool_result.structured` and also extracts narrow
 fields for thin clients: Bash exposes `timedOutAfterMs` and
 `backgroundCwdHint`, while Grep exposes `grepTotals.files` and
 `grepTotals.lines`.
 
-Because everything ADE actually uses is projected into typed fields on the same
+Because everything DAEX actually uses is projected into typed fields on the same
 event at construction time, `structured` past that point is debug material.
 It is bounded on disk at 8 KB by `shared/chatEventCompaction.ts` (uncapped, it
 reached 56.6% of a real 8 MB transcript — ten times the size of `result`, the
@@ -86,7 +121,7 @@ Claude SDK sessions use the native `AskUserQuestion` SDK tool, which is plumbed
 through the same pending-input abstraction (see
 [transcript-and-turns](transcript-and-turns.md)).
 
-Pi sessions get an ADE-supplied `ask_user` custom tool (`piSdkUiBridge.ts`),
+Pi sessions get a DAEX-supplied `ask_user` custom tool (`piSdkUiBridge.ts`),
 injected into every Pi chat including personal chats. It takes a question, an
 optional short header, and optional labelled choices, and resolves through the
 same pending-input path with `source: "pi"`. Declining is a valid outcome, not a
@@ -96,7 +131,7 @@ judgement and state the assumption it made.
 ### Pi per-call approval gating
 
 Pi's built-in registry is only `read`, `bash`, `edit`, and `write`, and its
-`tools` option is a flat allowlist. In chat, ADE rebuilds `bash`, `edit`, and
+`tools` option is a flat allowlist. In chat, DAEX rebuilds `bash`, `edit`, and
 `write` from Pi's own root-exported definition factories and re-registers them
 through `customTools` under the same names — a custom tool whose name matches a
 built-in replaces it, so the rebuilt tool keeps Pi's schema, prompt text, and
@@ -105,7 +140,7 @@ still honours the user's configured shell path and command prefix.
 
 Consequences worth knowing:
 
-- ADE's `default` permission mode in a Pi chat means "ask before anything that
+- DAEX's `default` permission mode in a Pi chat means "ask before anything that
   changes the workspace", not read-only.
 - Only a tool the session actually grants is gated; relying on Pi's allowlist to
   drop an unrequested wrapper would make the gate depend on resolution order.
@@ -142,56 +177,29 @@ this warning next to `PR_ISSUE_TOOL_NAMES`.
 | `createPrFromLane({ laneId, title?, body? })` | Live. Creates a pull request from the lane's changes. |
 | `pr_get_checks`, `pr_get_review_comments`, `pr_rerun_failed_checks`, `pr_reply_to_review_thread`, `pr_resolve_review_thread` | Live. `pr_get_checks` returns the persisted checks verdict in preference to a row-level rollup, because a row tally cannot see required contexts that never reported. |
 | `pr_get_check_log`, `pr_refresh_issue_inventory`, `pr_reply_to_comment` | Not callable: no dispatch handler exists. The first two are in `PR_ISSUE_TOOL_NAMES`, which only filters names a caller already passed, so the prompt never claims them. |
-| `captureScreenshot`, `reportCompletion`, the camelCase `pr*` names | Not callable. Use `ade proof capture --caption "…"` for proof, or `screenshot_environment` for a bare look at the screen. |
+| `captureScreenshot`, `reportCompletion`, the camelCase `pr*` names | Not callable. Use `daex proof capture --caption "…"` for proof, or `screenshot_environment` for a bare look at the screen. |
 
 ### PR issue resolution
 
-The **tools work**; the **automatic launcher does not**. Keep those apart — they
-fail in opposite directions.
-
-An agent working a PR can already re-pull checks and review threads, re-trigger
-failed GitHub Actions runs, reply on review threads, and resolve them. Those are
-the five live `pr_*` RPC tools in the table above, dispatched from
-`apps/ade-cli/src/adeRpcServer.ts`. Nothing about that
-path is speculative.
-
-What does not exist is the surface that was supposed to *launch* such a chat for
-you off a failing PR:
-
-- `launchPrIssueResolutionChat` is not defined anywhere in the repo.
-- `apps/desktop/src/main/services/prs/` has no issue or rebase resolver
-  module. It holds `githubStackStore.ts`, `prCommentMutations.ts` and others
-  (see [ARCHITECTURE.md](../../ARCHITECTURE.md)).
-- `getPrIssueResolutionAvailability()` in
-  `apps/desktop/src/shared/prIssueResolution.ts` is real and tested, and has
-  no caller. It belongs to the unbuilt inventory tool.
-
-So: driving a PR from an agent is supported today by calling the `pr_*` tools
-directly. Building the one-click "resolve this PR's issues" flow means adding a
-launcher and implementing `pr_refresh_issue_inventory` — not reimplementing the
-tools that already work.
+Agents drive a PR through the five live `pr_*` RPC tools (dispatched from
+`apps/ade-cli/src/adeRpcServer.ts`). There is no one-click launcher for a
+"resolve this PR's issues" chat; `getPrIssueResolutionAvailability()` in
+`apps/desktop/src/shared/prIssueResolution.ts` has no caller yet.
 
 ### Proof capture
 
-`captureScreenshot` was never callable (see the table above), so nothing ever
-reached `computerUseArtifactBrokerService.ingest()` from that module, and there
-is no `captureScreenshot` body left to report anything. Proof-drawer entries are
-explicit-only regardless: an agent that wants a reviewer to see something runs
-`ade proof capture --caption "…"`, or `ade proof attach <path> --caption "…"` to
-promote a scratch file it already has from `screenshot_environment`. See
-`docs/features/proof.md` for the rule and the other two paths it covers.
-
-It is not gated by a policy — the proof-observer model (and `ComputerUsePolicy`)
-was removed. The platform-capability behavior lives on `screenshot_environment`,
-which reports `blocked_by_capability` on a platform without a supported capture
-backend (Linux/Windows); the agent can fall back to `ade proof attach <path>`
-with a headless-browser or Playwright-produced PNG in that case.
+Proof-drawer entries are explicit-only: an agent runs
+`daex proof capture --caption "…"`, or `daex proof attach <path> --caption "…"`
+to promote a scratch file from `screenshot_environment` (see
+`docs/features/proof.md`). `screenshot_environment` reports
+`blocked_by_capability` where no capture backend exists; the agent can attach
+a headless-browser PNG instead.
 
 ## CTO operator tools
 
 Sessions with `identityKey: "cto"` additionally receive the CTO operator
 tools from `ctoOperatorTools.ts`. These are the control plane the CTO
-uses to act on ADE itself:
+uses to act on DAEX itself:
 
 | Tool family | Purpose |
 |---|---|
@@ -204,7 +212,7 @@ uses to act on ADE itself:
 | `loadCtoTools` | List the eleven tool packs with their scopes and load state, or load one pack's full descriptions. Loading is a description-level economy — every CTO tool is registered and callable whether or not its pack is loaded. |
 | Linear tools (when connected) | Read and lightly update issues: list/inspect, comment, state, assignee, label. |
 | `listLinearIssues`, `getLinearIssue` | Issue reads. |
-| `listTestSuites`, `runTestSuite`, `stopTestSuite`, `listTestRuns` | Test orchestration. |
+| `listTestSuites`, `runTests`, `stopTestRun`, `listTestRuns`, `getTestLog` | Test orchestration. |
 | `gitStatus`, `gitFetch`, `gitListRecentCommits`, `gitListBranches`, `gitStashList`, `gitGetConflictState` | Git reads. `laneId` is optional and defaults to the CTO session's lane. |
 | `gitCommit`, `gitPush`, `gitPull`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, `gitCheckoutBranch`, `gitStashPush`, `gitStashPop`, `gitRebaseContinue`, `gitRebaseAbort`, `gitMergeAbort` | Git mutations. `laneId` is **required**, and every one of them is refused for the CTO: repository writes belong to an agent it starts. See [Lane defaulting is read-only](#lane-defaulting-is-read-only). |
 
@@ -226,7 +234,7 @@ The CTO tool set is registered through the per-provider tool transports below,
 gated on `identityKey === "cto"` via `createCtoRuntimeToolMap(managed)` in
 `agentChatService.ts`.
 
-A single descriptor table, `HTTP_MCP_TOOL_SETS`, names the tool sets ADE can
+A single descriptor table, `HTTP_MCP_TOOL_SETS`, names the tool sets DAEX can
 register on a session. Each entry carries a `serverName`, a `codexNamespace`,
 and a `buildTools(managed)` factory, so every transport below reads its
 identifiers from one place instead of restating them:
@@ -264,7 +272,7 @@ full-auto, so no stored approval names the old server.
 
 #### Who decides when a tool call has waited long enough
 
-ADE does, not the provider's MCP client. Every transport above runs a tool
+DAEX does, not the provider's MCP client. Every transport above runs a tool
 through `executeAdeTool`, which wraps it in `runAdeToolWithDeadline`
 (`ai/tools/toolDeadline.ts`):
 
@@ -283,7 +291,7 @@ through `executeAdeTool`, which wraps it in `runAdeToolWithDeadline`
   and the OpenCode `remote` entry's `timeout` (OpenCode otherwise uses its
   MCP client's 60 s default). Codex dynamic tools have no transport cap.
 - Cursor's and Droid's MCP configs have no timeout field, so their clients'
-  own defaults still apply to ADE's tools there; an approval card left open
+  own defaults still apply to DAEX's tools there; an approval card left open
   past that default can end the call on the provider side first.
 
 `buildCtoOperatorToolDeps` builds the dependency set for the runtime map.
@@ -303,23 +311,13 @@ convert the throw into a recoverable `{ success: false, error }` that names
 
 ## Standalone-chat restrictions
 
-Chat sessions connected to the ADE CLI with a `chatSessionId` but
+Chat sessions connected to the DAEX CLI with a `chatSessionId` but
 no worker context are classified as "standalone". The
-ADE action bridge hides `spawn_agent` from both the action-list
+DAEX action bridge hides `spawn_agent` from both the action-list
 response and the execution path. This prevents an interactive chat
 user from invoking elevated primitives reserved for managed sessions.
 
 ## Tool exposure policy
-
-`apps/desktop/src/main/services/ai/toolExposurePolicy.ts` implements
-runtime-specific filtering:
-
-- `decideFrontendRepoToolExposure(opts)` decides whether a frontend-repo
-  discovery tool should be exposed for the current session.
-- `filterFrontendRepoDiscoveryTools(tools, decision)` strips tools the
-  policy rejects before handing the set to the provider adapter.
-
-Additional exposure rules:
 
 - Linear tools are NOT hidden when the Linear integration is not connected.
   They come from `ctoOperatorTools.ts`, are registered unconditionally for CTO
@@ -329,8 +327,8 @@ Additional exposure rules:
 
 `mac-desktop` is a Work tools pane tool (`WORK_TOOL_IDS` in
 `apps/desktop/src/shared/types/workTools.ts`), not a model-callable tool: an
-agent drives it through the `ade mac-desktop` CLI and the `mac_desktop` action
-domain, the same way it drives `ade browser` and `ade ios-sim`.
+agent drives it through the `daex mac-desktop` CLI and the `mac_desktop` action
+domain, the same way it drives `daex browser` and `daex ios-sim`.
 
 Gating:
 
@@ -351,9 +349,9 @@ byte-identical prompt to one built before the feature existed. The line names
 the screen of the machine that runs the chat (`seatHostPlatform`, which the
 brain's `bootstrap.ts` and the desktop's `main.ts` both pass; without it the
 line fell back to macOS on every host): a Mac brain gets
-`MAC_DESKTOP_PROMPT_LINE` (`ade screen`), a Windows brain gets
-`WINDOWS_DESKTOP_PROMPT_LINE` and a Linux brain, an ADE Cloud computer
-included, gets `LINUX_DESKTOP_PROMPT_LINE` (`ade screen`). It is epoch-scoped like the
+`MAC_DESKTOP_PROMPT_LINE` (`daex screen`), a Windows brain gets
+`WINDOWS_DESKTOP_PROMPT_LINE` and a Linux brain, a DAEX Cloud computer
+included, gets `LINUX_DESKTOP_PROMPT_LINE` (`daex screen`). It is epoch-scoped like the
 computer-use block (`deliveredDirectiveKeys.laneScreen`): sent when the lane
 gains a screen or the line changes, and again after the provider thread is
 replaced, not on every turn. Personal chats never get it. Each host gets only
@@ -361,48 +359,12 @@ its own line, so a Windows lane's agent never reads that it has a macOS screen.
 
 See [Mac Desktop](../mac-desktop/README.md).
 
-## Fragile and tricky wiring
-
-- **System-prompt name-detection.** `buildCodingAgentSystemPrompt` branches on
-  exact tool-name matches (including `createLane`, `createPrFromLane`,
-  `TodoWrite`, `TodoRead`, and the fourteen entries of `PR_ISSUE_TOOL_NAMES` —
-  seven camelCase spellings and their seven snake_case counterparts). Renaming
-  any of these silently strips the corresponding prompt guidance. Keep name
-  changes synchronized. Note the two kinds of branch are not equally risky: the
-  PR section *filters* names the caller already passed and echoes the result, so
-  a dead entry in that Set is inert. An `includes(X)` gate that emits a bullet
-  describing a capability is the dangerous shape — that is how the prompt came
-  to advertise `captureScreenshot` and `reportCompletion`, neither of which
-  existed. Note that all **six** live callers in `agentChatService`
-  (`:7678` codex-app-server, `:7718` opencode, `:13117` pi-sdk, `:24653`
-  claude-code-cli, `:32675` claude-agent-sdk-query, `:42167` droid-sdk) pass no
-  `toolNames` at all, so every one of these branches is inert in a real
-  session — they fire only where a caller supplies the list.
-- **Tool name normalisation.** ADE CLI-exposed tools appear as
-  `ade.<server>__<tool>`. `normalizeToolName` in `systemPrompt.ts`
-  unwraps that form; new tools that should appear in the prompt must be
-  detectable after normalisation.
-- **Approval callback and UI wiring.** `onApprovalRequest` is provided
-  by `agentChatService` and funnels into the pending-input system.
-  Unwired callbacks default to "approve" on `full-auto`, "decline"
-  otherwise; unexpected defaults happen when the session's permission
-  mode is `default` (Claude-native behavior) and the callback is
-  omitted.
-- **Ask-user input schema.** Claude SDK `AskUserQuestion` inputs are
-  coerced to `AskUserToolInput` shape inside `agentChatService`. Codex
-  elicitations arrive through the `codex app-server` JSON-RPC stream
-  and are normalized inline in the Codex adapter; Claude MCP
-  elicitations arrive through the SDK's `onElicitation` callback
-  (`buildClaudeElicitationHandler`). Both reuse
-  `codexMcpElicitation.ts` for the questions and answer coercion, but
-  do not assume a common request shape across providers.
-
 ## Related docs
 
 - [Chat README](README.md) -- the service that provisions tools.
 - [Mac Desktop](../mac-desktop/README.md) -- the per-lane macOS screen the
-  `mac-desktop` tool shows and `ade mac-desktop` drives.
-- [Agents Tool Registration](../agents/tool-registration.md) -- ADE CLI
-  action registration and the private ADE RPC bridge used by the desktop app.
+  `mac-desktop` tool shows and `daex mac-desktop` drives.
+- [Agents Tool Registration](../agents/tool-registration.md) -- DAEX CLI
+  action registration and the private DAEX RPC bridge used by the desktop app.
 </content>
 </invoke>

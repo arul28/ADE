@@ -22,7 +22,7 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `components/app/ChatLaunchesSlideOut.tsx`, `components/terminals/useChatLaunchCliDriver.ts` | The Launches slide-out, and the driver that starts this window's CLI launches at `awaiting-client`. |
 | `renderer/lib/handoffLaunchJobs.ts` | Handoff placeholder DTOs, ids, labels and search, shown in the Work sidebar (`TerminalsPage`). Fork is offered when `providerSupportsHandoffFork` (Claude, Codex, OpenCode, Droid, Cursor); Cursor's fork replays the transcript (`providerForkReplaysTranscript`). |
 | `renderer/lib/chatHandoffIntent.ts` | One-shot bridge from the session menu's **Hand off…** (`SessionContextMenu.tsx`, `openChatHandoff`, `"local"` \| `"remote"`) to the pane; only the active tile drains it. |
-| `renderer/lib/aiDiscoveryCache.ts` | AI status and model cache per runtime binding (local and remote copies never share). `getAiStatusCached`: 10 s freshness, deduplicated `ade.ai.getStatus`, change events instead of polling. A chat pane reads its chat machine's status (by the chat's pin) when it shows, when a turn starts and ends, and when the chat moves; and past this cache on that machine's `providerLogins.onChanged` (an ADE Cloud computer applies the account's sign-ins about 30 s after ADE starts, so a read before that says "no login"), on a new connection to it (a wake), and at the end of a turn while the status says the provider cannot run. So the "<Provider> runtime" banner cannot outlive the sign-ins that fix it. |
+| `renderer/lib/aiDiscoveryCache.ts` | AI status and model cache per runtime binding (local and remote copies never share). `getAiStatusCached`: 10 s freshness, deduplicated `ade.ai.getStatus`, change events instead of polling. A chat pane reads its chat machine's status (by the chat's pin) when it shows, when a turn starts and ends, and when the chat moves; and past this cache on that machine's `providerLogins.onChanged` (a DAEX Cloud computer applies the account's sign-ins about 30 s after DAEX starts, so a read before that says "no login"), on a new connection to it (a wake), and at the end of a turn while the status says the provider cannot run. So the "<Provider> runtime" banner cannot outlive the sign-ins that fix it. |
 | `CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | **Continue on another machine**: destination, brief or fork, model, effort, Fast, permission, note and clone choice, then `startCrossMachineHandoff`; the source brain runs it (`crossMachineHandoffOrchestrator.ts`). Options (`getCrossMachineHandoffOptions`), a read-only preview (`previewCrossMachineHandoff`) and progress come from that brain. Every call, including **Publish branch** / **Update branch** (`git.push` / `git.pull`), is pinned to the source chat's `runtimePin`. Blockers render through `BlockedReasons` / `BlockedActionButton`; Send is the confirmation. |
 | `ChatHandoffDialogs.tsx` | The **Local handoff** Radix dialog (fork/brief form, or "Handoff is not available for this chat."). Popovers inside stay clickable through `PortalContainerContext`; Escape closes an open lane list first. |
 | `ProviderSignInCard.tsx`, `ProviderSignInSlot.tsx` | The sign-in card above the prompt box (`aboveComposerSlot`) while the provider is signed out on the composer's machine. See [README › Inline agent download, and the sign-in card](README.md). |
@@ -34,7 +34,7 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `UsageLimitChip.tsx` | The status-row chip: `Usage limit reached`, a **Cancel** / **Resume in …** toggle, and **Continue on <account>** when another account has room; pinned actions. |
 | `usageLimitResumePresentation.ts` | Pure usage-limit copy: `parseUsageLimitResume` (strict reader), countdown cadence (seconds round up, as iOS), `usageLimitResumeRowStatus`, `usageLimitTurnFooterLabel`, `isUsageLimitFailureText`. Clock-injected; nothing reads `Date.now()`. |
 | `chatTurnState.ts` | Turn-state helpers for live and hydration paths: terminal transcript evidence beats a stale summary; failed-turn retry finds its non-steer user message without a provider turn id. |
-| `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | The progress drawer (sections appear once they have content) and Sources (deduplicated files, web queries, MCP tools and URLs; safe web rows open in ADE's browser). |
+| `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | The progress drawer (sections appear once they have content) and Sources (deduplicated files, web queries, MCP tools and URLs; safe web rows open in DAEX's browser). |
 | `VoiceDictationButton.tsx`, `microphonePermissionGuidance.ts`, `renderer/services/globalVoiceRecorder.ts`, `components/voice/*`, `main/services/transcription/microphoneAccess.ts` | Dictation. The module-level recorder survives navigation, transcribes through `window.ade.transcription`, inserts into the registered composer and always copies the text. Windows denied/restricted mic states get Privacy & security guidance; unknown states go to Chromium's prompt. |
 | `main/services/transcription/*` | Transcription: 16 kHz mono WAV through the bundled `transcribe-cli` and the downloaded Parakeet Ultra model, then glossary cleanup. Threads cap near the physical core count. `downloadModel` is single-flight. After install, one silent warm-up (`stage: "warmup"`, "Finishing setup"); a failed warm-up still leaves the model installed. |
 | `CodexVoice.tsx`, `VoiceSessionCard.tsx`, `main/services/chat/codexVoiceSession.ts`, `codexVoiceNarration.ts`, `codexVoiceHost.ts`, `shared/codexVoice.ts`, `components/settings/VoiceConversationSection.tsx` | Voice conversations; see [Voice conversations](#voice-conversations). |
@@ -48,7 +48,7 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `AttachmentChipPeek.tsx` | `useAttachmentThumbnail` and the hover peek shared by composer and transcript chips: the caller's preview, the URL of an `image-url`, else one pinned read keyed on `pin.key`. |
 | `shared/attachmentLabels.ts` | The prompt-attachment grammar for desktop, runtimes and iOS: the k-th image is `[Image #k]` (an `image-url` counts), the k-th file `[File #k: <basename>]` (`[ ] CR LF` become `_`). Tokens resolve by ordinal only; an unmatched token stays text. `formatAttachmentToken`, `labelAttachments` / `labelAttachmentsByRef`, `parseAttachmentTokens`, `resolveAttachmentToken`, `renumberAttachmentTokens`, `formatAttachedImageLegend`. |
 | `chatAttachmentStaging.ts` | Staging one file: `readAttachmentStagingMode(pin)` asks once per batch and never throws (`CONSERVATIVE_ATTACHMENT_STAGING_MODE` on no answer). `planAttachmentStaging` forces the bytes leg with no source path (paste, hosted web), a renderer conversion (HEIC → JPEG) or a `base64` host, and then caps at `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`. `stageAttachmentBytesFromFile` is that leg (with `holdOnDevice` it keeps the bytes here instead); `AttachmentConversionError` gets no retry. |
-| `heldChatAttachments.ts` | Files attached while the chat's ADE Cloud computer rests, kept on this device under `ade-held:` stand-ins until the send copies them (`stageHeldAttachments`). See [Attachments](#attachments). |
+| `heldChatAttachments.ts` | Files attached while the chat's DAEX Cloud computer rests, kept on this device under `ade-held:` stand-ins until the send copies them (`stageHeldAttachments`). See [Attachments](#attachments). |
 | `deviceHeldSend.ts` | `prepareDeviceHeldForSend`: right before a send, copies the files and hands over the comments this device kept while the chat's computer rested, the way the send reaches it. |
 | `useProviderStatusRefresh.ts` | The pane's provider-status re-reads past the 10 s cache: when the chat's machine applies sign-ins (`providerLogins.onChanged`, pinned), on a new connection to that machine, at the end of a turn while the provider can't run, and when the chat's pin key changes. Keyed on `pin?.key`. |
 | `shared/chatAttachmentLimits.ts` | The ceilings and messages for renderer, main and the CLI sync host: `MAX_CHAT_ATTACHMENT_BYTES` (50 MB, files), `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB, base64 in a payload; 720 KiB frames under 25 MB over sync), `MAX_PROVIDER_INLINE_FILE_BYTES` (10 MB), `MAX_PROVIDER_INLINE_IMAGE_BYTES` (3.5 MB), `MAX_PROVIDER_INLINE_IMAGE_EDGE_PX` (2000 px). Messages render from the constants (`formatAttachmentSize`, `legacyAttachmentCapMessage`, `attachmentTooLargeMessage`). `maxBase64EncodedLength` refuses an oversized payload before decoding (`approxDecodedBytes`). |
@@ -60,7 +60,7 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `main/services/chat/smartLinkPreviewService.ts` | Best-effort metadata: GitHub and Linear through their services; generic pages through bounded reads with DNS pinning and SSRF checks, cached (256 entries, 30 min; 5 min for misses). Credential-backed results are never cached. Errors return the local preview. |
 | `shared/chips.ts` | The one chip model (iOS re-implements it against a shared fixture). `Chip` is `{ kind, token, label, detail?, title?, iconDataUrl?, source }`: `token` is canonical text, `label` display only. `parseChips` / `splitTextIntoChipParts`, the producers `chipFromPath` / `chipFromMention` / `chipFromDeeplinkTarget` / `chipFromSmartLink`, `chipDisplayLabel`, `CHIP_GLYPH`. Pure: a chip is a pointer. |
 | `shared/composerClipboard.ts` | Copy and cut: `text/plain` gets canonical tokens; `text/x-ade-composer` (`COMPOSER_CLIPBOARD_MIME`) adds a label per token, so a chip pastes into another chat as a chip. `parseComposerClipboard` returns `null` on bad input. Bounds: 64 chips, 256 label chars, 100,000 text chars. |
-| `shared/pastedTextAttachment.ts`, `shared/composerPasteFolding.ts` | The paste rule desktop and iOS share: `shouldPasteTextAsFile` is true over 3,000 UTF-16 units or 40 lines (CRLF/CR as LF, one trailing newline dropped). `sniffPastedTextExtension`: `.diff`, then `.json`, then `.log` (3+ lines, 60% timestamped), else `.txt`. The file is `pasted-<epoch ms>.<ext>`, labelled `Pasted · N lines` (`pastedTextChipLabel`). `pastedTextAttachmentFile` marks the file in a `WeakSet` (`isPastedTextAttachmentFile`; a dropped file sets `intent: "user_prompt"`). At send, ADE reads the text back into the message. Files, images and small link pastes skip the rule. |
+| `shared/pastedTextAttachment.ts`, `shared/composerPasteFolding.ts` | The paste rule desktop and iOS share: `shouldPasteTextAsFile` is true over 3,000 UTF-16 units or 40 lines (CRLF/CR as LF, one trailing newline dropped). `sniffPastedTextExtension`: `.diff`, then `.json`, then `.log` (3+ lines, 60% timestamped), else `.txt`. The file is `pasted-<epoch ms>.<ext>`, labelled `Pasted · N lines` (`pastedTextChipLabel`). `pastedTextAttachmentFile` marks the file in a `WeakSet` (`isPastedTextAttachmentFile`; a dropped file sets `intent: "user_prompt"`). At send, DAEX reads the text back into the message. Files, images and small link pastes skip the rule. |
 | `shared/sessionDraftIndicators.ts` | `deriveSessionRowIndicators({ hasDraft, queuedCount, queuedSending, queuedFailed })`: up to two marks (draft, then outbox) with label and sentence. |
 
 | `renderer/state/composerDraftPresenceStore.ts` | Which sessions hold an unsent draft, in memory. The draft lives in `localStorage` under `COMPOSER_DRAFT_STORAGE_KEY_PREFIX` (`<prefix>:<projectRoot>:<sessionId>:<profile>:<kind>`). `useComposerDraftPresence(sessionId)` reads one boolean through `useSyncExternalStore`, so a row re-renders only when its own mark flips. |
@@ -76,14 +76,14 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | The rewind confirmation: a message-scoped file list from the provider dry run plus diff summaries, per-file diffs, then `rewindFiles`. Diffs and restores use the chat's `runtimePin`. See [Codex rewind](agent-routing.md#codex-rewind-and-0145-readiness). |
 | `PendingInputStack.tsx` | The list of open cards when a chat has more than one; see [Subagent cards](#subagent-cards). |
 | `ChatSubagentsPanel.tsx` | Chat Info; see [Chat Info and subagents panel](#chat-info-and-subagents-panel). |
-| `ChatComputerUsePanel.tsx` | The proof drawer (lightbox, video, states, irreversible delete), read on the chat's machine; no review or reveal controls. Inline proof is `ChatProofFilmstrip` in the message list: a count on the producing turn, open by default. |
+| `ChatComputerUsePanel.tsx` | The proof drawer (lightbox, video, states, irreversible delete), read on the chat's machine; no review or reveal controls. Inline proof is `ChatProofCount` in the message list: a count on the producing turn, open by default. |
 | `ChatAppControlPanel.tsx` | App Control for Electron apps, under the composer (`sessionId` set) or in the Work sidebar (`sessionId={null}`). **Control** (screencast, launch/connect, input, `terminal write` / `terminal signal`) and **Inspect** (commits `AppControlContextItem`s). State in `sessionStorage["ade.chat.appControlPanel.<key>"]` (`chat:<sessionId>` or `lane:<laneId>:<projectRoot>`, plus the pin). Connect/launch pass `laneId`; every call uses the `runtimePin`. See [App Control](../computer-use/app-control.md). |
-| `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer (composer and Work sidebar): readiness checklist, pickers, one live view encoded by the vendored Swift helper on the device's machine (no Simulator.app window, no Screen Recording grant), inspect as a toggle, `IosElementContextItem` output. `useAppleDeviceStream` holds the stream; `AppleDeviceColumn` renders it. `laneId` goes into `iosSimulator.launch`. Another chat owning the simulator only changes where context goes. Scope from `useChatRuntimeScopeForPin`, project root from that machine's worktree. See [iOS Simulator](../apple-device/README.md). |
-| `ChatBuiltInBrowserPanel.tsx` | The Work sidebar browser: address bar, tabs, inspect, capture, states from `BuiltInBrowserStatus`; a main-process `WebContentsView` paints the page (`ade.builtInBrowser.setBounds`). Inspect emits `BuiltInBrowserContextItem`s (selector, role, attributes, crop, trimmed HTML, deciding CSS, and `frameworkSource`: React `_debugSource` on the element is exact and fills `sourceFile` / `sourceLine`; other sources are approximate; production builds give none). `ELEMENT_CONTEXT_SNIPPET` (`builtInBrowserService.ts`) redacts secret-looking attributes, values and bodies. Other code opens URLs with `openUrlInAdeBrowser()` (`openExternal.ts`, `ADE_OPEN_BUILT_IN_BROWSER_EVENT`). Calls use the `runtimePin`. **Attach to chat** (tab right-click, or ⋯) goes through `onAttachTab` → `useWorkToolContextInsertion().attachBrowserTab`; a chat gets `ade:agent-chat:insert-browser-tab` and a globe chip (`composerBrowserTabChip.ts`) that serializes `<ade-browser-tab id="…" title="…" url="…">…</ade-browser-tab>` (`shared/browserTabMention.ts`) with the takeover commands (`ade browser claim --tab <id> --text`). `parseChips` reads it back as a `browser_tab` chip. A CLI target gets one pasted line. The URL is the human's, so a tunneled tab shows its remote origin. |
+| `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer (composer and Work sidebar): readiness checklist, pickers, one live view encoded by the vendored Swift helper on the device's machine (no Simulator.app window, no Screen Recording grant), inspect as a toggle, `IosElementContextItem` output. `useAppleDeviceStream` holds the stream. `laneId` goes into `iosSimulator.launch`. Another chat owning the simulator only changes where context goes. Scope from `useChatRuntimeScopeForPin`, project root from that machine's worktree. See [iOS Simulator](../apple-device/README.md). |
+| `ChatBuiltInBrowserPanel.tsx` | The Work sidebar browser: address bar, tabs, inspect, capture, states from `BuiltInBrowserStatus`; a main-process `WebContentsView` paints the page (`ade.builtInBrowser.setBounds`). Inspect emits `BuiltInBrowserContextItem`s (selector, role, attributes, crop, trimmed HTML, deciding CSS, and `frameworkSource`: React `_debugSource` on the element is exact and fills `sourceFile` / `sourceLine`; other sources are approximate; production builds give none). `ELEMENT_CONTEXT_SNIPPET` (`builtInBrowserService.ts`) redacts secret-looking attributes, values and bodies. Other code opens URLs with `openUrlInAdeBrowser()` (`openExternal.ts`, `ADE_OPEN_BUILT_IN_BROWSER_EVENT`). Calls use the `runtimePin`. **Attach to chat** (tab right-click, or ⋯) goes through `onAttachTab` → `useWorkToolContextInsertion().attachBrowserTab`; a chat gets `ade:agent-chat:insert-browser-tab` and a globe chip (`composerBrowserTabChip.ts`) that serializes `<ade-browser-tab id="…" title="…" url="…">…</ade-browser-tab>` (`shared/browserTabMention.ts`) with the takeover commands (`daex browser claim --tab <id> --text`). `parseChips` reads it back as a `browser_tab` chip. A CLI target gets one pasted line. The URL is the human's, so a tunneled tab shows its remote origin. |
 | `ChatTerminalDrawer.tsx` | The chat's terminal drawer, pinned to the chat's machine. `requestChatTerminalFocus` (`chatTerminalFocus.ts`) carries the terminal, so it can show one that ended. |
 | `ChatCodeBlockRun.tsx`, `shellCodeBlockRun.ts`, `codeBlockActionButton.ts` | Run on shell code blocks (`planShellBlockRun`, confirm, run store, "Send output to the agent"); see transcript-and-turns.md, "Run on shell code blocks". |
 | `ChatGitToolbar.tsx` | The git status strip above the composer. The changed count is **distinct paths** (an `MM` file is in both lists). The PR mark shows only when the lane has a PR and opens the PR Work tool, which refreshes that PR. No manual sync here; it heals through reconcile-on-focus and `prs-updated`. Scope from `useChatRuntimeScopeForPin(runtimePin, laneId)`, because the CLI header renders it with no `ChatRuntimeScopeProvider`. |
-| `ChatPrPane.tsx` | The lane PR tool (`variant="tools"`): `PrSwitcherMenu` and the `‹ 1/N ›` `PrSwitcherStepper` for several PRs, stacked detail, or the inline creator. A PR pill elsewhere selects its PR through `chatPrPaneRequests.ts`, held for the named chat. Title bar: ↻ (`prs.syncLanePr`, spinning also for `pr-reconcile`, 300 ms debounce) and ✕ (`onClose`). Cached details first, then a targeted refresh; an unmapped PR (`pr.unmapped`, synthetic `gh:` id) skips it. With no PR it embeds `ChatPrInlineCreator` with the `sessionTitle`; under a `runtimePin` it points at the owning machine. A GitHub stack shows `ChatPrStackOffer` (**Link stack** / **Not now**, per chat and stack). All reads use the pin. |
+| `ChatPrPane.tsx` | The lane PR tool (`variant="tools"`): `PrSwitcherMenu` and the `‹ 1/N ›` `PrSwitcherStepper` for several PRs, stacked detail, or the inline creator. A PR pill elsewhere selects its PR through `chatPrPaneRequests.ts`, held for the named chat. Title bar: ↻ (`prs.syncLanePr`, spinning also for `pr-reconcile`, 300 ms debounce) and ✕ (`onClose`). Cached details first, then a targeted refresh; an unmapped PR (`pr.unmapped`, synthetic `gh:` id) skips it. With no PR it embeds `ChatPrInlineCreator` with the `sessionTitle`; under a `runtimePin` it points at the owning machine. A GitHub stack shows a stack offer (**Link stack** / **Not now**, per chat and stack). All reads use the pin. |
 | `ChatPrInlineCreator.tsx` | The create-PR flow: an immutable source row, a `↓` connector with `N ahead · N behind · clean`/`dirty` (or `comparing…`) from `lane.status`, the `LaneCombobox` target, title, description, Create. The title is the chat title unless it is `New chat`, else `<lane> -> <target>`. `prService` adds Linear words and the deeplink footer. `onCreated` passes the `PrSummary` up at once. |
 | `ChatUserMinimap.tsx`, `chatUserMinimap.logic.ts` | The tick rail in the left gutter, one tick per user message, behind `chatUserMinimapEnabled` and `[@media(pointer:fine)]`. Ticks are placed by percentage, with no cap, so index maps 1:1 (`resolveMinimapIndexFromPointer`). One `<button>` for the rail. The hit strip is clamped to the gutter (`resolveMinimapHitStripWidth`, max 40 px) and off at zero gutter. The hover preview shows the message and three lines of the reply, kept on screen by `resolveMinimapPreviewTranslateY`. Compaction events have no tick. |
 | `chatPromptHistory.ts` | Prompt history from the selected transcript: ArrowUp starts at the newest; same-direction presses stay in history for 3 s; multiline caret motion resumes after a pause at a line boundary; ArrowDown past the newest restores the unsent draft. Each pick jumps the transcript. |
@@ -134,6 +134,136 @@ Quick slots (nine actions on a leader chord plus a digit) are in
 [Quick slots](quick-slots.md). `QuickSlotsHost` is in `AppShell`; the visible
 composer publishes its target through
 `renderer/quickSlots/useQuickSlotComposerTarget.ts`.
+
+## Gotchas / fragile areas
+
+**Launches**
+
+- **One id.** A chat launch's `launchId` IS the session id, chosen by the
+  renderer first. The Work tab, sidebar row, `lockSessionId`, dock stash and
+  card id key off it. Never mint a second id.
+- **Launch rows.** `useWorkSessions` keeps the host list in `hostSessions` and
+  merges launch rows into `sessions` for chats not listed yet. Launch rows are
+  never mirrored into `sessionsCacheByProject` and never count as running.
+  Tabs close through `chatLaunchDraftRestore`: the first host snapshot that
+  moves a held launch to `cancelled` posts a close notice (closing the tab and
+  returning Work to the draft if it was on screen). Cancel/Delete here also
+  restore the prompt and switch the draft to the launch's kind.
+- **Narrow subscriptions.** Only the setup card, that chat's sidebar row and
+  the slide-out read full snapshots; page-level components use
+  equality-gated selectors. A plain whole-store read in a page
+  re-renders it every tick.
+- **Pending pane reads.** While `launchAwaitingSession` the pane skips the
+  summary read, history, turn recovery, delta and computer-use reads (history
+  re-runs when it flips). `submit` intercepts queued sends before the
+  model/lane checks.
+- **Draft launch jobs live in the root store** (`draftLaunchJobsByScope` via
+  `useRootAppStore` / `rootAppStoreApi.getState().setDraftLaunchJobs`), because a
+  launch outlives its pane and a project switch tears down the project store.
+  Restore (`restoreDraftLaunchSnapshot`) appends text and merges context by id.
+  `isDraftLaunchJobStale` makes a hung row hideable.
+  `DraftLaunchSnapshot` gives `createSessionForLane` a `launchState` that
+  overrides the live composer.
+- **Project-switch safety.** The chain captures `launchBinding` and passes it
+  as `pin` to config reads, branch discovery, lane create/rename, name
+  suggestions, session create/send/delete and PTY create/dispose (preload's
+  `callPinnedRuntimeAction`; see
+  [Remote runtime](../remote-runtime/internal-architecture.md#local-runtime-routing)).
+  Rollback uses the same binding (`window.ade.lanes.delete(..., launchBinding)`,
+  `window.ade.agentChat.delete(..., pin)`). With no binding the chain aborts on
+  root drift (`LAUNCH_PROJECT_CHANGED_MESSAGE`). Each step has
+  `withDraftLaunchTimeout` (`DRAFT_LAUNCH_TIMEOUT_MS = 90 s`).
+- **First turn waits.** A composer-created session awaits `onSessionCreated` and
+  the list refresh before the first turn; otherwise the screen shows a blank
+  new chat.
+
+**Composer state**
+
+- **An existing chat never shows an empty model.** The model resolves from the
+  summary's `modelId`, its `model` in the registry, its preset, the newest
+  `done` event naming a model (`resolveTranscriptComposerModelId`, last 2,000
+  events), then the raw `model`. Until then the picker shows "Loading model…"
+  (`emptyLabel`), and a locked pane clears a model left from the previous chat.
+  The fallback effect never swaps an existing chat's model, even when this
+  catalog cannot list it. A pick made before the model is known still applies.
+- **The locked summary read retries** (`refreshLockedSessionSummary`): it keeps
+  the held summary and retries at 1, 2, 4, 8, 15 s, then every 30 s while the
+  pane stays; "not found" keeps it until it persists 60 s. A late result for
+  another chat writes nothing; unmount or a switch cancels.
+- **Draft persistence.** `ComposerDraftStorageSnapshot` saves to
+  `localStorage` on each change and restores on scope switch;
+  `composerDraftHydratingRef` skips the first write-back;
+  `normalizeStoredComposerDraft` validates every field.
+- **Empty-state column.** Only the logo may flex (with a `min-h` floor); every
+  sibling is `shrink-0`; the lift is padding (`pb-[100px]`), because a negative
+  margin escapes `max-h-full`.
+- **No warmup on selection.** A model change does not call
+  `ade.agentChat.warmupModel`; the new model binds on Send.
+- **Effort track pointer.** A drag starts after a small threshold, previews
+  through CSS custom properties and commits once on pointer-up; a drag from a
+  ridge suppresses the trailing click. Do not close the Radix popover from
+  `onChange`.
+- **Native permission updates serialize.** `pendingNativeControlUpdateRef`
+  (sessionId, monotonic `updateId`, promise) chains every `updateSession`, and
+  `submit()` awaits it. The handler patches the summary with the returned
+  fields (`permissionMode`, `interactionMode`, `claudePermissionMode`,
+  `codexApprovalPolicy`, `codexSandbox`, `codexConfigSource`,
+  `opencodePermissionMode`, `cursorModeId`, `cursorModeSnapshot`).
+- **Inbound mode changes re-seed the composer.** On `session_meta_updated`
+  ([transcript-and-turns](transcript-and-turns.md)) for the selected session,
+  `AgentChatPane` patches the summary and calls the composer setters
+  (`setInteractionMode`, `setClaudePermissionMode`, the Codex, OpenCode, Droid
+  and Cursor setters), because the composer seeds from session scope. A
+  title-only event changes nothing.
+
+**Menus and chips**
+
+- **Stale slash commands.** SDK commands fetch by session; a pending model
+  handoff fetches by lane and pending provider, so the menu drops the old
+  provider's commands.
+- **File-search debounce.** 40 ms in `ChatCommandMenu`, a sequence number
+  drops stale results; cached queries show at once and revalidate.
+- **Triggers are cursor-relative** (`shared/composerTriggers.ts`). A slash
+  needs a word boundary before it and no whitespace or `/` inside, so paths,
+  URLs and fractions never open the menu; do not add `startsWith("/")` gates.
+  `@` queries may contain spaces and stop at a newline or another `@`. The
+  rich editor detects on the DOM text around the caret
+  (`getRichTriggerContext`), not serialized offsets.
+- **Chip selection marking must stay cheap.** The `selectionchange` listener
+  exists only while the editor is focused and holds a chip; a collapsed caret
+  costs one boolean; DOM writes coalesce into one `requestAnimationFrame`;
+  queries stay inside the editor; a `MutationObserver` watches `childList` +
+  `subtree` (never `characterData`) only while focused. Widening any of these
+  adds work to every keystroke.
+- **Smart-link presentation is not prompt storage.** Keep the full URL in
+  `data-composer-chip-text` and the draft; a failed lookup degrades to the
+  provider label or URL.
+
+**Transcript**
+
+- **Event identity is never the sequence alone.** The transcript is durable across restarts, so a rehydrated session that
+  restarts at 0 would reuse numbers already in the file. Host: `readTranscriptHydrationState` (`agentChatService.ts`)
+  seeds `managed.eventSequence` from the transcript's max in the same pass
+  that recovers todos. iOS: `AgentChatEventEnvelope.id` is
+  `sessionId:timestamp:sequence`; the thread engine keys on the durable
+  `sequence`, and cards derive per `itemId` (`derivePendingWorkInputs`). Short
+  text (under 24 characters) has no content dedupe key, so it depends on this.
+- **`isAskUserToolName` does not match `AskUserQuestion`.** Claude's ask emits a
+  `tool_call` (tool-use id) and an `approval_request` (a fresh `randomUUID`);
+  matching both makes two cards, and the `tool_call` one is unanswerable. That
+  branch is only for a bare ask-user call.
+- **Question drafts.** On desktop, picks and notes live in
+  `AskQuestionComposer` and reset when you leave the chat (minimizing keeps
+  them), so stale answers do not cross sessions; iOS keeps them
+  ([Cross-surface parity](#cross-surface-parity)). Focus and entrance run once
+  per card.
+- **Terminal drawer tabs.** PTY exit removes the tab; the last removal closes
+  the drawer (`ChatTerminalDrawer` owns the state machine).
+- **Virtual-scroll drift.** Spacers come from `measuredHeights` keyed by stable
+  row keys; a resize above the viewport needs `handleMeasure` →
+  `reconcileMeasuredScrollTop`. Unstable keys make the list jump. Sticky-bottom
+  recovery follows for a few frames after a measurement; removing it makes a
+  stream look cut short.
 
 ## Pane layout
 
@@ -502,7 +632,7 @@ a handoff that sees no frames in 1.5 s gives up and restores the composer.
   (`isTileActive: true` for grid tiles).
 - **Smart links.** A completed HTTP(S) or `ade://` URL becomes an atomic violet
   chip with the provider's mark (`smartLinkChipMark.ts`: GitHub, Linear
-  `LINEAR_LOGO_PATH`, ADE), or a globe that a resolved favicon replaces
+  `LINEAR_LOGO_PATH`, DAEX), or a globe that a resolved favicon replaces
   (`chat.resolveSmartLinkPreview`). The literal URL stays in the draft and is
   what the agent gets. Click, Enter or Space opens Copy link / Remove link;
   Backspace/Delete removes the whole chip. The editor is left-aligned.
@@ -594,8 +724,8 @@ a handoff that sees no frames in 1.5 s gives up and restores the composer.
   person mention is **context only**: its block (`kind="person"`) gives the
   name, Linear display name and user id, or the GitHub login and repository,
   and tells the agent to assign, comment or notify only when the user asks
-  (`ade linear assign <issue> <id>` for Linear; writing `@login` on GitHub
-  notifies). A resting ADE Cloud chat shows no people rows, because only its
+  (`daex linear assign <issue> <id>` for Linear; writing `@login` on GitHub
+  notifies). A resting DAEX Cloud chat shows no people rows, because only its
   computer can read them. A CLI's input box inserts a person as plain text
   (`@login`, or the name with its Linear id), since a CLI gets no expansion.
   iOS skips the kind until its Swift mirror learns it.
@@ -605,7 +735,7 @@ a handoff that sees no frames in 1.5 s gives up and restores the composer.
   (`shared/chatMentions.ts`; a PR chip reads `#1319 title`). A sent Linear
   person chip gets its name from the menu's rows, else from an exact lookup of
   the chips' ids on the chat's machine (`listMentionSuggestions` with `ids`,
-  batched per machine, never on a resting ADE Cloud computer; a miss is asked
+  batched per machine, never on a resting DAEX Cloud computer; a miss is asked
   again after a minute) (`mentionChipLabels.ts`); a GitHub one shows
   `@login`.
 - **`#`** lists the PRs the chat can reach (`ComposerPrSuggestion`,
@@ -661,7 +791,7 @@ dismissal in a ref and has three close calls:
   host only.
 - A fixable staging failure offers **Try again**; a size rejection or a failed
   HEIC conversion does not.
-- **A resting ADE Cloud computer.** Copying a file to the chat's computer is
+- **A resting DAEX Cloud computer.** Copying a file to the chat's computer is
   a write, and a write wakes it. While the chat's computer rests (the pane's
   `chatComputerResting`, read as `useChatRuntimeScope().machineRests`), a
   paste, drop or pick into a chat keeps the bytes on this device
@@ -681,7 +811,7 @@ dismissal in a ref and has three close calls:
   64 MB (past that a new file is copied at once, as before), and go as soon
   as nothing shows them: a file taken out of the box at once, a sent one
   once its bubble names the copy. After a reload a send names the file to
-  attach again. An awake computer stages as before. Desktop and ADE Web;
+  attach again. An awake computer stages as before. Desktop and DAEX Web;
   iOS already keeps files on the phone while the chat sends through the
   account and sends them with the queued message (`beginAttachmentUploads`).
   The same flag makes Up-arrow history skip its stash, which is a saved
@@ -733,7 +863,7 @@ It also gives the light-mode composer a solid background.
 
 ### Model, effort and Fast
 
-- **Model selection.** `ProviderModelSelector` filters by
+- **Model selection.** `ModelSelector` (`renderer/components/shared/ModelSelector.tsx`) filters by
   `filterChatModelIdsForSession`; crossing families is a handoff. Dynamic
   inventories load only when their rail opens and the TTL lapsed
   (`agentChat.modelCatalog({ mode: "cached" | "refresh-stale" | "force",
@@ -759,7 +889,7 @@ It also gives the light-mode composer a solid background.
   the shelf's machine, never `null`) as `modelRuntimePin`; the picker routes
   `agentChat.modelCatalog(args, pin)` there and caches by binding. During a tab
   switch, `modelCatalog` and `getAvailableModels` stay on the runtime. Tools,
-  git, iOS and App Control still use `null` for the tab's own machine. ADE Web
+  git, iOS and App Control still use `null` for the tab's own machine. DAEX Web
   rejects a foreign pin (`assertWebRuntimePinRoutable`) and uses the pinned
   list.
 - **Allowlist.** With `availableModelIdsOverride`, selection is limited to
@@ -775,7 +905,7 @@ It also gives the light-mode composer a solid background.
   brief can target any lane (`targetLaneId`) or a new one. Cursor's copy
   says the conversation is replayed (`providerForkReplaysTranscript`). An
   optional note goes into a brief's hidden prompt, or as a fork's first turn.
-  Codex targets get no ADE goals; forked Codex threads have their goal cleared
+  Codex targets get no DAEX goals; forked Codex threads have their goal cleared
   first.
 - **Reasoning effort.** `ReasoningEffortPicker` sits beside the model when the
   descriptor has `reasoningTiers`. Its trigger shows an `EffortMeter` (one bar
@@ -805,7 +935,7 @@ It also gives the light-mode composer a solid background.
     darker hover, violet on. Presses change colour, never size.
   - The trigger names the state (`composeModelPickerTriggerLabel()`: "GPT-5.6
     Terra Fast", with an `aria-hidden` glyph). Parallel slots use
-    `onParallelSlotCodexFastModeChange`.
+    `onParallelSlotFastModeChange`.
   - **Codex Ultrafast.** Where the surface passes `fastTier` and the model's
     catalog lists `ultrafast`, the chip cycles Off → Fast → Ultrafast (`Ultra`,
     double bolt); the tier is `onFastModeChange`'s second argument. Other
@@ -898,7 +1028,7 @@ and effort for a new chat's first prompt.
   and outside parallel and Cursor Cloud modes.
 - **Permission controls.** Interaction mode (`default` / `plan`); Claude's mode
   popover (**Ask permissions** green, **Accept edits** blue, **Plan mode**
-  purple, **Bypass permissions** red; `CLAUDE_MODE_TONE_STYLES`); Codex presets
+  purple, **Bypass permissions** red; `PERMISSION_MODE_TONE_STYLES` in `PermissionModePicker.tsx`); Codex presets
   (Plan / Guarded Edit / Full Auto, plus a read-only "Custom" row for custom
   and `config-toml`); OpenCode modes; Cursor's mode snapshot and options. Rows
   show titles only; detail is the tooltip. Popovers portal to
@@ -925,7 +1055,7 @@ and effort for a new chat's first prompt.
 - **Renderer-owned chain** (`launch/rendererOwnedLaunch.ts`) for an existing
   lane, parallel launches, Cursor Cloud, and a runtime without
   `chat.startLaunch` (`action_not_callable` / `action_not_exposed`, `Unknown
-  ADE action`, or no web descriptor; other rejections are real failures).
+  DAEX action`, or no web descriptor; other rejections are real failures).
   - A `DraftLaunchJob` goes `creating-lane` → `starting-session` →
     `sending-prompt` → `ready` / `failed`. Lanes are named at once;
     `startBackgroundLaneNaming` asks for an AI name and branch, with `Naming
@@ -1004,7 +1134,7 @@ and effort for a new chat's first prompt.
   order and reverts on refusal. The host reorders the queue
   `deliverNextQueuedSteer` reads (or the persisted `pendingSteers` with no
   runtime) and emits `queue_reordered { steerIds }`. A row an inline dispatch
-  owns is refused. Only ADE-held queues move (`queuedSteersCanReorder`). iOS offers a long-press menu when the
+  owns is refused. Only DAEX-held queues move (`queuedSteersCanReorder`). iOS offers a long-press menu when the
   host has `chat.moveSteer`.
 - Staged attachments show in the composer's `ChatAttachmentTray`.
 - A failed cancel shows "Couldn't remove the queued message: …" in the banner.
@@ -1042,15 +1172,15 @@ depth-first with the same mode, reported as `stoppedChildChatCount`).
   Codex stops background work through
   `thread/backgroundTerminals/terminate` (never user shells), and a
   user-picked queue clear deletes its app-server queue
-  (`thread/queue/delete`); ADE's internal Codex stops leave that queue. A
+  (`thread/queue/delete`); DAEX's internal Codex stops leave that queue. A
   remembered choice that cannot apply falls back to the default.
 - The job count is `activeBackgroundTaskCount`. Default Stop leaves Claude's
   query and background jobs when `perTaskStopAffordance` is declared; square
   stops call `ade.agentChat.stopTask` for one `taskId`.
 - The choice is stored per chat and drives the button and `Cmd+.`; the menu
-  closes on selection. A clear that cancelled ADE messages shows an eight-second
+  closes on selection. A clear that cancelled DAEX messages shows an eight-second
   Undo card (`restoreCancelledQueue`).
-- CLI: `ade chat interrupt --stop-children [--stop-background]`, `ade chat
+- CLI: `daex chat interrupt --stop-children [--stop-background]`, `ade chat
   stop-task <session> <taskId>`.
 
 ### Context meter and Compact first
@@ -1065,7 +1195,7 @@ depth-first with the same mode, reported as `stoppedChildChatCount`).
   now sends `/compact` and keeps the draft; it exists for Claude, Codex, Pi,
   OpenCode (when the server lists `compact`) and local Cursor
   (`manualCompactAvailable` for web and iOS), and is disabled during a turn or
-  pending input. ADE compacts Claude at 97% at a turn boundary when Claude did
+  pending input. DAEX compacts Claude at 97% at a turn boundary when Claude did
   not.
 - **Compact first.** For those providers, when the prompt cache expired and
   the last measured context is at least 200,000 tokens
@@ -1089,12 +1219,12 @@ depth-first with the same mode, reported as `stoppedChildChatCount`).
   on) or `never`. Claude defaults to `ask`; the others to `never`.
 - **Warm timer (Claude, `always`).** A one-hour-cache chat compacts 54 minutes
   in (`WARM_IDLE_COMPACT_FRACTION`, `warmIdleCompactAtMs`,
-  `warmIdleCompactionScheduler.ts`), because ADE closes an idle Claude process
+  `warmIdleCompactionScheduler.ts`), because DAEX closes an idle Claude process
   after five minutes. A turn cancels it; a timer over a minute late is dropped.
   Claude's `idleCompaction` setting is left alone.
 - Only a send with `compactFirst: true` compacts first; CLI, automation and
-  queued sends never do. A send to an ADE Cloud chat that goes through the
-  account's queue (its computer asleep or moving; desktop, ADE Web and the
+  queued sends never do. A send to a DAEX Cloud chat that goes through the
+  account's queue (its computer asleep or moving; desktop, DAEX Web and the
   phone) carries the choice in its settings (`CloudChatMessageSettings.compactFirst`),
   and the computer passes it with that send when it delivers it, never as a
   chat setting. An older server or computer drops it. No compaction while Claude's `resume_return` question
@@ -1203,7 +1333,7 @@ written, and ranks below the machine key.
 ### Free models
 
 A person with no paid plan, account or key can still chat: OpenCode Zen's
-free tier runs in ADE's pinned OpenCode with nothing signed in.
+free tier runs in DAEX's pinned OpenCode with nothing signed in.
 `shared/freeModels.ts` holds the rule (`modelOnlyRunsInOpenCode`: a
 `-free` id or `big-pickle`); iOS mirrors it in `WorkFreeModels.swift`.
 
@@ -1224,8 +1354,8 @@ free tier runs in ADE's pinned OpenCode with nothing signed in.
   `freeModels` (`main/services/ai/freeModelsStatus.ts`): `nothingSignedIn`
   (no provider, key, custom provider or local model), `everSignedIn` and
   `preferredDefaultModelIds` (the manifest's `defaults.free`).
-  `everSignedIn` reads a record in ADE's cache: the first check writes it,
-  counting an agent that ran there before (older ADE versions), and the
+  `everSignedIn` reads a record in DAEX's cache: the first check writes it,
+  counting an agent that ran there before (older DAEX versions), and the
   first sign-in seen marks it. Later agent runs do not count, because a
   runtime start is noted even with no sign-in. A local model is not a
   sign-in: it clears `nothingSignedIn` but never marks the record. Pi
@@ -1237,7 +1367,7 @@ free tier runs in ADE's pinned OpenCode with nothing signed in.
   - a fresh chat draft starts on the preferred free model, else the first
     listed one (`chat/useFreeModelsDraft.ts`). It loads OpenCode's catalog
     for that machine, and a load that found no free model runs again on a
-    later status read, at most once in 30 s. ADE set it, so it is not
+    later status read, at most once in 30 s. DAEX set it, so it is not
     remembered as the launch default or "last used", also after a launch or
     a reload, until a person picks a model; another chat or draft starts
     without the mark. A model someone chose
@@ -1338,7 +1468,7 @@ free tier runs in ADE's pinned OpenCode with nothing signed in.
   50 MB, 512 KiB slices, a `.part` file renamed on finish; the host owns the
   ceiling. The ref has type `File`. `chat.getAttachmentChunk` reads them back
   for previews. The phone enables "Attach file…" / "Attach video…" only when
-  the host lists `chat.beginTempFileAttachment` (else "Update ADE on your
+  the host lists `chat.beginTempFileAttachment` (else "Update DAEX on your
   computer to attach files and videos."); personal chats hide them.
   `workChatFileAttachmentAvailability` decides, and
   `SyncService.saveChatFileAttachment` re-checks.
@@ -1390,7 +1520,7 @@ with the user's ChatGPT sign-in, on desktop only.
 - **Audio path.** The renderer (`useCodexVoice`) owns the mic, the
   `RTCPeerConnection` and playback. It sends only its SDP offer to the brain
   (`chat.startCodexRealtime`) and gets the answer and a token; audio never
-  passes through ADE. Do not trim the offer (SDP lines end in CRLF; OpenAI
+  passes through DAEX. Do not trim the offer (SDP lines end in CRLF; OpenAI
   answers "unmarshal SDP: EOF"). Always send `version: "v3"`.
 - **Which brain.** `startCodexRealtime`, `stopCodexRealtime` and
   `getCodexRealtimeState` carry the chat's pin (`useChatRuntimeScope().pin`),
@@ -1398,10 +1528,10 @@ with the user's ChatGPT sign-in, on desktop only.
 
 | Mode | Chats | Where voice runs | How a request reaches the chat |
 |---|---|---|---|
-| native | Codex | The chat's own Codex thread | Codex runs each hand-off as a turn on that thread; ADE adopts the turn (also on the resumed-turn path) and shows the spoken request as its user message. |
-| host | every other provider | A private `codex app-server` with every config.toml MCP server switched off (`codexMcpOff.ts`) and one ephemeral relay thread (`codexVoiceHost.ts`) | The relay turn replies only `[RELAYED]` (GPT-6 Luna, low). ADE sends the spoken text to the real chat with `sendMessage` or an inline `steer` and narrates that chat's turn. |
+| native | Codex | The chat's own Codex thread | Codex runs each hand-off as a turn on that thread; DAEX adopts the turn (also on the resumed-turn path) and shows the spoken request as its user message. |
+| host | every other provider | A private `codex app-server` with every config.toml MCP server switched off (`codexMcpOff.ts`) and one ephemeral relay thread (`codexVoiceHost.ts`) | The relay turn replies only `[RELAYED]` (GPT-6 Luna, low). DAEX sends the spoken text to the real chat with `sendMessage` or an inline `steer` and narrates that chat's turn. |
 
-Both modes set `clientManagedHandoffs: true`, so ADE alone decides what voice
+Both modes set `clientManagedHandoffs: true`, so DAEX alone decides what voice
 says. A spoken request is a `user_message` with `metadata.voiceInput` ("Spoken"
 with a mic glyph). Subagent start and finish reach the session as context; a
 finish is spoken.
@@ -1425,10 +1555,10 @@ finish is spoken.
   concluded, a result is stated only from the agent's finished message, and
   the user may cut in.
 
-**Ending.** `asksToEnd` matches the user's own words ("end the call", "hang
+**Ending.** The voice narrator (`codexVoiceNarration.ts`) matches the user's own words ("end the call", "hang
 up", a bare farewell) and closes after `END_GRACE_MS`; negations and questions
-back out. `speakNow` refuses once closing. `handleHandoff` checks `asksToEnd`
-first, so an end request never goes to the agent.
+back out. `speakNow` refuses once closing. An end request is checked
+first, so it never goes to the agent.
 
 **The bar.** `CodexVoiceBar` is the composer's own top row (`voiceBar` slot on
 `ChatComposerShell`): waveform, newest caption, state word, timer, mute and
@@ -1442,7 +1572,7 @@ only while live. Small talk stays out of the thread.
 `voiceSession` field beside them (an object `detail` would print as JSON on
 iOS). `VoiceSessionCard` draws it as a `ChatCard`.
 
-**Context and style.** Voice gets Codex's startup context plus an ADE developer
+**Context and style.** Voice gets Codex's startup context plus a DAEX developer
 item: chat, lane, worktree, model, these rules, the `codexVoice` preferences
 (`shared/codexVoice.ts`: personality, voice, name, updates, language) and the
 last 12 messages. Codex's own voice instructions stay. `v3` uses the older
@@ -1471,9 +1601,9 @@ to its `label`:
   pills, so a paste into another chat works.
 - **Sent messages** render through `splitTextIntoChipParts` (`ChipText.tsx`).
   A chat, lane or terminal mention opens through its owning machine; a machine
-  mention opens its facts card; a PR mention resolves ADE's row id first; an
+  mention opens its facts card; a PR mention resolves DAEX's row id first; an
   MCP mention opens this computer's MCP Settings on that server.
-- **ADE deeplinks** go through `deeplinks.ts`, so `ade://pr/...` is a PR pill.
+- **DAEX deeplinks** go through `deeplinks.ts`, so `ade://pr/...` is a PR pill.
 - **Folders** are chips (`fileSearchIndexService.ts` keeps directories in a
   separate map); a folder is a pointer, never an attachment.
 
@@ -1508,8 +1638,8 @@ One pill names a model, a thinking level and a permission mode.
   click reopens a part. No thinking levels, no thinking part. The list is
   `ModelChipSegmentMenu` on `AnchoredMenu`.
 - **Send.** `chatMentionService` expands each model token into an
-  `<ade-mention kind="model">` block with the exact `ade chat create` and
-  `ade chat handoff` flags. An unknown model is `resolved="false"` (ask, do
+  `<ade-mention kind="model">` block with the exact `daex chat create` and
+  `daex chat handoff` flags. An unknown model is `resolved="false"` (ask, do
   not guess); an unsupported level is dropped and named.
 - **Transcript.** The label is `Display name · Level · Mode`. **New chat with
   this model** opens an unsent Work draft in the same lane and machine with
@@ -1522,8 +1652,7 @@ Markdown image syntax for a file on disk (absolute, workspace-relative or
 `ChatInlineMedia.tsx`, not an `<img>` the CSP blocks. `http(s)` / `data:`
 images and `ade-proof://` keep their paths.
 
-- It resolves like a link (`resolveWorkspaceMediaTarget`,
-  `chatWorkspacePaths.tsx`) on the chat's machine, with a 30 s cache, and only
+- It resolves like a link (`chatWorkspacePaths.tsx`) on the chat's machine, with a 30 s cache, and only
   near the viewport.
 - An image draws inline (up to 25 MB) and opens in Files. Audio gets
   `ChatInlineAudio` (play, seek, time, mute, 1×/1.5×/2×, Open; no bytes before
@@ -1558,7 +1687,7 @@ a timestamp shows local time. iOS ports the rules
 
 ### Settings and page chips
 
-An agent asked where something is runs `ade settings find <words>` (from
+An agent asked where something is runs `daex settings find <words>` (from
 `shared/settingsManifest.ts`, no brain call) and writes the printed link;
 `[user only: <why>]` marks settings only the user changes.
 
@@ -1623,7 +1752,7 @@ unwindowed.
   tone="bubble"`). A `metadata.hideFullPrompt` message shows and copies only
   its `displayText`, with a brief chip.
 - Code blocks use `HighlightedCode`; tables get rounded borders; system
-  notices are compact; `ChatTurnDivider` separates turns.
+  notices are compact; a turn divider separates turns.
 - A `Woke on schedule` divider precedes each scheduled turn. Real subagents
   get inline `SubagentSpawnCard` / `SubagentResultCard` rows; backgrounded
   shell runs get `BackgroundJobRunRow`.
@@ -1799,7 +1928,7 @@ with `beforeTurnId` on app-server 0.145.0 or later, else the deprecated
 - Running durations tick once a second from the wall clock; finished rows
   keep their final time.
 - Square stops are labelled `Stop ${agentType}`; `chat:` rows have none.
-- **Spawned chats** (`ade chat create --parent` from a tracked shell) list via
+- **Spawned chats** (`daex chat create --parent` from a tracked shell) list via
   synthetic `subagent_*` events keyed `chat:<childSessionId>`.
   `deriveChatSubagentSnapshots` keeps that id and `spawnKind` when the
   dot-form twin merges, and sets `childSessionId`; the row shows the child's
@@ -1879,7 +2008,7 @@ distinct, adopting the placeholder only when exactly one resolves.
 `ChatActionsDrawerPanel` (tree icon left of the Tools toggle) is one scroll of
 sections the host passes in order, each only when it has content: progress
 (goal, tasks, subagents, background), proof (one or more artifacts), Droid
-mission (features or progress), sources (`hasChatSources()`, checked only
+mission (features or progress), sources (checked only
 while open). `ChatSubagentsPanel` is always passed and renders `null` when
 empty.
 
@@ -1977,7 +2106,7 @@ mirrors it): `answerState` (`EMPTY`, `PICK`, `PICK_NOTE`, `NOTE`), `sendLabel`,
   allowing; an unknown or missing kind is an approval.
   - Decline (button or Escape) sends `QUESTION_DECLINED_MODEL_MESSAGE` (stop
     and ask in plain text, never "choose for me") for Claude `AskUserQuestion`,
-    ADE `ask_user`, Codex `requestUserInput` and Cursor. Pi sends
+    DAEX `ask_user`, Codex `requestUserInput` and Cursor. Pi sends
     `QUESTION_UNANSWERED_MODEL_MESSAGE`.
   - `declineMessageForModel` picks `LIVE_QUESTION_DECLINED_MODEL_MESSAGE`
     ("keep working") for a live Codex question (`isBlocking: false`).
@@ -2055,7 +2184,7 @@ multiselect), coerced back to the schema. Approval/URL mode shows **Allow
 once** and **Deny**, **Open authorization** only for safe web URLs, and
 **Always allow** only when `_meta.persist` includes `always`. Claude
 (`onElicitation`) raises the same card without **Always allow**. In a Claude
-full-auto chat or automation run ADE answers it (an empty form is accepted, a
+full-auto chat or automation run DAEX answers it (an empty form is accepted, a
 form takes schema defaults when every required field has one, anything else is
 declined) with a notice; an unanswered Claude card cancels after 5 minutes.
 Codex full-auto does not auto-answer. `serverRequest/resolved` closes a card
@@ -2071,7 +2200,7 @@ it suggested), and "Saved to Passwords & Secrets for this project. The agent
 only sees the name." Enter saves, Esc declines. An existing name opens on
 "Keep existing" with "Replace" one click away.
 
-- **Temporary private file.** The card also asks "Save to ADE secrets" or
+- **Temporary private file.** The card also asks "Save to DAEX secrets" or
   "Temporary private file" (`--delivery file` sets the default; the person
   decides; the `secret_delivery` question, so the phone shows a normal
   choice). The file is written on the chat's machine to `<ADE
@@ -2140,7 +2269,7 @@ composer shows the connect card.
   Receipts: "Linear connected with an API key · never shown to the agent",
   "Jira · not now", "Connect GitHub · awaiting you". An answer after the asker
   stopped saves nothing; a finished browser sign-in says it is signed in.
-- `ade integrations status` (`integration_connect.status`) lists connection
+- `daex integrations status` (`integration_connect.status`) lists connection
   and account, never a credential.
 - Events: `chat/connect_requested`; `mcp_registry.request` →
   `chat/mcp_server_requested`; `mcp_registry.remove` (the removal card, see
@@ -2169,8 +2298,8 @@ asked. Without it an event is an approval. Readers use
 
 A subagent inside the chat's own provider session (a Claude background agent,
 a Codex `spawn_agent` child, an OpenCode child session, a Muse subagent) asks
-through the **parent** chat, with the parent's answer key and pin. ADE child
-chats (`ade chat create --type subagent`) keep their own cards.
+through the **parent** chat, with the parent's answer key and pin. DAEX child
+chats (`daex chat create --type subagent`) keep their own cards.
 
 - **Naming.** `subagent: { key, name, background? }` (`PendingInputSubagent`,
   kept by `readPendingInputSubagent`); `key` is the roster id
@@ -2182,7 +2311,7 @@ chats (`ade chat create --type subagent`) keep their own cards.
   person's pick, else the first. Chat Info marks the subagent **needs you**
   (`waitingSubagentKeys`), on desktop and iOS.
 - **Accept all covers the chat** ("…the main agent and all its subagents.").
-  Claude's session rule covers the query already. For Codex and OpenCode ADE
+  Claude's session rule covers the query already. For Codex and OpenCode DAEX
   remembers the grant per chat (`ManagedChatSession.sessionApprovalGrants`,
   `sessionApprovalGrantKey` in `sessionApprovalGrants.ts`) and answers later
   matches itself. Keys are exact: Codex command + `cwd` + extra permissions; a
@@ -2192,7 +2321,7 @@ chats (`ade chat create --type subagent`) keep their own cards.
   cards; Stop with background closes them. A Codex parent turn ending keeps
   cards of running children. A subagent ending closes its cards
   (`settleEndedSubagentCardsSoon`); a child-thread `serverRequest/resolved`
-  closes that card. A Claude card ADE closes sends `CLAUDE_CARD_CLOSED_MESSAGE`,
+  closes that card. A Claude card DAEX closes sends `CLAUDE_CARD_CLOSED_MESSAGE`,
   not "User denied". Dismissing a Muse subagent's card declines only that
   approval (or stops only that subagent); the parent turn continues.
 - **After a restart.** An answer to a subagent question after a restart (or
@@ -2244,10 +2373,10 @@ dedup, monospace preview and accent. Label helpers live in
 | Runtime | Fields filled |
 |---|---|
 | Claude | Full (`AskUserQuestion`): `header`, option `description` / `preview` / `previewFormat` / `recommended`, `multiSelect`. |
-| Codex | Full (`item/tool/requestUserInput`: header, multiSelect, isSecret, option description/preview). `isBlocking: false` is non-blocking steering: header `{Provider} has a question`, composer open, row stays Working with a pip, the card dies on Stop or `turn/completed` with a `pending_input_resolved` cancel; no `awaitingInput` / `pendingInputItemId`; typed send ungated (`pendingApprovalCapturesPrompt`). Missing `isBlocking` blocks. Thread start/resume send `config.tools.update_plan.enabled = true`. |
+| Codex | Full (`item/tool/requestUserInput`: header, multiSelect, isSecret, option description/preview). `isBlocking: false` is non-blocking steering: header `{Provider} has a question`, composer open, row stays Working with a pip, the card dies on Stop or `turn/completed` with a `pending_input_resolved` cancel; no `awaitingInput` / `pendingInputItemId`; typed send ungated. Missing `isBlocking` blocks. Thread start/resume send `config.tools.update_plan.enabled = true`. |
 | Cursor | Full via `normalizeCursorControlQuestions` (with `defaultAssumption`, `impact`, `isSecret`). |
 | OpenCode | `header`, `multiSelect` (`multiple`), `allowsFreeform` (`custom`), option `description`. No `recommended` / `preview` / `isSecret`. |
-| Droid | `topic` → `header` and string options. The `@factory/droid-sdk` 0.9.x schema has per-question `multiSelect`, which ADE does not draw as its own control; no option description or preview. |
+| Droid | `topic` → `header` and string options. The `@factory/droid-sdk` 0.9.x schema has per-question `multiSelect`, which DAEX does not draw as its own control; no option description or preview. |
 
 ## Presentation profiles
 
@@ -2255,13 +2384,12 @@ dedup, monospace preview and accent. Label helpers live in
 
 | Field | Effect |
 |---|---|
-| `mode` | `standard | resolver | worker-thread | activity-feed`. |
+| `mode` | `standard` or `resolver` (`ChatSurfaceMode`). |
 | `profile` | `standard | persistent_identity`; persistent identity changes accent, chips, title and some layouts. |
-| `modelSwitchPolicy` | Overrides the session's switch policy. |
 | `title`, `subtitle`, `assistantLabel`, `messagePlaceholder` | Text overrides. |
 | `accentColor` | Accent for the header, chips and active-turn indicators. |
 | `chips` | `{ label, tone }` header chips. |
-| `showMcpStatus` | Whether to show the ADE CLI status indicator. |
+| `showMcpStatus` | Whether to show the CLI status indicator. |
 
 CTO and resolver surfaces set `profile: "persistent_identity"` and their own
 chips.
@@ -2312,7 +2440,7 @@ Pure modules:
   names in `pendingInputItemId`. Renderers call it and never read the flag or
   fold the summary into the derivation (see "Pending input derivation" in
   [Fragile and tricky wiring](README.md#fragile-and-tricky-wiring)). Also
-  `getPendingInputQuestionCount()` and `hasPendingInputOptions()`.
+  `getPendingInputQuestionCount()`.
 - `shared/chatTaskList.ts`: the one task list (provider normalization,
   merge/replace/clear, progress, summary line).
 - `chatExecutionSummary.ts`: subagent snapshots and turn diff summaries;
@@ -2322,7 +2450,7 @@ Pure modules:
 
 ## Cloud agents (Devin Cloud and Cursor Cloud)
 
-A **cloud lane** is a lane whose branch lives on the cloud: ADE keeps a local
+A **cloud lane** is a lane whose branch lives on the cloud: DAEX keeps a local
 worktree as a mirror, and the lane's chats run on the cloud's VM. The machine
 in the prompt box is where the lane lives, and a cloud is one of those
 machines.
@@ -2352,7 +2480,7 @@ Devin Cloud uses the **ACP cloud relay**, `devin acp --cloud`
 - `session/new` takes `repos`, `devin_version` (the model, via
   `modelConfigOptionId`) and `platform` as `initialConfigValues` on new
   sessions. Relay ids are `devin-<hex>`, REST/web ids `<hex>`
-  (`devinCloudAcpSessionId` / `devinCloudRestSessionId`).
+  (`devinCloudAcpSessionId`).
 - `session/load` replays history; user messages become cloud `user_message`
   rows (`echoRemoteUserMessages`), deduped by `cognition.ai/eventId`.
 - `session_info_update` carries status, `userActionRequired`,
@@ -2373,9 +2501,9 @@ Devin Cloud uses the **ACP cloud relay**, `devin acp --cloud`
 `launchCloudAgent`, as IPC, `window.ade.cloudAgents.*` and the sync commands
 `ai.*CloudAgent*` (which the web panel uses).
 
-- `list`: `CloudAgent` rows with ADE status (starting / working / needs_you /
+- `list`: `CloudAgent` rows with DAEX status (starting / working / needs_you /
   idle / finished / failed / archived), PR, model, platform and a `link` to
-  the ADE chat and lane.
+  the DAEX chat and lane.
 - `open`: reuses the linked chat; else the lane on the PR branch, else a lane
   imported from it; with no branch (merged or closed PR) or no PR, a new cloud
   lane on a pushed branch. The chat opens with history.
@@ -2386,7 +2514,7 @@ Devin Cloud uses the **ACP cloud relay**, `devin acp --cloud`
 ### The panels
 
 `renderer/components/app/cloudAgents/` (`CloudAgentsPanel`, `CloudAgentRow`,
-`cloudAgentsModel.ts`: filters, sections Needs you / Working / In ADE / Recent,
+`cloudAgentsModel.ts`: filters, sections Needs you / Working / In DAEX / Recent,
 brands; an unknown Devin model id reads "Devin"). Each cloud has its own
 top-bar modal (`CloudAgentsQuickViewButton` with its `provider`), opened by
 `openCloudAgentsPanel(provider)`.
@@ -2409,136 +2537,6 @@ top-bar modal (`CloudAgentsQuickViewButton` with its `provider`), opened by
   (`fixedModelLabel`).
 - **Cloud lanes are marked** by `LaneCloudMarker` and a cloud glyph on cards
   that name the lane.
-
-## Fragile and tricky wiring
-
-**Launches**
-
-- **One id.** A chat launch's `launchId` IS the session id, chosen by the
-  renderer first. The Work tab, sidebar row, `lockSessionId`, dock stash and
-  card id key off it. Never mint a second id.
-- **Launch rows.** `useWorkSessions` keeps the host list in `hostSessions` and
-  merges launch rows into `sessions` for chats not listed yet. Launch rows are
-  never mirrored into `sessionsCacheByProject` and never count as running.
-  Tabs close through `chatLaunchDraftRestore`: the first host snapshot that
-  moves a held launch to `cancelled` posts a close notice (closing the tab and
-  returning Work to the draft if it was on screen). Cancel/Delete here also
-  restore the prompt and switch the draft to the launch's kind.
-- **Narrow subscriptions.** Only the setup card, that chat's sidebar row and
-  the slide-out read full snapshots; page-level components use
-  equality-gated selectors. A plain `useChatLaunchEntries()` in a page
-  re-renders it every tick.
-- **Pending pane reads.** While `launchAwaitingSession` the pane skips the
-  summary read, history, turn recovery, delta and computer-use reads (history
-  re-runs when it flips). `submit` intercepts queued sends before the
-  model/lane checks.
-- **Draft launch jobs live in the root store** (`draftLaunchJobsByScope` via
-  `useRootAppStore` / `rootAppStoreApi.getState().setDraftLaunchJobs`), because a
-  launch outlives its pane and a project switch tears down the project store.
-  Restore (`restoreDraftLaunchSnapshot`) appends text and merges context by id.
-  `isDraftLaunchJobStale` makes a hung row hideable.
-  `DraftLaunchSnapshot` gives `createSessionForLane` a `launchState` that
-  overrides the live composer.
-- **Project-switch safety.** The chain captures `launchBinding` and passes it
-  as `pin` to config reads, branch discovery, lane create/rename, name
-  suggestions, session create/send/delete and PTY create/dispose (preload's
-  `callPinnedRuntimeAction`; see
-  [Remote runtime](../remote-runtime/internal-architecture.md#local-runtime-routing)).
-  Rollback uses the same binding (`window.ade.lanes.delete(..., launchBinding)`,
-  `window.ade.agentChat.delete(..., pin)`). With no binding the chain aborts on
-  root drift (`LAUNCH_PROJECT_CHANGED_MESSAGE`). Each step has
-  `withDraftLaunchTimeout` (`DRAFT_LAUNCH_TIMEOUT_MS = 90 s`).
-- **First turn waits.** A composer-created session awaits `onSessionCreated` and
-  the list refresh before the first turn; otherwise the screen shows a blank
-  new chat.
-
-**Composer state**
-
-- **An existing chat never shows an empty model.** The model resolves from the
-  summary's `modelId`, its `model` in the registry, its preset, the newest
-  `done` event naming a model (`resolveTranscriptComposerModelId`, last 2,000
-  events), then the raw `model`. Until then the picker shows "Loading model…"
-  (`emptyLabel`), and a locked pane clears a model left from the previous chat.
-  The fallback effect never swaps an existing chat's model, even when this
-  catalog cannot list it. A pick made before the model is known still applies.
-- **The locked summary read retries** (`refreshLockedSessionSummary`): it keeps
-  the held summary and retries at 1, 2, 4, 8, 15 s, then every 30 s while the
-  pane stays; "not found" keeps it until it persists 60 s. A late result for
-  another chat writes nothing; unmount or a switch cancels.
-- **Draft persistence.** `ComposerDraftStorageSnapshot` saves to
-  `localStorage` on each change and restores on scope switch;
-  `composerDraftHydratingRef` skips the first write-back;
-  `normalizeStoredComposerDraft` validates every field.
-- **Empty-state column.** Only the logo may flex (with a `min-h` floor); every
-  sibling is `shrink-0`; the lift is padding (`pb-[100px]`), because a negative
-  margin escapes `max-h-full`.
-- **No warmup on selection.** A model change does not call
-  `ade.agentChat.warmupModel`; the new model binds on Send.
-- **Effort track pointer.** A drag starts after a small threshold, previews
-  through CSS custom properties and commits once on pointer-up; a drag from a
-  ridge suppresses the trailing click. Do not close the Radix popover from
-  `onChange`.
-- **Native permission updates serialize.** `pendingNativeControlUpdateRef`
-  (sessionId, monotonic `updateId`, promise) chains every `updateSession`, and
-  `submit()` awaits it. The handler patches the summary with the returned
-  fields (`permissionMode`, `interactionMode`, `claudePermissionMode`,
-  `codexApprovalPolicy`, `codexSandbox`, `codexConfigSource`,
-  `opencodePermissionMode`, `cursorModeId`, `cursorModeSnapshot`).
-- **Inbound mode changes re-seed the composer.** On `session_meta_updated`
-  ([transcript-and-turns](transcript-and-turns.md)) for the selected session,
-  `AgentChatPane` patches the summary and calls the composer setters
-  (`setInteractionMode`, `setClaudePermissionMode`, the Codex, OpenCode, Droid
-  and Cursor setters), because the composer seeds from session scope. A
-  title-only event changes nothing.
-
-**Menus and chips**
-
-- **Stale slash commands.** SDK commands fetch by session; a pending model
-  handoff fetches by lane and pending provider, so the menu drops the old
-  provider's commands.
-- **File-search debounce.** 40 ms in `ChatCommandMenu`, a sequence number
-  drops stale results; cached queries show at once and revalidate.
-- **Triggers are cursor-relative** (`shared/composerTriggers.ts`). A slash
-  needs a word boundary before it and no whitespace or `/` inside, so paths,
-  URLs and fractions never open the menu; do not add `startsWith("/")` gates.
-  `@` queries may contain spaces and stop at a newline or another `@`. The
-  rich editor detects on the DOM text around the caret
-  (`getRichTriggerContext`), not serialized offsets.
-- **Chip selection marking must stay cheap.** The `selectionchange` listener
-  exists only while the editor is focused and holds a chip; a collapsed caret
-  costs one boolean; DOM writes coalesce into one `requestAnimationFrame`;
-  queries stay inside the editor; a `MutationObserver` watches `childList` +
-  `subtree` (never `characterData`) only while focused. Widening any of these
-  adds work to every keystroke.
-- **Smart-link presentation is not prompt storage.** Keep the full URL in
-  `data-composer-chip-text` and the draft; a failed lookup degrades to the
-  provider label or URL.
-
-**Transcript**
-
-- **Event identity is never the sequence alone.** The transcript is durable across restarts, so a rehydrated session that
-  restarts at 0 would reuse numbers already in the file. Host: `readTranscriptHydrationState` (`agentChatService.ts`)
-  seeds `managed.eventSequence` from the transcript's max in the same pass
-  that recovers todos. iOS: `AgentChatEventEnvelope.id` is
-  `sessionId:timestamp:sequence`; the thread engine keys on the durable
-  `sequence`, and cards derive per `itemId` (`derivePendingWorkInputs`). Short
-  text (under 24 characters) has no content dedupe key, so it depends on this.
-- **`isAskUserToolName` does not match `AskUserQuestion`.** Claude's ask emits a
-  `tool_call` (tool-use id) and an `approval_request` (a fresh `randomUUID`);
-  matching both makes two cards, and the `tool_call` one is unanswerable. That
-  branch is only for a bare ask-user call.
-- **Question drafts.** On desktop, picks and notes live in
-  `AskQuestionComposer` and reset when you leave the chat (minimizing keeps
-  them), so stale answers do not cross sessions; iOS keeps them
-  ([Cross-surface parity](#cross-surface-parity)). Focus and entrance run once
-  per card (`focusedQuestionCardKeys` / `enteredQuestionCardKeys`).
-- **Terminal drawer tabs.** PTY exit removes the tab; the last removal closes
-  the drawer (`ChatTerminalDrawer` owns the state machine).
-- **Virtual-scroll drift.** Spacers come from `measuredHeights` keyed by stable
-  row keys; a resize above the viewport needs `handleMeasure` →
-  `reconcileMeasuredScrollTop`. Unstable keys make the list jump. Sticky-bottom
-  recovery follows for a few frames after a measurement; removing it makes a
-  stream look cut short.
 
 ## Browser dock context
 

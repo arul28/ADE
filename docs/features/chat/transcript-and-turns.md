@@ -7,6 +7,68 @@ stream. Sessions persist the stream to disk so they survive restarts.
 
 In light themes, chat uses readable text and syntax colours for code blocks, inline code, quotes, tables, and command output. The message bubble fill is configurable under Settings → Chat.
 
+## Source file map
+
+| Path | Role |
+|---|---|
+| `apps/desktop/src/shared/types/chat.ts` | The `AgentChatEvent` union and envelope types. |
+| `apps/desktop/src/shared/chatTranscript.ts` | Transcript parsing and canonical assistant text. |
+| `apps/desktop/src/shared/chatTurnFold.ts` | How a finished turn folds (prose kept, tool rows collapsed). |
+| `apps/desktop/src/shared/chatEventCompaction.ts`, `chatHistoryMerge.ts` | Persisted-event compaction and merging history pages with live events. |
+| `apps/desktop/src/shared/chatSources.ts`, `apps/desktop/src/main/services/chat/sourceFaviconService.ts` | Sources (web results, fetched pages) per turn, and their favicons. |
+| `apps/desktop/src/shared/chatSubagents.ts`, `chatActivityPhase.ts`, `chatTaskList.ts`, `chatErrorPresentation.ts` | Subagent rows and model attribution, activity phase, task lists, error presentation. |
+| `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Text batching; flushes on every non-text event. |
+| `apps/desktop/src/main/services/chat/claudeStructuredActivity.ts`, `claudeWorkflowProgress.ts` | Claude structured activity normalization and workflow progress. |
+| `apps/desktop/src/main/services/chat/chatTranscriptHistoryPager.ts` | The bounded history pager (snapshots, older pages). |
+| `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts`, `chatThoughtRuns.ts`, `chatBackgroundJobRuns.ts`, `chatScheduledWorkRows.ts`, `chatComputerUseRows.ts` | Event-to-row derivation for the render pipeline. |
+| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | The virtualized message list and card primitives. |
+| `apps/ios/ADE/Views/Work/WorkTimelineHelpers.swift` | The iPhone's port of the timeline rules. |
+
+## Gotchas / fragile areas
+
+- **`messageId` before turn/item identity.** A provider that stops sending
+  `messageId` merges correctly but noisier; watch `shouldMergeTextRows` when
+  swapping SDKs.
+- **Hidden event types drop silently.** A new event type for the work log
+  needs plumbing in `chatTranscriptRows.ts` and `HiddenTranscriptEvent`.
+- **Row keys never carry an index.** Build keys from identity; see
+  [Row keys](#row-keys).
+- **`logicalItemId` before `itemId`** in collapse keys, or re-emits become
+  duplicate rows.
+- **Turn diffs need a lane.** No lane, no `turn_diff_summary`.
+- **The fold's keep-visible decision is taken once, at `done`.** New row types
+  default to visible; add a type to `classifyTurnFoldEvent`'s sets on
+  purpose, and give a grouped keep-if-live row its `liveKeys`.
+- **Timeline rows are the folded list.** In `AgentChatMessageList`,
+  `presentedRows` are unfolded and `groupedRows` folded. Rendering and scroll
+  use `groupedRows`; anything that resolves a target from events or keys looks
+  in the unfolded rows, then opens the fold (`revealTurnFoldRow`) or maps to
+  the fold row (`foldIdByHiddenRowKey`). Prune the height cache against
+  unfolded keys plus fold ids.
+- **A card in a grid or stopped group is not a row.** Map card keys through
+  `subagentCardGridKeyByMemberKey` / `subagentCardRowKeyCandidates`, never by
+  one prefix. Never splice the spawn row out on settle.
+- **Claude parent terminal events are an ordered pair**, after any orphan
+  cleanup.
+- **A terminal turn does not clear a Codex card; a receipt does.** Every Codex
+  turn-ending path emits `pending_input_resolved`, except on runtime death for
+  a plan approval (`planApprovals: "preserve-cards"`), so `respondToInput` can
+  rebuild the card. See
+  [README › Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
+- **Claude idle turns close on an SDK event, never on a timer:** the
+  `session_state_changed` message with `state: "idle"`. `finishClaudeIdleTurn`
+  no-ops with no idle turn open. Do not add a time-based idle watchdog (long
+  tool calls emit nothing). New Claude `system` subtypes hit a compile-time
+  exhaustiveness guard.
+- **A failed history read is not a missing chat.** Set `unavailable: true`,
+  never `sessionFound: false`, for a connection or dispatch failure.
+- **`tailStartOffset > 0` does not mean older history.** Gate on
+  `hasOlderHistory`.
+- **Subscribed mobile history pages do not start project runtimes.** Hosts
+  with `chatHistoryPaging` answer `chat_history` pages on the authorized
+  subscription's transcript path. A scope mismatch or read failure returns
+  `unavailable: true` with the cursor intact.
+
 ## Event envelope
 
 ```ts
@@ -52,7 +114,7 @@ hold **both** the live fragment stream and this canonical text (iOS, the web
 client) reconcile the two, so the module owes them one invariant:
 
 > Canonical text is byte-identical to what a renderer draws from the same
-> envelopes. ADE never invents a character.
+> envelopes. DAEX never invents a character.
 
 That is stronger than "don't corrupt text", and it is the property that matters:
 a client holding both renditions can only reconcile them if they agree. The
@@ -69,12 +131,12 @@ So canonical mirrors the renderer exactly:
   the `itemId` Codex advances per provider message — makes a client silently
   concatenate two entries it keyed the same.
 - **Identified fragments concatenate verbatim**, whatever interleaves, because
-  the renderer joins merged rows with a bare `${previous}${next}`. ADE has no
+  the renderer joins merged rows with a bare `${previous}${next}`. DAEX has no
   block-level identity it can trust, so guessing a boundary from interleaved
   events is what spliced `"\n\n"` into the middle of a word (`"no new mod"` +
   `"ifier chain needed:"`).
 
-Only when ADE cannot tie a fragment to a provider message does it fall back to
+Only when DAEX cannot tie a fragment to a provider message does it fall back to
 inferring boundaries from interleaved events. Ephemeral chrome — `activity`
 hints, live `context_usage`, token counters — is invisible to every renderer, so
 letting it break a run made the canonical text disagree with what desktop
@@ -129,7 +191,7 @@ Two helpers summarise a parsed stream:
 
 | Type | Purpose |
 |---|---|
-| `user_message` | A user turn; carries text, attachments, `turnId`, optional `steerId` and `deliveryState`. A send held on its way (its computer woke, its ADE started) also carries `sentAt`, the person's send time from the client's `clientSubmittedAtMs` when it is 5 s to 1 hour before the host wrote the row; the bubble shows it, while ordering and turn timing keep the envelope `timestamp`. `deliveryState` is `"queued"` while a steer waits for turn-end delivery, `"delivered"` once flushed at turn boundary, `"inline"` when the message was folded into the active turn rather than queued behind it (Claude's SDK `shouldQuery:false` send, Cursor's `Run.steer()`, OpenCode's `session.prompt` with `delivery: "steer"`, or Pi's `steer`), and `"failed"` if dispatch errored. Cursor, OpenCode, and Pi first write the row as `"accepted"` ("Steering…") before they await the provider, then move the same `steerId` to `"inline"` ("Steered") when the turn takes it. Cursor's `Run.steer()` resolves only once the turn reads the message at its next model step, so without the early row the message was invisible for that whole step. A refusal moves the row to `"queued"` (staged again), `"delivered"` (sent as its own turn), or `"failed"` (dropped), so it never stays `"accepted"`. The desktop draws the delivery state as one small line under the bubble, right-aligned with it and never inside it (see [Message delivery](README.md#message-delivery-turn-health-and-quiet-diagnostics)). Same-turn steers (`queued`, `inline`, `accepted` from every inline provider, and Codex `processed`/`unprocessed`) do not clear the live provider-retry working indicator; only a primary user message, `delivered`/`failed` user message, or a terminal status/`done` starts the next retry-replay segment. A `user_message` carrying `metadata.boardMove` is intercepted before the user-bubble branch and rendered as a divider (`Moved on the board · <from> → <to>`) with the exact text the agent received centred underneath — never a bubble, because the user dragged a card between Work-board columns rather than typing that sentence. Messages a person did not type fold into one compact right-aligned row (`resolveUserMessageBody` kind `folded`): `agentRelay` (sender = the sending chat's title, with **Open chat**), `automationRun` (sender = the rule's name, preview = what set it off, or the prompt), and `scheduledWake` (Scheduled task / Loop / Scheduled wake-up, preview = the prompt's first line). The row shows an icon, the sender and a one-line preview, and opens to the full text with copy and time. ⌘F and the minimap read the sender and preview. |
+| `user_message` | A user turn; carries text, attachments, `turnId`, optional `steerId` and `deliveryState`. A send held on its way (its computer woke, its DAEX started) also carries `sentAt`, the person's send time from the client's `clientSubmittedAtMs` when it is 5 s to 1 hour before the host wrote the row; the bubble shows it, while ordering and turn timing keep the envelope `timestamp`. `deliveryState` is `"queued"` while a steer waits for turn-end delivery, `"delivered"` once flushed at turn boundary, `"inline"` when the message was folded into the active turn rather than queued behind it (Claude's SDK `shouldQuery:false` send, Cursor's `Run.steer()`, OpenCode's `session.prompt` with `delivery: "steer"`, or Pi's `steer`), and `"failed"` if dispatch errored. Cursor, OpenCode, and Pi first write the row as `"accepted"` ("Steering…") before they await the provider, then move the same `steerId` to `"inline"` ("Steered") when the turn takes it. Cursor's `Run.steer()` resolves only once the turn reads the message at its next model step, so without the early row the message was invisible for that whole step. A refusal moves the row to `"queued"` (staged again), `"delivered"` (sent as its own turn), or `"failed"` (dropped), so it never stays `"accepted"`. The desktop draws the delivery state as one small line under the bubble, right-aligned with it and never inside it (see [Message delivery](README.md#message-delivery-turn-health-and-quiet-diagnostics)). Same-turn steers (`queued`, `inline`, `accepted` from every inline provider, and Codex `processed`/`unprocessed`) do not clear the live provider-retry working indicator; only a primary user message, `delivered`/`failed` user message, or a terminal status/`done` starts the next retry-replay segment. A `user_message` carrying `metadata.boardMove` is intercepted before the user-bubble branch and rendered as a divider (`Moved on the board · <from> → <to>`) with the exact text the agent received centred underneath — never a bubble, because the user dragged a card between Work-board columns rather than typing that sentence. Messages a person did not type fold into one compact right-aligned row (`resolveUserMessageBody` kind `folded`): `agentRelay` (sender = the sending chat's title, with **Open chat**), `automationRun` (sender = the rule's name, preview = what set it off, or the prompt), and `scheduledWake` (Scheduled task / Loop / Scheduled wake-up, preview = the prompt's first line). The row shows an icon, the sender and a one-line preview, and opens to the full text with copy and time. ⌘F and the minimap read the sender and preview. |
 | `text` | Streaming assistant text; identified by `messageId` (preferred) or turn/item identity. Fragments merge when `shouldMergeTextRows()` returns true. Codex text may carry an optional `phase` (`commentary` / `partial_answer` / `final_answer`); see Text merging. |
 | `transcript_retraction` | Provider-level retraction signal. Claude emits this for refusal fallback `retracted_message_uuids` and assistant `supersedes`; renderers remove prior assistant text rows whose `messageId` matches `messageIds`, optionally retaining `replacementMessageId` as the new provider message id. The persisted JSONL remains append-only. |
 | `reasoning` | Chain-of-thought or assistant-internal reasoning; surfaces as a distinct transcript row with a collapsible header. |
@@ -137,32 +199,31 @@ Two helpers summarise a parsed stream:
 | `file_change` | Emitted when the agent writes or deletes a file; carries `path`, `diff`, and `kind`. |
 | `command` | A shell command invocation; carries `cwd`, `output`, `exitCode`, `durationMs`. |
 | `plan` | Plan payload (steps + explanation). A plan with steps writes the chat's one task list; a Codex plan-mode proposal (no steps, `streamingText`) keeps its own plan card; a plan with no steps and no text (ACP `plan_removed`) clears the list. See [One task list per chat](#one-task-list-per-chat). |
-| `plan_text` | Streaming plan fragments; merged via `shouldMergePlanTextRows()`. |
 | `approval_request` | Legacy approval; newer code emits an embedded `PendingInputRequest` via `detail`. |
 | `structured_question` | Claude SDK `AskUserQuestion` tool surface. OpenCode's `question` tool arrives as `form.created` and maps to the same card (see [OpenCode integration](opencode-integration.md#permissions-and-questions)). |
 | `pending_input_resolved` | Hidden row; consumed by pending-input derivation to clear UI state. |
 | `status` | Turn-level lifecycle: `started`, `completed`, `interrupted`, `failed`. |
 | `done` | Final turn marker with model, model id, usage, cost, and optional open-string `terminalReason`. Claude may also carry `canonicalModel`, `modelProvider`, `apiErrorStatus`, `fastModeDisabledReason`, `userMessageUuid`, and `requestSentWallMs`; these preserve billing/provider provenance, terminal HTTP class, Fast fallback cause, and request correlation/latency metadata without exposing raw provider envelopes. Failed/interrupted dividers translate known reasons into a short explanation; completed turns omit the reason. Also clears non-question pending inputs when status is not `completed`. |
-| `error` | Provider/runtime failure with message, detail, and semantic `errorInfo`. `errorInfo.presentation` is the host's own card copy for the row — `{ title, body, nextAction?, technicalDetail? }` from `shared/chatErrorPresentation.ts` — so desktop, iOS, and hosted web show the same sentence and none of them titles a failed turn "Error" or "Unknown"; raw provider text belongs in `technicalDetail`, never in `body`. A client that receives no presentation derives the same shape from `errorInfo.category`. Codex can report the same terminal failure first as an app-server `error` notification and again on failed `turn/completed`; ADE keeps one visible row for the same turn/error identity while preserving distinct failures. |
+| `error` | Provider/runtime failure with message, detail, and semantic `errorInfo`. `errorInfo.presentation` is the host's own card copy for the row — `{ title, body, nextAction?, technicalDetail? }` from `shared/chatErrorPresentation.ts` — so desktop, iOS, and hosted web show the same sentence and none of them titles a failed turn "Error" or "Unknown"; raw provider text belongs in `technicalDetail`, never in `body`. A client that receives no presentation derives the same shape from `errorInfo.category`. Codex can report the same terminal failure first as an app-server `error` notification and again on failed `turn/completed`; DAEX keeps one visible row for the same turn/error identity while preserving distinct failures. |
 | `activity` | Ephemeral UI hint (thinking, searching, running_command). Hidden from the transcript. Automatic provider retry, reconnect, and transport-fallback signals also use this event with one compact, replaceable detail in the working indicator; they are emitted live-only and are not persisted. A live-only retry flushes any buffered assistant text/reasoning first so an older 100 ms fragment cannot land after the retry and clear the working indicator. |
 | `todo_update` | Task-list snapshot (whole list each time); writes the chat's one task list. Items may carry `activeForm` (Claude) and `cancelled` (Cursor; wire status `completed`). OpenCode 2.0 has no `todowrite` tool and emits none of these. |
-| `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. Each envelope carries `taskId`, `parentToolUseId`, `description`, and optional `agentId`, `parentAgentId`, `agentType`, and `providerSessionId`; Claude start rows bind the native child to the owning Claude session so transcript drill-in never mistakes the ADE chat id for a provider session id. For Claude `agentType` is the Task tool's `subagent_type` (stashed at the `tool_use` boundary and joined on `parentToolUseId`); for Codex parallel agents it is a per-turn `Agent #N` label assigned at first announcement and the raw threadId is mirrored as `agentId`; for OpenCode subagents `agentType` is omitted so the row falls back to the `description` (taken from `session.title`). Codex app-server `subAgentActivity` items also flow into these rows and may carry `label`, `model`, and `reasoningEffort` for richer roster labels. Claude carries `label` too, and it is a different field from `agentType` on purpose: the Task tool's `name` is the human-chosen display name for *this* spawn, while `subagent_type` is the agent type. `name` used to be used as a fallback `agentType`, which made one spawn look like an agent type that does not exist. The label is stashed per subagent identity under both id spaces (taskId and agentId) in a map kept off `activeSubagents`, because terminal paths delete that entry — and the stashed tool input with it — before the result event is emitted, so a label stored there would vanish exactly when the completion row needs it. Claude SDK runs also stash `taskType` (`subagent` / `background` / `local_workflow` / `cron` / `other`) and `workflowName` at spawn so the renderer can label rows by workflow without re-deriving them per event; ambient/housekeeping tasks (the SDK's `skip_transcript=true` flag — e.g. session-title generation) and plain Claude Code task runs (`task_type` `other` with no agent metadata, e.g. "Re-run affected test files") are both tracked only for cleanup and filtered out symmetrically across spawn, progress, and completion notifications so the subagent panel never flashes them, while a backgrounded `Bash` shell (`task_type` `local_bash`/`background`) is routed to the background pane rather than the roster. Every `subagent_result` is gated on a recorded `subagent_started` (`emittedSubagentStartIds`), so an interrupt cannot emit a phantom stopped card for a subagent that never announced; terminal events clear both the taskId and agentId aliases. The service also emits canonical `subagent.started` / `subagent.progress` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. There is no canonical end twin: a subagent ends once, so `subagent_result` is its single end event. A paired `subagent.completed` beside it makes clients count, group, and render each finished subagent twice. Two additional producers fan into the same three event types: **Claude Workflow runs** — the SDK's undocumented `workflow_progress` snapshot on `system:task_progress` is normalized by `claudeWorkflowProgress.ts` (defensive: malformed entries dropped, previews clipped, counts capped, unknown states degrade to queued/running; an unparseable snapshot leaves the generic task rendering untouched) and diffed per tick into started/progress/result transitions under a stable `<taskId>::a<index>` / latched-agentId identity, so each workflow agent renders as its own row with phase, tokens, and duration, reconnects upsert instead of duplicating, and agents left running when the workflow ends are closed out as `stopped`; and **child chat spawns** — a session created with `orchestrationParentSessionId` outside an orchestration run (e.g. `ade chat create` from a tracked agent shell) emits synthetic `subagent_started`/`subagent_result` events keyed `chat:<childSessionId>` into the parent so the child lists in the parent's subagents panel, its first finished turn reporting completed/failed/stopped. A `--mode cli` child (`ade new chat --mode cli --parent … --type …`, which goes through `start_cli_session` and creates a tracked PTY session) is not a chat session, so a third producer bridges it: `start_cli_session` calls `agentChatService.notifyParentOfCliChildSpawn`, which emits the same `subagent_spawned` chip and `chat:<terminalId>` `subagent_started` card (description = the terminal title, `agentType` = the CLI's provider for the logo, `model` from the launch) — clicking it opens the terminal session — and the chat service's `ptyService.onExit` listener closes the card when the PTY ends: exit 0 is `completed`, a non-zero exit is `failed`, and a closed or orphaned terminal is `stopped` unless the CLI had already written a closing message, in which case it is `completed` (the same rule the stale-run sweep applies to an ended chat that left a report). The summary is the CLI's own last assistant message when ADE can read it (Codex rollout by resume thread id, Claude Code JSONL by session id), otherwise the last meaningful terminal lines, and only when both are empty a plain statement of the exit — never a placeholder. Completion routing is the chat-child path (`deliverChildCompletionToParent`): `subagent` wakes the parent (the wake text points at `ade terminal read <id>`), `peer` leaves the quiet note, and the CTO gets one line. The dedupe `childTurnId` is `cli-exit:<endedAt>`, so the live exit and a post-restart reconcile of the same exit deliver once, while a resumed run that ends again reports again. Because an interactive CLI stays open after finishing its task, the card closes only when the process exits. The stale-run sweep defers `chat:` rows whose id is a tracked CLI child (`deferChildTerminal`) instead of reading the missing chat row as "the subagent chat is gone": an ended child is reported through the CLI path with quiet routing (no parent wake, matching the sweep), a running one is left to its PTY exit, and a row that already has its result is never re-closed. A shutting-down host unsubscribes before its PTYs are disposed, so a brain restart does not read its own terminal teardown as every CLI child stopping. `ade chat status <id>` answers for tracked CLI sessions (`running` while the PTY is busy, `blocked` while the TUI waits on a prompt, `idle` once quiet or ended, plus a `cliSession` block with status, exit code, lane, parent and the `ade terminal read` hint), `ade chat list` appends the lane's CLI children (`chat.listCliChildSessions`, `kind: "cli"`), and `ade chat read <id>` returns the CLI's last message and terminal tail with a pointer to `ade terminal read`. |
-| `scheduled_work_update` | Scheduled/background-work lifecycle snapshot. ADE emits it for provider-neutral action schedules and Claude `ScheduleWakeup`, `CronCreate`, `CronDelete`, `/loop`/hook snapshots, remote triggers, cron/background task lifecycle messages, and durable scheduler transitions. It carries `kind` (`wakeup`, `cron`, `loop`, `remote_trigger`, `background_task`), `status` (`scheduled`, `paused`, `running`, `fired`, `missed`, `completed`, `cancelled`, `failed`, `stopped`), provenance ids, optional cron/prompt/reason/timestamps, `firedAt`, `late`, and `durable`; `shared/chatScheduledWork.ts` folds it into active/history Chat Info rows on desktop and iOS. `background_task` is additionally how the live Claude runtime reports a backgrounded shell command — it emits no subagent lifecycle events for one — so on desktop those snapshots also drive the in-thread `background_job_line`; other kinds bundle as activity. Parent turn completion does not imply background completion, and `background_task` snapshots whose `sourceTaskId` belongs to a real subagent are omitted from the Background roster (and from the job line) to avoid duplicate Agent rows. One-shots progress through `scheduled` -> `fired` -> `completed`; crons record the fire and return to `scheduled` with `lastRunAt` plus their next occurrence. |
-| `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
+| `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. Each envelope carries `taskId`, `parentToolUseId`, `description`, and optional `agentId`, `parentAgentId`, `agentType`, and `providerSessionId`; Claude start rows bind the native child to the owning Claude session so transcript drill-in never mistakes the DAEX chat id for a provider session id. For Claude `agentType` is the Task tool's `subagent_type` (stashed at the `tool_use` boundary and joined on `parentToolUseId`); for Codex parallel agents it is a per-turn `Agent #N` label assigned at first announcement and the raw threadId is mirrored as `agentId`; for OpenCode subagents `agentType` is omitted so the row falls back to the `description` (taken from `session.title`). Codex app-server `subAgentActivity` items also flow into these rows and may carry `label`, `model`, and `reasoningEffort` for richer roster labels. Claude carries `label` too, and it is a different field from `agentType` on purpose: the Task tool's `name` is the human-chosen display name for *this* spawn, while `subagent_type` is the agent type. `name` used to be used as a fallback `agentType`, which made one spawn look like an agent type that does not exist. The label is stashed per subagent identity under both id spaces (taskId and agentId) in a map kept off `activeSubagents`, because terminal paths delete that entry — and the stashed tool input with it — before the result event is emitted, so a label stored there would vanish exactly when the completion row needs it. Claude SDK runs also stash `taskType` (`subagent` / `background` / `local_workflow` / `cron` / `other`) and `workflowName` at spawn so the renderer can label rows by workflow without re-deriving them per event; ambient/housekeeping tasks (the SDK's `skip_transcript=true` flag — e.g. session-title generation) and plain Claude Code task runs (`task_type` `other` with no agent metadata, e.g. "Re-run affected test files") are both tracked only for cleanup and filtered out symmetrically across spawn, progress, and completion notifications so the subagent panel never flashes them, while a backgrounded `Bash` shell (`task_type` `local_bash`/`background`) is routed to the background pane rather than the roster. Every `subagent_result` is gated on a recorded `subagent_started` (`emittedSubagentStartIds`), so an interrupt cannot emit a phantom stopped card for a subagent that never announced; terminal events clear both the taskId and agentId aliases. The service also emits canonical `subagent.started` / `subagent.progress` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. There is no canonical end twin: a subagent ends once, so `subagent_result` is its single end event. A paired `subagent.completed` beside it makes clients count, group, and render each finished subagent twice. Two additional producers fan into the same three event types: **Claude Workflow runs** — the SDK's undocumented `workflow_progress` snapshot on `system:task_progress` is normalized by `claudeWorkflowProgress.ts` (defensive: malformed entries dropped, previews clipped, counts capped, unknown states degrade to queued/running; an unparseable snapshot leaves the generic task rendering untouched) and diffed per tick into started/progress/result transitions under a stable `<taskId>::a<index>` / latched-agentId identity, so each workflow agent renders as its own row with phase, tokens, and duration, reconnects upsert instead of duplicating, and agents left running when the workflow ends are closed out as `stopped`; and **child chat spawns** — a session created with `orchestrationParentSessionId` outside an orchestration run (e.g. `daex chat create` from a tracked agent shell) emits synthetic `subagent_started`/`subagent_result` events keyed `chat:<childSessionId>` into the parent so the child lists in the parent's subagents panel, its first finished turn reporting completed/failed/stopped. A `--mode cli` child (`daex new chat --mode cli --parent … --type …`, which goes through `start_cli_session` and creates a tracked PTY session) is not a chat session, so a third producer bridges it: `start_cli_session` calls `agentChatService.notifyParentOfCliChildSpawn`, which emits the same `subagent_spawned` chip and `chat:<terminalId>` `subagent_started` card (description = the terminal title, `agentType` = the CLI's provider for the logo, `model` from the launch) — clicking it opens the terminal session — and the chat service's `ptyService.onExit` listener closes the card when the PTY ends: exit 0 is `completed`, a non-zero exit is `failed`, and a closed or orphaned terminal is `stopped` unless the CLI had already written a closing message, in which case it is `completed` (the same rule the stale-run sweep applies to an ended chat that left a report). The summary is the CLI's own last assistant message when DAEX can read it (Codex rollout by resume thread id, Claude Code JSONL by session id), otherwise the last meaningful terminal lines, and only when both are empty a plain statement of the exit — never a placeholder. Completion routing is the chat-child path (`deliverChildCompletionToParent`): `subagent` wakes the parent (the wake text points at `daex terminal read <id>`), `peer` leaves the quiet note, and the CTO gets one line. The dedupe `childTurnId` is `cli-exit:<endedAt>`, so the live exit and a post-restart reconcile of the same exit deliver once, while a resumed run that ends again reports again. Because an interactive CLI stays open after finishing its task, the card closes only when the process exits. The stale-run sweep defers `chat:` rows whose id is a tracked CLI child (`deferChildTerminal`) instead of reading the missing chat row as "the subagent chat is gone": an ended child is reported through the CLI path with quiet routing (no parent wake, matching the sweep), a running one is left to its PTY exit, and a row that already has its result is never re-closed. A shutting-down host unsubscribes before its PTYs are disposed, so a brain restart does not read its own terminal teardown as every CLI child stopping. `daex chat status <id>` answers for tracked CLI sessions (`running` while the PTY is busy, `blocked` while the TUI waits on a prompt, `idle` once quiet or ended, plus a `cliSession` block with status, exit code, lane, parent and the `daex terminal read` hint), `daex chat list` appends the lane's CLI children (`chat.listCliChildSessions`, `kind: "cli"`), and `daex chat read <id>` returns the CLI's last message and terminal tail with a pointer to `daex terminal read`. |
+| `scheduled_work_update` | Scheduled/background-work lifecycle snapshot. DAEX emits it for provider-neutral action schedules and Claude `ScheduleWakeup`, `CronCreate`, `CronDelete`, `/loop`/hook snapshots, remote triggers, cron/background task lifecycle messages, and durable scheduler transitions. It carries `kind` (`wakeup`, `cron`, `loop`, `remote_trigger`, `background_task`), `status` (`scheduled`, `paused`, `running`, `fired`, `missed`, `completed`, `cancelled`, `failed`, `stopped`), provenance ids, optional cron/prompt/reason/timestamps, `firedAt`, `late`, and `durable`; `shared/chatScheduledWork.ts` folds it into active/history Chat Info rows on desktop and iOS. `background_task` is additionally how the live Claude runtime reports a backgrounded shell command — it emits no subagent lifecycle events for one — so on desktop those snapshots also drive the in-thread `background_job_line`; other kinds bundle as activity. Parent turn completion does not imply background completion, and `background_task` snapshots whose `sourceTaskId` belongs to a real subagent are omitted from the Background roster (and from the job line) to avoid duplicate Agent rows. One-shots progress through `scheduled` -> `fired` -> `completed`; crons record the fire and return to `scheduled` with `lastRunAt` plus their next occurrence. |
+| `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
 | `step_boundary` | Workflow step boundary marker. |
-| `system_notice` | Non-transcript chrome: auth errors, rate limits, and file persistence hints. Automatic retry/reconnect progress is not a system notice: it is live `activity` state, so successful recovery leaves no transcript row. Special-cased renders: the "Promoted to Cursor Cloud" pill, the `status:"subagent_spawned"` chip (emitted into the parent when a child chat session is created with a parent lineage; `detail.spawnedSession` carries the child sessionId/laneId/title and the chip deep-links via `ade:work:select-session`. iOS renders it through its existing system_notice mapping), the quiet `status:"model_switched"` divider after a Claude Pre/PostModelSwitch, and `status:"classifier_context"` audit lines when ADE relays user-authored classifierContext. "Getting <agent> ready" carries `status:"agent_download"`: while it is the newest event (only the person's messages after it) the working line reads "Getting <agent> ready…" instead of "Thinking" (`deriveAgentSetupWait`). |
+| `system_notice` | Non-transcript chrome: auth errors, rate limits, and file persistence hints. Automatic retry/reconnect progress is not a system notice: it is live `activity` state, so successful recovery leaves no transcript row. Special-cased renders: the "Promoted to Cursor Cloud" pill, the `status:"subagent_spawned"` chip (emitted into the parent when a child chat session is created with a parent lineage; `detail.spawnedSession` carries the child sessionId/laneId/title and the chip deep-links via `ade:work:select-session`. iOS renders it through its existing system_notice mapping), the quiet `status:"model_switched"` divider after a Claude Pre/PostModelSwitch, and `status:"classifier_context"` audit lines when DAEX relays user-authored classifierContext. "Getting <agent> ready" carries `status:"agent_download"`: while it is the newest event (only the person's messages after it) the working line reads "Getting <agent> ready…" instead of "Thinking" (`deriveAgentSetupWait`). |
 | `model_handoff` | A completed **provider** transition. Emitted on Send only when the committed session's top-level provider group changes (`claude` → `codex`); a model switch inside one provider — including swapping the vendor model fronted by an aggregator provider, since OpenCode, Cursor, and Droid each collapse to a single group — is a model change but not a handoff and emits nothing. Desktop draws a divider with previous and current provider marks. iOS renders a hairline · from-logo · `HANDOFF` · arrow · to-logo divider: `WorkEventMapping` routes the event onto the notice channel under `AgentChatNoticeKind.modelHandoff` with the provider pair packed into the notice `detail` (`from|to`), and the `Model handoff · Codex → Claude` sentence survives as the VoiceOver label. All three renderers additionally skip a same-provider pair, so legacy transcripts holding `Claude → Claude` no longer draw one. |
-| `conversation_reset` | Marks a fresh Claude conversation inside the same ADE session. ADE adopts `newConversationId` as the next SDK resume pointer, clears conversation-scoped auto-title/continuity caches while preserving a manual title, and renderers show a `New conversation` divider. |
-| `interrupt_receipt` | Records SDK UUIDs that remain queued or were cancelled after an interrupt, plus the selected `stopMode`. Clients show the full remaining count; ADE-attributed messages include their `steerId` and offer cancellation through the SDK control channel. The long-lived query remains attached while messages are still queued so the receipt stays actionable. |
-| `queue_recovery` | Bounded recovery lifecycle for Claude queue-clearing Stop (`stop_and_clear` / `stop_and_clear_and_background`): `available` renders one Undo card for the actually cancelled ADE-attributed messages, `restored` rehydrates the original steer payloads/ids, and `expired` closes the eight-second window. Terminal recovery events suppress the earlier available card during replay. |
-| `command_lifecycle` | Ground-truth lifecycle for ADE-owned Claude messages (`queued`, `started`, `completed`, `cancelled`, `discarded`). ADE ignores internal UUIDs it cannot attribute, deduplicates repeated states, clears staged composer rows once execution begins, and renders only cancelled/discarded terminal anomalies to keep transcripts quiet. |
+| `conversation_reset` | Marks a fresh Claude conversation inside the same DAEX session. DAEX adopts `newConversationId` as the next SDK resume pointer, clears conversation-scoped auto-title/continuity caches while preserving a manual title, and renderers show a `New conversation` divider. |
+| `interrupt_receipt` | Records SDK UUIDs that remain queued or were cancelled after an interrupt, plus the selected `stopMode`. Clients show the full remaining count; DAEX-attributed messages include their `steerId` and offer cancellation through the SDK control channel. The long-lived query remains attached while messages are still queued so the receipt stays actionable. |
+| `queue_recovery` | Bounded recovery lifecycle for Claude queue-clearing Stop (`stop_and_clear` / `stop_and_clear_and_background`): `available` renders one Undo card for the actually cancelled DAEX-attributed messages, `restored` rehydrates the original steer payloads/ids, and `expired` closes the eight-second window. Terminal recovery events suppress the earlier available card during replay. |
+| `command_lifecycle` | Ground-truth lifecycle for DAEX-owned Claude messages (`queued`, `started`, `completed`, `cancelled`, `discarded`). DAEX ignores internal UUIDs it cannot attribute, deduplicates repeated states, clears staged composer rows once execution begins, and renders only cancelled/discarded terminal anomalies to keep transcripts quiet. |
 | `claude_goal_updated` / `claude_goal_cleared` | Read-only Claude `/goal` lifecycle. The update carries the condition, iteration count, token baseline, timestamps, and optional last reason; the session summary mirrors the latest value as `claudeGoal`. |
 | `session_meta_updated` | Runtime-native session metadata update. Carries title / manual-name state, and — when a client changes the session's mode via `updateSession` — the permission/interaction mode fields (`permissionMode`, `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource`, `opencodePermissionMode`, `droidPermissionMode`, `cursorModeId`, `cursorModeSnapshot`). The renderer treats it as a local-touch event so Work lists and grid tiles refresh when a provider renames a session, patches the session summary with any mode fields present, and re-seeds the selected chat's composer mode controls so a mode change on another client (desktop ↔ iOS) shows up live without a refetch. All mode fields are optional; a title-only emit carries none of them. |
 | `completion_report` | Structured closeout produced by the `reportCompletion` workflow tool. |
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
 | `delegation_state` | Delegated worker state updates. |
 | `context_usage` | Provider-neutral context occupancy. Automatic Claude samples use `origin: "live" \| "snapshot" \| "compact"` and are filtered out of the transcript; `live` is the responsive stream estimate, while `snapshot`/`compact` come from the SDK control channel after initialization, settled turns, and compact completion. `state` is `measured`, `compacting`, `recalculating`, or `unknown`; non-measured states deliberately hide the old percentage. Monotonic `sampleId` plus `capturedAt` support stale-response rejection and diagnostics. The user-invoked `/context` command carries `origin: "command"` (historical undefined-origin snapshots are treated the same) and still renders its inline breakdown card, classified by each category's `kind` (`used` / `free` / `buffer` / `deferred`) — never by the display name `"free"`. Optional typed fields (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`) carry the breakdown the meter's hover shows without reparsing the display `categories`. |
-| `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary, `"completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, per-session count, and `summary` (Claude's `PostCompact` hook, OpenCode's summary text), and `"failed"` carries `failReason` (`interrupted`, `timed_out`, `teardown`, `provider_error`, `quota`), the provider's `failDetail`, and the account's `accountLabel`. `trigger` is `manual` (the turn was a typed or clicked `/compact`), `auto`, or `ade_fallback` (ADE's guarded fallback). A compaction says `started` exactly once: an `ade_fallback` one when Claude reports `compacting` (the `/compact` waits behind whatever Claude runs next, and saying "Compacting" when ADE asked left the label up for half an hour while the context kept growing), and a native one on its first `compacting` status frame — Claude repeats that status every ~30 s while one compaction runs, and a repeat must not open a second row or restart the elapsed clock above it. When a turn ends, ADE closes every compaction still open for it as `failed`, so no divider spins after its turn; an `interrupted` one closes as a cancellation (see the divider table). A completed boundary invalidates older context-meter usage on desktop and iOS; a failed one leaves the last measured value. |
+| `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary, `"completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, per-session count, and `summary` (Claude's `PostCompact` hook, OpenCode's summary text), and `"failed"` carries `failReason` (`interrupted`, `timed_out`, `teardown`, `provider_error`, `quota`), the provider's `failDetail`, and the account's `accountLabel`. `trigger` is `manual` (the turn was a typed or clicked `/compact`), `auto`, or `ade_fallback` (DAEX's guarded fallback). A compaction says `started` exactly once: an `ade_fallback` one when Claude reports `compacting` (the `/compact` waits behind whatever Claude runs next, and saying "Compacting" when DAEX asked left the label up for half an hour while the context kept growing), and a native one on its first `compacting` status frame — Claude repeats that status every ~30 s while one compaction runs, and a repeat must not open a second row or restart the elapsed clock above it. When a turn ends, DAEX closes every compaction still open for it as `failed`, so no divider spins after its turn; an `interrupted` one closes as a cancellation (see the divider table). A completed boundary invalidates older context-meter usage on desktop and iOS; a failed one leaves the last measured value. |
 | `web_search` | Provider-neutral web-search/fetch lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips. Codex 0.145 additionally emits structured `results` (an array of `{ url, title, snippet }` capped at 8 by the adapter) plus `resultsTotal` (the pre-cap hit count). Renderers thread these onto the same grouped row — desktop/iOS surface them as `Sources` chips (deduped against the action URLs) and the Sources tab. Codex emits native web-search items; `claudeStructuredActivity.ts` maps Claude server-tool blocks into the same event. Every surface that lists sources reads these results and URL actions through `shared/chatSources.ts`; the queries are metadata on the sources they produced, never items of their own. The desktop row header shows the result count (`resultsTotal`, else the results, else the URL actions) without being expanded. |
 | `sources` | Data-only citations for an assistant message: `sources: ChatSourceRef[]` plus optional `itemId`/`turnId`. Claude text-block citations, Codex `agentMessage.memoryCitation`, and ACP `resource_link` message blocks emit it. It draws no row on any surface (desktop hides it with the token events; iOS decodes it as `.unknown`) and does not break the streaming assistant message (`shouldFlushBufferedAssistantTextForEvent` returns false). Sources, the turn chip, and the fold count read it. |
 | `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. OpenCode's two origins are split by where the `file` part lives: an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`) — except attachments from a recognized image-generation tool, which keep the generation card. A view is one quiet line in the grid of the computer-use rows (`CodexImageViewLine`): "Viewed banner.png", named by the file name (never a whole path or a data URI). A click opens the picture small under the line and a click on it opens `MediaLightbox`; nothing is read until then. A picture is a local file read through the chat's machine (`readAttachmentImageDataUrl` with the runtime pin, `ChatViewedImages.tsx`) or an inline data URI; a remote URL is not previewable (the renderer CSP pins `img-src` to an allowlist plus data:/blob:). A view of a file that a computer-use action of the same turn printed — its screenshot, the picture its observation saved — draws no row: it joins that action's line (`foldImageViewIntoAction`, on `ChatWorkLogEntry.imageViews`), see the computer-use rows below. Consecutive views in one turn fold into a single `Viewed N images` line (`imageViewSiblings`, carried through `ChatTranscriptRenderEnvelope` / `ChatTranscriptGroupedEnvelope`): a later view joins it when only folded work — tool calls, commands, narration, rows that draw nothing such as automatic `context_usage` snapshots — sits between them, and a row the reader keeps seeing starts a new one. OpenCode's `read` names its attachment with the absolute path it read; the mapper records that as the view's `path` and its file name as the title, so the picture stays reachable after storage drops a large data URI (original/omitted byte metadata is kept). |
@@ -190,7 +251,7 @@ runtime's provider mark at the bottom-right of the card (the same 20px mark the
 Work session rows use, from the same `chatToolTypeForProvider` mapping), so a
 thread makes clear which provider the main chat is calling. A runtime-native
 subagent inherits the chat's provider — that is the runtime that ran it. A
-spawned ADE child chat can run on a different provider, so `AgentChatPane`
+spawned DAEX child chat can run on a different provider, so `AgentChatPane`
 resolves the child's own provider from the session list and the card wears
 that; an unresolved child falls back to the parent runtime's mark rather than
 rendering nothing or a guess.
@@ -203,7 +264,7 @@ by a summary. On desktop (`ContextCompactDivider.tsx`) the line is one pill betw
 | State | Pill |
 |---|---|
 | Running | A spinner, `Compacting`, the token count (`481k`), and the seconds after five seconds. The elapsed counts from the first `started` of this compaction, so a provider that re-reports its `compacting` status (Claude, every ~30 s) cannot restart it. |
-| Done | `Compacted`, then `481k → 6k`. Hover gives who asked (`You asked`, `Automatic`, or ADE near the limit), how long it took, and `2nd time in this chat` from the second compaction on. |
+| Done | `Compacted`, then `481k → 6k`. Hover gives who asked (`You asked`, `Automatic`, or DAEX near the limit), how long it took, and `2nd time in this chat` from the second compaction on. |
 | Cancelled | Warning tone, `Compaction cancelled`: the compaction was aborted — the person's Stop, or the provider cancelling its own `/compact` (Claude Code prints "Compaction canceled.") — with a **Retry** action that sends `/compact`. Hover shows the provider's text when there is one. |
 | Failed | Warning tone: `Compaction failed` (or `Compaction timed out`), plus `— weekly limit on <account>` or `— usage limit on <account>` when the provider said so, and a **Retry** action that sends `/compact`. Hover shows the provider's text. |
 
@@ -234,12 +295,12 @@ turn's error under a new turn.
 
 Live Claude occupancy is the last request's input + cache read + cache creation tokens (output tokens are not
 counted), measured against the model's maximum window (`modelUsage[].contextWindow`, else the registry). The SDK's
-`getContextUsage().raw_max_tokens` is the auto-compact window, not the model maximum, so ADE keeps it separately as
+`getContextUsage().raw_max_tokens` is the auto-compact window, not the model maximum, so DAEX keeps it separately as
 the compaction window; the 80/90/97% guardrail gates measure against that window. Claude itself compacts a fixed
-33,000-token buffer below the window and reports that point as `autoCompactThreshold`; ADE shows it as
+33,000-token buffer below the window and reports that point as `autoCompactThreshold`; DAEX shows it as
 `compactAtTokens` (estimated as window − 33,000 before the first snapshot). The 97% fallback stays on the window, so
 it fires only after Claude should already have compacted. It emits at most once every
-five seconds and only after a one-point percentage change. ADE never preempts the SDK's natural compaction.
+five seconds and only after a one-point percentage change. DAEX never preempts the SDK's natural compaction.
 The streamed reading is refreshed from authoritative SDK `getContextUsage()`
 snapshots after runtime initialization, every settled turn, and compact
 completion. A compact start emits `compacting`; completion emits
@@ -253,7 +314,7 @@ since occupancy crossed 90%, and no fallback was already issued in the same
 high-water episode. The episode resets below 80%.
 
 If a turn ends with `terminalReason: "prompt_too_long"` (or the equivalent
-overflow signature), ADE compacts once and asks the user to re-send the last
+overflow signature), DAEX compacts once and asks the user to re-send the last
 message. It does not automatically replay that message.
 
 ## Canonical runtime events
@@ -306,7 +367,7 @@ ignores the optional `activeForm`, `cancelled`, and `priority` fields.
 
 Sources, as each provider's SDK or protocol types them:
 
-| Provider | Native shape | ADE event |
+| Provider | Native shape | DAEX event |
 | --- | --- | --- |
 | Claude | `TodoWrite` `{ todos: [{ content, status, activeForm }] }`; `TaskCreate` / `TaskUpdate` (`subject`, `activeForm`, `status` incl. `deleted`) | `todo_update` (with `activeForm`) |
 | Codex | app-server `turn/plan/updated` (`TurnPlanStep { step, status: pending \| inProgress \| completed }`); the `update_plan` tool (`in_progress`, snake case); legacy `planningItem` | `plan` (`state: "updated"`); `todo_update` for `planningItem` |
@@ -440,7 +501,7 @@ s2 endpoint would learn every domain a chat touched).
   sends the viewer-allowed `chat.resolveSourceFavicons` sync command, which is
   runtime-scoped, so a personal chat with no project gets icons too. iOS can
   send the same command; its web-search `Sources` chips do not draw favicons
-  yet. The CLI reaches it with `ade actions run chat.resolveSourceFavicons`.
+  yet. The CLI reaches it with `daex actions run chat.resolveSourceFavicons`.
 - **Resolution.** `GET https://<host>/`, then the `<head>`'s
   `<link rel="icon" | "shortcut icon" | "apple-touch-icon">`: a declared
   32–64px icon first, then SVG, then an undeclared size, then smaller, larger,
@@ -476,7 +537,7 @@ s2 endpoint would learn every domain a chat touched).
 Adapters live in `apps/desktop/src/main/services/chat/chatSourceAdapters.ts`,
 bounded by `boundChatSourceRefs` (http(s) only, deduped, 20 per event).
 
-| Provider | Native shape (verified against) | ADE event |
+| Provider | Native shape (verified against) | DAEX event |
 |---|---|---|
 | Codex | `webSearch` item `{ query, action: WebSearchAction \| null, results }`; `WebSearchAction` is tagged by `type` (`search`, `openPage`, `findInPage`, `other`; legacy snake_case). `agentMessage.memoryCitation { entries: { path, lineStart, lineEnd, note }[], threadIds }` (`codex app-server generate-ts`, v2 `ThreadItem`, `MemoryCitation`). | `web_search` with `actions`/`results`; memory citations → `sources` event (cited `file` refs, note as snippet). Subagent transcripts read `action.type` and keep actions/results. |
 | Claude (server tools) | `web_search_tool_result` → `WebSearchResultBlock { url, title }[]`; `web_fetch_tool_result` → `WebFetchBlock { url }` (`@anthropic-ai/sdk` messages.d.ts). | `web_search` via `claudeStructuredActivity.ts`. |
@@ -484,13 +545,13 @@ bounded by `boundChatSourceRefs` (http(s) only, deduped, 20 per event).
 | Claude (citations) | `TextBlock.citations`: `web_search_result_location { url, title, cited_text }`, `search_result_location { source, title, cited_text }`. Document locations (`char_location`, `page_location`, `content_block_location`) name no URL or path and are skipped. | `sources` event per assistant message, cited. |
 | Cursor | `ToolName` includes `webSearch`/`webFetch` (`@cursor/sdk` agent/options.d.ts); no JSON types. Agent protobuf: `WebSearchArgs { searchTerm }`, `WebSearchResult.success.references { title, url, chunk }[]`, `WebFetchArgs { url }`, `WebFetchResult.success { url, markdown }`. The 1.0.31 local converter currently drops both tool calls, so this path fires only when the SDK forwards them. | `tool_result.sources` (none on `error`). |
 | OpenCode | `ToolStateCompleted { input: Record<string, unknown>, output: string, title }` (`@opencode/client` types); tool names `webfetch`/`websearch` (its permission config). Input is untyped, so only `url`/`query` are read and output is scanned only when it is JSON. | `tool_result.sources`. |
-| Droid | `@factory/droid-sdk` 0.9.1 types every tool as a generic `ToolUse { name, input }` / `ToolResult { content, isError }` and names no web tools. ADE uses an allowlist: `WebSearch` and `FetchUrl` (plus the generic aliases). | `tool_result.sources` (input remembered from the `tool_call`). |
+| Droid | `@factory/droid-sdk` 0.9.1 types every tool as a generic `ToolUse { name, input }` / `ToolResult { content, isError }` and names no web tools. DAEX uses an allowlist: `WebSearch` and `FetchUrl` (plus the generic aliases). | `tool_result.sources` (input remembered from the `tool_call`). |
 | ACP | `AcpToolKind` `fetch`/`search`, `rawInput`, `locations`; `resource_link { uri, name, title?, description? }` (`acpHost/acpProtocolTypes.ts`). | `fetch` + `rawInput.url` → `fetched_url`. `search` counts only with a `query`, no path/glob/cwd/locations, and URL records in its output, so grep never becomes a source. A `resource_link` in a message renders as a markdown link (it used to become `""`) and emits a cited `sources` event; in tool content it becomes an uncited source. |
 
 ### Where sources show
 
 - **Drawer.** `ChatSourcesPanel` is a drawer section for every provider,
-  mounted only when `chatHasSources(events)` is true. It draws no scroller,
+  mounted only when the chat has sources. It draws no scroller,
   border, or empty state (it returns `null` when empty). Each group header
   shows its label and full count; the group lists its first three rows and a
   `Show N more` toggle (`Show less` folds it back), tracked separately for the
@@ -733,14 +794,14 @@ event anchors and scroll memory resolve members to the group
   pane. A running turn keeps a `ScheduledWorkLine` row until its `done`.
 - Task lists are never bundled; they are the chat's one `task_list` row.
 - A turn the agent started from its own wake-up is a wake turn
-  (`deriveWakeTurnIds`). It has no `Worked for …` row: the `ran 2.2s ›` time
+  (`deriveWakeTurns`). It has no `Worked for …` row: the `ran 2.2s ›` time
   on its turn-end line opens the fold. Consecutive wake turns fold every
-  check but the latest (`deriveWakeChains` / `applyWakeChains`) behind `+3
+  check but the latest (wake chains in `chatScheduledWorkRows.ts`) behind `+3
   more checks ›` on the turn-end line above them; without that line a slim
   `3 earlier checks` row (`wake_chain`) shows. A turn the user started ends
   the run.
 
-#### ADE cards
+#### DAEX cards
 
 `ade_card` collapses per `cardId` into one permanent row keyed
 `ade-card:<cardId>`:
@@ -824,8 +885,8 @@ boundaries, so `snake_case` and globs survive. Grouping uses
 
 #### Computer-use action rows (desktop, hosted web, iOS)
 
-A group with ADE computer-use shell commands (`ade screen|mac-desktop|desk`,
-`ade app-control`, `ade browser`, `ade apple`, `ade proof`, also through
+A group with DAEX computer-use shell commands (`daex screen|mac-desktop|desk`,
+`daex app-control`, `daex browser`, `daex apple`, `daex proof`, also through
 `"$ADE_CLI_PATH"`, from any provider) stays in the thread and draws those
 commands as sentences: "Clicked “Checkout” on localhost:5173".
 
@@ -844,7 +905,7 @@ commands as sentences: "Clicked “Checkout” on localhost:5173".
   window title forward. `app-control launch` reads as the app's label or
   "the app".
 - Consecutive actions with the same words, outcome and proof merge with a
-  count ("Looked at ADE ×3"). An unnamed element is named by its role
+  count ("Looked at DAEX ×3"). An unnamed element is named by its role
   ("Clicked a button"), a bare point by the point.
 - A proof call counts as filed only when its output names the record (a
   `cite:` line, the JSON record, or the filed table). Output without one
@@ -856,7 +917,7 @@ commands as sentences: "Clicked “Checkout” on localhost:5173".
   case-insensitively). The line then reads "Taking / Took / Viewing / Viewed
   a screenshot". A line with pictures is a button: the pictures open small
   under it and enlarge on click. They start closed.
-- The latest action draws in a stronger colour, with "no change seen" when ADE
+- The latest action draws in a stronger colour, with "no change seen" when DAEX
   could not confirm it. Only a warning (amber) or failure (red) gets a mark,
   and a failure always says why. A running action shimmers once across the
   line. App icons come from `app.getAppIcon` (macOS, cached).
@@ -988,7 +1049,7 @@ narration). Copy always copies the stored text, never a paced prefix.
 Adjacent `text` events merge via `shouldMergeTextRows()`:
 
 - Events with the same `messageId` merge, unless both carry a `phase` and the
-  phases differ. ADE reuses one `messageId` for consecutive text until a tool
+  phases differ. DAEX reuses one `messageId` for consecutive text until a tool
   call, so a Codex `commentary` and its `final_answer` can share an id; they
   stay separate so the turn fold can pick the answer. A `partial_answer`
   stays separate from both. A merged row takes a later fragment's `phase`
@@ -1017,9 +1078,6 @@ means unknown.
 - The field only labels text, so the stored transcript stays byte-identical.
   It survives storage and sync compaction, Codex imports, thread-read recovery
   and Codex subagent transcripts. Clients that do not know it ignore it.
-
-`plan_text` merges the same way (`shouldMergePlanTextRows()`). A final `plan`
-event for a turn replaces that turn's `plan_text` rows.
 
 ## Reasoning merging
 
@@ -1100,7 +1158,7 @@ covers all (`ThinkingPreview.tsx`, through `MinimalThought` in
 ## Turn diff summaries
 
 When a turn on a lane moved HEAD, the service emits `turn_diff_summary` with
-per-file counts. `ChatTurnDiffPanel` draws it and fetches file diffs lazily
+per-file counts. `TurnDiffSummary` in `AgentChatMessageList.tsx` draws it and fetches file diffs lazily
 (`ade.agentChat.getTurnFileDiff`); only this summary offers real diffs and a
 SHA-scoped revert. Other turns that changed files fall back to
 `ChatTurnFilesChangedSummary`, built from work-log entries for every runtime
@@ -1111,14 +1169,13 @@ list draws only one of the two per turn.
 
 The Claude SDK runtime tracks each invocation by `toolUseID`:
 
-1. `tool_use_start` records it as in progress.
-2. A `tool_use_summary` with `preceding_tool_use_ids` completes each one and
-   emits `tool_use_complete`.
-3. `AskUserQuestion` builds a `PendingInputRequest` with the `toolUseID`. The
+1. A `tool_use_summary` with `preceding_tool_use_ids` completes the earlier
+   invocations.
+2. `AskUserQuestion` builds a `PendingInputRequest` with the `toolUseID`. The
    answer goes back as a `tool_result`, and `pending_input_resolved` clears
    the UI. Claude has no time-based idle watchdog (long tool calls emit no
    stream events); `pauseIdleWatchdog` / `resumeIdleWatchdog` are no-ops.
-4. `resolvedToolUseIds` swallows a second resolution.
+3. `resolvedToolUseIds` swallows a second resolution.
 
 ## Text batching
 
@@ -1128,7 +1185,7 @@ The Claude SDK runtime tracks each invocation by `toolUseID`:
 - **Invariant:** flush at once on every non-text event, to keep the order.
   `shouldFlushBufferedAssistantTextForEvent()` is the gate; consider it for
   every new event type.
-- `getRecentEntries` (auto-title, compaction) flushes first.
+- Transcript reads for auto-title and compaction flush first.
 - Each flush has a reason (`timer`, `identityBreak`, `interleave`). With
   `ADE_PERF_RUN_ID` set, `services/perf/chatTextProbe.ts` records a
   `chatTextFlush` perf event; with no run id it does nothing. The `ade`
@@ -1258,7 +1315,7 @@ The list owns scroll anchoring (`overflow-anchor: none`):
 - Windows PowerShell 5.1 drops pending table output when a script ends in
   `exit` or `throw`; that output never reaches the terminal.
 - Runs live in a module store keyed by chat and block. The hosted web sends
-  `work.runShellBlock`; a host without it gets an "update ADE" refusal.
+  `work.runShellBlock`; a host without it gets an "update DAEX" refusal.
 
 ## History snapshots, scroll-back, and misses
 
@@ -1324,7 +1381,7 @@ a display-only `system_notice` (`status: "history_row_omitted"`, **no
   reads past oversized, unsequenced and hidden rows (Codex subagent rows,
   `isVisible`). A file that shrinks mid-read fails with the retryable
   `chat_history_changed_during_read`.
-- A transcript read (`getChatTranscript`, `ade chat read`, handoff briefs)
+- A transcript read (`getChatTranscript`, `daex chat read`, handoff briefs)
   reports `truncated: true` when the omitted row may have held a message.
 - `getChatEventHistoryPage` returns `envelopeStartOffsets` lined up with its
   events.
@@ -1500,47 +1557,3 @@ failures share one key (turn id + message + detail + error identity);
 retrying notifications stay provider-health notices. The renderer applies the
 same rule on replay.
 
-## Gotchas
-
-- **`messageId` before turn/item identity.** A provider that stops sending
-  `messageId` merges correctly but noisier; watch `shouldMergeTextRows` when
-  swapping SDKs.
-- **Hidden event types drop silently.** A new event type for the work log
-  needs plumbing in `chatTranscriptRows.ts` and `HiddenTranscriptEvent`.
-- **Row keys never carry an index.** Build keys from identity; see
-  [Row keys](#row-keys).
-- **`logicalItemId` before `itemId`** in collapse keys, or re-emits become
-  duplicate rows.
-- **Turn diffs need a lane.** No lane, no `turn_diff_summary`.
-- **The fold's keep-visible decision is taken once, at `done`.** New row types
-  default to visible; add a type to `classifyTurnFoldEvent`'s sets on
-  purpose, and give a grouped keep-if-live row its `liveKeys`.
-- **Timeline rows are the folded list.** In `AgentChatMessageList`,
-  `presentedRows` are unfolded and `groupedRows` folded. Rendering and scroll
-  use `groupedRows`; anything that resolves a target from events or keys looks
-  in the unfolded rows, then opens the fold (`revealTurnFoldRow`) or maps to
-  the fold row (`foldIdByHiddenRowKey`). Prune the height cache against
-  unfolded keys plus fold ids.
-- **A card in a grid or stopped group is not a row.** Map card keys through
-  `subagentCardGridKeyByMemberKey` / `subagentCardRowKeyCandidates`, never by
-  one prefix. Never splice the spawn row out on settle.
-- **Claude parent terminal events are an ordered pair**, after any orphan
-  cleanup.
-- **A terminal turn does not clear a Codex card; a receipt does.** Every Codex
-  turn-ending path emits `pending_input_resolved`, except on runtime death for
-  a plan approval (`planApprovals: "preserve-cards"`), so `respondToInput` can
-  rebuild the card. See
-  [README › Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
-- **Claude idle turns close on an SDK event, never on a timer:** the
-  `session_state_changed` message with `state: "idle"`. `finishClaudeIdleTurn`
-  no-ops with no idle turn open. Do not add a time-based idle watchdog (long
-  tool calls emit nothing). New Claude `system` subtypes hit a compile-time
-  exhaustiveness guard.
-- **A failed history read is not a missing chat.** Set `unavailable: true`,
-  never `sessionFound: false`, for a connection or dispatch failure.
-- **`tailStartOffset > 0` does not mean older history.** Gate on
-  `hasOlderHistory`.
-- **Subscribed mobile history pages do not start project runtimes.** Hosts
-  with `chatHistoryPaging` answer `chat_history` pages on the authorized
-  subscription's transcript path. A scope mismatch or read failure returns
-  `unavailable: true` with the cursor intact.

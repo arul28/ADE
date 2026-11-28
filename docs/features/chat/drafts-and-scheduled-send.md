@@ -1,7 +1,7 @@
 # Drafts and scheduled send
 
 A **draft** is unsent composer text (and its images) that survives across
-machines: whatever you typed in one ADE runtime is readable from every desktop
+machines: whatever you typed in one DAEX runtime is readable from every desktop
 and phone signed into the same project. A **scheduled send** is a draft that
 additionally carries a fire time and is delivered later as a real user turn by
 the machine that owns the target chat. One store backs both — the same
@@ -27,7 +27,29 @@ deliberate (see [Storage](#storage-the-prompt_stashes-table)).
 | `apps/desktop/src/renderer/components/chat/ComposerDrafts.tsx`, `DraftSchedulePopover.tsx` | The desktop Drafts control and the scheduled-send form. |
 | `apps/desktop/src/preload/preload.ts` (`agentChat.drafts.*`), `apps/desktop/src/shared/ipc.ts` | The renderer IPC surface (`ade.agentChat.drafts.list` / `.create` / `.delete` / `.update` / `.claim`), pinned to the project runtime that owns the draft. |
 | `apps/ios/ADE/Views/Work/WorkDrafts.swift`, `WorkDraftScheduleSheet.swift` | The iOS drafts surface and its schedule half-sheet. See [iOS companion](../sync-and-multi-device/ios-companion.md). |
-| `apps/ade-cli/src/cli.ts` | The typed `ade drafts` command family over the same actions. |
+| `apps/ade-cli/src/cli.ts` | The typed `daex drafts` command family over the same actions. |
+
+## Gotchas / fragile areas
+
+- **Draft images are not replicated across machines.** The bytes stay on the
+  machine that made them; another machine sees the image **count**, marks them
+  unavailable, and **refuses to attach** them. This was a planned decision and
+  it is **not delivered in this change** — the current behavior is the refusal,
+  which is explicit, never a silent drop.
+- **A send that could not go out stays in the list with its reason.** Just after
+  a fire, a send that is `blocked` or `missed` remains in the drafts list with
+  its `lastError`. A *transport* failure is different: it leaves the row
+  `scheduled`, and the scheduler retries.
+- **A simultaneous claim is decided after the fact.** Two humans clicking the
+  same draft on two machines in the same instant is decided by CRR convergence
+  **after** the fact, not before. The claim removes the sequential two-machine
+  case, not a simultaneous one.
+- **Machine targeting is literal.** A schedule naming a machine fires **only**
+  on that machine; a schedule naming no machine fires on **whichever runtime is
+  up**.
+- **Time is the target machine's local time.** A fire time is interpreted in the
+  local time of the machine that will deliver the send, not the machine that
+  armed it.
 
 ## The draft model
 
@@ -213,22 +235,22 @@ every chat the desktop names.
 
 ## CLI surface
 
-`ade drafts` is the human/agent CLI over the `chat.*Draft` actions; it owns no
-state. There is deliberately one noun — there is no `ade sends`.
+`daex drafts` is the human/agent CLI over the `chat.*Draft` actions; it owns no
+state. There is deliberately one noun — there is no `daex sends`.
 
 ```
-ade drafts list [--scheduled | --needs-you | --machine <key>] [--text]
-ade drafts create --prompt "<text>" [--image <path> ...]
-cat prompt.md | ade drafts create
-ade drafts schedule <id> --in 90m --target <session>
-ade drafts schedule <id> --at "2026-07-23T01:05:00-04:00" --target <session>
-ade drafts schedule <id> --in 2h --new-chat --lane <lane> --provider codex --model openai/gpt-5.6-sol
-ade drafts update <id> --prompt "<text>"        # edit the text
-ade drafts update <id> --in 30m                 # retime (its target carries over)
-ade drafts update <id> --unschedule             # return it to a plain draft
-ade drafts show <id> [--text]
-ade drafts now <id>                             # deliver immediately, whatever its fire time
-ade drafts delete <id>
+daex drafts list [--scheduled | --needs-you | --machine <key>] [--text]
+daex drafts create --prompt "<text>" [--image <path> ...]
+cat prompt.md | daex drafts create
+daex drafts schedule <id> --in 90m --target <session>
+daex drafts schedule <id> --at "2026-07-23T01:05:00-04:00" --target <session>
+daex drafts schedule <id> --in 2h --new-chat --lane <lane> --provider codex --model openai/gpt-5.6-sol
+daex drafts update <id> --prompt "<text>"        # edit the text
+daex drafts update <id> --in 30m                 # retime (its target carries over)
+daex drafts update <id> --unschedule             # return it to a plain draft
+daex drafts show <id> [--text]
+daex drafts now <id>                             # deliver immediately, whatever its fire time
+daex drafts delete <id>
 ```
 
 `--in 90m` is a relative fire time; `--at <iso>` requires an explicit offset or
@@ -254,24 +276,3 @@ the captured config with an elevated-permission warning. A host that omits
 keeps the list but hides "Schedule send…". See
 [iOS companion](../sync-and-multi-device/ios-companion.md).
 
-## Honest limits
-
-- **Draft images are not replicated across machines.** The bytes stay on the
-  machine that made them; another machine sees the image **count**, marks them
-  unavailable, and **refuses to attach** them. This was a planned decision and
-  it is **not delivered in this change** — the current behavior is the refusal,
-  which is explicit, never a silent drop.
-- **A send that could not go out stays in the list with its reason.** Just after
-  a fire, a send that is `blocked` or `missed` remains in the drafts list with
-  its `lastError`. A *transport* failure is different: it leaves the row
-  `scheduled`, and the scheduler retries.
-- **A simultaneous claim is decided after the fact.** Two humans clicking the
-  same draft on two machines in the same instant is decided by CRR convergence
-  **after** the fact, not before. The claim removes the sequential two-machine
-  case, not a simultaneous one.
-- **Machine targeting is literal.** A schedule naming a machine fires **only**
-  on that machine; a schedule naming no machine fires on **whichever runtime is
-  up**.
-- **Time is the target machine's local time.** A fire time is interpreted in the
-  local time of the machine that will deliver the send, not the machine that
-  armed it.

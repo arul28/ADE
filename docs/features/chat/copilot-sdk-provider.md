@@ -1,8 +1,8 @@
 # GitHub Copilot SDK provider
 
-How ADE runs a GitHub Copilot chat. Copilot is no longer an ACP provider. It is
-an SDK provider, like Droid and Cursor: ADE drives the official
-`@github/copilot-sdk` on the Copilot runtime that SDK ships, which ADE pins and
+How DAEX runs a GitHub Copilot chat. Copilot is no longer an ACP provider. It is
+an SDK provider, like Droid and Cursor: DAEX drives the official
+`@github/copilot-sdk` on the Copilot runtime that SDK ships, which DAEX pins and
 downloads like Claude's binary.
 The provider id stays `copilot`, so saved chats, the CLI, iOS and analytics keep
 the same name.
@@ -21,11 +21,11 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 | `apps/desktop/src/main/services/chat/copilotSdkWorker.ts` | Forked Node child, built as `copilotSdkWorker.cjs`. Owns one `CopilotClient` and the SDK sessions for the chats that use it. |
 | `apps/desktop/src/main/services/chat/copilotSdkPool.ts` | Worker lifecycle. Keys a worker by CLI path, config home and environment. Reference-counted. |
 | `apps/desktop/src/main/services/chat/copilotSdkProtocol.ts` | Messages between the app and the worker. |
-| `apps/desktop/src/main/services/chat/copilotSdkEventMapper.ts` | SDK session events to ADE chat events. |
+| `apps/desktop/src/main/services/chat/copilotSdkEventMapper.ts` | SDK session events to DAEX chat events. |
 | `apps/desktop/src/main/services/chat/copilotSdkPermissions.ts` | The "Allow for this session" rule Copilot can remember for a permission prompt. |
 | `apps/desktop/src/main/services/chat/copilotSentry.ts` | Which Copilot failures become Sentry issues and which stay Logs (see Troubleshooting). |
-| `apps/desktop/src/main/services/chat/copilotSlashCommands.ts` | Copilot's own slash commands: the `/` menu rows, which ones ADE owns, and what ADE does with a command's answer. |
-| `apps/desktop/src/main/services/ai/acpExecutables.ts` (`resolveCopilotSdkRuntime`) | Picks the runtime chats run on: a dev/test override, ADE's pinned download, the SDK's own package (a source checkout), the previous pinned version. Never the machine's `copilot`. `resolveCopilotExecutable` in the same file resolves the separate `copilot-cli` pin that terminals run. |
+| `apps/desktop/src/main/services/chat/copilotSlashCommands.ts` | Copilot's own slash commands: the `/` menu rows, which ones DAEX owns, and what DAEX does with a command's answer. |
+| `apps/desktop/src/main/services/ai/acpExecutables.ts` (`resolveCopilotSdkRuntime`) | Picks the runtime chats run on: a dev/test override, DAEX's pinned download, the SDK's own package (a source checkout), the previous pinned version. Never the machine's `copilot`. `resolveCopilotExecutable` in the same file resolves the separate `copilot-cli` pin that terminals run. |
 | `apps/desktop/src/main/services/ai/providerConnectionStatus.ts` (`buildCopilotConnection`) | Copilot's Settings and availability status, from the SDK's live sign-in check. |
 | `apps/desktop/src/main/services/chat/copilotModelsDiscovery.ts` | Model rows, the Auto-only fallback, and the saved model catalog. |
 | `apps/desktop/src/main/services/ai/copilotSdkLoader.ts` | Loads `@github/copilot-sdk` inside the worker only. |
@@ -36,9 +36,9 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 
 ## What changed from ACP
 
-- ADE no longer starts `copilot --acp`. There is no Copilot dialect in the ACP
+- DAEX no longer starts `copilot --acp`. There is no Copilot dialect in the ACP
   host, and Copilot is not in the ACP provider list.
-- Existing Copilot chats keep working. When a chat opens, ADE reads its saved
+- Existing Copilot chats keep working. When a chat opens, DAEX reads its saved
   `copilotSdkSessionId`, or the older `acpSessionId`, as the SDK session id and
   resumes that session. Nothing on disk is migrated.
 - Model list, events, usage and quota now come from the SDK and its account
@@ -47,17 +47,17 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 ## Requirements
 
 - **No Copilot CLI install.** `@github/copilot-sdk` ships its runtime in a
-  per-platform package (`@github/copilot-sdk-<platform>`, about 125 MB). ADE
+  per-platform package (`@github/copilot-sdk-<platform>`, about 125 MB). DAEX
   pins it in the tools manifest (`copilot`, from `apps/desktop/package-lock.json`,
   so the worker's SDK and the runtime it spawns cannot drift) and downloads it to
   `~/.ade/tools` like Claude's binary; the installer and the brain archive no
-  longer carry it. ADE starts that `copilot-runtime` over stdio through
+  longer carry it. DAEX starts that `copilot-runtime` over stdio through
   `RuntimeConnection.forStdio({ path })`. It is the version the SDK was built
   against, so it always speaks the SDK's protocol.
-- **When it downloads.** At launch and `ade serve` when the machine shows signs
+- **When it downloads.** At launch and `daex serve` when the machine shows signs
   of Copilot (a `copilot` CLI, a token in the environment, `~/.copilot`, or a
   `gh auth login`); otherwise when a status refresh first finds one of those, or
-  when a Copilot chat or task starts. A chat says "ADE is downloading the
+  when a Copilot chat or task starts. A chat says "DAEX is downloading the
   Copilot runtime for this machine" while it waits. See
   [agent-tools-cache.md](../onboarding-and-settings/agent-tools-cache.md#which-tools-a-machine-fetches).
 - **Runtime order** (`resolveCopilotSdkRuntime`): `COPILOT_EXECUTABLE` or
@@ -68,16 +68,16 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
   waits for the download). A candidate counts only with its `runtime.node`
   beside it. The machine's own `copilot` is never used. An override that does
   not match the SDK fails with the SDK's protocol message plus
-  "COPILOT_EXECUTABLE names a Copilot that does not match ADE's Copilot SDK."
-- **Self-update off.** The SDK passes `--no-auto-update` to its runtime, and ADE
+  "COPILOT_EXECUTABLE names a Copilot that does not match DAEX's Copilot SDK."
+- **Self-update off.** The SDK passes `--no-auto-update` to its runtime, and DAEX
   also sets `COPILOT_AUTO_UPDATE=false` on the runtime and the terminal CLI.
-- **No fall-forward.** The runtime is version-paired with the SDK, so ADE never
+- **No fall-forward.** The runtime is version-paired with the SDK, so DAEX never
   swaps in a newer one on its own. When an organisation policy requires a newer
   client (`managed_client_update_required`, or "your organization's managed
   settings require version X or newer"), the failed request and the chat's
   `session.error` read "Your organization's GitHub Copilot policy requires
-  Copilot X or newer. ADE runs its own tested copy (Y) and does not update it on
-  its own, so Copilot cannot run until ADE is updated." The stderr line logs as
+  Copilot X or newer. DAEX runs its own tested copy (Y) and does not update it on
+  its own, so Copilot cannot run until DAEX is updated." The stderr line logs as
   `agent_chat.copilot_client_update_required`.
 - **Other machines.** Every brain downloads the same pinned runtime for itself;
   a host the manifest does not pin (Windows on Arm) reads "not available on
@@ -104,7 +104,7 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 
 ## How it runs
 
-- **One worker per chat.** Each chat's environment carries its ADE chat id, so
+- **One worker per chat.** Each chat's environment carries its DAEX chat id, so
   each chat gets its own forked worker. The pool keys a worker by the CLI path,
   the config home (`COPILOT_HOME`, passed as the SDK `baseDirectory`) and a
   fingerprint of the environment. Chats never share a worker.
@@ -126,14 +126,14 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 - The runtime reuses the login the machine already has, in the CLI's order:
   `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, then the stored
   `copilot login` (keychain), then `gh auth login`. The SDK runtime has no
-  `login` command, so Settings (and first-run setup) sign in with ADE's pinned
+  `login` command, so Settings (and first-run setup) sign in with DAEX's pinned
   Copilot CLI instead: `copilot login --device-code` in a private PTY on the
   machine (`agentCliLoginRunner.ts`), showing GitHub's code in a sheet. Copilot
   rewrites `config.json` when that login starts, so only its exit after
   approval counts. `config.json` is JSONC with `//` comment lines and camelCase
   `loggedInUsers` (`parseCopilotLoggedInUsers`). Hosts without the in-app
   sign-in still show `copilot login` to copy.
-- ADE reads the signed-in state with `client.getAuthStatus()` on every status
+- DAEX reads the signed-in state with `client.getAuthStatus()` on every status
   refresh. This needs no session, so checking auth never starts a session or an
   MCP server. Its answer is the truth for Copilot's Settings tile and
   availability (`providerConnections.copilot`): the disk check (a token variable
@@ -145,14 +145,14 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
   fine-grained token that has the Copilot Requests permission.
 - The plan and premium-request quota come from the usage poll. See
   [Usage, context and quota](#usage-context-and-quota).
-- **Auto-only plans.** Some accounts get an empty model list. ADE then offers a
+- **Auto-only plans.** Some accounts get an empty model list. DAEX then offers a
   single `github-copilot/auto` model named "Auto", and Copilot picks the model on
   each turn.
 
 ## Models
 
-- The catalog is `client.listModels()`, run in the worker. ADE saves the list to
-  `copilot-model-catalog-cache.json` in the machine's ADE data folder (Electron's
+- The catalog is `client.listModels()`, run in the worker. DAEX saves the list to
+  `copilot-model-catalog-cache.json` in the machine's DAEX data folder (Electron's
   `userData` in the desktop app, else `ADE_HOME`, else `~/.ade`), with a 6-hour TTL.
 - The picker serves the saved list. A live list is fetched when a catalog
   refresh is asked for, and during provider availability checks when the saved
@@ -176,7 +176,7 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
   `session.auto_mode_resolved.chosenModel`, and the `model` on `assistant.message`
   and `assistant.usage`.
 - **Served-model notice.** When the model that writes a reply is not the one the
-  chat picked, ADE shows one notice per served model:
+  chat picked, DAEX shows one notice per served model:
   "Copilot used <served>, not <picked> (your plan may not include it)". When
   Copilot switched on its own (`session.model_change.cause`), the notice says
   why instead: "Copilot switched to <served> after a rate limit" or "… because
@@ -208,7 +208,7 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 - An unset profile is sent to the SDK as no profile, so the SDK's default routing
   applies. The profile goes out on session create and resume as `capi: { autoTier }`.
   A profile-only change on a live session calls `session.setAutoTier(tier)`.
-- **Pending.** The runtime can answer a change with `status: "pending"`. ADE then
+- **Pending.** The runtime can answer a change with `status: "pending"`. DAEX then
   shows "Applies from the next message". `session.model_change` with the new
   `autoTier` confirms it.
 - **Failure.** `session.auto_tier_switch_failed` clears the pending choice,
@@ -216,13 +216,13 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 
 ## Permission levels
 
-ADE's five levels map onto Copilot's session mode and permission mode:
+DAEX's five levels map onto Copilot's session mode and permission mode:
 
-| ADE level | Copilot behavior |
+| DAEX level | Copilot behavior |
 |---|---|
-| Plan | Session mode `plan`, with approvals set to manual so a chat that was at Full-auto cannot plan under allow-all. When the agent asks to leave plan mode, ADE's plan-approval card shows the plan with "Approve and continue" and "Reject". Approving picks Copilot's recommended action, never Autopilot, and the chat moves to Ask. |
-| Ask (default) | Every request goes to ADE's approval card: "Allow once", "Allow for this session" or "Deny". The card shows the write diff or the full shell command. |
-| Assisted | Copilot's assisted mode. A safety model attaches a recommendation to each request (`promptRequest.assistedApproval.recommendation`), which the SDK passes to the permission handler with the request; the worker attaches it. ADE approves a request only when it says `approve`. Every other answer (`requireApproval`, `excluded`, a judge error) goes to ADE's approval card. If the plan does not allow Assisted, the chat drops to Ask and shows a notice: "Assisted isn't available on this Copilot plan; using Ask". This happens on open and when the level is changed. |
+| Plan | Session mode `plan`, with approvals set to manual so a chat that was at Full-auto cannot plan under allow-all. When the agent asks to leave plan mode, DAEX's plan-approval card shows the plan with "Approve and continue" and "Reject". Approving picks Copilot's recommended action, never Autopilot, and the chat moves to Ask. |
+| Ask (default) | Every request goes to DAEX's approval card: "Allow once", "Allow for this session" or "Deny". The card shows the write diff or the full shell command. |
+| Assisted | Copilot's assisted mode. A safety model attaches a recommendation to each request (`promptRequest.assistedApproval.recommendation`), which the SDK passes to the permission handler with the request; the worker attaches it. DAEX approves a request only when it says `approve`. Every other answer (`requireApproval`, `excluded`, a judge error) goes to DAEX's approval card. If the plan does not allow Assisted, the chat drops to Ask and shows a notice: "Assisted isn't available on this Copilot plan; using Ask". This happens on open and when the level is changed. |
 | Auto-edit | Reads and writes inside the lane worktree are approved. Everything else asks. |
 | Full-auto | Each request is approved once. A request that managed policy marks `managedApprovalRequired` still asks. |
 
@@ -241,7 +241,7 @@ Copilot's `read`, `write` and `memory` rules cover every request of that kind
 for the rest of the session: "Allow all file reads for this session", "Allow
 these commands for this session", "Allow example.com for this session".
 
-Questions from the agent go to ADE's question card through `onUserInputRequest`.
+Questions from the agent go to DAEX's question card through `onUserInputRequest`.
 Free-form answers are allowed unless the request forbids them.
 
 MCP elicitation (`onElicitationRequest`) uses the same question card: a form
@@ -249,7 +249,7 @@ becomes one question per schema field, as for Codex, and a URL request shows the
 link with Accept and Decline.
 
 **Rate limits and Auto.** When a rate limit is eligible for it, Copilot asks
-through `onAutoModeSwitchRequest` whether to continue on Auto. ADE asks "Switch
+through `onAutoModeSwitchRequest` whether to continue on Auto. DAEX asks "Switch
 to Auto", "Always switch to Auto" or "Wait for the limit". The rate-limit error
 is held back while it asks; it is shown (and the usage-limit resume armed) only
 when the user chooses to wait.
@@ -281,11 +281,11 @@ when the user chooses to wait.
   message is not sent again. The session stays usable.
 - **Turn end** is `session.idle`. An aborted idle marks the turn interrupted.
 - **Close** calls `session.disconnect()`, which keeps the data so the chat can
-  resume. ADE never deletes a user chat's SDK session.
+  resume. DAEX never deletes a user chat's SDK session.
 
 ## Events
 
-| SDK event | ADE |
+| SDK event | DAEX |
 |---|---|
 | `assistant.message_delta` / `assistant.message` | Assistant text. A full message is skipped when its deltas already streamed. |
 | `assistant.reasoning_delta` / `assistant.reasoning` | Reasoning. |
@@ -295,7 +295,7 @@ when the user chooses to wait.
 | `subagent.started`, `completed`, `failed` | Subagent cards, attributed by the event's `agentId`. |
 | `session.compaction_start` / `complete` | Context compaction events, with `preCompactionTokens` and `postCompactionTokens`. A failed compaction's `error` becomes a warning notice. |
 | `session.usage_info` | The context meter (`currentTokens` over `tokenLimit`), broken down into system, tools and conversation tokens. |
-| `session.error` | The turn's error, classed by `errorType` (authentication and authorization → auth, rate_limit → rate limit, quota → budget), then by `errorCode` (a `*rate_limit*` code → rate limit, a quota or billing code → budget) and the HTTP status (401 → auth, 429 → rate limit, 408 and 5xx → network, which the card offers to retry). The detail carries its `remediation`, its `url`, and the diagnostics: the HTTP status, the provider's error type and parameter, the error code, and the two request ids GitHub traces a failure by (`providerCallId`, the `x-github-request-id`, and `serviceRequestId`). The brain logs the same fields as `agent_chat.copilot_session_error`, which reaches Sentry as a log. An error none of those classes cover also opens a Sentry issue (kind `session_error`, one per error type and code), since it may be a request ADE built wrong. A root `session.error` ends the turn as failed. |
+| `session.error` | The turn's error, classed by `errorType` (authentication and authorization → auth, rate_limit → rate limit, quota → budget), then by `errorCode` (a `*rate_limit*` code → rate limit, a quota or billing code → budget) and the HTTP status (401 → auth, 429 → rate limit, 408 and 5xx → network, which the card offers to retry). The detail carries its `remediation`, its `url`, and the diagnostics: the HTTP status, the provider's error type and parameter, the error code, and the two request ids GitHub traces a failure by (`providerCallId`, the `x-github-request-id`, and `serviceRequestId`). The brain logs the same fields as `agent_chat.copilot_session_error`, which reaches Sentry as a log. An error none of those classes cover also opens a Sentry issue (kind `session_error`, one per error type and code), since it may be a request DAEX built wrong. A root `session.error` ends the turn as failed. |
 | `session.mcp_server_status_changed` | A server that failed to start shows once per chat: "Copilot could not start the MCP server <name>: <first line of the error>". |
 | `session.info` | An info notice with Copilot's message and tip. Cancellation, timing, snapshot and MCP lines are not shown. |
 | `session.warning` | A warning notice. |
@@ -312,7 +312,7 @@ changes, context usage, errors, idle and abort do not touch the turn, the
 served-model notice or the context meter. Its token usage still counts toward the
 turn's totals.
 
-Diffs for file writes also come from the write approval's `diff`, when ADE asks
+Diffs for file writes also come from the write approval's `diff`, when DAEX asks
 for one.
 
 ## Attachments
@@ -329,36 +329,36 @@ for one.
 
 ## MCP servers
 
-- **ADE's own servers and the MCP registry's** go to the session as
+- **DAEX's own servers and the MCP registry's** go to the session as
   `mcpServers` (stdio, HTTP and SSE; `registryMcpSupport` has a Copilot row).
   A registry server that needs a sign-in carries its `Authorization` header.
 - **The user's own servers.** Interactive chats keep Copilot's config discovery
   on, so servers from the workspace `.mcp.json` and from the user's Copilot
-  config (`mcp-config.json` under `COPILOT_HOME`) run in chats. ADE shows no
+  config (`mcp-config.json` under `COPILOT_HOME`) run in chats. DAEX shows no
   notice about them.
 - **Sign-in handoff.** When a server asks for OAuth, `onMcpAuthRequest` runs:
-  - If ADE already sends an `Authorization` header for that server URL, the
+  - If DAEX already sends an `Authorization` header for that server URL, the
     request is cancelled and no notice is shown.
-  - If the MCP registry holds a sign-in for that server URL, ADE returns that
+  - If the MCP registry holds a sign-in for that server URL, DAEX returns that
     token to Copilot. URLs match ignoring host case, a default port, a
     fragment and a trailing slash (`sameMcpServerUrl`).
   - Otherwise the request is cancelled and one warning notice is posted per chat
-    and server. A server that is not in ADE's MCP registry gets: "<server> needs
-    a sign-in. Add it to ADE's MCP servers (Settings → MCP servers: Import, or
+    and server. A server that is not in DAEX's MCP registry gets: "<server> needs
+    a sign-in. Add it to DAEX's MCP servers (Settings → MCP servers: Import, or
     Add with <origin and path of its URL>) and sign in once — every agent will
     use it." Import lists it because the scan reads Copilot's
     `mcp-config.json`. A registry server that is signed out names the registry
     entry and asks for a sign-in, then a new chat; one switched off here says
     it is off.
-  - ADE does not start the OAuth browser flow for these requests. Copilot no
-    longer opens browser tabs for ADE's servers.
+  - DAEX does not start the OAuth browser flow for these requests. Copilot no
+    longer opens browser tabs for DAEX's servers.
 
 ## Background tasks never start user MCP servers
 
 Titles and summaries run on a utility session, not on a chat:
 
 - `disabledMcpServers` lists every server name in the user's Copilot config, so
-  none of them start or authenticate. If ADE cannot list them, the task fails
+  none of them start or authenticate. If DAEX cannot list them, the task fails
   closed.
 - No tools (`availableTools: []`), no custom instructions, and infinite sessions
   off.
@@ -368,7 +368,7 @@ Titles and summaries run on a utility session, not on a chat:
 
 ## Skills, instructions and commands
 
-- `skillDirectories` is ADE's bundled agent skill roots. Personal chats get none.
+- `skillDirectories` is DAEX's bundled agent skill roots. Personal chats get none.
 - **Copilot's own slash commands** run through its command API
   (`session.rpc.commands.invoke`), as in its CLI. Sent as a message, a command
   would reach the model as prose and spend a request.
@@ -384,11 +384,11 @@ Titles and summaries run on a utility session, not on a chat:
     shows it as the turn's reply, with no model request. A command that builds
     a prompt (`/review`, `/plan`, `/init`, a skill) sends that prompt as the
     turn; the chat shows what the person typed.
-  - Commands ADE owns answer with where ADE does it, and are not in the menu:
+  - Commands DAEX owns answer with where DAEX does it, and are not in the menu:
     `/model` (the model picker), `/permissions` and `/allow-all` (the
     permission level), `/autopilot` (`/goal`), `/cwd` (the lane), `/rename`
-    (the chat title), `/every`, `/loop` and `/after` (ADE's scheduled work;
-    they would start turns no ADE turn listens to) and `/remote`.
+    (the chat title), `/every`, `/loop` and `/after` (DAEX's scheduled work;
+    they would start turns no DAEX turn listens to) and `/remote`.
   - During a turn, a command Copilot allows then (`/context`, `/usage`, …)
     runs at once and shows its output as a notice; any other says "Wait for
     this turn to finish before running /<name>."
@@ -404,13 +404,13 @@ Titles and summaries run on a utility session, not on a chat:
 - **Per turn.** Each `assistant.usage` event adds input, output, cache read and
   cache write tokens, and reasoning tokens. These fill the turn's usage record.
   The context meter comes from `session.usage_info`.
-- **Premium requests per turn.** ADE reads the account's usage metrics before
+- **Premium requests per turn.** DAEX reads the account's usage metrics before
   and after each turn. The change is that turn's premium-request count, unless a
   premium count on an `assistant.usage` event is higher. The turn's record carries
   it as a `premium_request` plan-usage unit.
 - **Quota.** The usage poll reads GitHub's `copilot_internal/user` endpoint for
   the premium-interaction counts, the plan and the reset date. When that response
-  has no counts or no plan, ADE reads the SDK's account quota instead. That read
+  has no counts or no plan, DAEX reads the SDK's account quota instead. That read
   is cached for 15 minutes unless the user asks for a refresh. The SDK windows
   replace the GitHub ones when they have any. The windows show used and
   entitlement counts, percent, the reset date, and an unlimited flag.
@@ -422,20 +422,20 @@ Titles and summaries run on a utility session, not on a chat:
 ## Fork and rewind
 
 - **Rewind.** The rewind points are the root user turns Copilot captured, keyed
-  by the id of each turn's `user.message` event. When a turn starts, ADE records
+  by the id of each turn's `user.message` event. When a turn starts, DAEX records
   that id against its own message id (`copilotRewindEventIds` in the chat state),
   so a rewind finds the exact turn even when two messages read the same. Chats
-  from before that match on text: Copilot's recorded prompt can carry ADE's
-  context ahead of what the user typed, so both sides match by suffix. ADE
+  from before that match on text: Copilot's recorded prompt can carry DAEX's
+  context ahead of what the user typed, so both sides match by suffix. DAEX
   lists them, previews the files a rewind would restore, and then applies the
   rewind to the conversation and the files. File changes are tracked for
   interactive chats, so a turn can be undone with its files. Applying a rewind is
   refused while a turn is running. Previewing is not. If Copilot has no rewind
-  point for a message, or did not capture file changes for it, ADE says so.
+  point for a message, or did not capture file changes for it, DAEX says so.
 - **Native fork.** A fork of a Copilot chat into a Copilot chat uses the SDK's
   session fork. A fork from an earlier turn keeps that turn and everything it
   produced: the boundary is the next top-level user message. The turn is found
-  by the Copilot event id ADE recorded for it (see Rewind); older chats fall back
+  by the Copilot event id DAEX recorded for it (see Rewind); older chats fall back
   to its text and order. The new session id is stored as the new chat's `copilotSdkSessionId`.
   A fork is refused while a turn is running.
 - **Cross-machine.** Cross-machine fork is not offered for Copilot. The fork
@@ -444,7 +444,7 @@ Titles and summaries run on a utility session, not on a chat:
 
 ## CLI
 
-`ade chat create` and `ade new chat` take three Copilot flags. Passing one with
+`daex chat create` and `daex new chat` take three Copilot flags. Passing one with
 another provider is an error.
 
 - `--copilot-permission-mode`: `plan`, `ask`, `assisted`, `auto-edit` or `full-auto`.
@@ -453,16 +453,16 @@ another provider is an error.
 
 ## Legacy chats
 
-A Copilot chat created before this change has a saved `acpSessionId`. ADE reads
+A Copilot chat created before this change has a saved `acpSessionId`. DAEX reads
 it as the SDK session id. Opening the chat calls `resumeSession` with it, and the
-full history comes back. If Copilot no longer has the session, ADE opens a new
+full history comes back. If Copilot no longer has the session, DAEX opens a new
 one and says so in the chat; the earlier messages stay visible but Copilot cannot
 see them.
 
 ## What stays the same
 
 - **The terminal Copilot CLI.** Its session id flag and its terminal signals
-  are unchanged; the terminal now runs ADE's pinned `copilot-cli` instead of the
+  are unchanged; the terminal now runs DAEX's pinned `copilot-cli` instead of the
   `copilot` on the PATH. See `terminals-and-sessions/`.
 - **Usage history import.** The local usage ledgers and the account scanners are
   unchanged. See `onboarding-and-settings/usage-tracking.md`.
@@ -473,20 +473,20 @@ see them.
 
 ## Session import
 
-ADE's chats and the user's Copilot CLI share one session store
+DAEX's chats and the user's Copilot CLI share one session store
 (`COPILOT_HOME`, default `~/.copilot`), so the import box has to tell them apart.
 
 - **Marking.** The worker creates every session with `clientName: "ade"`, which
   Copilot writes to `workspace.yaml` as `client_name`. A resume does not
   rewrite it. Discovery leaves out `client_name` values that start with `ade`,
-  and `client_name: sdk` sessions whose first system message carries ADE's
-  coding-agent prompt (ADE's chats from before the marking).
+  and `client_name: sdk` sessions whose first system message carries DAEX's
+  coding-agent prompt (DAEX's chats from before the marking).
 - **Claiming.** A live chat's `copilotSdkSessionId` (or an older chat's
-  `acpSessionId`) marks that session "already in ADE" in the import box.
+  `acpSessionId`) marks that session "already in DAEX" in the import box.
 - **Continue.** Continuing a CLI session as a chat seeds it as the chat's
   `copilotSdkSessionId`. The first message opens it with `resumeSession`, in
   the lane root (the importer refuses a session from another folder), on the
-  session's recorded model when ADE knows it, else the Copilot default, and in
+  session's recorded model when DAEX knows it, else the Copilot default, and in
   the permission mode a new Copilot chat gets (Ask unless a default level maps
   to another). The CLI session's own mode is not carried over. The events the resume returns are not
   replayed; the chat already shows the imported history.
@@ -504,7 +504,7 @@ These are deliberately not built yet:
 - Remote and cloud sessions.
 - BYOK providers through Copilot.
 - Organisation managed settings fetched by the session itself
-  (`enableManagedSettings` needs an explicit GitHub token, which ADE does not
+  (`enableManagedSettings` needs an explicit GitHub token, which DAEX does not
   pass); a policy floor on the client version still reaches the chat, as below.
 
 ## Troubleshooting
@@ -517,9 +517,9 @@ These are deliberately not built yet:
   names the model's limit.
 
 - **"Your organization's GitHub Copilot policy requires Copilot X or newer."**
-  The organisation's floor is above ADE's pinned runtime. A newer ADE release
-  with a newer pin fixes it; ADE does not update Copilot on its own.
-- **"ADE is downloading the Copilot runtime" / "Couldn't download …".** Wait, or
+  The organisation's floor is above DAEX's pinned runtime. A newer DAEX release
+  with a newer pin fixes it; DAEX does not update Copilot on its own.
+- **"DAEX is downloading the Copilot runtime" / "Couldn't download …".** Wait, or
   press Retry in Settings > Providers > GitHub Copilot on the machine that runs
   the chat.
 - **Copilot shows as signed out but `copilot login` worked.** A token variable
@@ -528,7 +528,7 @@ These are deliberately not built yet:
 - **Only "Auto" in the model list.** Expected on an Auto-only plan, or before the
   first live model list is saved.
 - **"<server> needs a sign-in."** If the notice asks you to add the server, add it
-  to ADE's MCP servers and sign in once. Otherwise open the server's sign-in from
+  to DAEX's MCP servers and sign in once. Otherwise open the server's sign-in from
   Settings → MCP servers. Then retry the chat.
 - **"Assisted isn't available on this Copilot plan; using Ask."** The plan does
   not allow Assisted. Choose another level if you need one.
@@ -536,10 +536,10 @@ These are deliberately not built yet:
   set the goal again.
 - **"Copilot no longer has this conversation, so it started a new one."** The
   chat's saved Copilot session is gone (Copilot's session store was cleared, or
-  the chat came from another machine). ADE opens a new session; the earlier
+  the chat came from another machine). DAEX opens a new session; the earlier
   messages stay in the chat, but Copilot cannot see them.
 - **"Copilot could not switch to the new model / permission level."** Copilot
-  refused a live change. ADE closes the session (the conversation is kept) and
+  refused a live change. DAEX closes the session (the conversation is kept) and
   the next message reopens it with the new setting. If a turn is running it
   finishes first, unless the change was to a stricter permission level: then
   the turn stops at once, so tools do not keep running under the looser level.
@@ -547,7 +547,7 @@ These are deliberately not built yet:
 ### Copilot in Sentry
 
 Every Copilot failure is a brain log line, and warn lines reach Sentry as Logs.
-The ones that may be ADE's fault are also issues, tagged `provider: copilot`,
+The ones that may be DAEX's fault are also issues, tagged `provider: copilot`,
 `copilot.kind` and `copilot.model`, grouped per kind and cause (ids and numbers
 taken out of the message), so one bug is one issue:
 
@@ -555,7 +555,7 @@ taken out of the message), so one bug is one issue:
 |---|---|
 | `session_error` | A `session.error` that is not sign-in, rate limit, quota or an outage. Tagged with its error type, code and HTTP status; the extra carries both request ids. |
 | `turn_failed` | A turn that failed opening, sending or running a command, unless it was interrupted. |
-| `worker_exited` | The SDK worker died under a live chat (not a close ADE asked for). |
+| `worker_exited` | The SDK worker died under a live chat (not a close DAEX asked for). |
 | `commands_list_failed` | The runtime would not list its slash commands. |
 | `command_failed` | A command typed mid-turn failed to run. |
 | `setting_failed` | Copilot refused a model or permission-level change. |

@@ -19,7 +19,7 @@ Paths are under `apps/desktop/src/`.
 | `main/services/chat/crossProviderReplayFork.ts` | The replay budget constants and derivations, `CODEX_REPLAY_MAX_CHARS`, `CODEX_APP_SERVER_INPUT_MAX_CHARS`, and the fitters (`fitTranscriptReplayToBudget`, `buildFittedTranscriptReplay`). |
 | `main/services/chat/claudeReplayOverflowRecovery.ts` | Claude-only replay overflow repair (`createClaudeReplayOverflowRecovery`): `TranscriptReplayOrigin`, `ReplayForkProvenance`, the 2,000-character floor, and `noteConsumedReplay` / `forgetConsumedReplay`, `recoverFromOverflow`, `noteRetrySucceeded`, `reportRetryFailed`. State lives in `WeakMap`s keyed by the runtime. |
 | `main/services/chat/providerThreadContinuity.ts` | Which provider thread a chat talks to: `persistedPointerState()` (every provider's thread field, shared with the pointer ledger), `providerThreadRef()` (`"none"` = unknown), `providerThreadContinuityChanged()`, and the `StagedSection` operations that decide whether a static block or the tail rides a turn. See [CTO](../cto/README.md). |
-| `main/services/chat/sessionTurnHealth.ts` | Durable turn health as pure functions: `normalizeLastTurnFailure()`, `normalizeSessionContextHealth()`, `shouldAdviseSessionRotation()`, and the `nextSessionTurnHealth()` reducer, which reports a change field by field to avoid needless disk writes. |
+| `main/services/chat/sessionTurnHealth.ts` | Durable turn health as pure functions: `normalizeLastTurnFailure()`, `normalizeSessionContextHealth()`, and the `nextSessionTurnHealth()` reducer, which reports a change field by field to avoid needless disk writes. |
 | `shared/cursorModes.ts` | Cursor mode vocabulary and the mapping from the legacy permission field. |
 | `main/services/chat/cursorModelSelection.ts` | A chat's Cursor effort, Fast/tier and model options as `ModelSelection.params`; see "Model params". |
 | `main/services/chat/servedModelMismatch.ts` | `isServedModelMismatch` and `isServedRouteMismatch`. |
@@ -27,11 +27,11 @@ Paths are under `apps/desktop/src/`.
 | `shared/cliLaunch.ts` | Tracked CLI start/resume builders (model, reasoning, permission flags, Codex `computer_use` overrides). Tracked OpenCode always runs the root TUI with no `--variant`. |
 | `main/services/ai/providerRuntimeHealth.ts` | Provider readiness, auth and network failures for degraded states. |
 | `main/services/chat/permissionMapping.ts` | Abstract permission mode to native options (`mapPermissionToClaude`, `mapPermissionToCodex` …). |
-| `main/services/ai/apiKeyStore.ts`, `main/services/account/accountVaultBridge.ts` | Encrypted ADE provider keys, account/device provenance, the vault mirror, and the purge on sign-out or account switch. |
+| `main/services/ai/apiKeyStore.ts`, `main/services/account/accountVaultBridge.ts` | Encrypted DAEX provider keys, account/device provenance, the vault mirror, and the purge on sign-out or account switch. |
 | `main/services/shared/providerConfigHomes.ts` | Provider config homes and the config-ownership rule. |
 | `main/services/ai/authDetector.ts` | Credential discovery and auth status. |
 | `main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | Resolve the pinned Codex and Droid CLIs: env override, (Codex) [fall-forward](../onboarding-and-settings/agent-tools-cache.md#codex-fall-forward), the tools-cache pin, (Codex) a checkout's `node_modules`, the previous pin. Never PATH. Claude uses `claudeCodeExecutable.ts`. See [agent tools cache](../onboarding-and-settings/agent-tools-cache.md#resolution-order). |
-| `main/services/ai/tools/systemPrompt.ts` | The system prompt per mode and permission mode, with native-subagent versus ADE-child guidance. |
+| `main/services/ai/tools/systemPrompt.ts` | The system prompt per mode and permission mode, with native-subagent versus DAEX-child guidance. |
 | `main/services/chat/openCodeTurnUsage.ts`, `codexSubagentUsage.ts`, `providerUsageAccount.ts` | Turn telemetry for OpenCode (step sums, live samples, account), Codex subagents (usage split, rollout read-back), and the Claude and Codex account kind. |
 | `main/services/chat/droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts` | Droid adapter: one forked worker per session over a JSON-line protocol; screenshots as paths (`workerAttachmentImages.ts`); the mapper keeps streaming ids, tool names, usage, live context, compaction and mission-worker usage. |
 | `main/services/chat/piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkSelection.ts` | Pi adapter: the pool forks a worker per session key; protocol version 2 carries the `ui_*` and `login` frames, validated both ways; the mapper owns the card helpers (`piUiRequestToPendingInput`, `piUiResponseFromAnswer`, `piUiNoticeToChatEvents`, `piExtensionLoadNotice`); `piSdkSelection` applies model and thinking level exactly. |
@@ -39,6 +39,43 @@ Paths are under `apps/desktop/src/`.
 | `main/services/ai/piInstallation.ts` | Resolves the pinned Pi (`ADE_PI_PACKAGE_ROOT` override): CLI path (Node >= 22.19), SDK entry, agent dir, profile files, inventory, and a `blocker` (`PI_SDK_MIN_NODE`). `sdkAvailable` and `cliAvailable` are independent. |
 | `main/services/ai/piAuthService.ts` | In-app Pi sign-in: `listPiLoginProviders`, `startPiLogin`, `addPiAuthStatusListener`, `submitPiLoginPrompt`, `cancelPiLogin`; 10-minute bound; never touches a credential. |
 | `main/services/chat/droidModelsDiscovery.ts` | Droid models from the pinned `droid` CLI once downloaded, plus custom models from `<factoryConfigHome>/config.json`, as `droid/<id>` descriptors. Fast choices are separate ids. Stale-while-revalidate: `markDroidModelCachesStale` ages rows, served up to ~6 h while one background warm per window refreshes them. |
+
+## Gotchas / fragile areas
+
+- **Model discovery changes the registry.** `localModelDiscovery.ts` adds and
+  removes descriptors; a cache of the registry must subscribe or re-read.
+- **Cursor discovery is surface-scoped (`cursorSource`).** Chat surfaces use
+  the SDK (~300 ms); Work CLI drafts use the `cursor-agent` CLI (seconds).
+  `loadAvailableModels` / `getModelCatalog` probe only the requested source
+  (`"sdk" | "cli" | "all"`) and serve the other from last-known-good. Mobile
+  and the desktop ModelPicker pass `"sdk"`. Staleness checks
+  `cursorAvailability[source]`, mirrored in `runtimeCatalogCache.ts`.
+- **Claude runtime readiness.** `claudeRuntimeProbe.ts` checks the binary and
+  auth before launch (`CLAUDE_RUNTIME_AUTH_ERROR`).
+  `probeClaudeRuntimeHealth` is fully isolated (`settingSources: []`,
+  `mcpServers: {}`, `strictMcpConfig: true`, `persistSession: false`); keep
+  any new probe option unable to fail the health answer.
+- **Claude account skills download first.** Claude Code downloads a claude.ai
+  account's skills and plugins into `<config>/skills/synced` and
+  `<config>/plugins/synced` when a session first starts in a Claude home. A
+  chat that starts during that download lists a different skill set, so its
+  cached prefix is of no use to the next chat. `claudeAccountSkillSync.ts`
+  starts one Claude session with no prompt when the AI status reports an
+  account sign-in and the base home has no completed skills round
+  (`.last-complete-round`). It runs in the temp folder, loads user settings
+  only (empty setting sources skip the download), no MCP servers and no hooks,
+  and stops when both rounds complete (2 s after the skills round when no
+  plugins round follows) or after 15 s. Claude chat starts (warm and cold)
+  call `waitForClaudeAccountSkillSync`, which waits at most 5 s. Other Claude
+  accounts (their own `CLAUDE_CONFIG_DIR`) download on their first chat.
+- **Permission mapping is one way.** `permissionMapping.ts`
+  (`mapPermissionToClaude`, `mapPermissionToCodex`) maps abstract to native
+  only. Changing a native field without the abstract one leaves them out of
+  sync.
+- **CTO compaction.** After a CTO compaction, `refreshReconstructionContext`
+  must re-inject identity and memory, or the agent forgets it is the CTO.
+- **OAuth redirect ports.** `oauthRedirectService.ts` binds an ephemeral port;
+  if another process takes it before the callback, the flow fails silently.
 
 ## Supported providers
 
@@ -50,14 +87,14 @@ The ACP providers (Muse, Qwen, Kimi, Grok, Antigravity) are described in
 
 | Provider | Runtime | Adapter location |
 |---|---|---|
-| `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE input pump, `startup()` warmup, ADE's pinned Claude Code binary (with the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward) override when Anthropic refuses the pin), SDK sessions, hooks, output styles, plugins, context usage, rewind and slash commands. | `agentChatService.ts` (inline). |
+| `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with a DAEX input pump, `startup()` warmup, DAEX's pinned Claude Code binary (with the [fall-forward](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward) override when Anthropic refuses the pin), SDK sessions, hooks, output styles, plugins, context usage, rewind and slash commands. | `agentChatService.ts` (inline). |
 | `codex` | Pinned `@openai/codex` 0.167.0 `codex app-server`, JSON-RPC, shared by every chat whose process would launch the same way (see [One app-server for many Codex chats](#one-app-server-for-many-codex-chats)). Spawn failures are error events. | `agentChatService.ts`; `codexAppServerPool.ts`; `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime; catalog from OpenCode/Models.dev, with OAuth, API-key, custom and local-server paths. | `agentChatService.ts`; `openCodeInventory.ts`; `openCodeAuthService.ts`. |
-| `cursor` | `@cursor/sdk` in a Node worker pool. ADE owns permissions, hooks and the system prompt; the SDK owns model and tools. Slash commands from `.cursor/commands/`, `.cursor/agents/`, built-in subagents and Agent Skill roots. A local turn silent for 90 s raises "Cursor hasn't answered" (Restart / Keep waiting), and a transport error before any event recycles and re-sends once — see [Cursor thread recycling](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
-| `copilot` | ADE's pinned Copilot runtime through `@github/copilot-sdk` over stdio, one forked worker per chat (keyed by CLI path, `COPILOT_HOME` and env). Models from `client.listModels()`. Five permission levels. Utility tasks never start a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`. See [copilot-sdk-provider.md](copilot-sdk-provider.md). |
-| `devin` | ADE's pinned `devin` CLI as `devin acp` over the ACP host; Devin Cloud uses `devin acp --cloud` through the cloud agents service. The same id covers the tracked `devin` CLI. | `acpHost/acpDialects/devin.ts`, `devinCloud.ts`; `cloudAgentsService.ts`, `devinCloudDirectory.ts`. |
+| `cursor` | `@cursor/sdk` in a Node worker pool. DAEX owns permissions, hooks and the system prompt; the SDK owns model and tools. Slash commands from `.cursor/commands/`, `.cursor/agents/`, built-in subagents and Agent Skill roots. A local turn silent for 90 s raises "Cursor hasn't answered" (Restart / Keep waiting), and a transport error before any event recycles and re-sends once — see [Cursor thread recycling](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
+| `copilot` | DAEX's pinned Copilot runtime through `@github/copilot-sdk` over stdio, one forked worker per chat (keyed by CLI path, `COPILOT_HOME` and env). Models from `client.listModels()`. Five permission levels. Utility tasks never start a user MCP server. | `copilotSdkPool.ts`, `copilotSdkWorker.ts`, `copilotSdkProtocol.ts`, `copilotSdkEventMapper.ts`, `copilotModelsDiscovery.ts`, `ai/copilotSdkLoader.ts`. See [copilot-sdk-provider.md](copilot-sdk-provider.md). |
+| `devin` | DAEX's pinned `devin` CLI as `devin acp` over the ACP host; Devin Cloud uses `devin acp --cloud` through the cloud agents service. The same id covers the tracked `devin` CLI. | `acpHost/acpDialects/devin.ts`, `devinCloud.ts`; `cloudAgentsService.ts`, `devinCloudDirectory.ts`. |
 | `droid` | Factory Droid models as `droid/<modelId>` descriptors through `@factory/droid-sdk` in a forked worker pool. Reports turn tokens, live context, compaction and Factory account; mission-worker usage comes from the worker's settings file. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`. |
-| `pi` | ADE's pinned Pi package, loaded as a library in a forked worker (never a static import). The worker owns the session, model runtime, tools and sign-in; ADE owns the cards. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; `piSessionStore.ts`, `piSessionLease.ts`, `piSessionOwnership.ts`; `ai/piInstallation.ts`, `ai/piAuthService.ts`. |
+| `pi` | DAEX's pinned Pi package, loaded as a library in a forked worker (never a static import). The worker owns the session, model runtime, tools and sign-in; DAEX owns the cards. | `piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts`, `piSdkUiBridge.ts`, `piSdkEnvironment.ts`; `piSessionStore.ts`, `piSessionLease.ts`, `piSessionOwnership.ts`; `ai/piInstallation.ts`, `ai/piAuthService.ts`. |
 
 ## Model registry
 
@@ -105,7 +142,7 @@ so a merge to `main` reaches running installs in minutes.
   (`defaults.free`, see [Free models](composer-and-ui.md#free-models)). One invalid
   field rejects the file; an id or alias collision rolls back to the previous
   manifest.
-- **Trust boundary.** The file is unsigned, so it can use only values ADE
+- **Trust boundary.** The file is unsigned, so it can use only values DAEX
   already runs: routes are an allowlist (`MODEL_MANIFEST_ROUTE_CLI`, each
   launching only its own CLI), and so are families, auth types, efforts and
   service tiers; ids match a strict pattern; colors are `#RRGGBB`. Routing
@@ -181,12 +218,12 @@ The OpenAI section follows the Codex catalog's order:
 
 **Codex thread behavior.**
 
-- A resumed thread reports its `collaborationMode`, which ADE adopts as the
+- A resumed thread reports its `collaborationMode`, which DAEX adopts as the
   chat's mode, except while `codexPendingCollaborationMode` (saved) holds a
   mode the thread has not run under yet; the first `turn/start` with that mode
   clears it.
 - `/personality` is not offered for Codex.
-- ADE always enables `tools.update_plan` on `thread/start` and
+- DAEX always enables `tools.update_plan` on `thread/start` and
   `thread/resume`, copies the thread's `model` / `reasoningEffort` into the
   session, and treats `item/tool/requestUserInput` with `isBlocking: false` as
   live steering.
@@ -206,23 +243,23 @@ The OpenAI section follows the Codex catalog's order:
   Sign-in comes from the provider's own files, keychain or a probe. Disk-only
   sign-ins (Copilot, ACP) are read before the download. The cache is keyed on
   `pinnedToolInstallGeneration()`.
-- Cursor chat signs in through the SDK. ADE also probes its pinned Cursor CLI
+- Cursor chat signs in through the SDK. DAEX also probes its pinned Cursor CLI
   (`cursor-cli`, with `--disable-auto-update` and
   `CURSOR_INVOKED_AS=cursor-agent`) for CLI-launch models once it is
   downloaded, and merges them with the SDK registry. Discovery accepts JSON
   arrays, `{ models: [...] }` and the CLI table.
-- API-key providers check `apiKeyStore.ts`, then the env vars. ADE keys are
+- API-key providers check `apiKeyStore.ts`, then the env vars. DAEX keys are
   account-owned (`provider_api_key` in the account vault) or device-only;
   provenance decides what hydrates and what is purged on an account change.
 - OAuth providers use `services/lanes/oauthRedirectService.ts`. Local
   providers (`ollama`, `lmstudio`) probe their endpoint.
 
 OpenCode's Settings catalog comes from the live server's `provider.list()`.
-ADE passes on only each provider's credential env-var names and a non-secret
+DAEX passes on only each provider's credential env-var names and a non-secret
 source marker, never its `key`. An env-backed credential gets an API-key
 editor but no disconnect. OAuth goes through `integration.list` / `.get` /
 `.oauth.*`; API keys through `integration.connect.key` and
-`credential.remove`, then ADE's key store. Verify shows only for providers
+`credential.remove`, then DAEX's key store. Verify shows only for providers
 with a native verifier.
 
 Results feed `AiProviderConnectionStatus` / `AiRuntimeConnectionStatus`
@@ -237,7 +274,7 @@ interaction)` on an inventory-only worker; Settings → Providers renders what
 Pi asks for (an auth URL, a device code, a text or secret field, a choice).
 Pi has two login types, `oauth` and `api_key`.
 
-- **ADE never holds the credential.** The worker sends prompt text only, the
+- **DAEX never holds the credential.** The worker sends prompt text only, the
   answer goes back through `respondToUi`, and Pi's `AuthStorage` writes
   `auth.json`. `registerIpc.ts` redacts the `value` of `ade.ai.piLoginSubmit`.
 - Only providers with an interactive login are offered. One flow runs per
@@ -245,13 +282,12 @@ Pi has two login types, `oauth` and `api_key`.
 - A loopback `baseUrl` makes a provider `local`, not a sign-in
   (`piInstallation.ts`, `AiPiProviderStatus.baseUrl`), because LM Studio ships
   a placeholder `apiKey`. A stored auth entry still wins.
-- A success invalidates the readiness caches (logs
-  `ai.pi_auth_cache_invalidation_failed` on failure).
+- A success invalidates the readiness caches.
 - The outcome travels on the `piAuthStatus` `success` / `error` event. Leaving
   Settings cancels nothing; the ten-minute bound reclaims an abandoned flow.
   **Cancel** waits `PI_LOGIN_CANCEL_GRACE_MS` for a login that already
   finished. Auth URLs open automatically, with the URL and code on screen.
-- ADE does not drive Pi's terminal `/login`; with `sdkAvailable` false the
+- DAEX does not drive Pi's terminal `/login`; with `sdkAvailable` false the
   card gives the instruction.
 
 ### Session store
@@ -262,7 +298,7 @@ native store (`piSessionStoreForEnvironment`): `--session-dir`, then
 `sessionDir`, then `<agentDir>/sessions`.
 
 - A checkout's `.pi/settings.json` is never read, so a cloned repository
-  cannot redirect where ADE authorizes sessions. Pi's own CLI does read it;
+  cannot redirect where DAEX authorizes sessions. Pi's own CLI does read it;
   `repositoryOverridesPiSessionDir` makes the launch say so.
 - The worker gets the root as `sessionRoot` (an authorization boundary) and
   `sessionStorageDir` only when the user set one, because Pi nests one folder
@@ -278,18 +314,18 @@ native store (`piSessionStoreForEnvironment`): `--session-dir`, then
   launch skip a held session.
 - **`<session>.ade-owner`** (`piSessionOwnership.ts`): whose session it is. A
   durable `{ owner, ownerSessionId }` claim, never removed. An unclaimed
-  session stays adoptable. `ownerSessionId` is the ADE chat or terminal id.
+  session stays adoptable. `ownerSessionId` is the DAEX chat or terminal id.
 - Before Pi writes, a tracked CLI launch holds
   `piSessionCreationLeaseTarget(sessionRoot, cwd)`, a token per working
   directory, so one lane's starting chat never blocks another's.
 
 ## Provider config ownership
 
-ADE hands its settings to every provider SDK at the **highest precedence tier
+DAEX hands its settings to every provider SDK at the **highest precedence tier
 that SDK offers**, above the user's own config. So every adapter follows one
 rule:
 
-> Name a config key only when ADE owns it: there is ADE UI for it and ADE's
+> Name a config key only when DAEX owns it: there is DAEX UI for it and DAEX's
 > value is the truth. Otherwise leave the key absent and let the provider's
 > own precedence resolve it.
 
@@ -298,13 +334,13 @@ that wins. The rule and its probe results live in
 `main/services/shared/providerConfigHomes.ts`. **A new provider starts here.**
 Each row was checked against a live runtime:
 
-| Provider | Where ADE's settings land | Omitting a key | Explicit `null` / `false` |
+| Provider | Where DAEX's settings land | Omitting a key | Explicit `null` / `false` |
 |---|---|---|---|
 | Claude | Agent SDK `settings` (flag tier, above every `settings.json`) | the user's settings chain applies | `"Default"` is a real output style |
 | Codex | `thread/start` + `turn/start` args | `config.toml`'s value applies | `null` reports `"default"`, a real downgrade |
 | Droid | `createSession` / `updateSettings` options | `~/.factory/settings.json` applies, per key | `null` wedges the Droid RPC for 30 s; never send it |
-| Cursor | `local.sandboxOptions` | `~/.cursor/sandbox.json` decides | `false` gives `insecure_none` without reading that file; ADE always sends `false` |
-| OpenCode | `OPENCODE_CONFIG` (a generated, hot-reloaded file) | the user's `opencode.json` loads underneath | n/a: a project's own `opencode.json` can override any key ADE names |
+| Cursor | `local.sandboxOptions` | `~/.cursor/sandbox.json` decides | `false` gives `insecure_none` without reading that file; DAEX always sends `false` |
+| OpenCode | `OPENCODE_CONFIG` (a generated, hot-reloaded file) | the user's `opencode.json` loads underneath | n/a: a project's own `opencode.json` can override any key DAEX names |
 
 ### Provider config homes
 
@@ -318,14 +354,14 @@ Each CLI has an env override for its config home, and the shapes differ:
 
 Every path into a provider config home goes through these helpers (chat
 adapters, `droidModelsDiscovery.ts`, `ptyService.ts` recovery,
-`providerSessionHandles.ts`, `discoverDroid.ts`); a hardcoded path makes ADE
+`providerSessionHandles.ts`, `discoverDroid.ts`); a hardcoded path makes DAEX
 read a different folder than the process it spawns.
 
 ### What each adapter states
 
 **Claude.**
 
-- ADE sends `enabledPlugins` (merged per key) and `fastMode` (the Fast chip).
+- DAEX sends `enabledPlugins` (merged per key) and `fastMode` (the Fast chip).
   `outputStyle` only when a settings file names one; `workflowSizeGuideline:
   "medium"` only when none states one.
 - `readClaudeOutputStyleSelection` / `readClaudeWorkflowSizeGuideline`
@@ -337,7 +373,7 @@ read a different folder than the process it spawns.
 - The walk honours `CLAUDE_CONFIG_DIR`, as does the plugin registry. When it
   moved the user tier, the real `~/.claude` is skipped from the ancestor walk.
   Roots compare through `pathKey` / `pathsEqual` (Windows spellings).
-- ADE states no prompt cache TTL of its own. An account's Settings choice sets
+- DAEX states no prompt cache TTL of its own. An account's Settings choice sets
   `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` / `CLAUDE_CODE_PROMPT_CACHE_TTL`
   (`claudeAccountPromptCacheEnv`) for its SDK chats and terminal `claude`
   sessions (`ptyService.create`), except where the env already states one or
@@ -389,7 +425,7 @@ thread ~10 MB
   `normalizeSessionNativePermissionControls` deletes the field. `cliLaunch`
   rejects `config-toml` for Droid.
 - Spec pairs with `autonomyLevel: "off"`, as `droidSettingsJson` does for
-  terminals. The worker tracks whether ADE entered Spec (`enteredSpecMode`)
+  terminals. The worker tracks whether DAEX entered Spec (`enteredSpecMode`)
   and calls `exitSpecMode()` once to leave.
 - **Effort.** `reasoningEffort` is not nullable in `update_session_settings`,
   so an update without it keeps the last effort. The worker tracks what it
@@ -402,7 +438,7 @@ thread ~10 MB
 - `buildReady` reads `session.settings.modelId` and `session.id`;
   `DroidSdkReady.availableModels` stays empty (`droidModelsDiscovery` owns the
   list).
-- **Usage.** `token_usage_update` is cumulative for the turn, so ADE keeps the
+- **Usage.** `token_usage_update` is cumulative for the turn, so DAEX keeps the
   latest; `thinkingTokens` becomes `reasoningTokens`. After each turn and
   around `compacting_conversation`, the worker reads `getContextStats()`
   without waiting; each sample posts later as `context_stats` →
@@ -413,34 +449,34 @@ thread ~10 MB
   within 500 ms, marked derived.
 
 **Cursor.** Local workers always get `sandboxOptions: { enabled: false }`
-(`cursorSdkWorker.ts`); ADE's hook denials are the permission guard.
+(`cursorSdkWorker.ts`); DAEX's hook denials are the permission guard.
 
 **OpenCode.**
 
 - `buildOpenCodeConfig` writes `OPENCODE_CONFIG`, over the global
-  `opencode.json` and under project files. ADE states `share: "disabled"` and
-  `update: "disable"` (ADE pins the binary); the env also sets
+  `opencode.json` and under project files. DAEX states `share: "disabled"` and
+  `update: "disable"` (DAEX pins the binary); the env also sets
   `OPENCODE_DISABLE_AUTOUPDATE=1`.
-- Local blocks (`ollama`, `lmstudio`) only when the user set an endpoint or ADE
+- Local blocks (`ollama`, `lmstudio`) only when the user set an endpoint or DAEX
   found models; an invented `baseURL` would override the user's own. Only
   `ollama` needs `npm` stated.
-- ADE's four agent profiles are `hidden: true`, so they never appear in
+- DAEX's four agent profiles are `hidden: true`, so they never appear in
   Tab-cycle or `@`. `ade-helper` uses `steps: 1`.
-- ADE's system prompt rides the request's `system` field every turn, never a
+- DAEX's system prompt rides the request's `system` field every turn, never a
   `synthetic`/`ignored` part (OpenCode drops `ignored` parts).
 - Re-attach: only a confirmed 404 on `session.get` (`isOpenCodeNotFoundError`)
   makes a new session; other errors show.
 
 ## Compaction per provider
 
-Every harness compacts by itself. ADE sets each harness's own compaction
+Every harness compacts by itself. DAEX sets each harness's own compaction
 config, renders one `context_compact` lifecycle, and adds a guarded Claude
 fallback at 97%.
 
-| Provider | Compacts by itself | ADE setting applied as | `/compact` in ADE | Context window source |
+| Provider | Compacts by itself | DAEX setting applied as | `/compact` in DAEX | Context window source |
 |---|---|---|---|---|
 | Claude | Yes (per-model `auto` window) | SDK `settings.autoCompactWindow` (100k–1M); subagents get it on each `agents` entry | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the window and `autoCompactThreshold` the point (33,000 below) |
-| Codex | Yes | `model_auto_compact_token_limit=<n>` in the thread config, capped at the window | `thread/compact/start`; no custom instructions, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only |
+| Codex | Yes | `model_auto_compact_token_limit=<n>` in the thread config, capped at the window | `thread/compact/start`; no custom instructions, and DAEX says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only |
 | OpenCode | Yes | `compaction: { buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
 | Pi | Yes | `settingsManager.applyOverrides({ compaction: { reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
 | Cursor | Yes | Compact first only | Local: `agent.summarize()` as a normal turn; custom instructions ignored with a notice. Cursor Cloud refuses it. | The SDK's window or the preCompact hook's `context_window_size` |
@@ -458,7 +494,7 @@ Settings live in `ai.compaction.<provider>` (`shared/compactionSettings.ts`):
 - Compaction has no off switch; a saved `enabled: false` is dropped on read.
 - `subagentAtTokens` can only lower a subagent's window, so Settings says "No
   effect" at or above `atTokens`. Built-ins the chat does not replace
-  (Explore, Plan, general-purpose) get ADE's copy of their definition
+  (Explore, Plan, general-purpose) get DAEX's copy of their definition
   (`withClaudeSubagentCompactWindow`, `shared/claudeBuiltinAgentPrompts.ts`):
   the main model for Explore and Plan (Explore capped at Opus under Fable or
   Mythos), the default subagent model for general-purpose, no CLAUDE.md for
@@ -467,7 +503,7 @@ Settings live in `ai.compaction.<provider>` (`shared/compactionSettings.ts`):
 - Claude and Codex accounts can override fields
   (`ProviderInstance.compaction`). A change restarts an idle Claude or Codex
   runtime.
-- ADE never writes `~/.claude/settings.json` and never sets
+- DAEX never writes `~/.claude/settings.json` and never sets
   `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
 
 ## Permission modes
@@ -538,7 +574,7 @@ read-only`, because its only network switch is a custom profile that a
 managed Codex policy may replace with a writable default. `config-toml` leaves
 both to the person's config.
 
-**Wire format.** ADE's kebab-case values become `onRequest`, `unlessTrusted`,
+**Wire format.** DAEX's kebab-case values become `onRequest`, `unlessTrusted`,
 `onFailure`, `workspaceWrite` at the JSON-RPC boundary. `thread/start` and
 `thread/resume` pass `{ model, cwd, config: { model_reasoning_effort,
 mcp_servers? }, ...codexPolicyArgs, ...codexServiceTierArgs(session) }`.
@@ -547,7 +583,7 @@ mcp_servers? }, ...codexPolicyArgs, ...codexServiceTierArgs(session) }`.
   `sandbox` (with the camel-case aliases) and `reasoningEffort` into the
   session, so the chips show what the runtime applied.
 - In flag modes, the policy sent with `thread/resume` stays authoritative when
-  the response echoes an older one. With `config-toml`, ADE sends no policy.
+  the response echoes an older one. With `config-toml`, DAEX sends no policy.
 - Turns use `effort` (`turn/start({ threadId, input, effort?, serviceTier? })`).
 
 **Server requests.** `currentTime/read` answers `{ currentTimeAt: <Unix
@@ -560,14 +596,14 @@ a card resolved elsewhere. Full-auto never approves a Codex elicitation, and
 **Versions.** `parseCodexServerVersion` reads the `initialize` `userAgent`
 into `runtime.serverVersion`. `normalizeCodexTokenBreakdown` maps
 `cacheWriteInputTokens` / `reasoningOutputTokens` (and the older
-`cacheCreationTokens`) to ADE's fields. `normalizeCodexRateLimits` carries
+`cacheCreationTokens`) to DAEX's fields. `normalizeCodexRateLimits` carries
 `spendControlReached` on `account/rateLimits/read` and `…/updated`.
 
 **Defaults.** A Codex chat launched with no controls and no project setting
 runs `never` + `danger-full-access`. A project CLI mode of `edit` maps to
 "Default permissions" (`workspace-write` + `on-request`).
 
-**Plan mode** uses the native app-server planning flow. ADE's guidance goes as
+**Plan mode** uses the native app-server planning flow. DAEX's guidance goes as
 a system-context input item (`collaborationMode.settings.developer_instructions`
 stays null). Completed `plan` items (and `<proposed_plan>` wrappers) become
 plan-approval requests. Accepting moves the session to full access
@@ -665,7 +701,7 @@ cache), so the Settings toggle applies with no restart.
   phone draws a muted bolt and disables its switch. The hosted web reaches the
   row through `chat.getFastModeEnabled` / `chat.setFastModeEnabled`. Only the
   Settings row explains the cost.
-- **Refused, not downgraded.** `ade chat create --fast` / `handoff --fast`
+- **Refused, not downgraded.** `daex chat create --fast` / `handoff --fast`
   answer `FAST_MODE_DISABLED_MESSAGE`, except for an automation, which runs
   Standard. `updateSession` drops a forbidden Fast. A live chat with Fast
   loses it, and the stored bit, at its next turn start.
@@ -678,7 +714,7 @@ boundaries).
 
 | Provider | How Fast is sent |
 |---|---|
-| Codex | `serviceTier: "fast"` (or `"ultrafast"`) on every `turn/start` and `thread/start`, and an **explicit `null`** when off, which forces standard over a `config.toml` `service_tier = "fast"`. ADE handles `/fast` inline. |
+| Codex | `serviceTier: "fast"` (or `"ultrafast"`) on every `turn/start` and `thread/start`, and an **explicit `null`** when off, which forces standard over a `config.toml` `service_tier = "fast"`. DAEX handles `/fast` inline. |
 | Cursor | `fastMode: false` whenever off, because Cursor's catalog default can be Fast. `cursorModelSelection` maps the flag; Work CLI launches use the `*-fast` alias. |
 | Claude | Fable and Opus advertise `["fast"]`. Chat sends `settings.fastMode`; CLI launches pass `--settings '{"fastMode":true|false}'`. Sonnet and Haiku have no Fast; Claude's own `/fast` is left to the runtime. |
 | OpenCode | A models.dev fast mode becomes a sibling model `<id>-fast` (calls `<id>` with the same effort variants), folded into its base row; combined keys (`high-fast`, `fast_high`) read as Fast routes. `resolveOpenCodeFastEffortSelection` sends the sibling with the effort, else the combined key, else a plain `fast` variant. If no route keeps both, the effort wins, the prompt logs `agent_chat.opencode_fast_not_applied` once, and the chip is disabled with the reason. Work CLI launches carry no variant. |
@@ -744,7 +780,7 @@ context figure. Other steps each emit a live `context_usage`.
   model (the fast sibling).
 - `done.account` names the `upstream`: `lmstudio` / `ollama` are `local`;
   `opencode` / `opencode-go` are `subscription` (email from the `account`
-  table of ADE's `opencode.db`); others from the `credential` table
+  table of DAEX's `opencode.db`); others from the `credential` table
   (`readOpenCodeCredentials`: `key` → `api_key`, `oauth` → `subscription`
   with `accountId`); none → `unknown`. Only `type` and `accountId` are read.
   Both lookups cache for five minutes.
@@ -789,7 +825,7 @@ Chat and tracked-CLI Pi use two mappings in `shared/cliLaunch.ts`:
   clearing mid-chat sends `set_thinking` with `null`. The picker offers
   `piSupportedThinkingLevels` per model (carried as `modelThinkingLevels`); a
   model that cannot think gets no picker.
-- **ADE never writes Pi's settings.** The settings manager uses
+- **DAEX never writes Pi's settings.** The settings manager uses
   `createPiReadOnlySettingsStorage`. One exception: Pi's "Sign in with
   ChatGPT" needs an installation id, so `login` passes
   `LoginOptions.getDeviceId`, reading `deviceId` from the global
@@ -880,9 +916,9 @@ manager.
   `buildCursorSdkLocalRunOptions` reduces the policy to run options.
 - `fullAuto` only partitions the pool and labels logs. It is **not** the SDK's
   `local.force`, which expires the active run; that is reachable only through
-  `CursorSdkSendPrompt.forceExpireActiveRun` on ADE's recovery re-send.
+  `CursorSdkSendPrompt.forceExpireActiveRun` on DAEX's recovery re-send.
 - **Hook timeout.** Cursor kills a `preToolUse` hook at its `timeout` (60 s
-  unset), so ADE's gate entry states `timeout: 86400` and the script denies
+  unset), so DAEX's gate entry states `timeout: 86400` and the script denies
   15 s earlier with a reason. If the script gives up or is killed, the worker
   posts `hook_abandoned` and the card is retired as cancelled
   (`agent_chat.cursor_permission_hook_abandoned`).
@@ -929,9 +965,9 @@ live turn. `ACTIVE_TURN_DISPATCH_MODES` gives Codex and OpenCode `inline` and
   exists, so `done.usage` has no `contextTokens` or `requestCount`.
 - **Compaction hook.** `ensureCursorSdkUserHook` registers a `preCompact`
   entry beside the `preToolUse` gate in `~/.cursor/hooks.json` (the user's
-  global file; ADE edits only its own entries). It runs its own
+  global file; DAEX edits only its own entries). It runs its own
   `~/.cursor/hooks/ade-precompact.{sh,cjs,cmd}` with `failClosed: false`,
-  never the gate scripts, which an older ADE build may rewrite. The scripts
+  never the gate scripts, which an older DAEX build may rewrite. The scripts
   answer `{}` on every path, so they cannot block a compaction. They connect
   only when `ADE_CURSOR_SDK_PRECOMPACT=1` (`buildCursorSdkWorkerEnv`). If the
   scripts cannot be written, no entry is added and the gate still installs.
@@ -1027,7 +1063,7 @@ maps each onto every vocabulary, so a family switch keeps the user's level.
   inherits its parent.
 
 **Keep the ladder separate from `AgentChatPermissionMode`.** The generic
-`plan | default | edit | full-auto` is what `ade --permission-mode`, CLI
+`plan | default | edit | full-auto` is what `daex --permission-mode`, CLI
 launches and saved sessions speak, and `droidPermissionModeFromLegacyPermissionMode`
 maps it. There `edit` is the cautious tier (Droid `auto-low`), so the middle
 rungs look inverted. Do not "fix" it: that would shift every saved session.
@@ -1119,16 +1155,16 @@ read-only and proposes changes through `ExitPlanMode`.
 - **The fence.** While `isSessionInPlanMode`, `canUseTool` refuses any tool not
   on `CLAUDE_PLAN_MODE_ALLOWED_TOOLS` (`claudeToolGate.ts`): the CLI's own
   plan-mode list (read-only built-ins, `NotebookRead`, `Agent`/`Task`,
-  `Skill`, task bookkeeping, `AskUserQuestion`) plus ADE's plan-flow and
+  `Skill`, task bookkeeping, `AskUserQuestion`) plus DAEX's plan-flow and
   question tools. It is a literal allowlist, so unknown and MCP tools are
   refused. A refusal logs `agent_chat.plan_mode_tool_denied`.
 - **Approval.** An approved `ExitPlanMode` returns `{ behavior: "allow",
   updatedInput: input }`, so the SDK's handler restores `prePlanMode` and
-  answers the model. ADE also calls `setPermissionMode` so both agree.
+  answers the model. DAEX also calls `setPermissionMode` so both agree.
 
 ## Model selection flow
 
-1. The user picks a model in `ProviderModelSelector`
+1. The user picks a model in `ModelSelector`
    (`renderer/components/shared/`).
 2. The renderer resolves a `ModelDescriptor` (`getModelById` /
    `resolveModelDescriptorForProvider`), which gives the provider, routing and
@@ -1149,7 +1185,7 @@ The model and effort the chat shows must be the ones the provider runs.
 | Claude | `buildClaudeQueryOptions` sends `model` (`resolveClaudeCliModel`, or a preset's own id) and `effort` | Teardown, then a new query; a live query also gets `setModel` | A change resets the query |
 | Codex | `thread/start` and `thread/resume` send `model` and the effort config | `thread/settings/update` on a live thread; `turn/start` sends `model` and `effort` every turn | Sent every turn |
 | Cursor | `ensureCursorSdkRuntime` sends `{ id, params }`; the pool key holds both | Teardown, or deferred to turn end while busy (`pendingModelSwitchReset`) | Params recomputed every turn (see Model params) |
-| OpenCode | `session.prompt` sends `model` and `variant` every prompt (`resolveOpenCodeFastEffortSelection`) | Teardown; a fresh session opens with ADE's reconstruction context | `variant` (`openCodeVariantKeys`); only the variants OpenCode reported; the no-inventory fallback keeps the Anthropic tiers, never Fast |
+| OpenCode | `session.prompt` sends `model` and `variant` every prompt (`resolveOpenCodeFastEffortSelection`) | Teardown; a fresh session opens with DAEX's reconstruction context | `variant` (`openCodeVariantKeys`); only the variants OpenCode reported; the no-inventory fallback keeps the Anthropic tiers, never Fast |
 | Droid | `createSession` / `updateSettings` send `modelId` and `reasoningEffort` every turn | Teardown | `ultracode` is sent as `xhigh`; a cleared stated effort resets to Droid's default |
 | Pi | `createAgentSession({ model })` with the exact model, then `setThinkingLevel`; an explicit model wins over the session file | Teardown | Pi's levels per model (`piThinkingLevel`); none means Pi's default |
 
@@ -1173,7 +1209,7 @@ the curated row with the live efforts; the live id resolves to it
 
 **Served-model mismatch.** When a served model is not a spelling, context
 tier, dated snapshot or effort variant of the requested one
-(`servedModelMismatch.ts`), ADE logs `agent_chat.served_model_mismatch` once
+(`servedModelMismatch.ts`), DAEX logs `agent_chat.served_model_mismatch` once
 per chat and model pair; `auto` never counts. `isServedRouteMismatch`
 compares routes: differing known upstreams always count, else
 `isServedModelMismatch` compares names. It runs on every `done`, ACP
@@ -1214,13 +1250,8 @@ machine in `<ADE home>/chat-launch-defaults.json`
 
 ## Model switching mid-session
 
-`chatModelSwitching.ts`:
-
-- `ChatModelSwitchPolicy` is `"same-family-after-launch"` (regular chats) or
-  `"any-after-launch"` (CTO and persistent-identity sessions).
-- `canSwitchChatSessionModel(session, target)` applies it;
-  `filterChatModelIdsForSession` limits the picker to switches without a
-  handoff.
+`shared/chatModelSwitching.ts`: `filterChatModelIdsForSession` builds the
+picker's list, keeping the session's active model in it.
 
 Another model means a **handoff** (`handoffSession`):
 
@@ -1250,7 +1281,7 @@ providers' replays are capped by a wire limit (`CODEX_REPLAY_MAX_CHARS` …).
   window. A "prompt is too long" halves the budget (floor 2,000 characters),
   re-fits the transcript and re-sends once, on a **fresh** provider session,
   clearing the continuity tail.
-- This covers a refused carrying turn and a later overflow alike. ADE never
+- This covers a refused carrying turn and a later overflow alike. DAEX never
   asks Claude to compact a one-exchange chat.
 - One retry per message. `noteRetrySucceeded` drops the staged replay;
   `reportRetryFailed` (idempotent) restores it and says so. An interrupted
@@ -1261,7 +1292,7 @@ providers' replays are capped by a wire limit (`CODEX_REPLAY_MAX_CHARS` …).
 
 ## Auto-title generation
 
-ADE names chats and auto-created lanes with one model per provider, from the
+DAEX names chats and auto-created lanes with one model per provider, from the
 vendor the chat already uses, so content never goes to another vendor:
 
 | Chat provider | Model | How it runs |
@@ -1300,8 +1331,8 @@ vendor the chat already uses, so content never goes to another vendor:
 
 **Rules.**
 
-- ADE chats wait about 8 s for a native title, then ADE-name a still-default
-  title. CLI sessions are always ADE-named (the cheap helper for Claude, Codex
+- DAEX chats wait about 8 s for a native title, then DAEX-name a still-default
+  title. CLI sessions are always DAEX-named (the cheap helper for Claude, Codex
   or Cursor, else the launch model; see
   [AI-driven titles](../terminals-and-sessions/pty-and-sessions.md#ai-driven-titles)).
 - Cursor Cloud names stay Cursor's: `updateSession`,
@@ -1316,16 +1347,16 @@ vendor the chat already uses, so content never goes to another vendor:
   title write.
 - `buildSessionIntelligenceModelCandidates` (`sessionNaming.ts`) gives the one
   model for titles, status lines, regeneration, lane names, handoff briefs
-  and identity summaries. `ade chat generate-names` regenerates title, lane
+  and identity summaries. `daex chat generate-names` regenerates title, lane
   name and status line.
 - `regenerateSessionMetadata` returns `generationError` (from
   `runNamingAcrossProviders`' `lastFailure`, passed through
-  `presentChatFailure`) with `usedDeterministicFallback`, which the Work tab
-  shows.
+  `presentChatFailure`) and keeps the current values when no model produced
+  usable names (`applied`, `skipped`, `modelId`).
 
 ## One-shot utility tasks
 
-ADE does not write commit messages, PR titles or descriptions, PR summaries or
+DAEX does not write commit messages, PR titles or descriptions, PR summaries or
 GitHub issues; the person or agent doing it writes them. Graph and iOS PR
 create is a title (from the lane name) plus optional markdown. Graph edge
 clicks run merge simulation only. Conflict proposals throw `Choose a … model
@@ -1363,7 +1394,7 @@ CTO sessions (`identityKey: "cto"`, the only identity session):
    CTO to `full-auto`; `ensureIdentitySession` re-normalizes before every turn.
 6. The provider thread is disposable. `refreshCtoProviderThread` tears down
    the runtime, forgets provider pointers, re-stages the prompt and tail, and
-   lets the next send open a new thread on the same ADE session. It runs at
+   lets the next send open a new thread on the same DAEX session. It runs at
    55% occupancy after a turn, after a compaction or overflow, on a model
    fallback, or on request.
 7. CTO-launched work never runs on the main checkout.
@@ -1373,43 +1404,6 @@ CTO sessions (`identityKey: "cto"`, the only identity session):
 8. A new CTO thread gets one visible opening user turn (`seedCtoIntroTurn`),
    once per project.
 9. Its "needs you" state comes from the read-only `getCtoAttention` probe.
-
-## Fragile and tricky wiring
-
-- **Model discovery changes the registry.** `localModelDiscovery.ts` adds and
-  removes descriptors; a cache of the registry must subscribe or re-read.
-- **Cursor discovery is surface-scoped (`cursorSource`).** Chat surfaces use
-  the SDK (~300 ms); Work CLI drafts use the `cursor-agent` CLI (seconds).
-  `loadAvailableModels` / `getModelCatalog` probe only the requested source
-  (`"sdk" | "cli" | "all"`) and serve the other from last-known-good. Mobile
-  and the desktop ModelPicker pass `"sdk"`. Staleness checks
-  `cursorAvailability[source]`, mirrored in `runtimeCatalogCache.ts`.
-- **Claude runtime readiness.** `claudeRuntimeProbe.ts` checks the binary and
-  auth before launch (`CLAUDE_RUNTIME_AUTH_ERROR`).
-  `probeClaudeRuntimeHealth` is fully isolated (`settingSources: []`,
-  `mcpServers: {}`, `strictMcpConfig: true`, `persistSession: false`); keep
-  any new probe option unable to fail the health answer.
-- **Claude account skills download first.** Claude Code downloads a claude.ai
-  account's skills and plugins into `<config>/skills/synced` and
-  `<config>/plugins/synced` when a session first starts in a Claude home. A
-  chat that starts during that download lists a different skill set, so its
-  cached prefix is of no use to the next chat. `claudeAccountSkillSync.ts`
-  starts one Claude session with no prompt when the AI status reports an
-  account sign-in and the base home has no completed skills round
-  (`.last-complete-round`). It runs in the temp folder, loads user settings
-  only (empty setting sources skip the download), no MCP servers and no hooks,
-  and stops when both rounds complete (2 s after the skills round when no
-  plugins round follows) or after 15 s. Claude chat starts (warm and cold)
-  call `waitForClaudeAccountSkillSync`, which waits at most 5 s. Other Claude
-  accounts (their own `CLAUDE_CONFIG_DIR`) download on their first chat.
-- **Permission mapping is one way.** `permissionMapping.ts`
-  (`mapPermissionToClaude`, `mapPermissionToCodex`) maps abstract to native
-  only. Changing a native field without the abstract one leaves them out of
-  sync.
-- **CTO compaction.** After a CTO compaction, `refreshReconstructionContext`
-  must re-inject identity and memory, or the agent forgets it is the CTO.
-- **OAuth redirect ports.** `oauthRedirectService.ts` binds an ephemeral port;
-  if another process takes it before the callback, the flow fails silently.
 
 ## Related docs
 
