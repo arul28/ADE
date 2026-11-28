@@ -504,7 +504,7 @@ function CloudHero({
                 ? `When credits run out, computers keep going on extra credits at ${words.scale === 1 ? `${formatCloudCentsPerHour(extraCents)} each` : words.extraPrice(extraCents)}, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
                 : `${pauseLine}${account.plan === "free" && !held ? ` Paid plans can keep going ${words.scale === 1 ? `for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}` : `at ${words.extraPrice(catalog.extraHourCents)}`}.` : ""}`}
               {extra.available ? (
-                <> <button type="button" className="adecd-linkish" onClick={toExtra}>{extra.enabled ? "Change" : "Turn on"}</button></>
+                <> <button type="button" className="adecd-linkish" onClick={toExtra}>{extra.enabled ? "Change" : "Turn on extra credits"}</button></>
               ) : account.plan === "free" ? (
                 <> <button type="button" className="adecd-linkish" onClick={toPlans}>See paid plans</button></>
               ) : null}
