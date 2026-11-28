@@ -474,6 +474,12 @@ struct WorkSessionDestinationView: View {
   /// The last title another computer's roster gave this chat (see
   /// `followRemoteRosterTitle`).
   @State private var remoteRosterTitleSeen: String?
+  /// Pricing v3: the live cloud iPhone this chat holds (`cloudHeldPhoneId`), read
+  /// again when the account's live phone changes and after each turn (a turn
+  /// is when a chat takes the phone); nil with none.
+  @State var sponsoredHeldPhoneId: String?
+  /// Counts this chat's finished turns, so the held phone is read again after each.
+  @State private var sponsoredTurnsEnded = 0
   // Last non-nil summary this mounted instance ever observed. The composer's
   // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
   // momentary nil summary would blank those controls mid-session. This latch
@@ -727,10 +733,18 @@ struct WorkSessionDestinationView: View {
   /// Its own machine's key, never the tab's unless the chat lives there; nil
   /// on the person's own machines and for a deleted computer's saved copy.
   var sponsoredInstanceId: String? {
-    guard let sponsored = accountCloud.account?.sponsored, sponsored.ads,
-          sponsored.consent != CloudSponsoredState.declined,
-          !personalChat, providerSignInIsAdeCloud else { return nil }
+    // Pricing v3: every plan, while ads exist here and are on or the notice is due (`cloudChatAdsMayShow`).
+    guard cloudChatAdsMayShow(), !personalChat, providerSignInIsAdeCloud else { return nil }
     return syncService.cloudServerInstance(fleetKey: sessionCloudMachineKey)?.id
+  }
+
+  /// The account's ADE Free Models state, while this chat runs an ADE Free
+  /// Model the person agreed to: on any machine, any plan. Its cards and the
+  /// "someone is watching" reports follow it (`WorkChatSessionView.sponsoredFreeModels`).
+  var sponsoredFreeModels: CloudFreeModelsState? {
+    guard let state = accountCloud.account?.freeModels, state.available, state.granted,
+          let summary = composerChatSummary else { return nil }
+    return state.lists(summary.modelId ?? "") || state.lists(summary.model) ? state : nil
   }
 
   var sessionCloudMachineKey: String? {
@@ -2043,6 +2057,7 @@ struct WorkSessionDestinationView: View {
         // status (which downgrades a stale-active row to idle via the fresher
         // liveTurnActiveHint) so the belt still fires when the row lags.
         guard previous == "active", current != "active" else { return }
+        sponsoredTurnsEnded += 1
         Task { await reconcileOptimisticSteersAfterTurnEnd() }
       }
       .task(id: sessionRowObservationKey) {
@@ -2078,6 +2093,11 @@ struct WorkSessionDestinationView: View {
       }
       .task(id: session?.laneId ?? initialSession?.laneId ?? "") {
         await syncLanePresence()
+      }
+      // Pricing v3: whether this chat holds the account's live cloud iPhone (one
+      // read per phone and per finished turn; none while the account has no live phone).
+      .task(id: "\(sessionId)|\(accountCloud.account?.pricing?.phone?.phoneId ?? "")|\(sponsoredTurnsEnded)") {
+        sponsoredHeldPhoneId = await cloudHeldPhoneId(sessionId: sessionId)
       }
       .task(id: headerMenuPrLookupKey) {
         // PR + lane presence lookups read the active project's caches; skip
@@ -2835,6 +2855,8 @@ struct WorkSessionDestinationView: View {
     chatView.onReactToAssistantMessage = assistantReactionAction
     chatView.cloudHeld = cloudHeldThread(frame: thread.frame)
     chatView.sponsoredInstanceId = sponsoredInstanceId
+    chatView.sponsoredFreeModels = sponsoredFreeModels
+    chatView.sponsoredHoldsPhone = sponsoredHeldPhoneId != nil
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog
     chatView.sendBlockedReason = cloudNewComputerBlockedReason
     return chatView
@@ -3332,6 +3354,8 @@ struct WorkSessionDestinationView: View {
         localEchoMessages.removeAll { $0.id == echo.id }
       }
       errorMessage = nil
+      // The opener a person typed on the new-chat screen counts like a composer send.
+      noteAdProofSent(echo.id)
     } catch {
       ADEHaptics.error()
       localEchoMessages.removeAll { $0.id == echo.id }

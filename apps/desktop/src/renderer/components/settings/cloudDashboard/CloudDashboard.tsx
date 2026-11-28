@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { AppleLogo, ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { CLOUD_COMPUTER_UNAVAILABLE_LABEL, CLOUD_MAC_NAME, cloudMachineAllows, type CloudComputerAction } from "../../../../shared/cloudMac";
 import {
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
@@ -11,7 +12,6 @@ import {
   cloudExtraHourCentsOf,
   cloudFreePlanOf,
   cloudCatalogOf,
-  cloudHoursLeftMilli,
   cloudPlanIdOf,
   cloudPlanLabelOf,
   cloudSmallHoursSentence,
@@ -19,7 +19,6 @@ import {
   formatCloudCentsPerHour,
   formatCloudDate,
   formatCloudGb,
-  formatCloudHours,
   percentOf,
   planCleanupDoneSentence,
   timedWakesCancelledSentence,
@@ -27,8 +26,9 @@ import {
   type CloudPlanCleanupPick,
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
-import { cloudTierHoursAt } from "../../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { cloudAdsViewOf, cloudPricingOf } from "../../../../shared/cloudAdPriceWords";
+import { cloudTiers } from "../../../../shared/cloudTiers";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
 import { formatAgo, ipcErrorMessage } from "../../../lib/format";
@@ -52,8 +52,12 @@ import { CLOUD_EXTRA_ANCHOR, CloudPlans } from "./CloudPlans";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 import { CloudIdleCleanupNotices, idleRowTag } from "./CloudIdleCleanupNotice";
 import { CloudSizes } from "./CloudSizes";
+import { CloudAdsBand } from "./CloudAdsBand";
+import { CloudMacExplainer } from "./CloudMacExplainer";
+import { CloudMacRowNote } from "./CloudMacRowNote";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
+import { CloudFreeModelsCard } from "./CloudFreeModelsCard";
 import { useHasOwnComputer, useOwnWebComputers } from "../../../state/ownComputers";
 import { useWebMachines } from "../../../webclient/workspace/WebWorkspaceContext";
 import {
@@ -258,7 +262,12 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     if (!lane.instanceId) return;
     setBusyKey(lane.key);
     try {
-      await freeCloudLaneWithConfirm({ instanceId: lane.instanceId, laneName: lane.name, onDone: refresh });
+      await freeCloudLaneWithConfirm({
+        instanceId: lane.instanceId,
+        laneName: lane.name,
+        onDone: refresh,
+        mac: lane.mac ? { stopped: lane.mac.phase === "stopped" || lane.mac.phase === "start_failed" } : null,
+      });
     } finally {
       setBusyKey(null);
     }
@@ -335,31 +344,36 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
               }}
             />
           )}
+          {/* How a Mac works, once, under the table (until Got it). */}
+          {!inside ? <CloudMacExplainer account={account} hasMacLane={lanes.some((lane) => lane.isMac)} /> : null}
         </div>
       </section>
 
-      <CloudSavedLaneWorkCard shownLaneIds={shownLaneIds} />
-
-      <CloudPlans account={account} onChanged={refresh} newPlanId={moment?.planId ?? null} />
       <CloudSizes account={account} />
+      <CloudPlans account={account} onChanged={refresh} newPlanId={moment?.planId ?? null} />
 
-      {/* Sign-ins on the left; the shorter agent limits and the invite card
-          stack on the right, so the two columns end near one height (B14-2). */}
+      {/* Two columns of about the same height: sign-ins with the invite card
+          under them, then agent limits with DAEX Free Models (B14-2). */}
       {/* With no computer of the person's own (ADE Web), the sign-ins show as
           "Providers on ADE Cloud" below this page instead. The web app reads
           the agent limits from the account; on a server without that route
           they need a connected computer (an ADE Cloud one will do). */}
+      <CloudSavedLaneWorkCard shownLaneIds={shownLaneIds} />
       {ownComputer ? (
         <div className="adecd-pair">
-          <CloudSignIns />
+          <div className="adecd-stack">
+            <CloudSignIns />
+            <CloudInviteCard account={account} onChanged={refresh} />
+          </div>
           <div className="adecd-stack">
             <CloudAgentLimitsCard />
-            <CloudInviteCard account={account} onChanged={refresh} />
+            <CloudFreeModelsCard account={account} onChanged={refresh} />
           </div>
         </div>
       ) : (
         <div className="adecd-stack">
           {connectedMachine || isWebClientMode() ? <CloudAgentLimitsCard /> : null}
+          <CloudFreeModelsCard account={account} onChanged={refresh} />
           <CloudInviteCard account={account} onChanged={refresh} />
         </div>
       )}
@@ -408,6 +422,10 @@ function CloudHero({
   const level = usageLeftLevel(hoursPct);
   // Small is free unless the account's catalog rates it (Free, sponsored cards off): then its time left shows too.
   const smallRateMilli = cloudSmallRateMilli(catalog);
+  // Under Pricing v3, Free's Small with ads on is free: a message still starts it at 0 credits.
+  const adsView = cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+  const smallAdMilli = cloudTiers(catalog).find((tier) => tier.id === "small")?.adMultiplierMilli ?? null;
+  const smallFreeNow = smallRateMilli <= 0 || (adsView?.available === true && adsView.on && smallAdMilli === 0);
   const forecast = hoursForecast(account, now, words);
   const worth = heroCreditsWorth(account, words);
   const parts = heroBalanceParts(account);
@@ -431,7 +449,7 @@ function CloudHero({
   const planTotal = held ? cloudCatalogOf(account).plans.free.includedMilli : hours.includedMilli;
   const barParts = parts.filter((part) => part.milli > 0);
   const barTotal = Math.max(1, hours.includedMilli);
-  const barAria = `${parts.map((part) => `${part.label} ${formatCloudHours(part.shownMilli)}`).join(", ")}, of ${formatCloudHours(hours.includedMilli)} ${words.noun}`;
+  const barAria = `${parts.map((part) => `${part.label} ${words.num(part.shownMilli)}`).join(", ")}, of ${words.num(hours.includedMilli)} ${words.noun}`;
   const extra = account.extraHours;
   const extraCents = cloudExtraHourCentsOf(cloudPlanIdOf(account), catalog) ?? catalog.extraHourCents;
   const keepsGoing = extra.available && extra.enabled;
@@ -439,11 +457,11 @@ function CloudHero({
   // Free credits held (GitHub rules, or another account used them here) don't come back at the reset, and nothing runs.
   const pauseLine = held
     ? earned > 0
-      ? "Your earned credits run your computers. Once they're used, cloud computers wait until the free plan's check clears, or you pick a paid plan."
+      ? "Your credits from invites run your computers. Once they're used, cloud computers wait until the free plan's check clears, or you pick a paid plan."
       : "Cloud computers wait until the free plan's check clears, or you pick a paid plan."
-    : smallRateMilli > 0
-    ? `Cloud computers pause until ${formatCloudDate(account.billing.periodEnd)}.`
-    : `Bigger computers pause until ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
+    : !smallFreeNow
+    ? `When credits run out, cloud computers pause until the plan renews on ${formatCloudDate(account.billing.periodEnd)}.`
+    : `When credits run out, bigger computers pause until the plan renews on ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
   return (
     <section ref={heroRef} className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
       <CloudSky />
@@ -457,11 +475,13 @@ function CloudHero({
       </header>
       <div className="adecd-hero-parts">
         <div className="adecd-hero-part adecd-hero-balance" role="group" aria-label={leftLabel} data-level={level}>
-          <span className="adecd-label" title={`${cloudSmallHoursSentence(catalog, words)} ${words.unitSentence}`}>{leftLabel}</span>
+          <span className="adecd-label" title={`${cloudSmallHoursSentence(catalog, words)} ${words.unitSentence}`.trim()}>{leftLabel}</span>
           <div className="adecd-hours-num">
-            <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
+            <b className="kit-num" data-face="ui">{words.num(hours.leftMilli)}</b>
             {/* Free hours held (GitHub rules, or another account used them here): the plan's own number, on hold, never "of 0". */}
-            <span>{held ? `of ${formatCloudHours(planTotal)}, on hold` : `of ${formatCloudHours(planTotal)}`}</span>
+            <span>{held ? `of ${words.num(planTotal)}, on hold` : `of ${words.num(planTotal)}`}</span>
+            {/* The plan's lit windows, as art: the computers' count lives in the lanes card's head. */}
+            <ComputerWindows total={computers.total} limit={computers.limit} awake={account.computers.awake} />
           </div>
           <div className="adecd-bar" role="img" aria-label={barAria}>
             {barParts.map((part) => (
@@ -470,57 +490,29 @@ function CloudHero({
           </div>
           <ul className="adecd-legend" aria-hidden="true">
             {parts.map((part) => (
-              <li key={part.key} data-part={part.key}><i />{part.label} <b className="kit-num">{formatCloudHours(part.shownMilli)}</b></li>
+              <li key={part.key} data-part={part.key}><i />{part.label} <b className="kit-num">{words.num(part.shownMilli)}</b></li>
             ))}
           </ul>
           <ul className="adecd-hours-notes">
             {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
             {githubLine ? <li data-tone="warn">{githubLine} <button type="button" className="adecd-linkish" onClick={toPlans}>See how</button></li> : null}
             {worth || forecast ? <li>{[worth, forecast].filter(Boolean).join(" ")}</li> : null}
-            {earned > 0 ? <li data-tone="lamp">{`${words.milli(earned)} earned from invites, used after your plan's. They never expire.`}</li> : null}
-            {smallRateMilli > 0 ? (
-              <li>
-                {`${cloudSmallHoursSentence(catalog, words)} ${cloudTierHoursAt({ multiplierMilli: smallRateMilli }, cloudHoursLeftMilli(account))} left at that size.`}
-                {account.sponsored?.smallNeedsLook
-                  ? ` Opening a ${BRAND.CLOUD_NAME} chat in the US makes it unlimited again.`
-                  : account.sponsored?.smallNeedsCards ? " Sponsored cards make it unlimited." : ""}
-              </li>
-            ) : null}
+            {earned > 0 ? <li data-tone="lamp">{`${words.milli(earned)} from invites, used after your plan's. They never expire.`}</li> : null}
+            {/* What happens at zero: one line, with the same link the old card had. */}
+            <li className="adecd-hero-when" data-on={keepsGoing || undefined}>
+              {keepsGoing
+                ? `When credits run out, computers keep going on extra credits at ${words.scale === 1 ? `${formatCloudCentsPerHour(extraCents)} each` : words.extraPrice(extraCents)}, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
+                : `${pauseLine}${account.plan === "free" && !held ? ` Paid plans can keep going ${words.scale === 1 ? `for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}` : `at ${words.extraPrice(catalog.extraHourCents)}`}.` : ""}`}
+              {extra.available ? (
+                <> <button type="button" className="adecd-linkish" onClick={toExtra}>{extra.enabled ? "Change" : "Turn on extra credits"}</button></>
+              ) : account.plan === "free" ? (
+                <> <button type="button" className="adecd-linkish" onClick={toPlans}>See paid plans</button></>
+              ) : null}
+            </li>
           </ul>
         </div>
-        <div className="adecd-hero-rail">
-          <div className="adecd-hero-stat" role="group" aria-label="Cloud computers" title="Every cloud computer counts toward your plan, asleep or not.">
-            <span className="adecd-label">Cloud computers</span>
-            <div className="adecd-stat-row">
-              <div className="adecd-part-num">
-                <b className="kit-num" data-face="ui">{computers.total}</b>
-                <span>of {computers.limit}</span>
-              </div>
-              <ComputerWindows total={computers.total} limit={computers.limit} awake={account.computers.awake} />
-            </div>
-            <span className="adecd-part-line">{account.computers.awake} awake now</span>
-          </div>
-          <div className="adecd-hero-stat" role="group" aria-label={WHEN_CREDITS_RUN_OUT}>
-            <span className="adecd-label">{WHEN_CREDITS_RUN_OUT}</span>
-            <div className="adecd-stat-row">
-              <div className="adecd-part-state" data-on={keepsGoing || undefined}>
-                <i aria-hidden="true" />
-                <b>{keepsGoing ? "Keep going" : "Pause"}</b>
-              </div>
-              {extra.available ? (
-                <button type="button" className="adecd-linkish adecd-part-link" onClick={toExtra}>{extra.enabled ? "Change" : "Turn on"}</button>
-              ) : account.plan === "free" ? (
-                <button type="button" className="adecd-linkish adecd-part-link" onClick={toPlans}>See paid plans</button>
-              ) : null}
-            </div>
-            <span className="adecd-part-line">
-              {keepsGoing
-                ? `Extra credits at ${formatCloudCentsPerHour(extraCents)} each, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
-                : `${pauseLine}${account.plan === "free" && !held ? ` Paid plans can keep going for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}.` : ""}`}
-            </span>
-          </div>
-        </div>
       </div>
+      <CloudAdsBand account={account} />
       {moment ? (
         <Banner
           layout="inline"
@@ -580,8 +572,6 @@ function statusActions(
   return extra.enabled ? [] : [{ label: `Turn on ${cloudUnitWords(account).extra.toLowerCase()}`, onClick: to.onExtra }];
 }
 
-const WHEN_CREDITS_RUN_OUT = "When credits run out";
-
 /**
  * The web app's server list of computers failed (`computersUnread`): the plan
  * and the lanes kept without a computer still show; Try again reads the list
@@ -631,6 +621,7 @@ function LaneTable({
   /** The row's actions, behind its ⋯ button at the right end (B14-22). */
   menuActions: (lane: DashLane) => MachineAction[];
 }) {
+  // A stopped Mac's first stop says once more what a stop keeps (synced, account-wide).
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // The listbox keeps focus itself (`aria-activedescendant`): keys from a
     // row's ⋯ button or its open menu (a portal, so they bubble here) are theirs.
@@ -654,9 +645,12 @@ function LaneTable({
     // An unread list says so above the table (`ComputersUnreadNotice`): not "nothing here".
     return computersUnread ? null : <p className="adecd-empty">Nothing here yet. Each cloud lane gets its own computer, and every computer you pay for is listed here.</p>;
   }
+  // Pricing v3: one more column, what each computer costs now.
+  const priced = lanes.some((lane) => lane.price != null);
   return (
     <div
       className="adecd-table"
+      data-priced={priced || undefined}
       role="listbox"
       tabIndex={0}
       aria-label="Lanes and computers. Arrow keys move, Enter looks inside."
@@ -664,7 +658,7 @@ function LaneTable({
       onKeyDown={onKeyDown}
     >
       <div className="adecd-tr adecd-th" aria-hidden="true">
-        <span>Lane</span><span>Size</span><span>State</span><span>Last run</span><span />
+        <span>Lane</span><span>Size</span><span>State</span>{priced ? <span>Costs now</span> : null}<span>Last run</span><span />
       </div>
       {lanes.map((lane) => {
         const open = lane.key === selectedKey;
@@ -682,7 +676,8 @@ function LaneTable({
               onDoubleClick={() => onOpen(lane.key)}
             >
               <span className="adecd-name">
-                {lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
+                {lane.isMac ? <AppleLogo size={15} weight="fill" className="adecd-mac-mark" aria-label="Mac" />
+                  : lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
                 <span className="adecd-name-text">{lane.name}</span>
                 {/* One mark at most, so the name keeps its room: the idle cleanup's warning, no lane, then unused, then safe to delete. */}
                 {lane.idle ? <IdleTag lane={lane} now={now} />
@@ -691,16 +686,24 @@ function LaneTable({
                   : lane.safe ? <span className="kit-tag" data-tone="ok" title="Its pull request is merged and nothing is unpushed">Safe to delete</span>
                   : null}
               </span>
-              <span className="adecd-tsize">{lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}</span>
+              <span className="adecd-tsize">
+                {lane.isMac ? <>Mac{lane.rateLabel ? <em className="kit-num">{lane.rateLabel}</em> : null}</>
+                  : lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}
+              </span>
               {status ? (
                 <span className="adecd-state" data-state={status.state} title={status.title ?? undefined}><i />{status.label}</span>
               ) : (
-                <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
+                <span className="adecd-state" data-state={lane.unavailable ? "failed" : lane.state} title={lane.mac?.label}>
+                  <i />{lane.unavailable ? CLOUD_COMPUTER_UNAVAILABLE_LABEL : lane.mac?.label ?? STATE_LABEL[lane.state]}
+                </span>
               )}
+              {priced ? <PriceCell lane={lane} /> : null}
               <span className="adecd-when" title={removedReasonText(lane) ?? undefined}>{lastRunText(lane, now)}</span>
               {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
               <span aria-hidden="true" />
             </div>
+            {lane.unavailable && !status ? <div className="adecd-row-note" data-tone="warn" role="presentation">{lane.unavailable}</div> : null}
+            {lane.mac && !status ? <CloudMacRowNote mac={lane.mac} now={now} /> : null}
             {actions.length ? (
               <span className="adecd-row-menu">
                 <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} />
@@ -711,6 +714,28 @@ function LaneTable({
         );
       })}
     </div>
+  );
+}
+
+/**
+ * Pricing v3: what a computer costs now, and why it has the full price while
+ * ads are on. Asleep (or no computer), it costs nothing now; a Mac costs
+ * something only while it is on (nothing while it waits for a free Mac).
+ */
+function PriceCell({ lane }: { lane: DashLane }) {
+  if (!lane.price) return <span className="adecd-price" data-quiet="">—</span>;
+  if (lane.mac && lane.mac.phase !== "running") {
+    const idle = lane.mac.phase === "queued" ? "Nothing while it waits" : lane.mac.phase === "starting" ? "Nothing until it's on" : "Nothing while stopped";
+    return <span className="adecd-price" data-quiet="" title={lane.price.text}>{idle}</span>;
+  }
+  if (lane.state === "asleep" || lane.state === "none") {
+    return <span className="adecd-price" data-quiet="" title={lane.price.text}>Nothing while asleep</span>;
+  }
+  return (
+    <span className="adecd-price" title={[lane.price.text, lane.price.reason].filter(Boolean).join(". ")}>
+      <span className="kit-num" data-face="ui">{lane.price.text}</span>
+      {lane.price.reason ? <small data-tone="full">{lane.price.reason}</small> : null}
+    </span>
   );
 }
 
@@ -745,14 +770,19 @@ function laneMenuActions(lane: DashLane, args: {
 }): MachineAction[] {
   if (!lane.instanceId) return [];
   const life = cloudLaneChangesAvailable();
-  const actions: MachineAction[] = [
-    { key: "disk", label: "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside },
-  ];
+  // What the server refuses on this computer (`unsupported`) is not offered at all.
+  const allows = (action: CloudComputerAction) => cloudMachineAllows(lane.machine, action);
+  const actions: MachineAction[] = [];
+  // A Mac's drive is measured only when it reports one.
+  if (!lane.mac || lane.usage) {
+    actions.push({ key: "disk", label: lane.mac ? "What uses the drive" : "What uses the disk", icon: <MagnifyingGlass size={13} />, onSelect: args.onLookInside });
+  }
   if (life && !lane.noLane) {
-    actions.push(
-      { key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning },
-      { key: "free", label: "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy },
-    );
+    if (allows("resize")) actions.push({ key: "size", label: "Change size", icon: <Cpu size={13} />, onSelect: args.onSize, disabled: args.busy || args.jobRunning });
+    // A lost drive has nothing to push: its saved work is already in Lanes without a computer.
+    if (lane.mac?.phase !== "drive_lost") {
+      actions.push({ key: "free", label: lane.mac ? "Keep the lane, delete the Mac and its drive" : "Keep the lane, free its computer", icon: <Desktop size={13} />, onSelect: args.onFree, disabled: args.busy });
+    }
   }
   if (life) {
     actions.push({ key: "delete", label: lane.noLane ? "Delete computer" : "Delete lane", icon: <Trash size={13} />, onSelect: args.onDelete, disabled: args.busy, danger: true });

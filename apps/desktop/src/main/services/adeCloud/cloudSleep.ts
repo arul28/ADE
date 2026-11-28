@@ -15,6 +15,7 @@
  */
 
 import { CLOUD_PLAN_PAST_DUE_SENTENCE, isCloudRefusalCode, type CloudAgentLimitsUpdate } from "../../../../../account-directory/src/cloud/contract";
+import { isCloudMacId } from "./cloudComputerRules";
 import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
 import { cloudAgentExtraDiskCentsOf } from "../../../shared/adeCloud/accountCalls";
 import { AdeExpectedError } from "../../../shared/expectedError";
@@ -28,7 +29,7 @@ import {
   type CloudWakeForUseResult,
 } from "../../../shared/adeCloud";
 import { getErrorMessage } from "../shared/utils";
-import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
+import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger, type CloudWakeAdProof } from "./cloudProvider";
 import type { CloudVault } from "./cloudAccess";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { wakeThroughTransition } from "./cloudInstanceOps";
@@ -59,6 +60,8 @@ export type CloudEnableSleepResult =
   | { state: "on" }
   /** The box's ADE predates keeping itself awake; sleep stays off until it updates. */
   | { state: "brain_too_old" }
+  /** A DAEX Cloud Mac: it has no provider sleep or wake URL; its brain's idle wait stops it. */
+  | { state: "not_on_mac" }
   /** Not awake now; ADE tries when it is (an exec here would wake it). */
   | { state: "not_running" }
   | { state: "failed"; error: string };
@@ -74,6 +77,8 @@ export async function enableCloudSleep(
   instanceId: string,
   options: { wakeIfNeeded?: boolean; logger?: CloudLogger } = {},
 ): Promise<CloudEnableSleepResult> {
+  // A public port would be refused (`mac_unsupported`): asked anyway, it failed once per sign-in and reconnect.
+  if (isCloudMacId(instanceId)) return { state: "not_on_mac" };
   try {
     const instance = await client.getInstance(instanceId);
     if (instance.status !== "running" && !options.wakeIfNeeded) return { state: "not_running" };
@@ -140,7 +145,7 @@ export function cloudInstanceForMachine(
 export async function wakeCloudMachineForUse(
   client: CloudProvider,
   machine: { machineKey: string; hostname?: string | null },
-  options: { logger?: CloudLogger; now?: () => number } = {},
+  options: { logger?: CloudLogger; now?: () => number; adProof?: CloudWakeAdProof | null } = {},
 ): Promise<CloudWakeForUseResult> {
   const now = options.now ?? (() => Date.now());
   // Bounded: this sits in front of a connect, which must not wait on a slow provider.
@@ -170,7 +175,7 @@ export async function wakeCloudMachineForUse(
   }
   const started = now();
   try {
-    await wakeThroughTransition(client, instance.id, now);
+    await wakeThroughTransition(client, instance.id, now, options.adProof);
   } catch (error) {
     // Hours, disk, a block, too many awake, a delete under way: every refusal
     // carries the server's code and sentence, and the caller shows the sentence.

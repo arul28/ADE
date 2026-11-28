@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CLOUD_MAC_PHASE_LABEL, cloudMacPhaseOf, type CloudMacPhase } from "../../../shared/cloudMac";
 import { CLOUD_MADE_BY_CHAT_METADATA, type CloudMachinesResult } from "../../../shared/adeCloud";
 import type { CloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_LANE_BRANCH_METADATA, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
@@ -119,6 +120,12 @@ function laneStateOf(state: string): CloudLaneEntryState {
     case "deleting": return "deleting";
     default: return "error";
   }
+}
+
+/** A Mac's phase and word, from the server's `mac` state. */
+function macOf(box: CloudLaneMachine): { phase: CloudMacPhase; label: string } {
+  const phase = cloudMacPhaseOf(box.mac, box.status);
+  return { phase, label: CLOUD_MAC_PHASE_LABEL[phase] };
 }
 
 function plural(count: number, one: string, many = `${one}s`): string {
@@ -276,11 +283,12 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
           instanceId: box.instanceId,
           machineKey: box.machineKey,
           name: box.name,
-          sizeLabel: describeCloudMachineSize(box, catalog),
+          sizeLabel: box.os === "mac" ? `Mac · ${describeCloudMachineSize(box, catalog)}` : describeCloudMachineSize(box, catalog),
           hoursRate: box.hoursRate,
           lastUsedAt: iso(box.lastActiveAtMs),
           deletesAt: deletesAt.get(box.instanceId) ?? null,
           diskGb: box.resources?.diskGb ?? null,
+          ...(box.os === "mac" ? { mac: macOf(box) } : {}),
         },
         deleted: null,
         chats: chatCount(box.lane.laneId),

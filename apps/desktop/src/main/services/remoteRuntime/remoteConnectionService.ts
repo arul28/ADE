@@ -188,7 +188,7 @@ type RemoteConnectionServiceOptions = {
    * an explicit Connect and for a call that changes something: background
    * reads never wake a box, or an open window would keep it awake forever.
    */
-  wakeForUse?: (target: RemoteRuntimeTarget) => Promise<boolean>;
+  wakeForUse?: (target: RemoteRuntimeTarget, use?: { adProof?: { chatId: string; messageId: string } | null }) => Promise<boolean>;
   /**
    * Whether a cloud computer is asleep or stopped. Asked when a call to it
    * fails the way a sleeping computer fails (its relay tunnel looks open until
@@ -2071,7 +2071,7 @@ export class RemoteConnectionService {
         }
         if (this.isManuallyDisconnected(sleeping)) throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
       }
-      if (sleeping && await this.wakeForUse(sleeping, { via: "action", action: `${request.domain}.${request.action}` })) {
+      if (sleeping && await this.wakeForUse(sleeping, { via: "action", action: `${request.domain}.${request.action}` }, personMessageOf(request))) {
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
       } else if (sleeping && this.asleepChecks.isResting(targetId)) {
@@ -2093,7 +2093,7 @@ export class RemoteConnectionService {
         // call is sent once more only when sending it twice is safe, or when
         // it never went out; otherwise its unknown outcome stands, and the
         // person's retry reaches the woken machine.
-        if (!wakes || !(await this.wakeForUse(target, { via: "action_retry", action: `${request.domain}.${request.action}` }))) throw error;
+        if (!wakes || !(await this.wakeForUse(target, { via: "action_retry", action: `${request.domain}.${request.action}` }, personMessageOf(request)))) throw error;
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(target));
         if (error instanceof RemoteActionOutcomeUnknownError
@@ -2853,9 +2853,10 @@ export class RemoteConnectionService {
   private async wakeForUse(
     target: RemoteRuntimeTarget,
     cause: { via: "connect" | "action" | "action_retry"; action?: string },
+    adProof: { chatId: string; messageId: string } | null = null,
   ): Promise<boolean> {
     if (!this.options.wakeForUse) return false;
-    const woke = await this.options.wakeForUse(target);
+    const woke = await this.options.wakeForUse(target, adProof ? { adProof } : undefined);
     if (woke) this.options.logger?.info("remote.cloud_woken_for_use", { targetId: target.id, via: cause.via, action: cause.action ?? null });
     return woke;
   }
@@ -3137,4 +3138,26 @@ export class RemoteConnectionService {
       listener(snapshot);
     }
   }
+}
+
+/**
+ * A person's chat message sent from this app's own window, stamped with the
+ * window's `inputOrigin` and its `clientSendId`: `chat.sendMessage`, or a new
+ * chat's first message (`chat.createSessionAndSend`, under the chat id the
+ * window picked). The ids a wake for it sends as its ad proof (Pricing v3),
+ * the same the window sends to `/sent`. Null for anything else, an agent's or
+ * a CLI's call included, so only a person's message counts.
+ */
+function personMessageOf(request: RemoteRuntimeActionRequest): { chatId: string; messageId: string } | null {
+  if (request.domain !== "chat" || (request.action !== "sendMessage" && request.action !== "createSessionAndSend")) return null;
+  const record = (value: unknown) => (value && typeof value === "object" ? value as Record<string, unknown> : null);
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+  const args = record(request.args);
+  const origin = record(args?.inputOrigin);
+  const created = request.action === "createSessionAndSend";
+  const message = created ? record(args?.message) : args;
+  const chatId = text(created ? record(args?.create)?.sessionId : args?.sessionId);
+  const messageId = text(message?.clientSendId);
+  if (!origin || typeof origin.clientId !== "string" || !origin.clientId || !chatId || !messageId) return null;
+  return { chatId, messageId };
 }

@@ -158,3 +158,75 @@ describe("runCloudBootLaunch: a machine launch", () => {
     expect(setUps).toBe(0);
   });
 });
+
+/**
+ * A join whose own sign-in link the computer couldn't finish (the headless
+ * approval closed): the join claimed that link's code, and an approval page
+ * refuses a claimed code, so the code a person is asked to approve must be a
+ * fresh one.
+ */
+describe("runCloudBootLaunch: a join that needs a person's approval", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-boot-join-"));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it("asks the person to approve a code the join's own link did not claim, and signs in with it", async () => {
+    const minted: string[] = [];
+    // The server's side: the first join claims its code for the link it answers with.
+    const claimed = new Set<string>();
+    const approvalCodes: string[] = [];
+    const polls = new Map<string, number>();
+    let signedIn = false;
+    const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+    const api = {
+      joinLaunch: async (_launchId: string, _instanceId: string, join: { needsApproval?: boolean; userCode?: string }) => {
+        if (join.needsApproval) {
+          const code = join.userCode ?? minted[0];
+          approvalCodes.push(code);
+          return { ok: true, state: "needs_approval", joinExpiresAt: Date.now() + 30 * 60_000 };
+        }
+        claimed.add(join.userCode!);
+        return { url: "https://accounts.example/sign-in?__clerk_ticket=t", joinExpiresAt: Date.now() + 30 * 60_000 };
+      },
+      launchStatus: async () => ({ launchId: LAUNCH, kind: "machine", state: "joined", request: null, stages: [] }),
+      reportLaunchStages: async () => ({}),
+    } as unknown as CloudApiClient;
+
+    await runCloudBootLaunch({
+      launchId: LAUNCH,
+      joinCode: "join-code-1234567890abcdef",
+      instanceId: "macfresh1234",
+      stateFile: path.join(dir, "cloud-launch.json"),
+      logger,
+      api: () => api,
+      account: {
+        isSignedIn: () => signedIn,
+        startDeviceLogin: async () => {
+          const userCode = `CODE-${minted.length + 1}`;
+          minted.push(userCode);
+          return { sessionId: userCode, userCode, intervalSec: 2, expiresAt };
+        },
+        // The person approves the code their page shows, which works only for a code no link claimed; a code
+        // nobody can approve runs out.
+        pollDeviceLogin: async (sessionId: string) => {
+          if (approvalCodes.includes(sessionId) && !claimed.has(sessionId)) {
+            signedIn = true;
+            return { status: "signed_in" };
+          }
+          polls.set(sessionId, (polls.get(sessionId) ?? 0) + 1);
+          return { status: (polls.get(sessionId) ?? 0) >= 3 ? "expired" : "pending" };
+        },
+      },
+      approveHeadless: async () => "closed",
+      setUpProject: async () => { throw new Error("a machine launch has no project"); },
+      launches: async () => { throw new Error("a machine launch starts no chat"); },
+      sleep: async () => {},
+    } as unknown as CloudBootLaunchDeps);
+
+    expect(approvalCodes).toHaveLength(1);
+    expect(claimed.has(approvalCodes[0])).toBe(false);
+    expect(signedIn).toBe(true);
+  });
+});

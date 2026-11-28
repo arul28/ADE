@@ -131,6 +131,13 @@ export type CloudPhoneStatusView = Omit<CloudPhoneState, "phone"> & {
    */
   lastActivityAt?: number | null;
   /**
+   * Pricing v3: the chat that holds the live phone (the chat of this brain's
+   * latest call to it), or null when none did or another brain drives it. An
+   * older brain leaves it out: then no chat holds it, and it keeps the full
+   * price there.
+   */
+  chatSessionId?: string | null;
+  /**
    * For a chat's call: the minutes this period of the phones that chat's
    * calls drove on this brain, in the server's own count (one phone two chats
    * drove counts for each), among the period's newest phones the server lists

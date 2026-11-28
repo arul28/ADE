@@ -20,8 +20,16 @@ Accounts (an email, or a Clerk user id that starts with user_):
   phone <account> <on|off>               on the ADE Cloud iPhone's beta list, or off it; not a test
                                          (a tester picks their own provider in an ADE beta app)
   tester <account> <on|off>              on the sponsored testers list (ads switch "testers")
+  mac <account> <on|off>                 on the DAEX Cloud Mac's testers list (switch mac_computers "testers");
+                                         off stops their Macs and keeps the drives
+  mac-testers                            the Mac's testers and the emails still waiting for an account
+  mac-template [stable|beta] [--drive <name>] [--min-version <x.y.z>]
+                                         a channel's Mac template drive and DAEX release ("" clears); no channel: both
   ad-format <account> <below_reply|above_prompt|inline|switch>
                                          where this account's sponsored cards show (switch: gravity_format's)
+  free-models-meter <account> <slowed|paused|reset>
+                                         puts its ADE Free Models no-cards meter at that line, to see the
+                                         notices; its next card request in those chats resets it
   reset <account>                        back to the real plan: every test field cleared
 
   Options for act-as and limits: --days N (how long the test lasts, default 7, at most 90),
@@ -30,10 +38,16 @@ Accounts (an email, or a Clerk user id that starts with user_):
 Switches:
   settings                               every switch, its deploy ceiling and what is in force
   set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
+                                         gravity_inference off|testers|all (ADE Free Models),
+                                         pricing_v3 off|testers|all (the ad price, credit scale 10),
+                                         ad_discount_pct 0-50 in steps of 5 (start 20),
+                                         ad_window_minutes 5|10|15|30|45|60|90|120|240|480|720|1440 (start 60),
+                                         mac_computers off|testers|all, mac_idle_stop_minutes 5|3|10|15,
                                          gravity_format below_reply|above_prompt|inline|split,
                                          gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
                                          (under the reply - inline - above the prompt box)
   ab [--days N]                          the sponsored formats' A/B scoreboard (default 14 days)
+  ad-price [--days N]                    Pricing v3: ad income against what the ad price took off, by product (default 30 days)
 
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
 
@@ -66,6 +80,8 @@ const COMMAND_OPTIONS = {
   limits: ["computers", "hours", "days", "note"],
   set: ["note"],
   ab: ["days"],
+  "ad-price": ["days"],
+  "mac-template": ["drive", "min-version"],
 };
 
 function readOptions(command, args) {
@@ -131,6 +147,11 @@ function printAccount({ account, warnings = [] }) {
     `  In force:   ${account.inForce.plan} · ${account.inForce.computers} computers · ${account.inForce.hours} credits (${account.inForce.usedHours} used) · Small ${account.inForce.smallUsesHours ? "uses credits" : "unlimited"}`,
     `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"} · format ${account.sponsored.format ?? "the switch's"}`,
   ];
+  // An older server answers no `freeModels`.
+  if (account.freeModels) {
+    const fm = account.freeModels;
+    lines.push(`  Free models: switch ${fm.mode} · ${fm.locked ? `locked (${fm.locked})` : "unlocked"} · ${fm.throttle ?? "running"} · ${fm.callsSinceCard} calls, ${fm.inputTokensSinceCard} input tokens since the last card request`);
+  }
   if (account.log.length) {
     lines.push("  Changes:");
     for (const row of account.log) lines.push(`    ${when(row.at)}  ${row.action}  ${JSON.stringify(row.detail)}`);
@@ -183,9 +204,32 @@ switch (command) {
     printAccount(await call("account", { ...accountRef(rest[0]), adFormat: rest[1] === "switch" ? null : rest[1] }));
     break;
   }
+  case "free-models-meter": {
+    if (!["slowed", "paused", "reset"].includes(rest[1])) fail(`free-models-meter takes slowed, paused or reset.\n\n${USAGE}`);
+    printAccount(await call("account", { ...accountRef(rest[0]), freeModelsMeter: rest[1] }));
+    break;
+  }
   case "tester": {
     if (rest[1] !== "on" && rest[1] !== "off") fail(`tester takes on or off.\n\n${USAGE}`);
     printAccount(await call("account", { ...accountRef(rest[0]), tester: rest[1] === "on" }));
+    break;
+  }
+  case "mac": {
+    if (rest[1] !== "on" && rest[1] !== "off") fail(`mac takes on or off.\n\n${USAGE}`);
+    console.log(JSON.stringify(await call("mac-testers", { ...accountRef(rest[0]), enabled: rest[1] === "on" }), null, 2));
+    break;
+  }
+  case "mac-template": {
+    const change = rest[0] ? { channel: rest[0], ...(options.drive !== undefined ? { drive: options.drive } : {}), ...(options["min-version"] !== undefined ? { minVersion: options["min-version"] } : {}) } : {};
+    const answer = await call("mac-template", change);
+    console.table(Object.entries(answer.channels).map(([channel, value]) => ({ channel, drive: value.drive ?? "-", "min version": value.minVersion ?? "-" })));
+    break;
+  }
+  case "mac-testers": {
+    const list = await call("mac-testers", {});
+    console.log(`Switch mac_computers in force: ${list.mode}`);
+    console.table(list.users.map((user) => ({ user: user.user_id, email: user.email ?? "-", added: new Date(user.added_at).toISOString() })));
+    if (list.pending.length) console.table(list.pending.map((entry) => ({ waiting: entry.email, added: new Date(entry.added_at).toISOString() })));
     break;
   }
   case "reset":
@@ -194,6 +238,24 @@ switch (command) {
   case "settings":
     printSettings(await call("settings", {}));
     break;
+  case "ad-price": {
+    const days = options.days === undefined ? undefined : Number(options.days);
+    if (days !== undefined && !Number.isInteger(days)) fail("--days is a whole number.");
+    const report = await call("ad-price", days === undefined ? {} : { days });
+    const money = (micros) => (micros == null ? "-" : `$${(micros / 1_000_000).toFixed(2)}`);
+    console.log(`pricing_v3 ${report.mode} · ${report.discountPct}% off · window ${report.windowMinutes} min · last ${report.days} days (since ${report.since}) · ad income ${money(report.incomeMicros)}`);
+    console.table(report.products.map((row) => ({
+      product: row.product,
+      replies: row.replies,
+      messages: row.messages,
+      "ad hours": row.adHours ?? "-",
+      "full hours": row.fullHours ?? "-",
+      "credits off": row.discountMilli / 100,
+      "discount worth": money(row.discountMicros),
+      "ad income (share)": money(row.incomeMicros),
+    })));
+    break;
+  }
   case "ab": {
     const days = options.days === undefined ? undefined : Number(options.days);
     if (days !== undefined && !Number.isInteger(days)) fail("--days is a whole number.");

@@ -131,8 +131,11 @@ export type CloudProvider = {
    * Wakes a sleeping machine or starts a stopped one. Every wake is use; none
    * is allowed at 0 hours. `origin: "mcp"`: an outside agent asked, refused on
    * the free plan (`outside_agent_free_plan`). Answers with the new status.
+   * `adProof` (Pricing v3): a person's message is why it wakes (the same ids
+   * the app sends to `/sent`), counted as the computer's ad proof first, so a
+   * Small on Free with ads wakes at 0 credits.
    */
-  startInstance(id: string, options?: { origin?: "mcp" }): Promise<string>;
+  startInstance(id: string, options?: { origin?: "mcp"; adProof?: CloudWakeAdProof }): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */
   stopInstance(id: string): Promise<string>;
   /**
@@ -145,11 +148,13 @@ export type CloudProvider = {
   /** The computer asks whether it should update itself now. */
   checkForUpdate(id: string): Promise<CloudUpdateCheck>;
   /** The computer's brain started: settles a waiting update. `sleepWhenIdle`: it woke only for that update. */
-  reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }>;
+  reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean; idleMinutes?: number }>;
   /** The computer's own report at its idle step: its last work and, now and then, what uses its disk. */
   reportDiskUsage?(id: string, report: CloudDiskUsageReport): Promise<void>;
   /** The computer's own report of hours near full CPU with no chat turn or agent working (the owner's daily report). */
   reportSustainedCpu?(id: string, report: CloudSustainedCpuReport): Promise<void>;
+  /** The computer's own brain is busy (\`POST /cloud/instances/:id/use\`): on a DAEX Cloud Mac this keeps NoMac's idle stop away. */
+  reportComputerUse?(id: string): Promise<void>;
   /** Changes the size in place: the machine restarts, files stay, the disk only grows. */
   /** `origin: "auto"` marks the computer's own disk grower, for the server's analytics. */
   /**
@@ -274,3 +279,6 @@ export type CloudProvider = {
    */
   readonly account?: string;
 };
+
+/** A person's message that wakes a computer (`POST /cloud/instances/:id/start` `adProof`). */
+export type CloudWakeAdProof = { chatId: string; messageId: string };

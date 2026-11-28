@@ -19,8 +19,11 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
  * the block: callers then behave as before (someone is signed in). `refresh`
  * makes that machine re-read its status (OpenCode just downloaded there) and
  * resolves false when the read failed.
+ *
+ * `active` false reads nothing (a picker whose chat does not run on that
+ * machine, such as a new chat on ADE Cloud): `status` stays null.
  */
-export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): {
+export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null, active = true): {
   status: AiFreeModelsStatus | null;
   refresh: () => Promise<boolean>;
 } {
@@ -34,13 +37,17 @@ export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): {
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const projectRoot = pin?.rootPath ?? activeProjectRoot;
   const [freeModels, setFreeModels] = useState<AiFreeModelsStatus | null>(
-    () => peekAiStatusCached(projectRoot, pin)?.freeModels ?? null,
+    () => (active ? peekAiStatusCached(projectRoot, pin)?.freeModels ?? null : null),
   );
 
   useEffect(() => {
-    let active = true;
+    if (!active) {
+      setFreeModels(null);
+      return undefined;
+    }
+    let live = true;
     const apply = (next: AiFreeModelsStatus | null | undefined) => {
-      if (!active) return;
+      if (!live) return;
       const value = next ?? null;
       setFreeModels((current) => (
         current?.nothingSignedIn === value?.nothingSignedIn
@@ -63,10 +70,10 @@ export function useFreeModelsStatus(runtimePin: OpenProjectBinding | null): {
         .catch(() => undefined);
     }
     return () => {
-      active = false;
+      live = false;
       window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
     };
-  }, [pinKey, projectRoot]);
+  }, [active, pinKey, projectRoot]);
 
   const refresh = useCallback(
     () => getAiStatusCached({ projectRoot, pin: pinRef.current, force: true }).then(() => true, () => false),

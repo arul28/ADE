@@ -156,6 +156,8 @@ struct CloudMachineFacts: View {
   /// each time the page opens or its state changes; never wakes it. Nil
   /// (no rows) on a server older than the route or any failed read.
   @State private var live: CloudComputerLiveStatus?
+  /// The phone's own read carries what this computer costs now (Pricing v3).
+  @ObservedObject private var accountStore = AccountCloudStore.shared
 
   var body: some View {
     let tier = cloudPhoneTier(of: machine, in: store.tiers)
@@ -172,11 +174,31 @@ struct CloudMachineFacts: View {
           fact("Lane", lane.laneName)
           if let origin = lane.projectOrigin { fact("Repository", origin) }
         }
-        if let tier {
+        if machine.isMac {
+          fact("Size", cloudMachineLine(machine, tier: nil, now: store.now, words: store.words))
+          // Time left on it, as a Linux size says it; the rate's home is the Sizes card.
+          if let offer = store.account?.macOffer, let left = store.hoursLeftMilli {
+            fact(store.words.title, "Your \(store.words.unit) last \(CloudMacWords.timeAt(offer, leftMilli: left, ad: CloudAdPriceWords(accountStore.account))) on it")
+          }
+          if let drive = CloudMacWords.driveText(machine.mac) { fact("Drive", drive) }
+        } else if let tier {
           fact("Size", "\(tier.label)\(tier.full ? ", full computer" : "") · \(tier.cpu) CPU · \(cloudGbText(tier.memoryGb)) GB")
-          fact(store.words.title, tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words))
+          // At the price this computer pays now (the ad price while ads are on).
+          fact(store.words.title, tier.atComputerPriceNow(cloudPricing(), instanceId: machine.instanceId).hoursLine(leftMilli: store.hoursLeftMilli, words: store.words))
         } else if let size = machine.size {
           fact("Size", size)
+        }
+        // Pricing v3: what it costs now while awake, and why it has the full price while ads are on.
+        // A Mac's row comes an hour from the server and reads a minute.
+        if machine.isAwake, let adWords = CloudAdPriceWords(accountStore.account), let listed = adWords.pricing.computer(machine.instanceId) {
+          let price = machine.isMac ? CloudMacWords.pricePerMinute(listed) : listed
+          fact("Price", adWords.priceNow(price, unit: machine.isMac ? .minute : .hour))
+          if let reason = adWords.reasonLine(price) {
+            GridRow {
+              Color.clear.frame(width: 1, height: 1)
+              Text(reason).foregroundStyle(ADEColor.textSecondary).fixedSize(horizontal: false, vertical: true)
+            }
+          }
         }
         let lastRun = cloudLastRun(machine, now: store.now)
         if !lastRun.isEmpty { fact("Last run", lastRun) }
@@ -190,6 +212,18 @@ struct CloudMachineFacts: View {
         }
       }
       .font(.subheadline)
+      if let unavailable = machine.unavailable, !machine.isAwake {
+        ADESettingsNotice(message: unavailable, tone: .warn)
+      } else if let phase = machine.macPhase, let sentence = CloudMacWords.sentence(machine.mac) {
+        // The server's sentence for where the Mac is, or why its start failed.
+        ADESettingsNotice(message: sentence, tone: phase == .startFailed || phase == .driveLost ? .crit : .neutral)
+      }
+      if machine.isMac, let keeps = store.account?.macOffer?.keeps {
+        Text(keeps)
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       if let live, machine.isAwake, let memory = cloudLiveMemoryWarning(live) {
         ADESettingsNotice(message: memory, tone: .warn)
       }
@@ -270,10 +304,11 @@ struct CloudDiskParts: View {
   }
 
   var body: some View {
-    if machine.resources != nil {
+    // A Mac's drive shows in its facts; this card only once the Mac has measured it.
+    if machine.resources != nil, !machine.isMac || machine.diskUsage != nil {
       let busy = store.busy.contains(machine.instanceId) || machine.isMoving || store.isMoving(machine.instanceId)
       ADEKitCard(
-        title: "What uses the disk",
+        title: machine.isMac ? "What uses the drive" : "What uses the disk",
         symbol: "internaldrive",
         hint: machine.diskUsage.map { "Measured \(cloudAgo($0.measuredAt, now: store.now))" }
       ) {
@@ -290,7 +325,7 @@ struct CloudDiskParts: View {
                 ADEKitMeter(fraction: usage.totalGb > 0 ? part.gb / usage.totalGb : 0)
               }
             }
-            Text("\(cloudGb(usage.totalGb)) used of \(cloudGb(machine.resources?.diskGb ?? 0))\(machine.isAwake ? "" : ". Asleep: its last measure.")")
+            Text("\(cloudGb(usage.totalGb)) used of \(cloudGb(machine.resources?.diskGb ?? 0))\(machine.isAwake ? "" : machine.isMac ? ". Stopped: its last measure." : ". Asleep: its last measure.")")
               .font(.system(size: 12))
               .foregroundStyle(ADEColor.textMuted)
             if canClear {
@@ -331,7 +366,7 @@ struct CloudMachineSizeCard: View {
 
   var body: some View {
     let tiers = store.tiers
-    if store.canManage, let current = cloudPhoneTier(of: machine, in: tiers) {
+    if store.canManage, machine.allows("resize"), !machine.isMac, let current = cloudPhoneTier(of: machine, in: tiers) {
       let busy = store.busy.contains(machine.instanceId) || machine.isMoving || store.isMoving(machine.instanceId)
       let otherKind = store.movesUnsupported ? tiers.first { $0.type != current.type } : nil
       ADEKitCard(title: "Size", symbol: "cpu", hint: "More CPU and memory use \(store.words.unit) faster.", flush: true) {
@@ -375,8 +410,13 @@ struct CloudMachineSizeCard: View {
 
   /// "4 credits an hour now → 1 credit an hour on Medium. 418 credits last about 418 h on Medium."
   private func rates(current: CloudPhoneTier, tier: CloudPhoneTier) -> String {
-    let hours = store.hoursLeftMilli.flatMap { store.words.hoursOn(tier, leftMilli: $0) }
-    return "\(store.words.changeRates(from: current, to: tier)).\(hours.map { " \($0)" } ?? "")"
+    // Pricing v3: this computer's own price now, and both prices of the new size.
+    let pricing = cloudPricing()
+    let hours = store.hoursLeftMilli.flatMap { store.words.hoursOn(tier.atPriceNow(pricing), leftMilli: $0) }
+    let line = CloudAdPriceWords(AccountCloudStore.shared.account)?
+      .changeRates(nowMilli: pricing?.computer(machine.id)?.rateMilli, to: tier, words: store.words)
+      ?? store.words.changeRates(from: current.atPriceNow(pricing), to: tier.atPriceNow(pricing))
+    return "\(line).\(hours.map { " \($0)" } ?? "")"
   }
 
   private func confirmTitle(current: CloudPhoneTier) -> String {
@@ -393,6 +433,8 @@ struct CloudMachineSizeCard: View {
 
   private func row(_ tier: CloudPhoneTier, current: CloudPhoneTier, busy: Bool) -> some View {
     let isCurrent = tier.id == current.id
+    // Time left at each size, at the price paid now (Free's Small with ads: Unlimited).
+    let now = tier.atPriceNow(cloudPricing())
     let sameKind = tier.type == current.type
     return Button { ask = tier } label: {
       HStack(spacing: 12) {
@@ -418,7 +460,7 @@ struct CloudMachineSizeCard: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 8)
-        Text(store.hoursLeftMilli.map { tier.hoursLeftLabel($0) } ?? (tier.usesHours ? "Uses \(store.words.unit)" : "Unlimited"))
+        Text(store.hoursLeftMilli.map { now.hoursLeftLabel($0) } ?? (now.usesHours ? "Uses \(store.words.unit)" : "Unlimited"))
           .font(.system(size: 13, weight: .semibold))
           .monospacedDigit()
           .foregroundStyle(CloudBrandColor.mark)
@@ -432,9 +474,9 @@ struct CloudMachineSizeCard: View {
     .disabled(isCurrent || (!sameKind && store.movesUnsupported) || busy)
     .accessibilityHint(
       isCurrent ? "Its size now."
-        : sameKind ? "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). It restarts on the new size."
+        : sameKind ? "\(now.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). It restarts on the new size."
         : store.movesUnsupported ? cloudPhoneKindChangeReason(to: tier)
-        : "\(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). \(Brand.name) moves it to a new computer."
+        : "\(now.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)). \(Brand.name) moves it to a new computer."
     )
   }
 }
@@ -452,11 +494,15 @@ struct CloudMachineControls: View {
   var showsOpenWork = true
   @State private var confirmDelete = false
   @State private var confirmFree = false
+  @State private var confirmDeleteHeld = false
 
   private var working: Bool { store.busy.contains(machine.instanceId) }
   private var busy: Bool { working || machine.isMoving || store.isMoving(machine.instanceId) }
   private var idle: CloudPhoneAccount.IdleCleanup? {
     store.account?.dueForDeletion.first { $0.instanceId == machine.instanceId }
+  }
+  private var heldWords: CloudIdleHeldWords? {
+    idle.flatMap { CloudIdleHeldWords($0, now: store.now.timeIntervalSince1970 * 1000) }
   }
 
   var body: some View {
@@ -501,22 +547,34 @@ struct CloudMachineControls: View {
               .buttonStyle(ADEKitButtonStyle(tone: .warn))
               .disabled(busy)
           }
+          // Kept because its work isn't saved (ADE-223): delete it anyway, behind one confirm.
+          if heldWords != nil {
+            Button(role: .destructive) { confirmDeleteHeld = true } label: { Label("Delete anyway", systemImage: "trash") }
+              .buttonStyle(ADEKitButtonStyle(tone: .crit))
+              .disabled(busy)
+          }
+          // A Mac starts and stops (its stop keeps only the drive); one the server
+          // can't wake now, or whose drive is gone, offers no start.
           if machine.isAwake {
-            Button { ADEHaptics.light(); Task { await store.sleep(machine) } } label: { Label("Sleep now", systemImage: "moon") }
+            Button { ADEHaptics.light(); Task { await store.sleep(machine) } } label: {
+              Label(machine.isMac ? "Stop now" : "Sleep now", systemImage: machine.isMac ? "stop.circle" : "moon")
+            }
               .buttonStyle(ADEKitButtonStyle())
               .disabled(busy)
-          } else if machine.isAsleep {
-            Button { ADEHaptics.light(); Task { await store.wake(machine) } } label: { Label("Wake", systemImage: "sun.max") }
+          } else if machine.isAsleep, machine.unavailable == nil, machine.macPhase != .driveLost, machine.macPhase != .stopping {
+            Button { ADEHaptics.light(); Task { await store.wake(machine) } } label: {
+              Label(machine.isMac ? "Start" : "Wake", systemImage: machine.isMac ? "play.circle" : "sun.max")
+            }
               .buttonStyle(ADEKitButtonStyle())
               .disabled(busy || store.outOfHours)
           }
-          if store.serverInstance(machine.instanceId)?.updateBehind == true {
+          if machine.allows("update"), store.serverInstance(machine.instanceId)?.updateBehind == true {
             Button { ADEHaptics.light(); Task { await store.update(machine) } } label: { Label("Update", systemImage: "arrow.triangle.2.circlepath") }
               .buttonStyle(ADEKitButtonStyle())
               .disabled(busy)
           }
-          if machine.lane != nil {
-            Button { confirmFree = true } label: { Label("Free computer", systemImage: "shippingbox") }
+          if machine.lane != nil, machine.macPhase != .driveLost {
+            Button { confirmFree = true } label: { Label(machine.isMac ? "Delete the Mac" : "Free computer", systemImage: "shippingbox") }
               .buttonStyle(ADEKitButtonStyle())
               .disabled(busy)
           }
@@ -552,7 +610,9 @@ struct CloudMachineControls: View {
       if machine.noLane || store.canManage {
         Text(machine.noLane
           ? "Deleting it removes everything on its disk for good."
-          : "Free computer pushes the lane's work to GitHub, then removes the computer. The lane and its chats stay; your next message makes a new computer.")
+          : machine.isMac
+            ? "Keep the lane, delete the Mac and its drive: \(Brand.name) pushes the lane's work to GitHub first. The lane and its chats stay; your next message starts a new Mac."
+            : "Free computer pushes the lane's work to GitHub, then removes the computer. The lane and its chats stay; your next message makes a new computer.")
           .font(.system(size: 12))
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
@@ -563,11 +623,29 @@ struct CloudMachineControls: View {
     } message: {
       Text("Everything on its disk is gone for good: repos, lanes, and any work not pushed.")
     }
-    .confirmationDialog("Free the computer of \(machine.displayName)?", isPresented: $confirmFree, titleVisibility: .visible) {
-      Button("Free the computer") { Task { await store.freeComputer(machine) } }
+    .alert(heldWords?.confirmTitle ?? "", isPresented: $confirmDeleteHeld) {
+      Button(CloudIdleHeldWords.confirmLabel, role: .destructive) {
+        guard let words = heldWords else { return }
+        Task { await store.deleteHeld(machine, words: words) }
+      }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("\(Brand.name) pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.")
+      Text(heldWords?.confirmBody ?? "")
+    }
+    .confirmationDialog(
+      machine.isMac ? "Delete the Mac of \(machine.displayName) and its drive?" : "Free the computer of \(machine.displayName)?",
+      isPresented: $confirmFree,
+      titleVisibility: .visible
+    ) {
+      Button(machine.isMac ? "Delete the Mac" : "Free the computer") { Task { await store.freeComputer(machine) } }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      if machine.isMac {
+        // The desktop's Mac confirm: what costs credits and what is lost.
+        Text("\(machine.isAwake ? "\(Brand.name) pushes" : "\(Brand.name) starts the Mac (this uses credits for a few minutes), pushes") the lane's work to its branch on GitHub, then deletes the Mac and its drive. The lane, its chats and the work it pushed stay; anything else on the drive is gone. Your next message starts a new Mac.")
+      } else {
+        Text("\(Brand.name) pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.")
+      }
     }
   }
 }

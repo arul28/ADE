@@ -3,7 +3,7 @@ import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { ClientUpdateGateState } from "../shared/clientUpdateGate";
 import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
-import type { AccountCloudLaunchesBridge, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
+import type { AccountCloudLaunchesBridge, CloudLaunchFreeModelResult, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
@@ -13,7 +13,7 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudAdProofAnswer, CloudAdSentRequest, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus, CloudFreeModelsSeenRequest, CloudFreeModelsState } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
@@ -5258,6 +5258,7 @@ declare global {
          * window's machine. `state: "failed"` with `reason` when refused.
          */
         sendLaunchSignInCode?: (args: { instanceId: string; jobId: string; code: string }) => Promise<CloudRemoteSignInStatus>;
+        launchFreeModel?: (args: { launchId: string }) => Promise<CloudLaunchFreeModelResult>;
         /**
          * A message for an existing ADE Cloud chat whose computer is asleep
          * or gone, through the account's queue. Account-level, by the chat's
@@ -5294,7 +5295,13 @@ declare global {
          * The server decides every card; a missing method means no cards.
          */
         /** `confirmed`: a yes the person confirmed a second time (`CloudSponsoredState.confirmYes`). */
-        setSponsoredConsent?: (consent: CloudSponsoredChoice, confirmed?: boolean) => Promise<CloudSponsoredState | null>;
+        /** `noticeSeen` (Pricing v3): the answer came from the ads notice or switch, so the account saw it. */
+        setSponsoredConsent?: (consent: CloudSponsoredChoice, confirmed?: boolean, noticeSeen?: boolean) => Promise<CloudSponsoredState | null>;
+        /**
+         * Pricing v3: a person sent a message in a chat on a cloud computer or
+         * holding the cloud iPhone (account level, no pin). Never throws.
+         */
+        sponsoredSent?: (input: CloudAdSentRequest) => Promise<CloudAdProofAnswer>;
         sponsoredSeen?: (input: CloudSponsoredSeenRequest) => Promise<void>;
         /** The person hid a reply's card: counted for the formats' A/B test. */
         sponsoredHide?: (input: CloudSponsoredHideRequest) => Promise<void>;
@@ -5302,6 +5309,13 @@ declare global {
         /** A card's view link, once half of the card was on screen. */
         /** True once Gravity has the view; false when it should be sent again. */
         sponsoredViewed?: (impUrl: string) => Promise<boolean>;
+        /**
+         * ADE Free Models (account level, no pin): the answer to the one-time
+         * sheet, and a person's look at a chat that uses them (true once the
+         * server has it). A missing method means the feature is off here.
+         */
+        setFreeModelsConsent?: (consent: CloudSponsoredConsent) => Promise<CloudFreeModelsState | null>;
+        freeModelsSeen?: (input: CloudFreeModelsSeenRequest) => Promise<boolean>;
         /**
          * A tester's pick of who runs their ADE Cloud iPhones (account level,
          * no pin). Refused for an account not on the iPhone's beta list.
@@ -5695,7 +5709,7 @@ declare global {
       /** Read-only Work tools-pane mirror; `null` when no runtime is bound. */
       workTools: {
         getLaneState: (laneId: string, pin: OpenProjectBinding) => Promise<WorkToolsLaneState | null>;
-        noteWatching?: (pin: OpenProjectBinding) => Promise<void>;
+        noteWatching?: (pin: OpenProjectBinding, tool?: string) => Promise<void>;
         /**
          * `openTools` is the pane's whole tab strip in order; `tool` is the one
          * on screen. Defaulted so an older caller still publishes coherently.

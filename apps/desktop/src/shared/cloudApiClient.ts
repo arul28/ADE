@@ -115,9 +115,16 @@ import {
   type CloudJiraSearchResult,
   type CloudLinearQueryRequest,
   type CloudLinearQueryResult,
+  type CloudFreeModelsSeenRequest,
+  type CloudFreeModelsState,
+  CLOUD_PRICING_HEADER,
+  CLOUD_PRICING_VERSION,
+  type CloudAdProofAnswer,
+  type CloudAdSentRequest,
   type CloudSponsoredAdAnswer,
   type CloudSponsoredAdRequest,
   type CloudSponsoredChoice,
+  type CloudSponsoredConsent,
   type CloudSponsoredSeenRequest,
   type CloudSponsoredHideRequest,
   type CloudSponsoredState,
@@ -177,7 +184,9 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     const limitMs = init.timeoutMs ?? timeoutMs;
     const startedAt = Date.now();
     const outOfTime = () => new CloudApiError(`${BRAND.CLOUD_NAME} did not answer in time. Try again.`, "timeout", 0);
-    const headers: Record<string, string> = { accept: "application/json", ...init.headers };
+    // Every call says this build knows Pricing v3 (`CLOUD_PRICING_HEADER`): the server
+    // treats a call without it as an older build (no `pricing`, the old ad rules).
+    const headers: Record<string, string> = { accept: "application/json", [CLOUD_PRICING_HEADER]: CLOUD_PRICING_VERSION, ...init.headers };
     if (!init.anonymous) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<never>((_resolve, reject) => {
@@ -262,13 +271,29 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
      * The account's answer to the sponsored question, on every machine, or `notice`: the person was told cards are on (`startsOn`).
      * `confirmed`: the person confirmed a yes a second time, which the server needs when the state says `confirmYes`.
      */
-    setSponsoredConsent: (consent: CloudSponsoredChoice, confirmed = false) =>
-      request<CloudSponsoredState>("PUT", CLOUD_PATHS.sponsoredConsent, { body: confirmed ? { consent, confirmed } : { consent } }),
+    setSponsoredConsent: (consent: CloudSponsoredChoice, confirmed = false, noticeSeen = false) =>
+      request<CloudSponsoredState>("PUT", CLOUD_PATHS.sponsoredConsent, {
+        // `noticeSeen` (Pricing v3): the answer came from the ads notice or the switch, so the account saw it.
+        body: { consent, ...(confirmed ? { confirmed } : {}), ...(noticeSeen ? { noticeSeen } : {}) },
+      }),
+    /**
+     * Pricing v3: a person sent a message in a chat that uses DAEX Cloud (the
+     * proof for that computer or the iPhone). Sent only while the account
+     * state has `pricing`; a 404 (Pricing v3 doesn't reach the account) reads
+     * as not counted.
+     */
+    sponsoredSent: (input: CloudAdSentRequest) => request<CloudAdProofAnswer>("POST", CLOUD_PATHS.sponsoredSent, { body: input }),
     /** A person has a chat or terminal of this ADE Cloud computer open. */
     sponsoredSeen: (input: CloudSponsoredSeenRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredSeen, { body: input }),
     sponsoredHide: (input: CloudSponsoredHideRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredHide, { body: input }),
     /** One card under a finished reply, or none (always a 200). */
     sponsoredAd: (input: CloudSponsoredAdRequest) => request<CloudSponsoredAdAnswer>("POST", CLOUD_PATHS.sponsoredAd, { body: input, timeoutMs: 10_000 }),
+    /* ---- ADE Free Models (account level, `freeModels.ts`) ---- */
+    /** The account's answer to the one-time ADE Free Models sheet, on every machine. */
+    freeModelsConsent: (consent: CloudSponsoredConsent) =>
+      request<CloudFreeModelsState>("PUT", CLOUD_PATHS.freeModelsConsent, { body: { consent } }),
+    /** A person has this ADE Free Models chat open on this device: its requests may run for a while. */
+    freeModelsSeen: (input: CloudFreeModelsSeenRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.freeModelsSeen, { body: input }),
     listComputers: async () => (await request<{ data: CloudInstance[] }>("GET", CLOUD_PATHS.instances)).data,
 
     /* ---- A lane on a new computer (the server launcher) ---- */
@@ -296,6 +321,8 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<CloudLaunchMessage>("POST", `${launchPath(launchId)}/messages`, { body: message }),
     /** Before the agent starts it deletes the computer; after, the server refuses with `launch_started`. */
     cancelLaunch: (launchId: string) => request<CloudLaunchRecord>("DELETE", launchPath(launchId)),
+    /** A chat waiting in its sign-in step starts on DAEX Free Models instead (409 `launch_not_waiting`, `free_models_unavailable`, `free_models_consent`). */
+    launchFreeModel: (launchId: string) => request<CloudLaunchRecord>("POST", `${launchPath(launchId)}/free-model`, { body: {} }),
 
     /* ---- One computer ---- */
     computer: (instanceId: string) => request<CloudInstance>("GET", instancePath(instanceId)),

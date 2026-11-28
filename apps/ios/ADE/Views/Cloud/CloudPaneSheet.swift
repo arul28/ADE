@@ -224,6 +224,14 @@ final class CloudPaneStore: ObservableObject {
 
   init(syncService: SyncService) {
     self.syncService = syncService
+    // The last known state at once (the app's own account read and computer
+    // list, both from the account server); `load` reads the page again.
+    account = AccountCloudStore.shared.account
+    let known = syncService.cloudServerInstances.filter { !$0.isGone }.compactMap(cloudPhoneMachine(from:))
+    if !known.isEmpty {
+      machines = Self.ordered(known, now: now)
+      selectedId = machines.first?.instanceId
+    }
     // A sign-in saved or applied on the machine shows at once (its push), not on the next open.
     signInsWatch = syncService.$providerLoginsRevision
       .dropFirst()
@@ -335,7 +343,7 @@ final class CloudPaneStore: ObservableObject {
       phase = .failed("Sign in to \(Brand.name) to see \(Brand.cloudName).")
       return
     }
-    async let accountRead = Self.readDirect("account") { try await client.account() }
+    async let accountRead = AccountCloudStore.shared.readAccountForPage(client)
     // The computers' read keeps its failure: the lanes card shows the
     // server's sentence then, never "No cloud lanes yet".
     async let instancesRead: Result<[CloudServerInstance], Error> = {
@@ -388,16 +396,6 @@ final class CloudPaneStore: ObservableObject {
     } catch {
       limitsError = cloudPhoneWords(error.localizedDescription) ?? "\(Brand.name) couldn't read the agent limits."
       cloudPaneLog.notice("cloud_pane read=limits failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-    }
-  }
-
-  /// One direct read of the page; a failure is logged and reads as nil.
-  private static func readDirect<T>(_ name: String, _ read: () async throws -> T) async -> T? {
-    do {
-      return try await read()
-    } catch {
-      cloudPaneLog.notice("cloud_pane read=\(name, privacy: .public) failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-      return nil
     }
   }
 
@@ -471,7 +469,8 @@ final class CloudPaneStore: ObservableObject {
   /// The phone can act on a computer: through the connected computer's
   /// `cloud.write`, or with its own sign-in straight on the account server
   /// (no computer of the person's own needed).
-  var canManage: Bool { canWrite || AccountService.shared.isSignedIn }
+  /// A fixture screen shows the actions too (they do nothing there).
+  var canManage: Bool { isFixture || canWrite || AccountService.shared.isSignedIn }
 
   /// Every action asks the account server with the phone's own sign-in: it
   /// is the account's, the same from any device. Only a phone that isn't
@@ -549,6 +548,20 @@ final class CloudPaneStore: ObservableObject {
   func clearCaches(_ machine: CloudPhoneMachine) async {
     await act(on: machine, title: "Cleared caches on \(machine.displayName)") { client in
       await client.clearCaches(instanceId: machine.instanceId)
+    }
+  }
+
+  /// "Delete anyway" for a computer the idle cleanup kept (ADE-223): an
+  /// account call by its id. It never wakes the computer and saves or pushes
+  /// nothing. A computer made for a lane keeps its lane and chats (the server
+  /// takes the lane's branch from its own row); one with no lane gets a plain
+  /// delete, since the server refuses to keep a lane it doesn't have.
+  func deleteHeld(_ machine: CloudPhoneMachine, words: CloudIdleHeldWords) async {
+    await act(on: machine, title: words.deletedTitle, gone: true) { client in
+      guard try await client.deleteInstanceConfirmed(machine.instanceId, keepLane: words.hasLane) else {
+        return CloudComputerOutcome(ok: false, message: "Try again in a moment.")
+      }
+      return words.deletedDetail.map { CloudComputerOutcome(ok: true, message: $0) }
     }
   }
 
@@ -904,6 +917,17 @@ func cloudPhoneMachine(from instance: CloudServerInstance) -> CloudPhoneMachine?
   if let work = instance.laneWork {
     object["laneWork"] = ["unpushed": work.unpushed as Any? ?? NSNull(), "prState": work.prState as Any? ?? NSNull()]
   }
+  // The Mac: its state, what the server refuses on it, and a computer it can't wake now.
+  if instance.isMac {
+    object["os"] = "mac"
+    if let mac = instance.mac,
+       let data = try? JSONEncoder().encode(mac),
+       let json = try? JSONSerialization.jsonObject(with: data) {
+      object["mac"] = json
+    }
+  }
+  if !instance.unsupported.isEmpty { object["unsupported"] = instance.unsupported }
+  if let unavailable = instance.unavailable { object["unavailable"] = unavailable }
   guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
   return try? JSONDecoder().decode(CloudPhoneMachine.self, from: data)
 }

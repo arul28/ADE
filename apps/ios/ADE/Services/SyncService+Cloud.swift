@@ -81,10 +81,19 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   let diskUsage: DiskUsage?
   let laneWork: LaneWork?
   let diskFull: String?
+  /// `mac` on a DAEX Cloud Mac (`CloudInstance.os`); nil on Linux and from an older server.
+  let os: String?
+  /// A Mac's own state (queue, start, drive); nil on Linux.
+  let mac: CloudMacState?
+  /// What the server refuses on this computer (`CloudInstance.unsupported`); empty allows everything.
+  let unsupported: [String]
+  /// The server can't wake or send to it now (`statusReason` `computer_unavailable`): its sentence.
+  let unavailable: String?
 
   private enum CodingKeys: String, CodingKey {
     case instanceId, name, machineKey, state, type, size, shape, shapeId, hoursRate, sleep, pastDue
     case resources, lane, lastActiveAtMs, createdAtMs, diskUsage, laneWork, diskFull
+    case os, mac, unsupported, unavailable
   }
 
   init(from decoder: Decoder) throws {
@@ -108,9 +117,19 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
     diskUsage = c.lenient(DiskUsage.self, forKey: .diskUsage)
     laneWork = c.lenient(LaneWork.self, forKey: .laneWork)
     diskFull = c.lenient(String.self, forKey: .diskFull)
+    os = c.lenient(String.self, forKey: .os)
+    mac = os == "mac" ? c.lenient(CloudMacState.self, forKey: .mac) : nil
+    unsupported = c.lenient([String].self, forKey: .unsupported) ?? []
+    unavailable = c.lenient(String.self, forKey: .unavailable).flatMap { nonEmptyTrimmed($0) }
   }
 
   var id: String { instanceId }
+  /// A DAEX Cloud Mac: its words say start and stop, never wake and sleep.
+  var isMac: Bool { os == "mac" }
+  /// Where the Mac is, from the server's `mac` state; nil on Linux.
+  var macPhase: CloudMacPhase? { isMac ? CloudMacPhase(mac, state: state) : nil }
+  /// Whether the server lets this computer take `action` (the client never decides it).
+  func allows(_ action: String) -> Bool { !unsupported.contains(action) }
   var displayName: String {
     if let laneName = lane?.laneName, !laneName.isEmpty { return laneName }
     // The name DAEX gives a computer with no lane, under either product name, is no name.
@@ -126,6 +145,8 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   var noLane: Bool { lane == nil && resources != nil }
 
   var stateLabel: String {
+    if unavailable != nil, !isAwake { return CloudMacWords.unavailableLabel }
+    if let macPhase { return macPhase.label }
     switch state {
     case "running": return "Awake"
     case "asleep", "stopped": return "Asleep"
@@ -139,9 +160,78 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
       && lhs.shape == rhs.shape && lhs.hoursRate == rhs.hoursRate && lhs.sleep == rhs.sleep
       && lhs.resources == rhs.resources && lhs.lane == rhs.lane && lhs.lastActiveAtMs == rhs.lastActiveAtMs
       && lhs.diskUsage == rhs.diskUsage && lhs.laneWork == rhs.laneWork
+      && lhs.os == rhs.os && lhs.mac == rhs.mac && lhs.unsupported == rhs.unsupported && lhs.unavailable == rhs.unavailable
   }
 
   func hash(into hasher: inout Hasher) { hasher.combine(instanceId) }
+}
+
+/// The DAEX Cloud Mac offer (`catalog.mac`, `CloudMacOffer`): sent only while
+/// the server's switch reaches the account. With no offer, nothing about a
+/// Mac shows. Every number here is the catalog's, never the phone's.
+struct CloudMacOffer: Decodable, Equatable {
+  /// A provider that doesn't run on a Mac in a chat, a CLI session or both, with the server's sentence.
+  struct Provider: Decodable, Equatable {
+    let provider: String
+    let chat: Bool
+    let cli: Bool
+    let sentence: String?
+  }
+  let label: String?
+  let cpu: Int
+  let memoryGb: Double
+  let driveGb: Double
+  /// What a running Mac uses each minute, in thousandths of a credit (full price).
+  let creditMilliPerMinute: Double
+  /// Pricing v3 only: what it uses each minute at the price with ads. Nil: one price.
+  let adCreditMilliPerMinute: Double?
+  let summary: String?
+  let keeps: String?
+  let providers: [Provider]
+
+  private enum CodingKeys: String, CodingKey { case label, cpu, memoryGb, driveGb, creditMilliPerMinute, adCreditMilliPerMinute, summary, keeps, providers }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    label = c.lenient(String.self, forKey: .label).flatMap { nonEmptyTrimmed($0) }
+    cpu = try c.decode(Int.self, forKey: .cpu)
+    memoryGb = try c.decode(Double.self, forKey: .memoryGb)
+    driveGb = try c.decode(Double.self, forKey: .driveGb)
+    creditMilliPerMinute = try c.decode(Double.self, forKey: .creditMilliPerMinute)
+    adCreditMilliPerMinute = c.lenient(Double.self, forKey: .adCreditMilliPerMinute)
+    summary = c.lenient(String.self, forKey: .summary).flatMap { nonEmptyTrimmed($0) }
+    keeps = c.lenient(String.self, forKey: .keeps).flatMap { nonEmptyTrimmed($0) }
+    providers = c.lenient([Provider].self, forKey: .providers) ?? []
+  }
+}
+
+/// A Mac's state beside its status (`CloudMacState`): `queued`, `starting`,
+/// `running`, `stopping`, `stopped`, with why a start failed and its drive.
+struct CloudMacState: Codable, Equatable {
+  struct Drive: Codable, Equatable {
+    let sizeGb: Double
+    let usedGb: Double?
+    let savedAt: Double?
+  }
+  let state: String
+  let since: Double?
+  let message: String?
+  let startFailed: Bool?
+  /// `queue_expired`, `unavailable` or `drive_lost`, set exactly when `startFailed` is.
+  let failure: String?
+  let drive: Drive?
+
+  private enum CodingKeys: String, CodingKey { case state, since, message, startFailed, failure, drive }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    state = try c.decode(String.self, forKey: .state)
+    since = c.lenient(Double.self, forKey: .since)
+    message = c.lenient(String.self, forKey: .message).flatMap { nonEmptyTrimmed($0) }
+    startFailed = c.lenient(Bool.self, forKey: .startFailed)
+    failure = c.lenient(String.self, forKey: .failure)
+    drive = c.lenient(Drive.self, forKey: .drive)
+  }
 }
 
 /// The account's plan, hours, disk, computers and catalog (`account` in
@@ -268,6 +358,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
     let state: String?
     let oldEnoughAt: Double?
     let githubLogin: String?
+    /// A card saved with no charge starts the free credits now (`too_new` only).
+    let canUnlockWithCard: Bool?
   }
 
   /// What goes over a cheaper plan's limits (`CloudPlanCleanup`). ADE frees
@@ -329,6 +421,9 @@ struct CloudPhoneAccount: Decodable, Equatable {
       let reason: String
       /// When ADE tries again; an older server leaves it out (`deletesAt` then).
       let retryAt: Double?
+      /// What ends the hold (`CloudIdleHeldKind`): the server decides it. An
+      /// older server leaves it out; missing or unknown reads as `open_once`.
+      let kind: String?
     }
     let instanceId: String
     let name: String?
@@ -391,9 +486,38 @@ struct CloudPhoneAccount: Decodable, Equatable {
       let tier: String?
       let label: String?
       let diskMaxGb: Double?
+      /// Pricing v3: this size's ad price, in the unit of `multiplierMilli`
+      /// (the full price). Nil while Pricing v3 doesn't reach the account.
+      let adMultiplierMilli: Int?
+    }
+    /// Pricing v3: the iPhone's full and ad rate, in thousandths a minute.
+    struct PhoneRates: Decodable, Equatable {
+      let milliPerMinute: Int
+      let adMilliPerMinute: Int
     }
     let plans: Plans
     let sizes: [Size]
+    /// Pricing v3: shown credits = milli / 1000 x `creditScale`. Nil: the old unit.
+    let creditScale: Int?
+    let phone: PhoneRates?
+    /// Pricing v3: Free's Small full rate an hour for this account, whatever
+    /// the viewer's plan (the Free plan card's Small line); 0 while Small on
+    /// Free is free. Nil from older servers.
+    let freeSmallMilli: Int?
+    /// The DAEX Cloud Mac offer; nil (or a rate of 0) shows no Mac anywhere.
+    let mac: CloudMacOffer?
+
+    private enum CodingKeys: String, CodingKey { case plans, sizes, creditScale, phone, freeSmallMilli, mac }
+
+    init(from decoder: Decoder) throws {
+      let c = try decoder.container(keyedBy: CodingKeys.self)
+      plans = try c.decode(Plans.self, forKey: .plans)
+      sizes = try c.decode([Size].self, forKey: .sizes)
+      creditScale = try c.decodeIfPresent(Int.self, forKey: .creditScale)
+      phone = try c.decodeIfPresent(PhoneRates.self, forKey: .phone)
+      freeSmallMilli = try c.decodeIfPresent(Int.self, forKey: .freeSmallMilli)
+      mac = c.lenient(CloudMacOffer.self, forKey: .mac).flatMap { $0.creditMilliPerMinute > 0 ? $0 : nil }
+    }
   }
 
   let plan: String
@@ -423,10 +547,20 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// Absent while the server's switch doesn't reach the account: nothing
   /// shows. A consent answer replaces it (`AccountCloudStore.noteSponsored`).
   var sponsored: CloudSponsoredState?
+  /// ADE Free Models (`CloudFreeModelsState`), on any plan and machine. Absent
+  /// while the server's switch or key is off: no ADE Free Model shows. A
+  /// consent answer replaces it (`AccountCloudStore.noteFreeModels`).
+  var freeModels: CloudFreeModelsState?
+  /// Pricing v3 (`CloudPricingState`): the ad price, what each computer and
+  /// the iPhone cost now, and the ads switch. Absent while Pricing v3 doesn't
+  /// reach the account (or the read came without the phone's header): every
+  /// screen is today's. Only the phone's own read has it for this phone's
+  /// country; a consent answer is followed by a new read.
+  var pricing: CloudPricingState?
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, credits, sponsored
+    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, credits, sponsored, freeModels, pricing
   }
 
   init(from decoder: Decoder) throws {
@@ -451,6 +585,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
     // A rate of 0 or less is no rate: read as absent (one credit a minute) rather than divide by it.
     credits = c.lenient(Credits.self, forKey: .credits).flatMap { $0.phoneMilliPerMinute > 0 ? $0 : nil }
     sponsored = c.lenient(CloudSponsoredState.self, forKey: .sponsored)
+    freeModels = c.lenient(CloudFreeModelsState.self, forKey: .freeModels)
+    pricing = c.lenient(CloudPricingState.self, forKey: .pricing)
   }
 
   /// The plan's computer limit (`docs/features/ade-cloud/README.md`, "Plans, credits and sizes").

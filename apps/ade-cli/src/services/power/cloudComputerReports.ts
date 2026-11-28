@@ -13,6 +13,7 @@ import { readCloudIgnoredFiles } from "./cloudIgnoredFiles";
 import type { ProjectScopeRegistry } from "../projects/projectScope";
 import type { ProjectRegistry } from "../projects/projectRegistry";
 import { BRAND } from "../../../../desktop/src/shared/brand";
+import { isAdeCloudMac } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 
 /**
  * After a failed update check or start, the idle step waits this long before
@@ -102,7 +103,8 @@ export function createCloudComputerReports(deps: {
     },
     // Idle and behind its channel's checked image: update now (it restarts), not sleep.
     updateIfBehind: async (stillIdle: () => boolean) => {
-      if (Date.now() < updateRetryAt) return false;
+      // A Mac's DAEX comes up to date at each boot (`ADE_MIN_VERSION`); it has no template update.
+      if (isAdeCloudMac() || Date.now() < updateRetryAt) return false;
       const client = instanceId ? await (await getCloudBrainAccess()).client() : null;
       if (!client) return false;
       try {
@@ -122,6 +124,13 @@ export function createCloudComputerReports(deps: {
       const client = await (await getCloudBrainAccess()).client();
       if (!client?.reportSustainedCpu) throw new Error(`no ${BRAND.CLOUD_NAME} access`);
       await client.reportSustainedCpu(instanceId, report);
+    },
+    // A DAEX Cloud Mac's busy brain, every few minutes: NoMac's idle stop counts commands, which the server runs (`touchMac`).
+    reportBusy: async () => {
+      if (!instanceId) return;
+      const client = await (await getCloudBrainAccess()).client();
+      if (!client?.reportComputerUse) throw new Error(`no ${BRAND.CLOUD_NAME} access`);
+      await client.reportComputerUse(instanceId);
     },
     reportBooted: async () => {
       if (!instanceId) return { sleepWhenIdle: false };

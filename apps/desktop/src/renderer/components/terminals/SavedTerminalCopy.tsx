@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { adeCloudLaneComputerForMachine } from "../../state/adeCloudLaneIndex";
 import { ArrowClockwise, PaperPlaneRight, Play, Terminal as TerminalIcon } from "@phosphor-icons/react";
 import type { CloudChatQueuedMessage } from "../../../../../account-directory/src/cloud/contract";
-import type { TerminalSessionSummary } from "../../../shared/types";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { adeCloudFailedMessageDismissed, dismissAdeCloudFailedMessage } from "../../state/adeCloudChatQueue";
 import { draftWithPutBack } from "../chat/CloudQueuedMessages";
 import { captureError } from "../../../shared/sentry/capture";
@@ -16,6 +17,7 @@ import { focusWorkSession } from "../../lib/workSessionRequests";
 import type { MachineAddress } from "../../../shared/machineAddress";
 import { AccountReadFailed } from "../adeCloud/AccountReadFailed";
 import { Button } from "../ui/Button";
+import { SessionCloudLaneButton } from "../cloudLane/CloudLaneHeaderButton";
 import { normalizeTranscriptToGrid } from "./terminalTranscriptNormalize";
 import { BRAND } from "../../../shared/brand";
 
@@ -183,7 +185,9 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
             ? `Its computer is gone. A new ${BRAND.CLOUD_NAME} computer restores this CLI and sends it.`
             : answer.wake.state === "moving"
               ? `This lane's computer is moving. ${BRAND.CLOUD_NAME} keeps this and sends it once the move is done.`
-              : `Waking your ${BRAND.CLOUD_NAME} computer. The CLI gets this when it's up.`,
+              : adeCloudLaneComputerForMachine({ machineKey })?.os === "mac"
+                ? `Starting your ${BRAND.CLOUD_NAME} Mac. The CLI gets this when it's up.`
+                : `Waking your ${BRAND.CLOUD_NAME} computer. The CLI gets this when it's up.`,
       });
       void refresh();
     } catch (error) {
@@ -288,8 +292,11 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
  */
 export function SavedTerminalCopyView({
   session,
+  runtimePin,
 }: {
-  session: Pick<TerminalSessionSummary, "id" | "title" | "toolType" | "lastActivityAt" | "laneId">;
+  session: Pick<TerminalSessionSummary, "id" | "title" | "toolType" | "lastActivityAt" | "laneId" | "status">;
+  /** The Work row's pin: the lane's cloud button reads (never wakes) the computer here. */
+  runtimePin: OpenProjectBinding | null;
 }): JSX.Element | null {
   const address = savedTerminalAddress(session.id);
   const { state, retry } = useAdeCloudAccountRead(address ? { call: "savedSession" as const, ...address } : null);
@@ -297,6 +304,8 @@ export function SavedTerminalCopyView({
   const readable = useReadableCopy(copy?.format ?? null, copy?.text ?? null);
   const machineKey = address?.machineKey ?? null;
   const waking = useCloudMachineWakeInFlight(machineKey);
+  // A DAEX Cloud Mac starts; it never sleeps.
+  const mac = machineKey != null && adeCloudLaneComputerForMachine({ machineKey })?.os === "mac";
   const wakeFailure = useCloudMachineWakeFailure(machineKey);
   if (!address) return null;
 
@@ -319,15 +328,16 @@ export function SavedTerminalCopyView({
             {saved ?? "Saved"} on {BRAND.CLOUD_NAME}. {isShell ? "The last lines it showed." : "Its screen when it went to rest."} Reading this doesn't wake it.
           </div>
         </div>
+        <SessionCloudLaneButton session={session} runtimePin={runtimePin} />
         <Button
           size="sm"
           variant="primary"
           disabled={waking}
           onClick={continueWork}
-          title="Wake the computer and open the live terminal"
+          title={mac ? "Start the Mac and open the live terminal" : "Wake the computer and open the live terminal"}
         >
           <Play size={12} weight="fill" />
-          {waking ? "Waking…" : "Continue"}
+          {waking ? (mac ? "Starting…" : "Waking…") : "Continue"}
         </Button>
       </div>
       {wakeFailure ? (

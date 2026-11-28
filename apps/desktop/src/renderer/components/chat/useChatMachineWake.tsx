@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { CLOUD_COMPUTER_UNAVAILABLE_SENTENCE } from "../../../../../account-directory/src/cloud/contract";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { isCloudConnectionTarget, isSavedChatsMachineId, savedChatComputerGone } from "../../state/cloudSavedChats";
 import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
@@ -15,6 +16,8 @@ export type ChatMachineWake = {
   resting: boolean;
   /** The chat's machine was an ADE Cloud computer that has been deleted. */
   gone: boolean;
+  /** The chat's machine is a DAEX Cloud Mac: it stops and starts, never sleeps or wakes. */
+  mac?: boolean;
   /** A wake from here is under way: the connect, then the wait to read online. */
   waking: boolean;
   /** Why the last wake failed, as one sentence, or null. */
@@ -52,12 +55,12 @@ export function chatMachineReach(machine: Pick<ChatMachineWake, "gone" | "waking
 }
 
 /** One sentence for a picture, video or proof on a cloud computer that is asleep, waking or deleted. */
-export function chatMachineMediaSentence(reach: ChatMachineReach, noun: string, machineName: string, wakeError?: string | null): string {
+export function chatMachineMediaSentence(reach: ChatMachineReach, noun: string, machineName: string, wakeError?: string | null, mac = false): string {
   switch (reach) {
     case "asleep":
-      return `This ${noun} is on ${machineName}, which is asleep.${wakeError ? ` ${wakeError}` : ""}`;
+      return `This ${noun} is on ${machineName}, which is ${mac ? "stopped" : "asleep"}.${wakeError ? ` ${wakeError}` : ""}`;
     case "waking":
-      return `Waking ${machineName} to show this ${noun}…`;
+      return mac ? `Starting ${machineName} to show this ${noun}…` : `Waking ${machineName} to show this ${noun}…`;
     case "gone":
       return `This ${noun} was on ${machineName}, which was deleted, so it can't be shown.`;
   }
@@ -174,7 +177,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
       } catch (connectFailure) {
         console.warn("[cloud] waking the chat's machine failed", connectFailure);
         // A refusal carries the server's sentence (hours, a block, too many awake).
-        fail(cloudWakeFailureSentence(connectFailure));
+        fail(cloudWakeFailureSentence(connectFailure, box?.os === "mac"));
         refresh();
         return false;
       }
@@ -202,9 +205,10 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
     return online;
   }, [wake]);
 
+  const mac = box?.os === "mac";
   const value = useMemo<ChatMachineWake>(
-    () => ({ resting, gone, waking, error, wake, wakeThen }),
-    [error, gone, resting, wake, wakeThen, waking],
+    () => ({ resting, gone, mac, waking, error, wake, wakeThen }),
+    [error, gone, mac, resting, wake, wakeThen, waking],
   );
   return <ChatMachineWakeContext.Provider value={value}>{children}</ChatMachineWakeContext.Provider>;
 }
@@ -213,8 +217,11 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
  * "Can't wake: <the server's sentence>" for a wake that failed, else a plain
  * try-again line. Never the computer's own name.
  */
-export function cloudWakeFailureSentence(error: unknown): string {
+export function cloudWakeFailureSentence(error: unknown, mac = false): string {
   const reason = ipcErrorMessage(error).trim();
+  // The server's whole sentence for a computer it can't wake now: shown as it is.
+  if (reason.includes(CLOUD_COMPUTER_UNAVAILABLE_SENTENCE)) return CLOUD_COMPUTER_UNAVAILABLE_SENTENCE;
+  if (mac) return reason ? `Can't start the Mac: ${reason}` : `${BRAND.NAME} couldn't start your ${BRAND.CLOUD_NAME} Mac. Try again.`;
   return reason ? `Can't wake: ${reason}` : `${BRAND.NAME} couldn't wake your ${BRAND.CLOUD_NAME} computer. Try again.`;
 }
 

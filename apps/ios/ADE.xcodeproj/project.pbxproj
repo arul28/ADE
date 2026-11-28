@@ -206,6 +206,7 @@
 		C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0002 /* CloudMachineScreen.swift */; };
 		C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0003 /* CloudLimitsScreen.swift */; };
 		C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0004 /* CloudPhoneFormat.swift */; };
+		C1AD00000000000000AD0002 /* CloudAdPrice.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD00000000000000AD0001 /* CloudAdPrice.swift */; };
 		C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0005 /* CloudSignInsCard.swift */; };
 		C10D000000000000000B0101 /* CloudComputerLimitSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */; };
 		C10D000000000000000B0102 /* CloudPlansCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0102 /* CloudPlansCard.swift */; };
@@ -541,6 +542,8 @@
 		A90000000000000000000001 /* ProductAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000011 /* ProductAnalytics.swift */; };
 		A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */; };
 		A11800000000000000000002 /* AppUpdateAdvisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11800000000000000000001 /* AppUpdateAdvisorTests.swift */; };
+		A1D500000000000000000002 /* CloudAccountRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D500000000000000000001 /* CloudAccountRequestTests.swift */; };
+		A1D500000000000000000004 /* CloudHoursAtPriceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D500000000000000000003 /* CloudHoursAtPriceTests.swift */; };
 		A1E700000000000000000008 /* ClientUpdateGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E700000000000000000007 /* ClientUpdateGateTests.swift */; };
 		A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */; };
 		A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90100000000000000000011 /* PrivacyInfo.xcprivacy */; };
@@ -1039,6 +1042,7 @@
 		C10D000000000000000A0002 /* CloudMachineScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudMachineScreen.swift; path = ADE/Views/Cloud/CloudMachineScreen.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0003 /* CloudLimitsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudLimitsScreen.swift; path = ADE/Views/Cloud/CloudLimitsScreen.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0004 /* CloudPhoneFormat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPhoneFormat.swift; path = ADE/Views/Cloud/CloudPhoneFormat.swift; sourceTree = "<group>"; };
+		C1AD00000000000000AD0001 /* CloudAdPrice.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudAdPrice.swift; path = ADE/Views/Cloud/CloudAdPrice.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0005 /* CloudSignInsCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudSignInsCard.swift; path = ADE/Views/Cloud/CloudSignInsCard.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudComputerLimitSheet.swift; path = ADE/Views/Cloud/CloudComputerLimitSheet.swift; sourceTree = "<group>"; };
 		C10D000000000000000A0102 /* CloudPlansCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPlansCard.swift; path = ADE/Views/Cloud/CloudPlansCard.swift; sourceTree = "<group>"; };
@@ -1146,6 +1150,8 @@
 		A90000000000000000000011 /* ProductAnalytics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalytics.swift; path = ADE/Services/ProductAnalytics.swift; sourceTree = "<group>"; };
 		A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalyticsPolicyTests.swift; path = ADETests/ProductAnalyticsPolicyTests.swift; sourceTree = "<group>"; };
 		A11800000000000000000001 /* AppUpdateAdvisorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppUpdateAdvisorTests.swift; path = ADETests/AppUpdateAdvisorTests.swift; sourceTree = "<group>"; };
+		A1D500000000000000000001 /* CloudAccountRequestTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudAccountRequestTests.swift; path = ADETests/CloudAccountRequestTests.swift; sourceTree = "<group>"; };
+		A1D500000000000000000003 /* CloudHoursAtPriceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudHoursAtPriceTests.swift; path = ADETests/CloudHoursAtPriceTests.swift; sourceTree = "<group>"; };
 		A1E700000000000000000007 /* ClientUpdateGateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ClientUpdateGateTests.swift; path = ADETests/ClientUpdateGateTests.swift; sourceTree = "<group>"; };
 		A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParserTests.swift; path = ADETests/PrGitHubDescriptionParserTests.swift; sourceTree = "<group>"; };
 		A90100000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADE/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -1299,6 +1305,7 @@
 				C10D000000000000000A0002 /* CloudMachineScreen.swift */,
 				C10D000000000000000A0003 /* CloudLimitsScreen.swift */,
 				C10D000000000000000A0004 /* CloudPhoneFormat.swift */,
+				C1AD00000000000000AD0001 /* CloudAdPrice.swift */,
 				C10D000000000000000A0005 /* CloudSignInsCard.swift */,
 				C10D000000000000000A0101 /* CloudComputerLimitSheet.swift */,
 				C10D000000000000000A0102 /* CloudPlansCard.swift */,
@@ -2089,6 +2096,8 @@
 				FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */,
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
 				A11800000000000000000001 /* AppUpdateAdvisorTests.swift */,
+				A1D500000000000000000001 /* CloudAccountRequestTests.swift */,
+				A1D500000000000000000003 /* CloudHoursAtPriceTests.swift */,
 				A1E700000000000000000007 /* ClientUpdateGateTests.swift */,
 				A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */,
 				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
@@ -2537,6 +2546,7 @@
 				C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */,
 				C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */,
 				C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */,
+				C1AD00000000000000AD0002 /* CloudAdPrice.swift in Sources */,
 				C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */,
 				C10D000000000000000B0101 /* CloudComputerLimitSheet.swift in Sources */,
 				C10D000000000000000B0102 /* CloudPlansCard.swift in Sources */,
@@ -2947,6 +2957,8 @@
 				FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */,
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
 				A11800000000000000000002 /* AppUpdateAdvisorTests.swift in Sources */,
+				A1D500000000000000000002 /* CloudAccountRequestTests.swift in Sources */,
+				A1D500000000000000000004 /* CloudHoursAtPriceTests.swift in Sources */,
 				A1E700000000000000000008 /* ClientUpdateGateTests.swift in Sources */,
 				A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */,
 				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,

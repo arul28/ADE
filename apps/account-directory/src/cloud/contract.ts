@@ -1,3 +1,6 @@
+import { BRAND } from "../../../desktop/src/shared/brand";
+import { PRODUCT_NAME_PATTERN } from "../../../desktop/src/shared/brandNames";
+
 /**
  * The ADE Cloud routes this Worker serves. Paths and response shapes only:
  * nothing here imports the Worker, so the desktop can `import type` it.
@@ -10,11 +13,13 @@
  *   GET    /cloud/account                      CloudAccountState
  *   GET    /cloud/templates/:name              { exists }
  *   GET    /cloud/instances                    { data: CloudInstance[] }
- *   POST   /cloud/instances                    CloudInstance (create)
+ *   POST   /cloud/instances                    CloudInstance (create; Pricing v3: { adProof: { chatId, messageId } }: a new lane's computer made for a
+ *                                                            person's first message, counted as its proof, so it starts at the price with ads and a Small on Free with ads is made at 0 credits)
  *   GET    /cloud/instances/:id                CloudInstance
  *   DELETE /cloud/instances/:id                { deleted: true }
  *   POST   /cloud/instances/:id/sleep          { status }
- *   POST   /cloud/instances/:id/start          { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan)
+ *   POST   /cloud/instances/:id/start          { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan.
+ *                                                            Pricing v3: { adProof: { chatId, messageId } }: a person's message wakes it, counted as its proof first, so a Small on Free with ads wakes at 0 credits)
  *   POST   /cloud/instances/:id/stop           { status }
  *   POST   /cloud/instances/:id/idle           { status }   the computer asks to be slept ({ backupReportId }: it rests with that backup report)
  *   POST   /cloud/instances/:id/update         { status, templateVersion }   409 `update_in_progress`
@@ -66,6 +71,7 @@
  *   DELETE /cloud/launches/:launch                      CloudLaunchRecord   (cancel; deletes the computer before the agent starts)
  *   POST   /cloud/launches/:launch/join                 CloudLaunchJoinResult   NO account token: the computer's join code (CloudLaunchJoinRequest)
  *   GET    /cloud/launches?active=1                     CloudLaunchList   (the caller's launches still in progress, and failures of the last day)
+ *   POST   /cloud/launches/:launch/free-model           CloudLaunchRecord   (the chat starts on DAEX Free Models instead of waiting for its sign-in; 409 `launch_not_waiting`, `free_models_unavailable`, `free_models_consent`)
  *   GET    /cloud/launches/:launch/messages             { messages: CloudLaunchMessage[] }
  *   POST   /cloud/launches/:launch/messages             CloudLaunchMessage   (CloudLaunchMessageRequest; 201 new, 200 the same id again; 409 `chat_ready` once the chat exists)
  *   POST   /cloud/launches/:launch/messages/:msg/claim  CloudLaunchMessage   (from the computer: { claimId }; 409 `message_taken`)
@@ -263,10 +269,10 @@ export const CLOUD_PATHS = {
   agent37Webhook: "/cloud/agent37/webhook",
   /**
    * Sponsored cards and the Index on the Free plan's ADE Cloud chats
-   * (`gravity.ts`). `PUT /consent` `{ consent: CloudSponsoredChoice }` records
+   * (`gravity.ts`). `PUT /consent` `CloudSponsoredConsentRequest` records
    * the account's answer, or the notice that cards are on, and answers
    * `CloudSponsoredState` (409 for a notice where cards don't start on); `POST /seen` `CloudSponsoredSeenRequest` says a
-   * person has one of the account's cloud chats open; `POST /ad`
+   * person has one of the account's cloud chats or terminals open (for the Index only); `POST /ad`
    * `CloudSponsoredAdRequest` answers `CloudSponsoredAdAnswer`; `POST /index`
    * `CloudSponsoredIndexRequest` answers `CloudSponsoredIndexAnswer`.
    */
@@ -275,7 +281,30 @@ export const CLOUD_PATHS = {
   sponsoredAd: "/cloud/sponsored/ad",
   sponsoredIndex: "/cloud/sponsored/index",
   sponsoredHide: "/cloud/sponsored/hide",
+  /**
+   * Pricing v3 (`adPrice.ts`): `POST` `CloudAdSentRequest`, a person sent a
+   * message in a chat that uses DAEX Cloud. Answers `CloudAdProofAnswer`. Not
+   * sent for CLI sessions, automations or outside agents. Answers 404 while
+   * Pricing v3 doesn't reach the account.
+   */
+  sponsoredSent: "/cloud/sponsored/sent",
+  /**
+   * ADE Free Models (`freeModels.ts`): Gravity's hosted models, paid for by
+   * the sponsored cards in the chats that use them, on any plan and machine.
+   * `PUT /consent` `CloudFreeModelsConsentRequest` answers `CloudFreeModelsState`;
+   * `POST /seen` `CloudFreeModelsSeenRequest` says a person has that chat open
+   * (inference runs only while someone does); `/v1/models` and
+   * `/v1/chat/completions` are OpenAI-compatible, for the OpenCode provider
+   * `ade-free`, with the chat in the `X-ADE-Chat-Id` header.
+   */
+  freeModelsConsent: "/cloud/free-models/consent",
+  freeModelsSeen: "/cloud/free-models/seen",
+  freeModelsModels: "/cloud/free-models/v1/models",
+  freeModelsChat: "/cloud/free-models/v1/chat/completions",
 } as const;
+
+/** The header an ADE Free Models request names its chat in. */
+export const CLOUD_FREE_MODELS_CHAT_HEADER = "X-ADE-Chat-Id";
 
 /** `/cloud/chats/:machine/:chat/messages[/:msg]`: the person's queue for an existing cloud chat. */
 export const cloudChatMessagesPath = (machineKey: string, chatId: string, messageId?: string): string =>
@@ -364,8 +393,13 @@ export type CloudLaneWithoutComputer = {
    * unless they said not to. An older ADE shows an unknown reason as a removed computer.
    */
   reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit";
-  /** The size the old computer had. */
-  type: "default" | "vm";
+  /**
+   * The size the old computer had. `mac`: a DAEX Cloud Mac's lane (6 CPU,
+   * 8 GB), sent only while the Mac switch reaches the account; otherwise the
+   * lane reads as `default` at 4 CPU, 8 GB. An older app shows `mac` as an
+   * unknown size.
+   */
+  type: "default" | "vm" | "mac";
   cpu: number;
   memoryGb: number;
   formerInstanceId: string;
@@ -447,6 +481,151 @@ export type CloudInstance = {
    * moves a lane from the saved copy only when this is true.
    */
   deleteOnlyIfSaved?: boolean;
+  /*
+   * The DAEX Cloud Mac (`CloudMacState`). Servers before it leave these out:
+   * read a missing `os` as `linux` and a missing `unsupported` as empty.
+   */
+  /** What runs it: `linux` (every computer before the Mac) or `mac`. */
+  os?: CloudComputerOs;
+  /** A Mac's own state: the queue, the start, and its drive. Null or absent on Linux. */
+  mac?: CloudMacState | null;
+  /**
+   * What the server refuses on this computer (`mac_unsupported`), so a
+   * client hides those controls instead of deciding itself. Absent: nothing.
+   */
+  unsupported?: CloudComputerAction[];
+};
+
+/* ---- The DAEX Cloud Mac ---- */
+
+/** What a cloud computer runs. Every computer before the Mac is `linux`. */
+export type CloudComputerOs = "linux" | "mac";
+
+/**
+ * An action a computer may not take, named in `CloudInstance.unsupported`
+ * and in a `mac_unsupported` refusal's `error.action`.
+ */
+export type CloudComputerAction =
+  | "resize"
+  | "disk_grow"
+  | "copy"
+  | "move"
+  | "update"
+  | "backup"
+  | "public_ports"
+  | "signed_url"
+  | "auto_sleep"
+  | "machine_launch";
+
+/** Every action a DAEX Cloud Mac refuses, in the order a client lists them. */
+export const CLOUD_MAC_UNSUPPORTED: readonly CloudComputerAction[] = [
+  "resize", "disk_grow", "copy", "move", "update", "backup", "public_ports", "signed_url", "auto_sleep", "machine_launch",
+];
+
+/** The one sentence the server answers with for each refused action (`mac_unsupported`). */
+export const CLOUD_MAC_UNSUPPORTED_SENTENCES: Readonly<Record<CloudComputerAction, string>> = {
+  resize: "A DAEX Cloud Mac has one size (6 CPU, 8 GB), so it can't change size.",
+  disk_grow: "A DAEX Cloud Mac's drive is 20 GB and can't grow. Free up space on it instead.",
+  copy: "A DAEX Cloud Mac can't be copied. Start a new Mac lane from the same branch instead.",
+  move: "A lane on a DAEX Cloud Mac can't move to another computer. Push its branch and start a new lane there.",
+  update: "A DAEX Cloud Mac updates DAEX each time it starts, so there is nothing to update now.",
+  backup: "A DAEX Cloud Mac keeps its drive between starts and has no snapshots. Your lane's work is saved as for any cloud lane.",
+  public_ports: "A DAEX Cloud Mac can't open public ports.",
+  signed_url: "A DAEX Cloud Mac can't share a link to a port.",
+  auto_sleep: "A DAEX Cloud Mac always stops a few minutes after its work stops.",
+  machine_launch: "A DAEX Cloud Mac is made for a lane. Start a new lane on a Mac instead.",
+};
+
+/** The Mac's one shape: CPU, memory and its drive (the only part that is kept between starts). */
+export const CLOUD_MAC_SHAPE = { cpu: 6, memoryGb: 8, driveGb: 20 } as const;
+
+/**
+ * `CloudCatalog.mac`: what a DAEX Cloud Mac is and costs, for the Linux or
+ * Mac pick, the composer and `ade cloud status`. Credits are in the
+ * server's units (thousandths, as `multiplierMilli`); the catalog's credit
+ * scale says how a client shows them.
+ */
+export type CloudMacOffer = {
+  label: string;
+  cpu: number;
+  memoryGb: number;
+  driveGb: number;
+  /** What a running Mac uses each minute, at the full price (no ads). Billed by the whole minute. */
+  creditMilliPerMinute: number;
+  /** Pricing v3 only: what it uses each minute at the price with ads (400 at a 20% discount). Missing: one price. */
+  adCreditMilliPerMinute?: number;
+  /** A Mac stops this many minutes after its work stops (Linux sleeps after 3). */
+  stopAfterIdleMinutes: number;
+  /** How long a start usually takes once a Mac is free, in seconds. */
+  startSeconds: { min: number; max: number };
+  /** One line that says what a Mac is, for the pick. */
+  summary: string;
+  /** One line that says what a stop keeps and loses, for the computer panel. */
+  keeps: string;
+  /**
+   * The agent providers that don't work on a Mac, in a chat, a CLI session or
+   * both, each with the sentence to show before the person starts. Only the
+   * exceptions: absent or empty, every provider works in both.
+   */
+  providers?: Array<{ provider: string; chat: boolean; cli: boolean; sentence: string | null }>;
+};
+
+/**
+ * A Mac's state, beside the computer's `status`:
+ * - `queued`: waiting for a free Mac (it can take minutes at busy hours; nothing is charged).
+ * - `starting`: a Mac was found and is starting with the lane's drive (under a minute), then DAEX starts on it.
+ * - `running`: on, and charged by the minute.
+ * - `stopping`: work stopped; the Mac saves its drive and goes.
+ * - `stopped`: only the drive is kept. The next message or a start makes a new Mac with it.
+ * `status` reads `starting` while queued or starting, `running`, and
+ * `stopped` while stopping or stopped, so an older app sees a computer that
+ * stops and starts.
+ */
+export type CloudMacStateName = "queued" | "starting" | "running" | "stopping" | "stopped";
+
+export type CloudMacState = {
+  state: CloudMacStateName;
+  /** When it entered `state` (ms). */
+  since: number;
+  /** The sentence to show for `state` (`CLOUD_MAC_STATE_SENTENCES`), or why the last start failed. */
+  message: string | null;
+  /** True when the last start ended without a Mac (none came free in time, or the provider refused): `message` says why. */
+  startFailed?: boolean;
+  /**
+   * Why, for the action a client offers: `queue_expired` and `unavailable`
+   * (send again or Start), `drive_lost` (the drive is gone: the lane's saved
+   * work is in Lanes without a computer, and the computer can only be
+   * deleted). Set exactly when `startFailed` is.
+   */
+  failure?: CloudMacStartFailure;
+  drive: {
+    sizeGb: number;
+    /** As the last stop saved it; null before its first save. */
+    usedGb: number | null;
+    savedAt: number | null;
+  };
+};
+
+/** The words for each state. The server sends them in `CloudMacState.message`; clients show the server's. */
+/** How long a Mac takes to start, in every sentence that says it (the catalog's `startSeconds` is the range behind it). */
+export const CLOUD_MAC_START_WORDS = "in under a minute";
+
+export const CLOUD_MAC_STATE_SENTENCES: Readonly<Record<CloudMacStateName, string>> = {
+  queued: "Waiting for a free Mac. It starts as soon as one is free, and nothing is charged while it waits.",
+  starting: `Starting the Mac with this lane's drive. It's ready ${CLOUD_MAC_START_WORDS}.`,
+  running: "The Mac is on.",
+  stopping: "Work stopped, so the Mac is saving its drive and stopping.",
+  stopped: `The Mac is stopped and its drive is kept. The next message starts it again ${CLOUD_MAC_START_WORDS}.`,
+};
+
+/** Why a start ended with no Mac (`CloudMacState.failure`). */
+export type CloudMacStartFailure = "queue_expired" | "unavailable" | "drive_lost";
+
+/** Why a start ended with no Mac, as the server words it (`CloudMacState.message` with `startFailed`). */
+export const CLOUD_MAC_START_FAILED_SENTENCES: Readonly<Record<CloudMacStartFailure, string>> = {
+  queue_expired: "No Mac came free within an hour. Send the message again to wait again.",
+  unavailable: "DAEX Cloud can't start a Mac right now. DAEX has been told. Try again later.",
+  drive_lost: "This Mac's drive is gone, so its lane can't start again. Its saved work is in Lanes without a computer.",
 };
 
 /**
@@ -496,6 +675,19 @@ export type CloudComputerActivityReport = {
   sleepsAt: number | null;
   runningAgents: number;
   reportedAt: number;
+  /**
+   * Pricing v3: the kinds of full-price work running on the computer now
+   * (`CloudFullPriceWork`), each listed once; empty when none. While any
+   * runs, the whole computer has the full price. Sent again whenever the
+   * list changes. An older brain leaves it out: read as none.
+   */
+  fullPriceWork?: CloudFullPriceWork[];
+  /**
+   * The terminals open on the computer now (any kind: a shell too). A
+   * launch's sign-in wait is free only while nothing runs (`signInWait.ts`).
+   * An older brain leaves it out.
+   */
+  openTerminals?: number;
 };
 
 /** How hard a computer pushes one of its limits, as the provider reads it. */
@@ -564,9 +756,29 @@ export type CloudIdleCleanupEntry = {
   idleDays?: number;
   /** Null before the computer first reported them. */
   ignoredFiles?: CloudIgnoredFiles | null;
-  /** Kept because its save failed; ADE tries again at `retryAt` (an older server leaves it out: use `deletesAt`). */
-  held?: { at: number; reason: string; retryAt?: number } | null;
+  /**
+   * Kept because its save failed; ADE tries again at `retryAt` (an older server
+   * leaves it out: use `deletesAt`). `kind` is what the person can do about it,
+   * read from `reason` (`idleHeldKindOf`); an older server leaves it out.
+   */
+  held?: { at: number; reason: string; retryAt?: number; kind?: CloudIdleHeldKind } | null;
 };
+
+/**
+ * What the person can do about a computer the idle cleanup kept: the action
+ * that really ends the hold for its reason, or `none` when only waiting
+ * (ADE tries again by itself), "Delete anyway" or "Keep it" are left.
+ */
+export type CloudIdleHeldKind =
+  | "too_large"
+  | "account_full"
+  | "staged_only"
+  | "submodule"
+  | "no_commit"
+  | "fix_named"
+  | "open_once"
+  | "stop_agent"
+  | "none";
 
 /** The update channel a computer follows. A client's `alpha` counts as `beta`. */
 export type CloudUpdateChannel = "stable" | "beta";
@@ -584,7 +796,16 @@ export type CloudUpdateCheck = {
 };
 
 /** `POST /cloud/instances/:id/booted`: it woke only for an update, so it may sleep at its first idle check. */
-export type CloudBootReportResult = { ok: true; sleepWhenIdle: boolean };
+export type CloudBootReportResult = {
+  ok: true;
+  sleepWhenIdle: boolean;
+  /**
+   * How many minutes with no work before the computer asks to rest: 5 on a
+   * Mac (`mac_idle_stop_minutes`), where resting is a stop. Absent (Linux, or
+   * an older server): the brain's own 3.
+   */
+  idleMinutes?: number;
+};
 
 /** What `POST /cloud/billing/checkout` answers. */
 export type CloudPaidPlanId = Exclude<CloudPlanId, "free">;
@@ -681,6 +902,12 @@ export type CloudCatalog = {
     label?: string;
     /** How far the disk may grow at this size. */
     diskMaxGb?: number;
+    /**
+     * Pricing v3: the ad price of this size, in the same unit as
+     * `multiplierMilli` (the full price). Sent only when Pricing v3 reaches
+     * the account; Small reads 0 (free with ads).
+     */
+    adMultiplierMilli?: number;
   }>;
   /**
    * `paid` is Plus, kept for builds that know only two plans. Servers before
@@ -701,6 +928,27 @@ export type CloudCatalog = {
   hourUnit?: "medium";
   /** Older servers only: what 10 GB of extra disk cost for a month. Pricing v2 servers leave it out (no extra disk). */
   extraDiskCentsPer10GbMonth?: number;
+  /*
+   * Pricing v3 (`adPrice.ts`): sent only when Pricing v3 reaches the account.
+   * An app that doesn't know these fields shows `multiplierMilli` (the full
+   * price) in the old unit: the same hours and money.
+   */
+  /** Shown credits = milli / 1000 x `creditScale` (10): a Medium hour shows as 10 credits. */
+  creditScale?: number;
+  /** The DAEX Cloud iPhone's full and ad rate, in thousandths a minute (500 and 400 at a 20% discount). */
+  phone?: { milliPerMinute: number; adMilliPerMinute: number };
+  /**
+   * Free's Small full rate an hour for this account (500 while the ad switch
+   * reaches it, else 0; free with ads either way), whatever the viewer's own
+   * plan: the Free plan card's Small line. Missing from older servers.
+   */
+  freeSmallMilli?: number;
+  /**
+   * The DAEX Cloud Mac, sent only while the server's `mac_computers` switch
+   * reaches this account. Absent: show nothing about a Mac anywhere, and
+   * never send `os: "mac"` (an older server would make a Linux computer).
+   */
+  mac?: CloudMacOffer;
 };
 
 /**
@@ -729,11 +977,23 @@ export type CloudDiskRefusalReason = "plan_disk" | "needs_approval" | "extra_off
 
 export type CloudAccountState = {
   /**
+   * Pricing v3: the ad price, what each computer and the iPhone cost now, and
+   * the ads switch (`adPrice.ts`). Sent only when the server's `pricing_v3`
+   * setting reaches this account; absent, a client shows today's prices.
+   */
+  pricing?: CloudPricingState;
+  /**
    * Sponsored cards and the Index in this account's ADE Cloud chats
    * (`gravity.ts`). Sent only when the server's switch reaches this account;
    * absent, a client shows nothing of them, not even the question.
    */
   sponsored?: CloudSponsoredState;
+  /**
+   * ADE Free Models (`freeModels.ts`), for any plan. Sent only when the
+   * server's switch reaches this account and its keys are set; absent, a
+   * client shows none of them.
+   */
+  freeModels?: CloudFreeModelsState;
   /**
    * Credits: `hours` is one balance of credits (the same numbers: a Medium
    * computer uses one an hour), and the ADE Cloud iPhone draws from it at
@@ -1148,13 +1408,164 @@ export function idleCleanupSaveSentence(branch: string | null | undefined): stri
   return `DAEX deletes it only once its work that isn't on GitHub is saved in DAEX Cloud; it never commits or pushes for you. The lane and its chats stay, and your next message makes a new computer from ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} with that work back on it.`;
 }
 
+/* ---- A computer the idle cleanup kept because its work isn't saved ---- */
+
+// The reasons a lane's save stops, as the computer reports them
+// (`cloudLaneBackup.ts`) and the server stores them: kept here so the server
+// can tell them apart (`idleHeldKindOf`).
+export const CLOUD_BACKUP_STAGED_ONLY_SENTENCE = `This lane has staged changes that its files no longer hold. Commit or unstage them, then ${BRAND.NAME} saves it.`;
+export const CLOUD_BACKUP_SUBMODULE_SENTENCE = `This lane has changes inside a submodule. Commit and push them in the submodule, then ${BRAND.NAME} saves it.`;
+export const CLOUD_BACKUP_NO_COMMIT_SENTENCE = `This lane has no commit yet, so ${BRAND.NAME} can't save it. Commit once, then it saves.`;
+export const CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE = `${BRAND.NAME} couldn't reach GitHub to check this lane's work. It checks again at the next rest.`;
+export const CLOUD_BACKUP_MISSING_FOLDER_SENTENCE = `This lane's folder is missing on the computer, and ${BRAND.NAME} has no saved copy of its work.`;
+export const CLOUD_BACKUP_SAVE_STOPPED_SENTENCE = `The save stopped before this lane; ${BRAND.NAME} saves it at the next rest.`;
+/** Ends a refusal that names what to fix in the lane's files (a path git can't carry, for one). */
+export const CLOUD_BACKUP_UNTIL_THEN_SUFFIX = `${BRAND.NAME} can't save this lane's work until then.`;
+// The reasons the server's own save check stops (`saveBeforeDelete`, the idle cleanup).
+export const CLOUD_SAVE_PREPARE_FAILED_SENTENCE = `${BRAND.NAME} on the computer couldn't stop its agents and save its chats.`;
+export const CLOUD_SAVE_ADE_TOO_OLD_SENTENCE = `This computer's ${BRAND.NAME} is too old to save its lanes' work. It saves them after it updates, the next time it rests.`;
+export const CLOUD_SAVE_UNREACHABLE_SENTENCE = `${BRAND.CLOUD_NAME} couldn't reach the computer to check its saved work.`;
+
 /**
- * What to do about a computer the idle cleanup kept because its lanes' work
- * isn't saved, and when ADE reads again (1, 2, 4 ... days, at most 14). ADE
- * never wakes it to save: its next use saves it when it rests.
+ * A stored reason with the product's name taken out: reasons stored before the
+ * rename say "ADE", newer ones "DAEX", and an old cloud image still writes the
+ * old name. The matcher compares text without it.
  */
-export function idleCleanupHeldNext(retryAt: number, now: number): string {
-  return `Open the lane once so DAEX saves its work when the computer rests, or delete the lane if you don't need it. DAEX checks again ${inHowLong(retryAt, now)}.`;
+const PRODUCT_NAME = new RegExp(String.raw`\b${PRODUCT_NAME_PATTERN}\b`, "g");
+const withoutProductName = (text: string): string => text.replace(PRODUCT_NAME, "\u0000");
+/** `sentence` as a pattern that matches it under either name. */
+const underEitherName = (sentence: string): string =>
+  sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(PRODUCT_NAME, PRODUCT_NAME_PATTERN);
+/**
+ * The reason sentences DAEX writes, each matched under either name. The
+ * stored text is the only record of a hold (an old computer sends nothing
+ * else), so each known sentence is shown in today's words and the rest (a
+ * lane's name, a path, a sentence this doesn't know) as stored. Built on first
+ * use: the sentences are declared further down this file.
+ */
+let knownSentences: ReadonlyArray<readonly [RegExp, string]> | null = null;
+const knownSentencesNow = (): ReadonlyArray<readonly [RegExp, string]> => (knownSentences ??= [
+  CLOUD_BACKUP_NOT_SAVED_SENTENCE, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_BACKUP_TOO_LARGE_SENTENCE, CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE,
+  CLOUD_BACKUP_STAGED_ONLY_SENTENCE, CLOUD_BACKUP_SUBMODULE_SENTENCE, CLOUD_BACKUP_NO_COMMIT_SENTENCE, CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE,
+  CLOUD_BACKUP_MISSING_FOLDER_SENTENCE, CLOUD_BACKUP_SAVE_STOPPED_SENTENCE, CLOUD_BACKUP_UNTIL_THEN_SUFFIX, CLOUD_SAVE_PREPARE_FAILED_SENTENCE,
+  CLOUD_SAVE_ADE_TOO_OLD_SENTENCE, CLOUD_SAVE_UNREACHABLE_SENTENCE,
+].map((sentence) => [new RegExp(underEitherName(sentence), "g"), sentence] as const));
+
+/** A stored reason in today's words: each sentence DAEX stored under the old name reads with the current one. */
+export function idleHeldReasonNow(reason: string): string {
+  return knownSentencesNow().reduce((text, [pattern, sentence]) => text.replace(pattern, () => sentence), reason);
+}
+
+/**
+ * Each reason's opening words (a stored reason is cut at 300 characters), and
+ * what the person can do about it. Built on first use: two of the sentences
+ * are declared further down this file.
+ */
+let idleHeldMarks: ReadonlyArray<readonly [string, CloudIdleHeldKind]> | null = null;
+const idleHeldMarksNow = (): ReadonlyArray<readonly [string, CloudIdleHeldKind]> => (idleHeldMarks ??= ([
+  [CLOUD_BACKUP_TOO_LARGE_SENTENCE, "too_large"],
+  [CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE, "account_full"],
+  [CLOUD_BACKUP_STAGED_ONLY_SENTENCE, "staged_only"],
+  [CLOUD_BACKUP_SUBMODULE_SENTENCE, "submodule"],
+  [CLOUD_BACKUP_NO_COMMIT_SENTENCE, "no_commit"],
+  [CLOUD_BACKUP_UNTIL_THEN_SUFFIX, "fix_named"],
+  [CLOUD_SAVE_PREPARE_FAILED_SENTENCE, "stop_agent"],
+  [CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE, "none"],
+  [CLOUD_BACKUP_MISSING_FOLDER_SENTENCE, "none"],
+  [CLOUD_SAVE_UNREACHABLE_SENTENCE, "none"],
+] as const).map(([sentence, kind]) => [withoutProductName(sentence).slice(0, 40), kind] as const));
+
+/**
+ * What the person can do about a kept computer, from the reason the server
+ * stored. The first reason named wins (a computer holds one lane). Anything
+ * else (it slept before ADE saved, its ADE is old, the save stopped or failed
+ * on the way) ends when the person uses it once: its next rest saves it.
+ */
+export function idleHeldKindOf(reason: string): CloudIdleHeldKind {
+  const text = withoutProductName(reason);
+  let first: { at: number; kind: CloudIdleHeldKind } | null = null;
+  for (const [mark, kind] of idleHeldMarksNow()) {
+    const at = text.indexOf(mark);
+    if (at >= 0 && (!first || at < first.at)) first = { at, kind };
+  }
+  return first?.kind ?? "open_once";
+}
+
+/** The action line for each kind: what ends the hold, then the way out. Each is 20 words or fewer. */
+function idleHeldAction(kind: CloudIdleHeldKind, hasLane: boolean): string {
+  switch (kind) {
+    case "too_large": return "Push its work to GitHub, or delete it anyway.";
+    case "account_full": return "Push or delete other lanes you don't need, or delete it anyway.";
+    case "staged_only": return "Open the lane and commit or unstage its staged changes, or delete it anyway.";
+    case "submodule": return "Open the lane and push the changes in its submodule, or delete it anyway.";
+    case "no_commit": return "Open the lane and make its first commit, or delete it anyway.";
+    case "fix_named": return "Open the lane and fix what Why? names, or delete it anyway.";
+    case "stop_agent": return "Open the lane and stop its agent, or delete it anyway.";
+    case "none": return "Delete it anyway, or keep it.";
+    case "open_once": return hasLane ? `Open the lane once so ${BRAND.NAME} can save its work, or delete it anyway.` : `Use it once so ${BRAND.NAME} can save its work, or delete it anyway.`;
+  }
+}
+
+export type CloudIdleHeldWords = {
+  /** What happened, in one short sentence. */
+  title: string;
+  /** What the person can do, in one short sentence. */
+  action: string;
+  /** "Why?": the cleanup's rule, the reason, the files git ignores, when ADE checks again. */
+  why: string[];
+  /** The one confirm before "Delete anyway": what is lost, and what stays. */
+  confirm: { title: string; body: string; confirmLabel: string };
+};
+
+/**
+ * The words for a computer the idle cleanup kept because its work isn't
+ * saved, the same on every surface (Settings, the lane's band and menus, the
+ * email). "Delete anyway" deletes the computer and keeps the lane and its
+ * chats; it saves and pushes nothing.
+ */
+export function idleHeldWords(
+  entry: Pick<CloudIdleCleanupEntry, "laneName" | "name" | "branch" | "idleDays" | "ignoredFiles" | "deletesAt"> & { held: NonNullable<CloudIdleCleanupEntry["held"]> },
+  now: number,
+): CloudIdleHeldWords {
+  const laneName = entry.laneName?.trim() || null;
+  const subject = laneName ? `${laneName}'s computer` : entry.name?.trim() || "a computer without a lane";
+  const kind = entry.held.kind ?? idleHeldKindOf(entry.held.reason);
+  let reason = idleHeldReasonNow(entry.held.reason.trim());
+  if (reason.startsWith(CLOUD_BACKUP_NOT_SAVED_SENTENCE) && reason.length > CLOUD_BACKUP_NOT_SAVED_SENTENCE.length) {
+    reason = reason.slice(CLOUD_BACKUP_NOT_SAVED_SENTENCE.length).trim();
+  }
+  if (laneName && reason.startsWith(`${laneName}: `)) reason = reason.slice(laneName.length + 2);
+  const ignored = entry.ignoredFiles ?? null;
+  const list = ignored ? ignoredFilesList(ignored) : null;
+  const ignoredLine = !ignored
+    ? "Files git ignores, such as .env, are never saved."
+    : list
+      ? `Files git ignores are never saved: ${list}.${ignored.incomplete ? ` ${BRAND.NAME} couldn't read every lane, so there may be more.` : ""}`
+      // A report that couldn't read a lane and found nothing doesn't mean there is nothing.
+      : ignored.incomplete
+        ? `Files git ignores, such as .env, are never saved. ${BRAND.NAME} couldn't read every lane to list them.`
+        : null;
+  const retryAt = entry.held.retryAt ?? entry.deletesAt;
+  const why = [
+    entry.idleDays
+      ? `${BRAND.CLOUD_NAME} deletes a computer after ${entry.idleDays} days without use, and saves its ${laneName ? "lane's " : ""}work first.`
+      : `${BRAND.CLOUD_NAME} deletes a computer that isn't used, and saves its ${laneName ? "lane's " : ""}work first.`,
+    reason || CLOUD_BACKUP_NOT_SAVED_SENTENCE,
+    ...(ignoredLine ? [ignoredLine] : []),
+    kind === "none" ? `${BRAND.NAME} tries again by itself ${inHowLong(retryAt, now)}.` : `${BRAND.NAME} checks again ${inHowLong(retryAt, now)}.`,
+  ];
+  const branch = entry.branch?.trim() || null;
+  const lost = !ignored || (!list && ignored.incomplete) ? "such as .env" : list;
+  const body = laneName
+    ? `Its work that isn't on GitHub is lost for good: changes not pushed to ${branch ?? "the lane's branch"}${lost ? `, and files git ignores (${lost})` : ""}. `
+      + `The lane and its chats stay; your next message makes a new computer from ${branch ?? "the lane's branch"} on GitHub.`
+    : `Its work that isn't on GitHub is lost for good${lost ? `, with files git ignores (${lost})` : ""}.`;
+  return {
+    title: `${BRAND.NAME} didn't delete ${subject} because it couldn't save its work.`,
+    action: idleHeldAction(kind, laneName != null),
+    why,
+    confirm: { title: `Delete ${subject} without saving its work?`, body, confirmLabel: "Delete computer" },
+  };
 }
 
 /** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
@@ -1206,6 +1617,18 @@ export function overPlanLimitsMoveSentence(cleanup: Pick<CloudPlanCleanup, "plan
 
 /** "1 cloud computer", "3 cloud computers". */
 export const cloudComputersPhrase = (count: number): string => `${count} cloud ${count === 1 ? "computer" : "computers"}`;
+
+/**
+ * What an `out_of_hours` refusal (a create, copy, wake, start or launch)
+ * carries next to `code` and `message` when a GitHub rule holds the Free
+ * plan's credits (`CloudFreePlanGithub`, `freePlanGithub.ts`): the hold is
+ * the reason, not credits spent. `message` is then `freeGithub.sentence`. A
+ * client shows the hold (with "Add a card (no charge)" when
+ * `canUnlockWithCard`, "Connect GitHub" for `no_github`) instead of an
+ * out-of-credits notice. Absent otherwise. The account state's
+ * `freePlan.github` says the same before any refusal.
+ */
+export type CloudOutOfHoursDetail = { freeGithub?: CloudFreePlanGithub };
 
 /* ---- The computer limit (Pricing v2) ---- */
 
@@ -1542,10 +1965,27 @@ export const CLOUD_REFUSAL_CODES = {
   /** The ADE Cloud iPhone: this client can't drive the account's provider, or none has what the start needs. */
   phone_needs_update: 409,
   phone_cant: 409,
+  /** A Linux-only action on a DAEX Cloud Mac (resize, disk, copy, move, ports…); `error.action` names it (`CloudComputerAction`). */
+  mac_unsupported: 409,
+  /** No DAEX Cloud Mac can start right now (the provider's line is full, or it refused). Try again later. */
+  mac_busy: 503,
+  /**
+   * The computer exists but DAEX can't wake or use it now (a kind of computer
+   * the account can no longer use). Its lane, work and chats are kept; nothing
+   * was stored or started. The sentence is `CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`.
+   */
+  computer_unavailable: 409,
 } as const;
 export type CloudRefusalCode = keyof typeof CLOUD_REFUSAL_CODES;
 export const isCloudRefusalCode = (code: unknown): code is CloudRefusalCode =>
   typeof code === "string" && Object.hasOwn(CLOUD_REFUSAL_CODES, code);
+
+/**
+ * `computer_unavailable`: what every wake, start and send of such a computer
+ * answers, and its \`statusReason.message\` in a list (where it reads as
+ * \`stopped\`). Names no kind of computer.
+ */
+export const CLOUD_COMPUTER_UNAVAILABLE_SENTENCE = "This lane's computer isn't available right now, so DAEX can't wake it or send it messages. The lane, its work and its chats are kept.";
 
 /** `plan_past_due`: a paid plan whose last payment failed; its computers are suspended until the card works. */
 export const CLOUD_PLAN_PAST_DUE_SENTENCE = "DAEX Cloud suspended this machine because your last payment didn't go through, so DAEX can't wake it right now. Update your card in Manage billing.";
@@ -2305,6 +2745,13 @@ export type CloudServerLaunchRequest = {
   launchId: string;
   /** A computer with nothing on it is its own request (`CloudMachineLaunchRequest`). */
   kind: Exclude<CloudLaunchKind, "machine">;
+  /**
+   * Linux (left out) or a DAEX Cloud Mac. Send `mac` only when the catalog
+   * has `mac`. A Mac has one size: `sizeId` is still sent (any tier) and
+   * ignored, and `sizeChoice` is `picked`. A server whose switch doesn't
+   * reach the account refuses `mac` like an unknown size.
+   */
+  os?: CloudComputerOs;
   sizeId: CloudTierId;
   /** How `sizeId` was chosen (`CloudLaunchSizeChoice`); left out is `picked`. */
   sizeChoice?: CloudLaunchSizeChoice;
@@ -2343,6 +2790,12 @@ export type CloudServerLaunchRequest = {
      * messages and is sent once, as the chat's first message.
      */
     messageId?: string;
+    /**
+     * Set by the server when the person moved this waiting chat to a DAEX
+     * Free Model (`POST /cloud/launches/:id/free-model`): what it asked for
+     * first. A Retry that sends that first choice again keeps the free model.
+     */
+    switchedFrom?: { provider: string; modelId: string };
   };
   /**
    * Who asked: a person on the web or the phone (the default), or an
@@ -2474,8 +2927,22 @@ export type CloudLaunchRecord = {
   error: string | null;
   /** While `waiting_for_sign_in`: the provider sign-in the launch waits on. Absent from an older server. */
   signIn?: CloudLaunchSignIn | null;
+  /**
+   * A launch that failed or was cancelled in its sign-in step: one plain
+   * sentence from the server about what the wait cost ("Nothing was charged
+   * for the wait."). Null otherwise; absent from an older server.
+   */
+  endNote?: string | null;
   /** A `machine` launch's computer; null for any other kind. Absent from an older server. */
   machine?: CloudMachineLaunchFacts | null;
+  /** What its computer runs. Absent from an older server: `linux`. */
+  os?: CloudComputerOs;
+  /**
+   * While `making` on a Mac: the computer waits for a free Mac or starts.
+   * Null once the computer runs (its own stages take over), on Linux, and
+   * from an older server.
+   */
+  mac?: CloudMacState | null;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
@@ -2743,16 +3210,71 @@ export type CloudLaunchSignIn = {
   needsPastedCode: boolean;
   /** For `api_key`: the account sign-in to save (`CloudAccountSignInId`). */
   signInId: string | null;
-  /** One plain sentence: what to do, or why it can't be done here. */
+  /**
+   * One plain sentence: why it can't be done here (`api_key`, `desktop`), a
+   * start that failed, or what changed (`CLOUD_SIGN_IN_CODE_REFUSED`,
+   * `CLOUD_SIGN_IN_LINK_CHANGED`, `CLOUD_SIGN_IN_CODE_EXPIRED`). For
+   * `device` and `url_paste` it never repeats the instruction.
+   */
   reason: string | null;
+  /** From the computer: when the wait ends (epoch ms); the launch fails after it. Absent from an older computer. */
+  expiresAt?: number | null;
+  /**
+   * From the server, on a read (whatever the computer sent is dropped): DAEX
+   * Free Models reach this account and the chat can start on one instead
+   * (`POST /cloud/launches/:launch/free-model`). Null otherwise.
+   */
+  freeModel?: { modelId: string; label: string } | null;
+  /** From the server, on a read: the account has DAEX on a computer of its own (sharing its sign-ins skips this step). */
+  ownComputer?: boolean;
+  /**
+   * From the server, on a read: the line about cost under the step. Null on
+   * a size that uses no credits. `free`: the wait costs nothing if it ends
+   * here (`SIGN_IN_FREE_SENTENCE`); otherwise it names the size.
+   */
+  charge?: { free: boolean; sentence: string } | null;
 };
+
+/** The sentences a waiting launch's `reason` carries when something changed (the apps show them as they are). */
+export const CLOUD_SIGN_IN_CODE_REFUSED = "That code didn't work. Open sign-in again and paste the new code.";
+export const CLOUD_SIGN_IN_LINK_CHANGED = "The sign-in page changed. Open it again.";
+export const CLOUD_SIGN_IN_CODE_EXPIRED = "The code expired. Open the page again and type the new code.";
+/**
+ * How long a cloud start waits for its provider sign-in. The server writes the
+ * launch's request, so it decides: a cloud Mac (`os: "mac"` in the request, a
+ * scarce machine at many times a Medium's rate) waits 10 minutes, every other
+ * computer 30. The computer's wait (`waitForSignIn`) and the server's free
+ * window (`signInWait.ts`) both read it; `expiresAt` carries it to the cards.
+ */
+export const CLOUD_SIGN_IN_WAIT_MS = 30 * 60_000;
+export const CLOUD_MAC_SIGN_IN_WAIT_MS = 10 * 60_000;
+export function cloudSignInWaitMsFor(request: unknown): number {
+  const os = request && typeof request === "object" ? (request as { os?: unknown }).os : undefined;
+  return os === "mac" ? CLOUD_MAC_SIGN_IN_WAIT_MS : CLOUD_SIGN_IN_WAIT_MS;
+}
+/** After a wait's end: the computer's failed report and the minute cron's delete (`failUnjoinedLaunches`). */
+export const CLOUD_SIGN_IN_END_GRACE_MS = 2 * 60_000;
+/** The most codes one sign-in job takes (`POST .../sign-ins/:job/code`). */
+export const CLOUD_SIGN_IN_MAX_CODES = 10;
+export const CLOUD_SIGN_IN_TOO_MANY_CODES = "That's too many codes for one sign-in. Cancel the start and try again.";
+
+/**
+ * `POST /cloud/launches/:launch/free-model`: the person's own chat launch,
+ * while it waits in its sign-in step, starts on DAEX Free Models instead
+ * (`CloudLaunchSignIn.freeModel`), with its first message unchanged, on the
+ * same computer. Once per launch: a second call answers the same record.
+ * 409 `launch_not_waiting`, `free_models_unavailable` (the message says
+ * why) or `free_models_consent` (the app asks for the Free Models yes, then
+ * calls again).
+ */
+export type CloudLaunchFreeModelErrorCode = "launch_not_waiting" | "free_models_unavailable" | "free_models_consent";
 
 /** `GET /cloud/launches?active=1`: newest first, at most 50. */
 export type CloudLaunchList = { launches: CloudLaunchSummary[] };
 export type CloudLaunchSummary = Pick<
   CloudLaunchRecord,
   "launchId" | "state" | "kind" | "projectOrigin" | "laneId" | "laneName" | "instanceId" | "approval" | "sessionId" | "error" | "createdAt" | "updatedAt"
-> & {
+> & Pick<CloudLaunchRecord, "endNote"> & {
   /** The stage running now, or the last one (`CloudLaunchStage.id`). */
   stage: CloudLaunchStage | null;
   signIn: CloudLaunchSignIn | null;
@@ -2860,7 +3382,36 @@ export type CloudRemoteSignInRow = {
  * error, whether the computer or the server gave up first, so the server's
  * cleanup knows it and deletes the unused computer.
  */
-export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
+export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The sign-in wasn't done in time, so the chat didn't start. Start it again to get a new sign-in page.";
+/**
+ * The same ending in its earlier words: a computer on a released DAEX still
+ * reports it, and launches that failed before keep it. The server reads both
+ * as the sign-in timeout and stores the current words from a report.
+ */
+/**
+ * A launch whose computer the server stopped before its chat started (the
+ * credits ran out, a block, another stop) fails with why and what to do.
+ * Out of credits: the first sentence, then the way out this account has.
+ */
+export const CLOUD_LAUNCH_OUT_OF_CREDITS = "Your DAEX Cloud credits ran out, so the computer stopped before the chat started.";
+export const CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT = {
+  /** Small uses no credits for this account. */
+  small_free: " Small computers don't use credits, so they keep working: start the chat again on Small.",
+  /** Free under Pricing v3: the words of the out-of-credits refusal (`SMALL_WAY_OUT` in routes.ts). */
+  ads_on: " Small computers keep working in chats with ads: send a message to start one.",
+  ads_off: " With ads on, Small computers keep working.",
+  /** `ads_on` for a computer bigger than Small: Retry makes the same size, which 0 credits refuses. */
+  ads_on_bigger: " Start the chat again on Small, which keeps working with ads, or pick a plan in Settings › DAEX Cloud › Plans.",
+  /** `ads_off` for a computer bigger than Small. */
+  ads_off_bigger: " Turn ads on and start the chat again on Small, or pick a plan in Settings › DAEX Cloud › Plans.",
+  /** Free with no free plan, or no other way out. */
+  plan: " Pick a plan in Settings › DAEX Cloud › Plans, then Retry.",
+  /** A paid plan. */
+  credits: " Add credits or pick a bigger plan in Settings › DAEX Cloud › Plans, then Retry.",
+} as const;
+/** Any other stop before the chat started. */
+export const CLOUD_LAUNCH_COMPUTER_STOPPED = "The computer stopped before the chat started. Retry starts the chat on a new computer.";
+export const LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
 
 /** What the phone and the web show for a provider whose sign-in can't move. */
 export const CLOUD_REMOTE_SIGN_IN_ELSEWHERE = "Sign in from DAEX desktop; it reaches DAEX Cloud.";
@@ -2915,6 +3466,15 @@ export type CloudRemoteSignInStatus = {
   userCode: string | null;
   needsPastedCode: boolean;
   reason: string | null;
+  /**
+   * The answer to a pasted code, read for a few seconds after it: `refused`
+   * (with `state: "failed"` and `CLOUD_SIGN_IN_CODE_REFUSED`), `accepted` (the
+   * provider took it; DAEX is finishing). Null or absent: no verdict yet (and
+   * from a computer whose DAEX predates it).
+   */
+  verdict?: "refused" | "accepted" | null;
+  /** In the computer only: a code was sent on the current link and has no verdict yet. */
+  codeSent?: boolean;
 };
 
 /* ---- The account's ADE Cloud sign-ins, from the web (`/cloud/sign-ins`) ---- */
@@ -2953,6 +3513,8 @@ export type CloudCatalogModel = {
   defaultReasoningEffort: string | null;
   /** The model has a fast mode (`chat.fast`). */
   fast: boolean;
+  /** A free model: the Free page's group and tag (`shared/freeModels.ts`). Absent: not free. */
+  free?: { source: string; badge: "free" | "ad-supported" };
 };
 export type CloudCatalogProvider = {
   /** The launch's `chat.provider`. */
@@ -3593,11 +4155,12 @@ export type CloudSponsoredState = {
    */
   smallNeedsCards?: boolean;
   /**
-   * The account said yes, but neither that yes nor a look at one of its ADE
-   * Cloud chats (or terminals) came from the US in the last 7 days (plus
-   * the hour a look's save may lag; away, or a yes given from
-   * elsewhere): Small uses credits until the next such chat. Read in the US
-   * only. Settings says so. Absent otherwise.
+   * The account said yes, but no card was asked for under a finished reply
+   * in one of its ADE Cloud chats from the US in the last 7 days (plus the
+   * hour a look's save may lag; a new yes, away, or only terminals and
+   * empty chats open): Small uses credits until the next such card. The yes
+   * itself, an open chat or a terminal is no look. Read in the US only.
+   * Settings says so. Absent otherwise.
    */
   smallNeedsLook?: boolean;
   /**
@@ -3652,16 +4215,122 @@ export const CLOUD_SPONSORED_OSES = ["macos", "windows", "linux", "ios", "androi
 
 /** `POST /cloud/sponsored/seen`: a person has a chat or terminal of this ADE Cloud computer open now. */
 export type CloudSponsoredSeenRequest = { instanceId: string; device: CloudSponsoredDevice };
+/**
+ * `PUT /cloud/sponsored/consent`. `confirmed`: the second confirm of a yes
+ * (`CloudSponsoredState.confirmYes`). `noticeSeen` (Pricing v3): the app
+ * showed the ads notice or question with this answer, or showed the notice
+ * over an answer already saved (send that answer again). The account's
+ * `CloudAdsState.noticeSeen` then reads true on every device. An older app
+ * leaves it out.
+ */
+export type CloudSponsoredConsentRequest = { consent: CloudSponsoredChoice; confirmed?: boolean; noticeSeen?: boolean };
+
+/* ---- ADE Free Models (`freeModels.ts`) ---- */
+
+/** Bumped when what a person agrees to for ADE Free Models changes: an older yes is asked again. */
+export const CLOUD_FREE_MODELS_TERMS_VERSION = 1;
+
+/**
+ * ADE Free Models for this account, as `CloudAccountState.freeModels`.
+ * - `modelIds`: the ADE model ids it may pick (`opencode/ade-free/<alias>`).
+ * - `available`: they run for this person from where they are now; false
+ *   with `reason` (`country`: outside the countries Gravity serves).
+ * - `consent`: the person's answer to the one-time sheet (cards in these
+ *   chats, and what Gravity receives). Null: never asked, or asked for an
+ *   older `CLOUD_FREE_MODELS_TERMS_VERSION`.
+ * - `format`: where cards show in these chats.
+ * - `test`: Gravity's test ads (nothing paid). True until go-live.
+ */
+export type CloudFreeModelsState = {
+  modelIds: string[];
+  available: boolean;
+  reason?: "country" | "unavailable";
+  consent: CloudSponsoredConsent | null;
+  format: CloudSponsoredFormat;
+  test: boolean;
+  /** Absent: unlocked. */
+  locked?: CloudFreeModelsLock;
+  /** Absent: running normally. */
+  throttle?: CloudFreeModelsThrottle;
+};
+/**
+ * Why ADE Free Models are locked for this account, as `CloudFreeModelsState.locked`:
+ * the Free plan's GitHub rule (`freePlanGithub.ts`). A card saved with no
+ * charge (or a paid plan) unlocks them. The rows stay listed, shown locked.
+ */
+export type CloudFreeModelsLock = {
+  reason: "no_github" | "too_new" | "used" | "checking";
+  /** `too_new`: when the GitHub account turns old enough (ms), unlocking them with no card. */
+  oldEnoughAt?: number | null;
+  githubLogin?: string | null;
+  /** A card saved with no charge unlocks them now (false only while `checking`). */
+  canUnlockWithCard: boolean;
+  /** What to tell the person, one sentence. */
+  sentence: string;
+};
+/**
+ * ADE Free Models are paid for by the cards in their chats. An account that
+ * keeps using them with no card asked for in those chats (a finished reply
+ * on screen asks for one) is `slowed` (2 requests a minute across them,
+ * answered 429 with `retry-after`), then `paused` (refused
+ * `free_models_no_cards`) until the next card request, whatever Gravity
+ * answers.
+ */
+export type CloudFreeModelsThrottle = "slowed" | "paused";
+/** `PUT /cloud/free-models/consent`. */
+export type CloudFreeModelsConsentRequest = { consent: CloudSponsoredConsent };
+/** `POST /cloud/free-models/seen`: a person has this ADE Free Models chat open now, on this device. */
+export type CloudFreeModelsSeenRequest = { chatId: string; device: CloudSponsoredDevice };
+/**
+ * Why the server refused an ADE Free Models request (the `error.code` of
+ * its OpenAI-shaped error, and the `code` of the others):
+ * - `free_models_off`: the switch doesn't reach this account, or a key is missing.
+ * - `free_models_consent`: the person hasn't agreed to the sheet.
+ * - `free_models_country`: outside the countries Gravity serves.
+ * - `free_models_not_watched`: nobody has the chat open in ADE (automations, a chat left running).
+ * - `free_models_limit`: the person's or ADE's share of Gravity's limits is used up for now.
+ * - `free_models_unknown_model`: not an ADE Free Model.
+ * - `free_models_too_large`: past Gravity's request size.
+ * - `free_models_unavailable`: Gravity refused or failed.
+ * - `free_models_locked`: the GitHub rule holds them (`CloudFreeModelsLock`); a card unlocks them.
+ * - `free_models_no_cards`: used too long with no card on screen (`CloudFreeModelsThrottle` `paused`).
+ */
+export type CloudFreeModelsErrorCode =
+  | "free_models_off"
+  | "free_models_consent"
+  | "free_models_country"
+  | "free_models_not_watched"
+  | "free_models_limit"
+  | "free_models_unknown_model"
+  | "free_models_too_large"
+  | "free_models_unavailable"
+  | "free_models_locked"
+  | "free_models_no_cards";
 
 /** One message of the chat as an ad request sends it: the latest request and reply only. */
 export type CloudSponsoredMessage = { role: "user" | "assistant"; content: string };
 /** Gravity reads at most this much of each message. */
 export const CLOUD_SPONSORED_MESSAGE_MAX_CHARS = 4_000;
 
-/** `POST /cloud/sponsored/ad`: one card under a finished reply of a chat on an ADE Cloud computer. */
+/**
+ * `POST /cloud/sponsored/ad`: one card under a finished reply of a chat on an
+ * ADE Cloud computer, or of an ADE Free Models chat on any machine.
+ */
 export type CloudSponsoredAdRequest = {
-  /** The ADE Cloud computer the chat runs on: the server checks it is the account's own. */
-  instanceId: string;
+  /**
+   * The ADE Cloud computer the chat runs on: the server checks it is the
+   * account's own. Null for an ADE Free Models chat on another machine: the
+   * server checks it served that chat instead.
+   */
+  instanceId: string | null;
+  /**
+   * Pricing v3: the DAEX Cloud iPhone this chat holds now (its
+   * `CloudPhoneSummary.id`), from a chat on any machine. The server checks it
+   * is the account's live phone; the request then counts as the phone's
+   * proof, and a chat on the person's own computer may show an ad while it
+   * holds it. Absent: none.
+   */
+  phoneId?: string | null;
   chatId: string;
   /** The finished reply the card goes under. Asking again for it answers the same card, with no new request to Gravity. */
   turnId: string;
@@ -3746,8 +4415,13 @@ export type CloudSponsoredGravityAd = {
 };
 /** `POST /cloud/sponsored/hide`: the person hid this reply's card (counted once per reply, per format, for the A/B test). */
 export type CloudSponsoredHideRequest = { chatId: string; turnId: string };
-/** Why no card: the answer is still a 200, and a client shows nothing either way. */
-export type CloudSponsoredNoAdReason = "off" | "plan" | "country" | "consent" | "not_cloud" | "limit" | "no_fill" | "unavailable";
+/**
+ * Why no card: the answer is still a 200, and a client shows nothing either
+ * way. Pricing v3 adds `notice` (the account hasn't seen the ads notice yet:
+ * no ad before it) and `unverified` (the request came from the network of the
+ * account's own cloud computers: it doesn't count, `CloudFullPriceReason`).
+ */
+export type CloudSponsoredNoAdReason = "off" | "plan" | "country" | "consent" | "not_cloud" | "limit" | "no_fill" | "unavailable" | "notice" | "unverified";
 export type CloudSponsoredAdAnswer = { ad: CloudSponsoredAd | null; reason?: CloudSponsoredNoAdReason };
 
 /** `POST /cloud/sponsored/index`: an agent on an ADE Cloud computer asks for a service the person needs. */
@@ -3799,3 +4473,138 @@ export function readCloudSponsoredPick(value: unknown): CloudSponsoredPick | nul
     installSteps: Array.isArray(raw.installSteps) ? raw.installSteps.filter((step): step is string => typeof step === "string") : [],
   };
 }
+
+/* ---- Pricing v3: the ad price (`adPrice.ts`, README "Plans, credits and sizes") ---- */
+
+/**
+ * The credit scale apps show under Pricing v3: shown credits = milli / 1000
+ * x 10. Storage stays in milli (1,000 milli = one Medium-hour); only the
+ * shown number changes. Also in `CloudCatalog.creditScale` and
+ * `CloudPricingState.creditScale`, which apps read instead of this.
+ */
+export const CLOUD_CREDIT_SCALE_V3 = 10;
+
+/**
+ * The header an app sends on `GET /cloud/account` to say it knows Pricing v3
+ * (value `CLOUD_PRICING_VERSION`). Without it, while Pricing v3 reaches the
+ * account, the answer leaves out `pricing` and `sponsored` (an older app would
+ * show its Free-plan ad question on any plan, and its answers can't count),
+ * so an older app shows today's product with no ads. The catalog's numbers
+ * and `credits.phoneMilliPerMinute` are the real ones for every app.
+ */
+export const CLOUD_PRICING_HEADER = "X-ADE-Pricing";
+export const CLOUD_PRICING_VERSION = "3";
+
+/** What a minute of a computer or the iPhone costs now: the full price, or the ad price. */
+export type CloudPriceNow = "ad" | "full";
+
+/**
+ * Work on a cloud computer where DAEX can't show an ad: an agent CLI session in
+ * a terminal, an automation (a scheduled or webhook run included), or a chat
+ * or lane an outside agent started through DAEX MCP. While one runs, the whole
+ * computer has the full price.
+ */
+export const CLOUD_FULL_PRICE_WORK = ["cli_session", "automation", "outside_agent"] as const;
+export type CloudFullPriceWork = (typeof CLOUD_FULL_PRICE_WORK)[number];
+
+/**
+ * Why a computer or the iPhone has the full price now, one line in the price
+ * row ("Full price: a CLI session runs here"):
+ * - `ads_off`: ads are off for the account (or it hasn't seen the notice).
+ * - `no_ads_here`: the person's country (this request's) has no ads.
+ * - `not_in_use`: no message sent and no finished reply in its chats within
+ *   the window (`CloudAdsState.windowMinutes`).
+ * - `cli_session`, `automation`, `outside_agent`: full-price work runs on it
+ *   (`CloudFullPriceWork`).
+ * - `unverified`: its latest request came from the network of the account's
+ *   own cloud computers, which doesn't count.
+ * A client that doesn't know a reason shows only "Full price".
+ */
+export type CloudFullPriceReason = "ads_off" | "no_ads_here" | "not_in_use" | CloudFullPriceWork | "unverified";
+
+/** What one computer or the iPhone costs now. */
+export type CloudPrice = {
+  now: CloudPriceNow;
+  /** Why it has the full price; null with the ad price. */
+  reason: CloudFullPriceReason | null;
+  /** When the ad price ends unless a new message or finished reply comes first (ms); null with the full price. */
+  adUntil: number | null;
+  /** What it uses now, in thousandths: a Medium-hour unit an hour for a computer, a minute for the iPhone. */
+  rateMilli: number;
+  /** The other price, in the same unit, for "8 with ads" beside "10". Equal to `rateMilli` when there is only one price. */
+  otherRateMilli: number;
+};
+
+/** `CloudPricingState.computers[]`: one of the account's computers. */
+export type CloudComputerPrice = CloudPrice & { instanceId: string };
+
+/**
+ * The account's ads, as the server decides them. The switch is one for the
+ * account (Linux, Mac and iPhone); `PUT /cloud/sponsored/consent` changes it
+ * (`CloudSponsoredConsentRequest`), and off takes effect at the next minute.
+ */
+export type CloudAdsState = {
+  /** This request's country has ads (US, Canada, the UK, Australia). False: show no second price and nothing about ads. */
+  available: boolean;
+  /** Ads are on for the account now: a yes that holds here and the notice seen. */
+  on: boolean;
+  /** This region starts with ads on (the US outside California): the notice tells, instead of asking. */
+  startsOn: boolean;
+  /** The account saw the ads notice (one answer on every device). No ad shows before it. */
+  noticeSeen: boolean;
+  /** The ad price's discount, in percent (`ad_discount_pct`). */
+  discountPct: number;
+  /** How long a message or a finished reply keeps the ad price (`ad_window_minutes`). */
+  windowMinutes: number;
+};
+
+/** `CloudAccountState.pricing`. */
+export type CloudPricingState = {
+  creditScale: number;
+  ads: CloudAdsState;
+  /** Every computer of the account, asleep ones included. */
+  computers: CloudComputerPrice[];
+  /** The live DAEX Cloud iPhone, or null when none runs. */
+  phone: (CloudPrice & { phoneId: string }) | null;
+};
+
+/**
+ * `POST /cloud/sponsored/sent`: a person sent a message in a chat that uses
+ * DAEX Cloud. `instanceId`: the cloud computer the chat runs on (null for a
+ * chat on the person's own computer). `phoneId`: the cloud iPhone the chat
+ * holds now. `messageId`: the message's own id; one (account, chat, message)
+ * counts once on any number of devices.
+ */
+export type CloudAdSentRequest = {
+  instanceId: string | null;
+  phoneId?: string | null;
+  chatId: string;
+  messageId: string;
+};
+
+/**
+ * Why a proof (a message sent, a finished reply's ad request) didn't count:
+ * `off` (Pricing v3 doesn't reach the account), `ads_off`, `no_ads_here`,
+ * `not_cloud` (not the account's own computer or live iPhone, or not a
+ * person's chat there; also the day's proofs for chats no computer saved yet
+ * used up, so never shown as "doesn't use DAEX Cloud"), `repeat` (that message or reply already counted),
+ * `unverified` (from the network of the account's own cloud computers).
+ */
+export type CloudAdProofRefusal = "off" | "ads_off" | "no_ads_here" | "not_cloud" | "repeat" | "unverified";
+export type CloudAdProofAnswer = { counted: boolean; reason?: CloudAdProofRefusal };
+
+/** `GET /public/pricing`: no auth, CORS `*`, never cached. For the website. */
+export const CLOUD_PUBLIC_PRICING_PATH = "/public/pricing";
+
+/**
+ * `GET /public/pricing`. `pricingV3` is true only while the `pricing_v3`
+ * setting is `all`; `mac` only while `mac_computers` is `all`.
+ * `freeSmallMilli`: a Small's full rate an hour on Free for this visitor, as
+ * the bill decides it (500 while the ad switch reaches everyone, 0 while it
+ * doesn't: Small on Free is free then); missing means it charges. `ads` is
+ * set only when the request's country has ads and the ad switch reaches
+ * everyone; `startsOn` is the app's own rule for that region.
+ */
+export type CloudPublicPricing =
+  | { pricingV3: false }
+  | { pricingV3: true; mac: boolean; freeSmallMilli?: number; ads: { startsOn: boolean; discountPct: number; adWindowMinutes: number } | null };

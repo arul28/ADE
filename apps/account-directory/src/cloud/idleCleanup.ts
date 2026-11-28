@@ -1,10 +1,14 @@
+import { BRAND } from "../../../desktop/src/shared/brand";
 import { captureCloudAction, captureCloudIdleCleanup, type CloudIdleCleanupEvent, type CloudWaitUntil } from "./analytics";
 import {
   CLOUD_IDLE_CLEANUP_DAYS,
   CLOUD_IGNORED_FILES_MAX_PATHS,
-  idleCleanupHeldNext,
+  CLOUD_SAVE_UNREACHABLE_SENTENCE,
   idleCleanupSaveSentence,
   idleCleanupWhen,
+  idleHeldKindOf,
+  idleHeldReasonNow,
+  idleHeldWords,
   ignoredFilesSentence,
   type CloudIdleCleanupEntry,
   type CloudIgnoredFiles,
@@ -212,7 +216,7 @@ export function idleCleanupEntries(account: AccountRow, computers: ComputerRow[]
         warnedAt: computer.idle_warned_at ?? null,
         idleDays: state.rule.days,
         ignoredFiles: ignoredFilesOf(computer),
-        held: state.held ? { at: state.held.at, reason: state.held.reason, retryAt: state.held.retryAt } : null,
+        held: state.held ? { at: state.held.at, reason: idleHeldReasonNow(state.held.reason), retryAt: state.held.retryAt, kind: idleHeldKindOf(state.held.reason) } : null,
       }];
     })
     .sort((a, b) => a.deletesAt - b.deletesAt);
@@ -295,15 +299,31 @@ export function idleWarningEmail(computer: ComputerRow, state: Pick<IdleState, "
   };
 }
 
-/** The email when the save didn't go through and the computer was kept, with when ADE tries again. */
-export function idleHeldEmail(computer: ComputerRow, reason: string, retryAt: number, now: number): { subject: string; text: string } {
-  const label = labelOf(computer);
+/**
+ * The email when the save didn't go through and the computer was kept: the
+ * notice's words (`idleHeldWords`). "Delete anyway" and "Keep it" are in ADE,
+ * never a link here: a link that deletes work is too easy to press.
+ */
+export function idleHeldEmail(computer: ComputerRow, reason: string, retryAt: number, now: number, idleDays: number): { subject: string; text: string } {
+  const words = idleHeldWords({
+    laneName: computer.lane_name,
+    name: computer.name,
+    branch: computer.lane_branch,
+    idleDays,
+    ignoredFiles: ignoredFilesOf(computer),
+    deletesAt: retryAt,
+    held: { at: now, reason, retryAt, kind: idleHeldKindOf(reason) },
+  }, now);
   return {
-    subject: `DAEX Cloud didn't delete ${computer.lane_name ?? computer.name ?? "your computer"}: its work couldn't be saved`,
+    subject: words.title.replace(/\.$/, ""),
     text: [
-      `${label} was due to be deleted because it hasn't been used, but DAEX couldn't save each lane's work first, so it kept the computer. DAEX doesn't start the computer to save it.`,
-      `Why: ${reason}`,
-      idleCleanupHeldNext(retryAt, now),
+      words.title,
+      words.action,
+      "",
+      "Why:",
+      ...words.why.map((line) => `- ${line}`),
+      "",
+      `To delete it anyway or keep it, open ${BRAND.NAME} on your computer: Settings › ${BRAND.CLOUD_NAME}.`,
     ].join("\n"),
   };
 }
@@ -676,7 +696,7 @@ async function saveAndDelete(env: CloudEnv, provider: CloudProvider, waitUntil: 
     try {
       work = await saveBeforeDelete(env, provider, computer, "idle_cleanup");
     } catch (error) {
-      work = { ok: false, reason: "DAEX Cloud couldn't reach the computer to check its saved work.", code: error instanceof CloudProviderError ? error.code : "unknown" };
+      work = { ok: false, reason: CLOUD_SAVE_UNREACHABLE_SENTENCE, code: error instanceof CloudProviderError ? error.code : "unknown" };
     }
     if (!work.ok) {
       await hold(env, waitUntil, fresh, work.reason, work.code, now);
@@ -749,7 +769,7 @@ async function hold(env: CloudEnv, waitUntil: CloudWaitUntil, fresh: Fresh, reas
   }
   await logStep(env, computer, "push_refused", code, now);
   captureCloudIdleCleanup(env, waitUntil, account.user_id, { step: "push_refused", plan: planIdOf(account), reason: code }, computer.instance_id, now);
-  if (first && !neverSaved) await sendStepEmail(env, waitUntil, account, computer, "held", idleHeldEmail(computer, reason, retryAt, now), now);
+  if (first && !neverSaved) await sendStepEmail(env, waitUntil, account, computer, "held", idleHeldEmail(computer, reason, retryAt, now, state.rule.days), now);
 }
 
 /** The owner's daily report line: what the idle cleanup did on `day`, and how many computers it keeps now because their save failed. */

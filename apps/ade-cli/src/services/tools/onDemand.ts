@@ -1,5 +1,5 @@
 import { pinnedToolFetchPending } from "./cacheLookup";
-import { asToolError, type ToolError, type ToolErrorKind } from "./errors";
+import { asToolError, isToolError, type ToolError, type ToolErrorKind } from "./errors";
 import type { ToolProgress, ToolsContext } from "./install";
 import { findToolPin, loadToolsManifest } from "./manifest";
 import { setToolsLogger, warnTools } from "./toolsLog";
@@ -43,6 +43,26 @@ let fetchDownloadOnly = false;
 let fetchLogger: FetchLogger | null = null;
 let installGeneration = 0;
 const inFlight = new Map<string, Promise<ToolError | null>>();
+/**
+ * What the brain does when a tool's pinned build is gone from its vendor's
+ * host (its download answers HTTP 403 or 404): install the vendor's current
+ * build as the pin's stand-in, or resolve false to keep the failure. Devin
+ * registers one (`devinFallForward.ts` in desktop). Every tracked fetch of the
+ * tool reaches it (on demand, a Retry, the launch and `ade serve` prefetches);
+ * a network error, a 5xx or any other failure never does.
+ */
+export type DeletedPinFallback = (failure: ToolError, context: ToolsContext) => Promise<boolean>;
+const deletedPinFallbacks = new Map<string, DeletedPinFallback>();
+
+export function registerDeletedPinFallback(name: string, fallback: DeletedPinFallback): void {
+  deletedPinFallbacks.set(name, fallback);
+}
+
+/** The vendor's host answered that the pinned build does not exist (S3 and CDNs answer 403 for a deleted object). */
+export function isDeletedPinFailure(error: unknown): error is ToolError {
+  return isToolError(error) && error.kind === "network" && (error.httpStatus === 403 || error.httpStatus === 404);
+}
+
 /** When each tool's last on-demand download failed; an offline machine must not retry on every status refresh. */
 const lastFailureAt = new Map<string, number>();
 const FAILED_FETCH_BACKOFF_MS = 2 * 60_000;
@@ -126,6 +146,17 @@ export function pinnedToolNeedsFetch(name: string, context: ToolsContext = {}): 
   return pinnedToolFetchPending(name, context);
 }
 
+/** `run`, and when it fails because the pinned build is gone, `name`'s registered fallback. */
+async function runOrFallBack(name: string, run: () => Promise<unknown>, context: ToolsContext): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    const fallback = deletedPinFallbacks.get(name);
+    if (fallback && isDeletedPinFailure(error) && await fallback(error, context).catch(() => false)) return;
+    throw error;
+  }
+}
+
 /**
  * Run one fetch of `name` as the process's only fetch of it: a caller that asks
  * while it runs joins it, a status read sees it in flight, and a success bumps
@@ -133,7 +164,7 @@ export function pinnedToolNeedsFetch(name: string, context: ToolsContext = {}): 
  * `ensureTools` through this, so an on-demand caller never queues a second
  * install behind theirs. Resolves to the failure, or null.
  */
-export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>): Promise<ToolError | null> {
+export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>, context: ToolsContext = {}): Promise<ToolError | null> {
   const running = inFlight.get(name);
   if (running) return running;
   let settle!: (error: ToolError | null) => void;
@@ -145,7 +176,7 @@ export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>):
   inFlight.set(name, fetch);
   void (async () => {
     try {
-      await run();
+      await runOrFallBack(name, run, context);
       installGeneration += 1;
       lastFailure.delete(name);
       settle(null);
@@ -202,7 +233,7 @@ function startTrackedDownload(name: string, context: ToolsContext): Promise<Tool
     // and only a real miss should load the download stack.
     const { ensureTools } = await import("./install");
     await ensureTools([name], { ...context, onProgress: notePinnedToolProgress });
-  }).then((error) => {
+  }, context).then((error) => {
     if (error) {
       lastFailureAt.set(name, Date.now());
       // The typed kind is the diagnosis; the message can carry local paths.

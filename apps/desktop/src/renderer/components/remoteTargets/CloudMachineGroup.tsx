@@ -14,6 +14,14 @@ import {
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
+import { refreshCloudAccount, useCloudAccount } from "../../state/cloudAccountStore";
+import {
+  CloudFreeGithubHold,
+  cloudFreeCreditsHoldActions,
+  freePlanGithubHold,
+  openGithubSettings,
+  useCloudFreeUnlock,
+} from "../settings/cloudDashboard/CloudFreeGithubNotice";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
@@ -48,7 +56,7 @@ export function CloudGroupHead({
   /** The account, for its words; null before it is read. */
   account?: CloudAccountState | null;
 }) {
-  const totals = cloudGroupTotals(boxes);
+  const totals = cloudGroupTotals(boxes, account);
   const words = cloudUnitWords(account);
   return (
     <div className="ade-cx-section-head ade-cx-cloud-head">
@@ -56,7 +64,7 @@ export function CloudGroupHead({
       {ADE_CLOUD_NAME}
       {loading ? <CircleNotch size={11} className="animate-spin" aria-label={`Checking ${BRAND.CLOUD_NAME}`} /> : null}
       {totals.hoursRate > 0 ? (
-        <span className="ade-cx-cloud-head-facts kit-num" title={`How fast the computers awake now use your ${words.noun}. ${words.unitSentence}`}>
+        <span className="ade-cx-cloud-head-facts kit-num" title={`How fast the computers awake now use your ${words.noun}. ${words.unitSentence}`.trim()}>
           Now: {formatCloudHoursRate(totals.hoursRate, words)}
         </span>
       ) : null}
@@ -129,6 +137,44 @@ export function CloudGroupBanners({
   return banners.length ? <div style={{ display: "grid", gap: 8 }}>{banners}</div> : null;
 }
 
+/**
+ * A wake, copy or move refused at 0 hours. When the free plan's GitHub rule
+ * is why (the server's `CloudOutOfHoursDetail`, and the account's
+ * `freePlan.github`), the hold with its way out (a card, GitHub), never
+ * "out of credits". Account level, so no pin.
+ */
+function CloudBoxOutOfHours({ error, onDismissError, onOpenSettings }: {
+  error: CloudBoxActionError;
+  onDismissError: () => void;
+  onOpenSettings?: (() => void) | null;
+}) {
+  const account = useCloudAccount(true);
+  const hold = freePlanGithubHold(account);
+  const { busy, addCard } = useCloudFreeUnlock({ purpose: "credits", onUnlocked: onDismissError });
+  if (!hold) {
+    return (
+      <Banner
+        layout="inline"
+        model={{ id: "cloud-action-out-of-hours", tone: "warning", title: error.message, actions: errorActions(error, onOpenSettings), dismiss: { onDismiss: onDismissError }, report: false }}
+      />
+    );
+  }
+  return (
+    <CloudFreeGithubHold
+      hold={hold}
+      purpose="credits"
+      plusIncludedMilli={account?.catalog?.plans?.plus?.includedMilli ?? null}
+      actions={cloudFreeCreditsHoldActions(hold, {
+        addCard: () => void addCard(),
+        cardBusy: busy,
+        connectGithub: openGithubSettings,
+        seePlans: () => onOpenSettings?.(),
+        checkAgain: refreshCloudAccount,
+      })}
+    />
+  );
+}
+
 /** What a failed action blocks on, as the buttons that clear it. */
 function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) | null): NoticeAction[] | undefined {
   // At the computer limit: the card with its three ways out (free up, delete, move up).
@@ -146,6 +192,7 @@ export function CloudBoxStrip({
   box,
   catalog,
   words,
+  account = null,
   work,
   pending,
   approvalUrl,
@@ -160,6 +207,8 @@ export function CloudBoxStrip({
   catalog: CloudCatalog;
   /** The account's words for the box's rate. */
   words?: CloudUnitWords;
+  /** The account, for the box's price now under Pricing v3; null before it is read. */
+  account?: CloudAccountState | null;
   work: CloudBoxWork;
   pending: CloudBoxPending | null;
   /** A copy's or move's sign-in link while its new computer waits for the person. */
@@ -174,7 +223,7 @@ export function CloudBoxStrip({
 }) {
   const tone = cloudStateTone(box);
   const stateLabel = box.pastDue ? "Suspended" : CLOUD_STATE_LABELS[box.state];
-  const rate = describeCloudRate(box, words);
+  const rate = describeCloudRate(box, words, account);
   const atRest = box.state === "asleep" || box.state === "stopped";
   const canWake = atRest && !box.pastDue;
   const laneNames = work.lanes.map((lane) => (lane.projectName ? `${lane.name} (${lane.projectName})` : lane.name));
@@ -241,6 +290,7 @@ export function CloudBoxStrip({
       {box.failure ? (
         <div className="ade-cx-cloud-note">{ADE_CLOUD_NAME} couldn't run it: {box.failure}</div>
       ) : null}
+      {box.unavailable ? <div className="ade-cx-cloud-note">{box.unavailable}</div> : null}
       {box.diskFull ? (
         <Banner
           layout="inline"
@@ -254,7 +304,11 @@ export function CloudBoxStrip({
           }}
         />
       ) : null}
-      {error ? (
+      {error?.blocker === "out_of_hours" ? (
+        <div ref={errorRef}>
+          <CloudBoxOutOfHours error={error} onDismissError={onDismissError} onOpenSettings={onOpenSettings} />
+        </div>
+      ) : error ? (
         <div ref={errorRef}>
           <Banner
             layout="inline"

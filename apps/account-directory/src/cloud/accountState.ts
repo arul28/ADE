@@ -1,15 +1,20 @@
 import { PHONE_CREDIT_MILLI_PER_MINUTE, liveUsedWithPhones } from "./credits";
 import { sponsoredAccountState } from "./gravity";
+import { freeModelsAccountState } from "./freeModels";
 import { smallUsesNoHours } from "./sponsoredSmall";
+import { pricingAccountState } from "./adPrice";
+import { adsCountryHas } from "./gravity";
+import { PHONE_MILLI_PER_MINUTE_V3 } from "./plans";
 import { sponsoredRequester } from "./sponsoredConsent";
 import { timedWakesCancelledOf } from "./accountNotices";
-import type { CloudAccountState } from "./contract";
+import { CLOUD_PRICING_HEADER, CLOUD_PRICING_VERSION, type CloudAccountState } from "./contract";
 import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
 import { freePlanOf } from "./freePlan";
 import { freePlanGithubOf } from "./freePlanGithub";
 import { idleCleanupEntries } from "./idleCleanup";
 import { planCleanupState } from "./planCleanup";
-import { cloudCatalog, isMeteredStatus, nextPlanOffer } from "./plans";
+import { cloudCatalog, cloudMacOffer, isMeteredStatus, nextPlanOffer } from "./plans";
+import { macIdleStopMinutes, macReaches } from "./macSwitch";
 import { readSummaryRow, referralSummary } from "./referrals";
 import { phoneAccountState } from "./phones";
 import {
@@ -98,13 +103,38 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   // The idle cleanup's warnings, and computers it kept because their work couldn't be saved.
   const due = idleCleanupEntries(account, computers, live, now);
   // Sponsored cards (`gravity.ts`): left out while the switch doesn't reach the account. A read that fails never costs the account read.
-  const sponsored = await sponsoredAccountState(env, account, sponsoredRequester(request ?? null), now).catch((error: unknown) => {
+  const who = sponsoredRequester(request ?? null);
+  // Read before Pricing v3's state below: an older app (no `X-ADE-Pricing: 3`) gets today's Free rule.
+  const knowsV3 = request?.headers.get(CLOUD_PRICING_HEADER)?.trim() === CLOUD_PRICING_VERSION;
+  const sponsoredRead = await sponsoredAccountState(env, account, who, now, { legacy: !knowsV3 }).catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
+  // Pricing v3 (`adPrice.ts`): left out while `pricing_v3` doesn't reach the account; then nothing below changes.
+  const priced = await pricingAccountState(env, account, computers, who, adsCountryHas(env, who.country), now).catch((error: unknown) => {
+    reportCloudFailure("cloud.ad_price.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+    return undefined;
+  });
+  const pricing = priced?.state;
+  // An app that doesn't know Pricing v3 (no `X-ADE-Pricing: 3`) gets no `pricing` while Pricing v3 reaches the
+  // account, and `sponsored` only on Free, by today's Free rule: it keeps its ads there (its card requests are
+  // proofs, and keep Small as free as today), and never shows an ad on a paid plan. The catalog's numbers are real.
+  const sponsored = pricing && !knowsV3 && shownPlan !== "free" ? undefined : sponsoredRead;
+  // ADE Free Models (`freeModels.ts`), any plan: left out while their switch doesn't reach the account or a key is missing.
+  const freeModels = await freeModelsAccountState(env, account, who, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.free_models.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+    return undefined;
+  });
+  const macShown = await macReaches(env, userId).catch((error: unknown) => {
+    reportCloudFailure("cloud.mac_switch_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return false;
+  });
   return {
+    ...(pricing && knowsV3 ? { pricing } : {}),
     ...(sponsored ? { sponsored } : {}),
-    credits: { phoneMilliPerMinute: PHONE_CREDIT_MILLI_PER_MINUTE },
+    ...(freeModels ? { freeModels } : {}),
+    // Under Pricing v3 the iPhone is 500 a minute, so an older app's minutes left stay right.
+    credits: { phoneMilliPerMinute: pricing ? PHONE_MILLI_PER_MINUTE_V3 : PHONE_CREDIT_MILLI_PER_MINUTE },
     plan: shownPlan === "free" ? "free" : "paid",
     rules,
     planId: shownPlan,
@@ -128,7 +158,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     freePlan: { ...freePlanOf(account, growth?.has_claim === 1), ...(freeGithub ? { github: freeGithub } : {}) },
     ...(referral ? { referral } : {}),
     // D1 only: the account read is polled, and never asks NoMac.
-    phone: await phoneAccountState(env, account, now, { liveUsedMilli: live }).catch((error: unknown) => {
+    phone: await phoneAccountState(env, account, now, { liveUsedMilli: live, phoneRateMilli: pricing ? PHONE_MILLI_PER_MINUTE_V3 : PHONE_CREDIT_MILLI_PER_MINUTE }).catch((error: unknown) => {
       reportCloudFailure("cloud.phone_account_state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return undefined;
     }),
@@ -136,8 +166,9 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
       // What the computer limit counts (`accountComputerCountSql`), so the count and a refusal agree.
-      total: countedComputers(computers, now),
-      awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
+      total: countedComputers(computers, now, { hideMacs: !macShown }),
+      // The same Macs left out as `total`, so a hidden Mac never reads as "0 computers · 1 awake" (the tick stops it).
+      awake: computers.filter((computer) => isMeteredStatus(computer.status) && (macShown || computer.type !== "mac")).length,
       limit: computerLimitOf(account),
       // What the limit card offers: the same answer a `computer_limit` refusal carries.
       nextPlan: nextPlanOffer(computerLimitPlanOf(account), offers),
@@ -146,7 +177,14 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     dueForDeletion: due,
     deletedInstanceIds,
     // Small's rate is the account's own: half a Medium-hour on Free with no sponsored cards (`gravity.ts` `smallUsesNoHours`).
-    catalog: cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) }),
+    catalog: {
+      ...(priced
+        ? cloudCatalog(offers, shownPlan, { v3: priced.catalog })
+        : cloudCatalog(offers, shownPlan, { smallUsesHours: !(await smallUsesNoHours(env, account)) })),
+      // The DAEX Cloud Mac: only while the switch reaches this account (`macSwitch.ts`); absent, no app shows anything of it.
+      // Under Pricing v3 it carries its ad price too (`adCreditMilliPerMinute`).
+      ...(macShown ? { mac: cloudMacOffer(await macIdleStopMinutes(env), priced ? priced.catalog.discountPct : null) } : {}),
+    },
     billing: {
       periodStart: account.period_start,
       periodEnd: account.period_end,

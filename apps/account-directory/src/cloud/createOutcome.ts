@@ -1,3 +1,4 @@
+import type { FirstMessageProof } from "./adProof";
 import type { CloudInstance } from "./contract";
 import { fail, json } from "./http";
 
@@ -31,6 +32,10 @@ export type CreateComputerExtras = {
   onMade?: (instance: CloudInstance) => D1PreparedStatement[];
   /** The disk this launch's repository's setup grew to before: a plain create starts there, inside its size's disk (`setupStartDiskGb`). */
   setupDiskGb?: number | null;
+  /** Pricing v3: a person's first message for the new computer, its proof (`adProof.ts` `firstMessageRate`). */
+  adProof?: FirstMessageProof;
+  /** The server launcher's Mac lane (`os: "mac"`): the only create that may make a Mac. */
+  mac?: boolean;
 };
 
 export const createInProgress = () => fail("create_in_progress", "DAEX Cloud is still making this computer. Try again in a moment.", 409);

@@ -40,8 +40,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE,
   CLOUD_BACKUP_MAX_BYTES,
+  CLOUD_BACKUP_MISSING_FOLDER_SENTENCE,
+  CLOUD_BACKUP_NO_COMMIT_SENTENCE,
+  CLOUD_BACKUP_SAVE_STOPPED_SENTENCE,
+  CLOUD_BACKUP_STAGED_ONLY_SENTENCE,
+  CLOUD_BACKUP_SUBMODULE_SENTENCE,
   CLOUD_BACKUP_TOO_LARGE_SENTENCE,
+  CLOUD_BACKUP_UNTIL_THEN_SUFFIX,
   type CloudBackupLaneReport,
   type CloudBackupSaveSummary,
   type CloudLaneBackup,
@@ -161,9 +168,6 @@ export async function readGithubBase(cwd: string): Promise<GithubBase> {
   return { shas: held, key: createHash("sha256").update(held.join("\n")).digest("hex"), verified };
 }
 
-const STAGED_ONLY_SENTENCE = `This lane has staged changes that its files no longer hold. Commit or unstage them, then ${BRAND.NAME} saves it.`;
-const SUBMODULE_WORK_SENTENCE = `This lane has changes inside a submodule. Commit and push them in the submodule, then ${BRAND.NAME} saves it.`;
-
 /**
  * The backup saves the lane's files as they are. Two kinds of work are not in
  * them, so the lane is refused (and its computer kept) rather than counted as
@@ -174,7 +178,7 @@ async function refuseWorkOutsideTheFiles(cwd: string, workingTree: string, tipTr
   if (workingTree === tipTree) {
     // `write-tree` fails on a conflict; that lane's files are saved as they are.
     const index = await runGit(["write-tree"], { cwd, timeoutMs: 30_000, env: READ_ENV });
-    if (index.exitCode === 0 && index.stdout.trim() && index.stdout.trim() !== tipTree) throw new LaneBackupRefused(STAGED_ONLY_SENTENCE, "failed");
+    if (index.exitCode === 0 && index.stdout.trim() && index.stdout.trim() !== tipTree) throw new LaneBackupRefused(CLOUD_BACKUP_STAGED_ONLY_SENTENCE, "failed");
   }
   if (!fs.existsSync(path.join(cwd, ".gitmodules"))) return;
   const status = await git(cwd, ["status", "--porcelain=v2", "--ignore-submodules=none"]);
@@ -183,11 +187,8 @@ async function refuseWorkOutsideTheFiles(cwd: string, workingTree: string, tipTr
     const sub = /^[12u] \S+ (S\S{3}) /.exec(line)?.[1];
     return sub != null && sub !== "S...";
   });
-  if (changed) throw new LaneBackupRefused(SUBMODULE_WORK_SENTENCE, "failed");
+  if (changed) throw new LaneBackupRefused(CLOUD_BACKUP_SUBMODULE_SENTENCE, "failed");
 }
-
-const GITHUB_UNREACHABLE_SENTENCE = `${BRAND.NAME} couldn't reach GitHub to check this lane's work. It checks again at the next rest.`;
-const MISSING_FOLDER_SENTENCE = `This lane's folder is missing on the computer, and ${BRAND.NAME} has no saved copy of its work.`;
 
 /** `head` and the exclusions, for `rev-list --stdin`. */
 const revsNotOnGithub = (head: string, base: GithubBase): string => `${[head, ...base.shas.map((sha) => `^${sha}`)].join("\n")}\n`;
@@ -202,7 +203,7 @@ export async function readLaneWork(worktreePath: string, base?: GithubBase): Pro
   const cwd = await git(worktreePath, ["rev-parse", "--show-toplevel"]);
   const githubBase = base ?? await readGithubBase(cwd);
   const tip = await resolveCommit(cwd, "HEAD");
-  if (!tip) throw new LaneBackupRefused(`This lane has no commit yet, so ${BRAND.NAME} can't save it. Commit once, then it saves.`, "failed");
+  if (!tip) throw new LaneBackupRefused(CLOUD_BACKUP_NO_COMMIT_SENTENCE, "failed");
   const branchRead = await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd, timeoutMs: 15_000, env: READ_ENV });
   const branch = branchRead.exitCode === 0 ? branchRead.stdout.trim() || null : null;
   const [workingTree, tipTree, aheadText] = await Promise.all([
@@ -239,7 +240,7 @@ export async function packLaneBackup(lane: BackupLane, read: LaneWorkRead): Prom
   try {
     files = (await refuseUnportablePaths(cwd, tip, snapshot, read.base.shas)).length;
   } catch (error) {
-    throw new LaneBackupRefused(`${error instanceof Error ? error.message : String(error)} ${BRAND.NAME} can't save this lane's work until then.`, "failed");
+    throw new LaneBackupRefused(`${error instanceof Error ? error.message : String(error)} ${CLOUD_BACKUP_UNTIL_THEN_SUFFIX}`, "failed");
   }
   const head = snapshot ?? tip;
   // The commits only this lane has, and the GitHub commits they build on (the bundle's prerequisites).
@@ -367,14 +368,14 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
     const report: CloudBackupLaneReport = { laneId: lane.laneId, laneName: lane.laneName, state: "failed" };
     reports.push(report);
     if (!deps.mayGoOn()) {
-      report.reason = `The save stopped before this lane; ${BRAND.NAME} saves it at the next rest.`;
+      report.reason = CLOUD_BACKUP_SAVE_STOPPED_SENTENCE;
       complete = false;
       continue;
     }
     try {
       const read = await readLaneWork(lane.worktreePath, await baseOf(lane.worktreePath));
       // GitHub didn't answer: nothing here can say what it holds, so every backup stays and the lane is not saved.
-      if (!read.base.verified) throw new LaneBackupRefused(GITHUB_UNREACHABLE_SENTENCE, "failed");
+      if (!read.base.verified) throw new LaneBackupRefused(CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE, "failed");
       if (read.clean) {
         // All on GitHub: its backup, and any backup of the lane it restored, go.
         if (own.has(lane.laneId) || restoredHere.has(lane.laneId)) await api.deleteLaneBackup(machineKey, lane.laneId, instanceId);
@@ -411,7 +412,7 @@ export async function runLaneBackups(deps: LaneBackupRunDeps): Promise<CloudBack
     const backup = own.get(laneId);
     reports.push(backup
       ? { laneId, state: "unchanged", fingerprint: backup.fingerprint }
-      : { laneId, state: "failed", reason: MISSING_FOLDER_SENTENCE });
+      : { laneId, state: "failed", reason: CLOUD_BACKUP_MISSING_FOLDER_SENTENCE });
     if (backup) summary.unchanged += 1;
     else summary.failed += 1;
   }

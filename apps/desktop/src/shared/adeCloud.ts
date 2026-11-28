@@ -1,4 +1,7 @@
 import type {
+  CloudComputerAction,
+  CloudComputerOs,
+  CloudMacState,
   CloudAccountState,
   CloudCatalog,
   CloudComputerActivityReport,
@@ -58,6 +61,13 @@ export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanGithub, CloudFreePla
 /** Sponsored cards on Free-plan ADE Cloud chats (`gravity.ts`): the account server decides every one. */
 export type {
   CloudSponsoredAd,
+  CloudAdProofAnswer,
+  CloudAdSentRequest,
+  CloudAdsState,
+  CloudComputerPrice,
+  CloudFullPriceReason,
+  CloudPrice,
+  CloudPricingState,
   CloudSponsoredAdAnswer,
   CloudSponsoredAdRequest,
   CloudSponsoredChoice,
@@ -75,6 +85,15 @@ export type {
   CloudSponsoredSeenRequest,
   CloudSponsoredState,
   CloudSponsoredSurface,
+} from "../../../account-directory/src/cloud/contract";
+/** ADE Free Models (`freeModels.ts`): Gravity's models, paid for by the cards in their chats, on any plan and machine. */
+export type {
+  CloudFreeModelsConsentRequest,
+  CloudFreeModelsErrorCode,
+  CloudFreeModelsLock,
+  CloudFreeModelsSeenRequest,
+  CloudFreeModelsState,
+  CloudFreeModelsThrottle,
 } from "../../../account-directory/src/cloud/contract";
 export { CLOUD_SPONSORED_MESSAGE_MAX_CHARS, CLOUD_SPONSORED_NEED_MAX_CHARS, isGravityUrl } from "../../../account-directory/src/cloud/contract";
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
@@ -95,12 +114,13 @@ export type { CloudComputerLimitDetail, CloudComputerLimitLane, CloudDiskRefusal
 export {
   CLOUD_BACKUP_NOT_SAVED_SENTENCE,
   CLOUD_IGNORED_FILES_MAX_PATHS,
-  idleCleanupHeldNext,
   idleCleanupSaveSentence,
   idleCleanupWhen,
   ignoredFilesList,
   ignoredFilesSentence,
+  idleHeldWords,
 } from "../../../account-directory/src/cloud/contract";
+export type { CloudIdleHeldKind, CloudIdleHeldWords } from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
 /** The disk-grow rules live in `cloudDiskGrowRules.ts`. */
@@ -329,7 +349,11 @@ export function cloudSmallUsesHours(catalog: Pick<CloudCatalog, "sizes">): boole
 export function cloudSmallHoursSentence(catalog: Pick<CloudCatalog, "sizes">, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string {
   const rate = cloudSmallRateMilli(catalog) / 1000;
   if (!(rate > 0)) return CLOUD_SMALL_UNLIMITED_SENTENCE;
-  return `Small computers use ${rate === 0.5 ? "half a credit" : words.count(rate)} for each hour awake.`;
+  const uses = rate * words.scale === 0.5 ? "half a credit" : words.count(rate);
+  // Pricing v3: Free's Small is free with ads (its ad rate is 0) and has the full rate with none.
+  const small = catalog.sizes.find((size) => size.tier === "small");
+  if (small?.adMultiplierMilli === 0) return `Small computers are free with ads, and use ${uses} for each hour awake with no ads.`;
+  return `Small computers use ${uses} for each hour awake.`;
 }
 
 /** Android needs a full computer of Medium or bigger. */
@@ -546,6 +570,12 @@ export type CloudMachine = {
   pastDue: boolean;
   /** the provider's reason for the last failed lifecycle action. */
   failure: string | null;
+  /**
+   * The server's sentence for a computer it can't wake or send to now
+   * (`statusReason.code` `computer_unavailable`, e.g. a Mac the switch no
+   * longer reaches). It reads as stopped; every wake and send is refused.
+   */
+  unavailable?: string;
   /** The box's ADE machine (account row), when ADE recorded it on the box. */
   machineKey: string | null;
   /**
@@ -569,6 +599,12 @@ export type CloudMachine = {
   laneWork?: CloudLaneWork | null;
   /** The files git ignores on it, as it last read them: a delete loses them. Null before its first read. */
   ignoredFiles?: CloudIgnoredFiles | null;
+  /** What runs it (`CloudInstance.os`); absent is Linux. */
+  os?: CloudComputerOs;
+  /** A DAEX Cloud Mac's own state (queue, start, drive); null on Linux. */
+  mac?: CloudMacState | null;
+  /** What the server refuses on it (`CloudInstance.unsupported`): hide those controls. */
+  unsupported?: CloudComputerAction[];
 };
 
 /**
@@ -1025,13 +1061,15 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     // Small computers usually never use hours, so they keep working: only the bigger sizes stop.
     // A Free account whose Small uses hours (sponsored cards off) stops every size.
     const bigger = cloudSmallUsesHours(catalog)
-      ? `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ${BRAND.CLOUD_NAME} to keep Small computers unlimited.`
+      ? account.pricing
+        ? `Your cloud computers are stopped until ${resetDate}. Small computers are free while a chat with ads is in use.`
+        : `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ${BRAND.CLOUD_NAME} to keep Small computers unlimited.`
       : `Medium, Large and X-Large computers${account.phone?.access === "on" ? ` and the ${BRAND.CLOUD_NAME} iPhone` : ""} are stopped until ${resetDate}. Small computers keep working.`;
     const plans = cloudCatalogHasMax(catalog)
-      ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
+      ? ` Plus has ${words.num(catalog.plans.plus.includedMilli)} ${noun} a month, Pro ${words.num(catalog.plans.pro.includedMilli)} and Max ${words.num(catalog.plans.max.includedMilli)}.`
       : cloudCatalogHasPro(catalog)
-        ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, and Pro ${formatCloudHours(catalog.plans.pro.includedMilli)}.`
-        : ` The paid plan has ${formatCloudHours(catalog.plans.paid.includedMilli)} ${noun} a month.`;
+        ? ` Plus has ${words.num(catalog.plans.plus.includedMilli)} ${noun} a month, and Pro ${words.num(catalog.plans.pro.includedMilli)}.`
+        : ` The paid plan has ${words.num(catalog.plans.paid.includedMilli)} ${noun} a month.`;
     return {
       id: "cloud-hours-zero",
       tone: "warning",

@@ -74,6 +74,8 @@ struct HubInlineComposer: View {
   // the provider/model onChange handlers don't reset runtimeMode on first
   // layout — same gotcha the in-project new-chat screen guards against).
   @State private var provider: String = "claude"
+  /// Mac picked for a new cloud lane (`CloudOsPick`); Linux each time the drawer opens.
+  @State private var cloudMac = false
   @State private var modelId: String = "claude-sonnet-5"
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
@@ -277,6 +279,11 @@ struct HubInlineComposer: View {
       if isExpanded {
         destinationControl
           .transition(.move(edge: .bottom).combined(with: .opacity))
+        if let offer = cloudMacOffer {
+          CloudOsPick(offer: offer, mac: $cloudMac, words: CloudBalanceWords(cloudStore.account), refusal: cloudMacRefusal)
+            .padding(.horizontal, 4)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
         if !isDictating {
           WorkSessionTypeSwitcher(selection: $sessionMode, onUserSelect: { mode in
             WorkNewSessionModePreferences.save(mode, projectId: pickedProjectId)
@@ -1443,6 +1450,11 @@ struct HubInlineComposer: View {
       errorMessage = "Pick a lane."
       return false
     }
+    let onMac = cloudMac && cloudMacOffer != nil
+    if onMac, let refusal = cloudMacRefusal {
+      errorMessage = refusal
+      return false
+    }
     WorkComposerPreferences.save(composerSelection)
     busy = true
     errorMessage = nil
@@ -1459,6 +1471,7 @@ struct HubInlineComposer: View {
       newLaneName: existingLane == nil
         ? workDeterministicAutoLaneName(from: rawText, genericSuffix: workAutoLaneGenericSuffix())
         : nil,
+      os: onMac ? "mac" : nil,
       using: syncService
     )
     busy = false
@@ -1566,6 +1579,18 @@ struct HubInlineComposer: View {
   /// ADE Cloud through the account server: `pickedProjectId` is then the
   /// account project's id.
   private var pickedAccountCloud: Bool { pickedMachineKey == ADECloudMachine.id }
+
+  /// The account's Mac offer while a new cloud lane is picked; nil shows no Mac.
+  private var cloudMacOffer: CloudMacOffer? {
+    pickedAccountCloud && isAutoCreateLane ? cloudStore.account?.macOffer : nil
+  }
+
+  /// Why the picked model can't run on a Mac, while Mac is picked.
+  private var cloudMacRefusal: String? {
+    guard cloudMac, let offer = cloudMacOffer else { return nil }
+    let label = cloudLaunches.catalog?.providers.first(where: { $0.provider == provider })?.label
+    return CloudMacWords.providerRefusal(offer, provider: provider, cli: sessionMode == .cli, label: label)
+  }
 
   private var accountCloudProject: AccountProject? {
     guard pickedAccountCloud else { return nil }

@@ -3,6 +3,7 @@ import { createComputerSettled, forkComputerSettled, handleCloudRequest, isCloud
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
+import { handlePublicPricing, isPublicPricingRequest } from "./cloud/adPrice";
 import { runAccountErasureRepeats } from "./accountErasure";
 import { pruneSponsored } from "./cloud/sponsoredReport";
 import { syncAllSmallRates } from "./cloud/sponsoredSmall";
@@ -13,7 +14,7 @@ import { runCloudMoves } from "./cloud/moves";
 import { sweepStaleBackupUploads } from "./cloud/laneBackups";
 import { runPlanCleanupPicks } from "./cloud/planCleanup";
 import { runIdleCleanup } from "./cloud/idleCleanup";
-import { createCloudProvider } from "./cloud/provider";
+import { createComputerProvider } from "./cloud/computerProvider";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
 import * as Sentry from "@sentry/cloudflare";
@@ -104,6 +105,8 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // "Update & restart" on other machines: account bearer, GET only, the
   // directory's exact-origin CORS for the web client.
   if (isLatestReleasesRequest(url)) return handleLatestReleasesRequest(request, env);
+  // DAEX Cloud's prices for the website (Pricing v3): public, no auth, CORS `*`.
+  if (isPublicPricingRequest(url)) return handlePublicPricing(request, env);
   // The oldest build each kind of install may run (the update gate). Public
   // and read-only: a signed-out app must still learn it has to update.
   if (isClientMinimumRequest(url)) return handleClientMinimumRequest(request, env);
@@ -264,17 +267,15 @@ export default Sentry.withSentry(sentryOptions, {
         // no computer, and the computer a cancel left behind. Indexed reads
         // when none.
         settle("cloud_launches_unjoined", async () => {
-          const key = env.AGENT37_API_KEY?.trim();
           await failUnjoinedLaunches(env, {
-            provider: key ? createCloudProvider(key) : null,
+            provider: createComputerProvider(env),
             onProgress: (record) => noteAutomationLaunchProgress(env, record, { now: Date.now() }),
           });
         }),
         // Automations whose home is ADE Cloud: due schedules and runs that need
         // the server, in one indexed read; nothing more when none is due.
         settle("cloud_automations", async () => {
-          const key = env.AGENT37_API_KEY?.trim();
-          const provider = key ? createCloudProvider(key) : null;
+          const provider = createComputerProvider(env);
           const waitUntil = (promise: Promise<unknown>) => ctx.waitUntil(promise);
           await runCloudAutomations(env, {
             provider,
@@ -285,11 +286,11 @@ export default Sentry.withSentry(sentryOptions, {
         // The server's own jobs (a computer moved to the other kind, freed or
         // copied): one or two short steps each, a few a tick. One indexed read when none is due.
         settle("cloud_jobs", async () => {
-          const key = env.AGENT37_API_KEY?.trim();
-          if (!key) return;
+          const provider = createComputerProvider(env);
+          if (!provider) return;
           const waitUntil = (promise: Promise<unknown>) => ctx.waitUntil(promise);
           await runCloudMoves(env, {
-            provider: createCloudProvider(key),
+            provider,
             createComputer: (userId, jobProvider, extras) => createComputerSettled(env, userId, jobProvider, extras, { now: Date.now(), waitUntil }),
             forkComputer: (source, jobProvider, extras) => forkComputerSettled(env, source, jobProvider, extras, { now: Date.now(), waitUntil }),
           });
@@ -297,8 +298,8 @@ export default Sentry.withSentry(sentryOptions, {
         // "Delete the project's cloud computers" jobs: a few computers a tick.
         // One indexed read when no job waits.
         settle("cloud_project_deletes", async () => {
-          const key = env.AGENT37_API_KEY?.trim();
-          if (key) await runProjectComputerDeletes(env, createCloudProvider(key));
+          const provider = createComputerProvider(env);
+          if (provider) await runProjectComputerDeletes(env, provider);
         }),
         // Lane backup uploads nobody committed (`laneBackups.ts`): their parts
         // go. One indexed read when none is stale.
@@ -306,15 +307,15 @@ export default Sentry.withSentry(sentryOptions, {
         // The computers a person picked to free for a cheaper plan: saved,
         // then freed, a few a tick. One indexed read when no pick waits.
         settle("cloud_plan_cleanups", async () => {
-          const key = env.AGENT37_API_KEY?.trim();
-          if (key) await runPlanCleanupPicks(env, createCloudProvider(key));
+          const provider = createComputerProvider(env);
+          if (provider) await runPlanCleanupPicks(env, provider);
         }),
         // Idle cleanup: warnings and follow-up emails for unused computers,
         // then each one's work saved and the computer deleted, its lane kept,
         // a few a tick. Two indexed reads when no computer is idle.
         settle("cloud_idle_cleanup", async () => {
-          const key = env.AGENT37_API_KEY?.trim();
-          if (key) await runIdleCleanup(env, createCloudProvider(key), Date.now(), (promise) => ctx.waitUntil(promise));
+          const provider = createComputerProvider(env);
+          if (provider) await runIdleCleanup(env, provider, Date.now(), (promise) => ctx.waitUntil(promise));
         }),
       ]);
     } catch (error) {

@@ -19,6 +19,12 @@ export type CloudPhoneRun<P> = {
   /** The agent chat whose call started it; null when a person, a terminal, or a reuse did. */
   chatSessionId: string | null;
   /**
+   * Pricing v3: the agent chat of this brain's latest call to the phone (the
+   * chat that holds it now), null before any chat's call. A chat on any
+   * machine that holds the live phone may show an ad and gives its proof.
+   */
+  holderChatSessionId?: string | null;
+  /**
    * The command whose start made this phone (a token it passed to the start),
    * or null: a phone it found already running is no command's. A command
    * stops only a phone its own start made.

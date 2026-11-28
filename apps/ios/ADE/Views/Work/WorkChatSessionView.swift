@@ -1151,6 +1151,13 @@ struct WorkChatSessionView: View {
   /// declined). Nil for a chat on the person's own machines, and wherever
   /// the host doesn't set it. Read through `sponsoredChatInstanceId`.
   var sponsoredInstanceId: String? = nil
+  /// The account's ADE Free Models state, when this chat runs an ADE Free
+  /// Model the person agreed to (on any machine). Nil otherwise, and wherever
+  /// the host doesn't set it. Read through `sponsoredChatFreeModels`.
+  var sponsoredFreeModels: CloudFreeModelsState? = nil
+  /// Pricing v3: this chat holds the live cloud iPhone (`cloudHeldPhoneId`), so
+  /// it shows ads on any machine. False wherever the host doesn't set it.
+  var sponsoredHoldsPhone = false
   /// Where the place under the last reply sits on screen. `@State`, not
   /// observed: only the slot redraws when it moves.
   @State var sponsoredSlot = WorkSponsoredSlotModel()
@@ -2232,7 +2239,7 @@ struct WorkChatSessionView: View {
               streamingAssistantMessageId: streamingAssistantMessageId,
               maxUserBubbleWidth: maxUserBubbleWidth
             )
-            WorkSponsoredInlineOutlet(sessionId: session.id, turnId: host.turnId, slot: sponsoredSlot)
+            WorkSponsoredInlineOutlet(sessionId: session.id, turnId: host.turnId, slot: sponsoredSlot, freeModels: sponsoredChatFreeModels)
           }
         } else {
           timelineRenderEntryView(
@@ -2249,14 +2256,17 @@ struct WorkChatSessionView: View {
     case .streamingStatus:
       streamingStatusSection
     case .sponsored:
-      if let instanceId = sponsoredChatInstanceId, let turn = sponsoredSlotTurn {
+      if sponsoredChatShowsCards, let turn = sponsoredSlotTurn {
+        // An ADE Free Models chat asks on its own state and names no computer.
+        let freeModels = sponsoredChatFreeModels
         WorkSponsoredReplySlot(
-          instanceId: instanceId,
+          instanceId: freeModels == nil ? sponsoredChatInstanceId : nil,
           sessionId: session.id,
           turn: turn,
           slot: sponsoredSlot,
           dockAvailable: sponsoredDockAvailable,
-          inlineHostRowId: sponsoredSlot.inlineHost?.rowId
+          inlineHostRowId: sponsoredSlot.inlineHost?.rowId,
+          freeModels: freeModels
         )
       }
     case .tail:
@@ -2273,6 +2283,24 @@ struct WorkChatSessionView: View {
     guard let sponsoredInstanceId, !isPersonalChat, chatSummaryContext.isAvailable,
           chatSummaryContext.spawnKind != .subagent, chatSummaryContext.orchestrationParentSessionId == nil else { return nil }
     return sponsoredInstanceId
+  }
+
+  /// The ADE Free Models state of a chat that shows their cards: never a
+  /// subagent's view. Personal chats count: they are on any machine too.
+  var sponsoredChatFreeModels: CloudFreeModelsState? {
+    guard let sponsoredFreeModels, chatSummaryContext.isAvailable,
+          chatSummaryContext.spawnKind != .subagent, chatSummaryContext.orchestrationParentSessionId == nil else { return nil }
+    return sponsoredFreeModels
+  }
+
+  /// A chat that may show sponsored cards: an ADE Cloud Free chat, or one
+  /// running an ADE Free Model.
+  var sponsoredChatShowsCards: Bool { sponsoredChatFreeModels != nil || sponsoredChatInstanceId != nil || sponsoredChatHoldsPhone }
+
+  /// A chat on any machine holding the cloud iPhone shows ads (Pricing v3): never a subagent's view.
+  var sponsoredChatHoldsPhone: Bool {
+    sponsoredHoldsPhone && chatSummaryContext.isAvailable && chatSummaryContext.spawnKind != .subagent
+      && chatSummaryContext.orchestrationParentSessionId == nil && cloudPricing() != nil && cloudChatAdsMayShow()
   }
 
   /// The prompt box is on screen (no sign-in card stands in for it), so a
@@ -2308,8 +2336,8 @@ struct WorkChatSessionView: View {
   /// turns and only in a chat that can show one: nil while a turn streams,
   /// while ADE Cloud holds a message, or after a failed or stopped turn.
   var sponsoredSlotTurn: CloudSponsoredTurn? {
-    guard sponsoredChatInstanceId != nil, !showsStreamingStatus, cloudHeld?.messages.isEmpty ?? true,
-          let turn = cloudSponsoredLastFinishedTurn(transcript), turn.isFresh() else { return nil }
+    guard sponsoredChatShowsCards, !showsStreamingStatus, cloudHeld?.messages.isEmpty ?? true,
+          let turn = cloudSponsoredLastFinishedTurn(transcript, pausedRecovery: sponsoredFreeModels != nil), turn.isFresh() else { return nil }
     return turn
   }
 
@@ -2765,12 +2793,17 @@ struct WorkChatSessionView: View {
           // An ADE Cloud chat's sponsored card docked above the prompt box
           // (the `above_prompt` format); takes no room otherwise.
           WorkSponsoredDockSlot(
-            instanceId: sponsoredChatInstanceId,
+            instanceId: sponsoredChatFreeModels == nil ? sponsoredChatInstanceId : nil,
             sessionId: session.id,
             turnActive: showsStreamingStatus,
             turn: sponsoredSlotTurn,
-            slot: sponsoredSlot
+            slot: sponsoredSlot,
+            freeModels: sponsoredChatFreeModels
           )
+          // An ADE Free Models chat whose account is locked or throttled: one calm line.
+          if let freeModels = sponsoredChatFreeModels {
+            WorkFreeModelsChatNotice(state: freeModels)
+          }
           WorkChatComposerCard(
             chatSummary: chatSummaryContext,
             contextMeter: composerContextMeter,
@@ -3028,7 +3061,7 @@ struct WorkChatSessionView: View {
       contentFitsViewport: geometry.contentFitsViewport
     )
     requestOlderHistoryIfScrolledNearTop(distanceFromTop: geometry.distanceFromTop)
-    if sponsoredChatInstanceId != nil {
+    if sponsoredChatShowsCards {
       sponsoredSlot.update(
         distanceFromBottom: geometry.distanceFromBottom,
         // Below the card: its cell's bottom margin, then the gutter cell with both of its margins.
@@ -3668,7 +3701,11 @@ struct WorkChatSessionView: View {
       .environment(\.workChatAttachIssue, onAttachIssue.map(WorkChatAttachIssueAction.init))
       .environment(\.workChatAttachGitHubIssue, onAttachGitHubIssue.map(WorkChatAttachIssueAction.init))
       // Someone watches this ADE Cloud chat: the Index may answer its agent.
-      .background(WorkSponsoredViewerBeacon(instanceId: sponsoredChatInstanceId, slot: sponsoredSlot))
+      .background(WorkSponsoredViewerBeacon(
+        instanceId: sponsoredChatInstanceId,
+        slot: sponsoredSlot,
+        freeModelsChatId: sponsoredChatFreeModels == nil ? nil : session.id
+      ))
       .onReceive(sponsoredSlot.$placed) { placed in
         let key = placed?.key
         if sponsoredPlacedKey != key { sponsoredPlacedKey = key }

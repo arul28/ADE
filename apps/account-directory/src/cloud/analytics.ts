@@ -251,6 +251,49 @@ export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, u
   })());
 }
 
+/* ---- A cloud start's provider sign-in step (`signIns.ts`, `launches.ts`) ---- */
+
+/**
+ * - `shown`: a launch reached its provider sign-in step.
+ * - `code_sent` / `code_refused`: a code pasted from the provider's page, and the computer refusing it.
+ * - `signed_in`: the step ended signed in and the chat starts.
+ * - `timed_out`: the computer gave up at the end of the wait.
+ * - `cancelled`: the person cancelled the start in the step.
+ * - `free_model`: the chat started on DAEX Free Models instead.
+ */
+export type CloudSignInStep = "shown" | "code_sent" | "code_refused" | "signed_in" | "timed_out" | "cancelled" | "free_model";
+/** Which screen acted; `computer` for the computer's own reports. */
+export type CloudSignInClient = "desktop" | "web" | "ios" | "computer";
+
+/**
+ * One `ade_cloud_sign_in_step` per account, step and `key` (a launch or a sign-in job, hashed into the
+ * uuid, never sent): the provider and the client only. Never a link, a code or any text.
+ */
+export function captureCloudSignInStep(
+  env: CloudEnv,
+  waitUntil: CloudWaitUntil | undefined,
+  userId: string,
+  event: { step: CloudSignInStep; provider: string | null; client: CloudSignInClient },
+  key: string,
+  now: number,
+): void {
+  if (!waitUntil || !env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  hold(waitUntil, (async () => {
+    await sendAnalyticsEvent(env, {
+      event: "ade_cloud_sign_in_step",
+      distinct_id: await accountDistinctId(userId),
+      uuid: await uuidFromSeed(`ade-cloud-sign-in-step-v1:${userId}:${event.step}:${key}:${event.step === "code_sent" || event.step === "code_refused" ? now : ""}`),
+      timestamp: new Date(now).toISOString(),
+      properties: {
+        client: event.client,
+        step: event.step,
+        ...(event.provider ? { provider: event.provider } : {}),
+        $geoip_disable: true,
+      },
+    });
+  })());
+}
+
 /* ---- Idle cleanup (`idleCleanup.ts`) ---- */
 
 /**
@@ -309,13 +352,15 @@ export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil
  * - `rate_limited`: too many new computers or launches in an hour.
  * - `creates_paused`: a new computer or launch refused by the owner's kill switch.
  * - `signup_burst`: sign-ups from one address reached the hourly alarm.
+ * - `ad_cloud_request`: under Pricing v3, a proof or ad request came from the network of the account's own cloud computers and didn't count (`adPrice.ts`; once a week per account).
+ * - `ad_cloud_network`: under Pricing v3, a proof came from DAEX Cloud's network but none of the account's computers (a VPN there) and counted (`adPrice.ts`; once a week per account).
  * - `small_cloud_look`: a US look or yes that keeps Free's Small free came from ADE Cloud's network (the account's own computers', or one an ADE Cloud computer joined from) (`sponsoredSmall.ts`; once a week per account).
  */
 export type CloudSafetyStep =
   | "first_chat"
   | "free_cap_50" | "free_cap_80" | "free_cap_100" | "free_cap_refused"
   | "blocked" | "unblocked" | "card_reused" | "blocked_returned"
-  | "rate_limited" | "creates_paused" | "signup_burst" | "small_cloud_look";
+  | "rate_limited" | "creates_paused" | "signup_burst" | "small_cloud_look" | "ad_cloud_request" | "ad_cloud_network";
 
 /** The distinct id for an owner-wide event that belongs to no account (a cap threshold). */
 const SERVER_DISTINCT_ID = "ade-cloud-server";

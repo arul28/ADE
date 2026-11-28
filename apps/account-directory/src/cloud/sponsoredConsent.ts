@@ -117,10 +117,12 @@ export type ConsentRow = {
   looked_at: number | null;
   /** The network (AS number) of the look or yes that last moved `looked_at`, cleared with it (Free Small's tripwire, `sponsoredSmall.ts`). */
   looked_asn?: number | null;
+  /** Pricing v3 (migration 0073): when the account saw the ads notice; no ad before it (`adPrice.ts`). */
+  notice_seen_at?: number | null;
 };
 
 export async function readConsent(env: CloudDb, userId: string): Promise<ConsentRow | null> {
-  return env.DB.prepare("select consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn from cloud_sponsored_consent where user_id = ?")
+  return env.DB.prepare("select consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn, notice_seen_at from cloud_sponsored_consent where user_id = ?")
     .bind(userId).first<ConsentRow>();
 }
 

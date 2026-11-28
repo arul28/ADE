@@ -4,7 +4,8 @@ import { cancelAccountSubscription } from "./billing";
 import { deleteAllAccountChats } from "./chats";
 import { deleteAccountLaunches } from "./launches";
 import { deleteAccountAutomations } from "./automations";
-import { createCloudProvider } from "./provider";
+import { createComputerProvider } from "./computerProvider";
+import { forgetAccountMacs } from "./macProvider";
 import { CLOUD_DELETED_ACCOUNT_PREFIX, CLOUD_REFERRAL_FRIEND_REASON, CLOUD_REFERRAL_REFERRER_REASON } from "./contract";
 import { sha256Hex } from "../sinkUtils";
 import {
@@ -37,13 +38,16 @@ export async function deleteCloudAccount(
 
   const real = (await listComputers(env, userId)).filter((computer) => !isPendingId(computer.instance_id));
   if (real.length) {
-    const key = env.AGENT37_API_KEY?.trim();
-    if (!key) throw new Error("no_provider_key");
-    const provider = createCloudProvider(key);
+    // The router: a Mac goes with its drive at NoMac, every other computer at Agent 37.
+    const provider = createComputerProvider(env as CloudEnv);
+    if (!provider) throw new Error("no_provider_key");
     for (const computer of real) {
       await deleteComputer(env, provider, computer, { who: "system", reason: "account_deleted" }, now);
     }
   }
+  // Any Mac drive still kept under the account's label (a Mac closed earlier whose drive delete failed).
+  // The Worker's whole env reaches here (`accountErasure.ts`), as the router needs.
+  if (env.NOMAC_API_KEY?.trim()) await forgetAccountMacs(env as CloudEnv, userId, now);
 
   // The ADE Cloud iPhone's saved states, replays and workspace at NoMac, and the beta list.
   // NoMac being down must not hold back the rest: its failure is thrown at the end, so Clerk's
@@ -129,6 +133,14 @@ export async function deleteCloudAccount(
     env.DB.prepare("delete from cloud_sponsored_turns where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_sponsored_formats where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_sponsored_days where user_id = ?").bind(userId),
+    // ADE Free Models (`freeModels.ts`): the answer, where the person watched from, the chats served, the no-cards meter.
+    env.DB.prepare("delete from cloud_free_model_consent where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_free_model_viewers where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_free_model_chats where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_free_model_meters where user_id = ?").bind(userId),
+    // Pricing v3 (`adPrice.ts`): the proofs and what decides each computer's and phone's price.
+    env.DB.prepare("delete from cloud_ad_proofs where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_ad_targets where user_id = ?").bind(userId),
     // The owner's change log of the account test tool (`ownerAccounts.ts`).
     env.DB.prepare("delete from cloud_owner_log where user_id = ?").bind(userId),
     env.DB.prepare("update cloud_referrals set friend_user_id = ? where friend_user_id = ?").bind(gone, userId),

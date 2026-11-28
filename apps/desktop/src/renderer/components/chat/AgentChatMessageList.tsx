@@ -234,6 +234,8 @@ import { ProviderSignInReceipt } from "./ProviderSignInCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { VoiceSessionCard } from "./VoiceSessionCard";
 import { TurnFailureLine } from "./TurnFailureLine";
+import { adeFreeModelsRefusalOf, adeFreeModelsRefusalPresentation } from "./adeFreeModelsRefusal";
+import { askAdeFreeModelsUnlock } from "../shared/ModelPicker/AdeFreeModelsUnlockDialog";
 import { classifyProviderFailure, foldTurnFailureRows } from "./turnFailureRows";
 import {
   isUsageLimitTurn,
@@ -4720,13 +4722,18 @@ function renderEvent(
           detail: event.detail,
           provider: errorProvider,
         }));
+    // ADE Free Models refused for the account (locked, or paused with no card shown): say so plainly, with the way out.
+    const freeModelsRefusal = adeFreeModelsRefusalOf(errorCode, event.message, event.detail);
+    const shownPresentation = freeModelsRefusal
+      ? adeFreeModelsRefusalPresentation(freeModelsRefusal, errorCopyValue)
+      : basePresentation;
     // The turn's later errors ride under this one line's Details (`foldTurnFailureRows`).
     const presentation = envelope.failureNotes?.length
       ? {
-          ...basePresentation,
-          technicalDetail: [basePresentation.technicalDetail, ...envelope.failureNotes].filter(Boolean).join("\n"),
+          ...shownPresentation,
+          technicalDetail: [shownPresentation.technicalDetail, ...envelope.failureNotes].filter(Boolean).join("\n"),
         }
-      : basePresentation;
+      : shownPresentation;
     const renderAgentCliAuthCard = () => agentCliInfo ? (
       <AgentCliAuthCard
         agentCli={agentCliInfo}
@@ -4767,6 +4774,7 @@ function renderEvent(
           title={recovery?.kind === "capacity" ? "Model at capacity" : undefined}
           repeatCount={envelope.repeatCount ?? 1}
           disabled={Boolean(options?.sessionTurnActive)}
+          {...(freeModelsRefusal === "locked" ? { action: { label: "Add a card", onClick: () => void askAdeFreeModelsUnlock() } } : {})}
           onRetry={options?.onRetryProviderFailure
             ? () => options.onRetryProviderFailure!(event.turnId ?? null)
             : undefined}

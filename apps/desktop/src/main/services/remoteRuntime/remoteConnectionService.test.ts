@@ -2073,8 +2073,33 @@ describe("RemoteConnectionService", () => {
     // A person's write wakes it and goes through.
     await service.callAction(computer.id, "project-1", { domain: "lane", action: "create" });
     expect(wakeForUse).toHaveBeenCalledTimes(1);
+    expect(wakeForUse).toHaveBeenLastCalledWith(computer, undefined);
     expect(service.snapshot().connections[0]?.state).toBe("connected");
     await read();
+
+    // Pricing v3: a person's message from this window (a new chat's first one
+    // too) wakes it with that message as its ad proof; a send with no window
+    // origin (an agent's, a CLI's) wakes it with none.
+    const sleepAgain = async () => {
+      frozen = true;
+      await expect(read()).rejects.toThrow(/timed out/i);
+      await vi.waitFor(() => expect(service.snapshot().connections[0]?.state).toBe("idle"));
+    };
+    const message = { text: "hi", clientSendId: "send-1" };
+    await sleepAgain();
+    await service.callAction(computer.id, "project-1", {
+      domain: "chat",
+      action: "createSessionAndSend",
+      args: { create: { sessionId: "chat-1" }, message, inputOrigin: { clientId: "window-1" } },
+    });
+    expect(wakeForUse).toHaveBeenLastCalledWith(computer, { adProof: { chatId: "chat-1", messageId: "send-1" } });
+    await sleepAgain();
+    await service.callAction(computer.id, "project-1", { domain: "chat", action: "sendMessage", args: { sessionId: "chat-1", ...message, inputOrigin: { clientId: "window-1" } } });
+    expect(wakeForUse).toHaveBeenLastCalledWith(computer, { adProof: { chatId: "chat-1", messageId: "send-1" } });
+    await sleepAgain();
+    await service.callAction(computer.id, "project-1", { domain: "chat", action: "sendMessage", args: { sessionId: "chat-1", ...message } });
+    expect(wakeForUse).toHaveBeenLastCalledWith(computer, undefined);
+    expect(wakeForUse).toHaveBeenCalledTimes(4);
 
     // Asleep again, then woken by another device: the write still goes through.
     frozen = true;

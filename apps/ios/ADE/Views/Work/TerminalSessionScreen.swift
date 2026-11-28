@@ -74,7 +74,7 @@ struct TerminalSessionScreen: View {
 
   /// The ADE Cloud lane computer of an agent CLI on screen; nil on the person's own machines.
   private var sponsoredViewerInstanceId: String? {
-    guard isAgentCli, syncService.isCloudFleetKey(sessionMachineKey) else { return nil }
+    guard isWatchedAgentCli, syncService.isCloudFleetKey(sessionMachineKey) else { return nil }
     return syncService.cloudServerInstance(fleetKey: sessionMachineKey)?.id
   }
 
@@ -326,6 +326,10 @@ struct TerminalSessionScreen: View {
 
       Spacer(minLength: 0)
 
+      // The session's DAEX Cloud computer: asleep, waking or awake, as a chat's
+      // header shows it. Nothing on the person's own machines.
+      CloudLaneHeaderStateButton(fleetKey: sessionMachineKey, inTerminal: true)
+
       if isAgentCli && !controller.hasExited {
         Button {
           messageBarOn.toggle()
@@ -472,6 +476,14 @@ struct TerminalSessionScreen: View {
   private var isAgentCli: Bool {
     let raw = session.toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
     return session.tracked && !raw.isEmpty && raw != "shell" && !raw.hasSuffix("-chat") && !raw.hasSuffix("-orchestrated")
+  }
+
+  /// An agent CLI a person can watch for the Index (desktop's
+  /// `isTrackedAgentCliToolType`): like `isAgentCli`, but an orchestrated CLI
+  /// (`claude-orchestrated`, ...) counts too.
+  private var isWatchedAgentCli: Bool {
+    let raw = session.toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    return session.tracked && !raw.isEmpty && raw != "shell" && !raw.hasSuffix("-chat")
   }
 
   /// Sends the message to the session's own computer, which types it at the

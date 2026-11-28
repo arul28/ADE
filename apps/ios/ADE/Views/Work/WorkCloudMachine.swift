@@ -14,54 +14,109 @@ func cloudDesktopSignInSentence(label: String) -> String {
   "Sign in to \(label) in \(Brand.name) on your computer once. \(Brand.cloudName) then uses that sign-in."
 }
 
+/// The sentence under the sign-in step's title, by kind (the same on every
+/// client): what to do with the link or the code. `api_key` and `desktop`
+/// keep their own lines (the computer's `reason`, the desktop sentence).
+func cloudSignInLead(_ signIn: CloudLaunchSignIn) -> String? {
+  switch signIn.kind {
+  case "url_paste":
+    return signIn.provider.lowercased() == "claude"
+      ? "Open sign-in, then paste the code it shows here. It needs a Claude subscription."
+      : "Open sign-in, then paste the code it shows here."
+  case "device":
+    return signIn.userCode == nil ? nil : "Open the page and type this code:"
+  default:
+    return nil
+  }
+}
+
+/// "You have 30 minutes.": the minutes left of the wait, rounded down. Worked
+/// out when the step renders for another reason; there is no countdown.
+func cloudSignInTimeLine(expiresAt: Double?, now: Date = Date()) -> String? {
+  guard let expiresAt else { return nil }
+  let minutes = Int(((expiresAt - now.timeIntervalSince1970 * 1000) / 60_000).rounded(.down))
+  guard minutes >= 1 else { return nil }
+  return "You have \(minutes) \(minutes == 1 ? "minute" : "minutes")."
+}
+
 /// What the person does for the provider sign-in a launch or a woken chat
-/// waits on (`CloudLaunchSignIn`). The same step on every client.
+/// waits on (`CloudLaunchSignIn`). The same step on every client. A code or
+/// a link is never logged or kept: the field clears once the code is sent.
 struct CloudSignInStepDetail: View {
   let signIn: CloudLaunchSignIn
   let instanceId: String?
+  /// The launch this step belongs to: it enables "Start with … instead".
+  /// Nil for a woken chat's step.
+  var launchId: String? = nil
   /// The code or key went through: read the launch or the chat again.
   var onDone: @MainActor () async -> Void = {}
+
+  /// What came of the last code sent.
+  enum CodeState: Equatable {
+    case idle
+    case checking
+    case refused(String)
+    case accepted
+    case sent
+  }
+
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.openURL) private var openURL
   @State private var value = ""
-  @State private var busy = false
   @State private var error: String?
-  @State private var sent = false
+  @State private var codeState: CodeState
+  @State private var freeModelBusy = false
+  @State private var freeModelError: String?
+  @State private var consentOpen = false
   /// Dropped on send: the keyboard would hide the answer under the field.
   @FocusState private var fieldFocused: Bool
 
-  private var needsInput: Bool { signIn.kind == "api_key" || signIn.kind == "url_paste" || signIn.needsPastedCode }
+  init(signIn: CloudLaunchSignIn, instanceId: String?, launchId: String? = nil, codeState: CodeState = .idle, consentOpen: Bool = false, onDone: @escaping @MainActor () async -> Void = {}) {
+    self.signIn = signIn
+    self.instanceId = instanceId
+    self.launchId = launchId
+    self.onDone = onDone
+    _codeState = State(initialValue: codeState)
+    _consentOpen = State(initialValue: consentOpen)
+  }
+
+  private var isKey: Bool { signIn.kind == "api_key" }
+  private var needsInput: Bool { isKey || signIn.kind == "url_paste" || signIn.needsPastedCode }
+  private var busy: Bool { codeState == .checking }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       if signIn.kind == "desktop" {
-        Text(cloudDesktopSignInSentence(label: signIn.label))
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
+        line(cloudDesktopSignInSentence(label: signIn.label))
       } else {
-        if signIn.kind == "device", let code = signIn.userCode {
-          HStack(spacing: 8) {
-            Text(code)
-              .font(.system(size: 17, weight: .semibold, design: .monospaced))
-              .foregroundStyle(ADEColor.textPrimary)
-              .textSelection(.enabled)
-              .accessibilityLabel("Sign-in code \(code)")
-            Button {
-              UIPasteboard.general.string = code
-            } label: {
-              Image(systemName: "doc.on.doc")
+        if let lead = cloudSignInLead(signIn) {
+          line(lead)
+          if signIn.kind == "device", let code = signIn.userCode {
+            HStack(spacing: 8) {
+              Text(code)
+                .font(.system(size: 17, weight: .semibold, design: .monospaced))
+                .foregroundStyle(ADEColor.textPrimary)
+                .textSelection(.enabled)
+                .accessibilityLabel("Sign-in code \(code)")
+              Button {
+                UIPasteboard.general.string = code
+              } label: {
+                Image(systemName: "doc.on.doc")
+              }
+              .buttonStyle(ADEKitButtonStyle())
+              .accessibilityLabel("Copy the code")
             }
-            .buttonStyle(ADEKitButtonStyle())
-            .accessibilityLabel("Copy the code")
           }
         }
+        // url_paste and device: set only for a change of the link or the
+        // code, or a start error. api_key: the instruction, as before.
         if let reason = signIn.reason {
-          Text(reason)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
+          line(reason)
+        }
+        if let time = cloudSignInTimeLine(expiresAt: signIn.expiresAt) {
+          line(time, muted: true)
         }
         if let link = signIn.url.flatMap(URL.init(string:)) {
           Button {
@@ -71,9 +126,9 @@ struct CloudSignInStepDetail: View {
           }
           .buttonStyle(ADEKitButtonStyle())
         }
-        if needsInput && !sent {
+        if needsInput {
           HStack(spacing: 8) {
-            SecureField(signIn.kind == "api_key" ? "API key" : "Code from the page", text: $value)
+            SecureField(isKey ? "API key" : "Code from the page", text: $value)
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
               .font(.system(size: 14))
@@ -82,22 +137,125 @@ struct CloudSignInStepDetail: View {
               .background(ADEColor.recessedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
               .focused($fieldFocused)
               .onSubmit(submit)
-            Button(signIn.kind == "api_key" ? "Save" : "Send code", action: submit)
+            Button(isKey ? "Save" : "Send code", action: submit)
               .buttonStyle(ADEKitButtonStyle(prominent: true))
               .disabled(busy || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
           }
-        }
-        if sent {
-          Text(signIn.kind == "api_key" ? "Key saved. The chat starts when the computer reads it." : "Code sent. The chat starts when the sign-in is done.")
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
+          // A code or a key is short: the open pose keeps the field near it.
+          .frame(maxWidth: 480, alignment: .leading)
+          codeLine
         }
         if let error {
-          Text(error)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.danger)
-            .fixedSize(horizontal: false, vertical: true)
+          line(error, tone: ADEColor.danger)
         }
+        waysOut
+      }
+    }
+    // A new link, job or code from the computer: the last code's result is over.
+    .onChange(of: "\(signIn.jobId ?? "")|\(signIn.url ?? "")|\(signIn.userCode ?? "")") { _, _ in
+      if codeState != .checking { codeState = .idle }
+    }
+    .sheet(isPresented: $consentOpen) {
+      if let freeModel = signIn.freeModel {
+        WorkFreeModelsGateSheet(modelId: freeModel.modelId, modelName: freeModel.label) {
+          switch await cloudSaveFreeModelsConsent(CloudSponsoredState.granted) {
+          case .success(let state):
+            guard state.granted else { return "\(Brand.name) couldn't save that. Try again." }
+            consentOpen = false
+            startOnFreeModel(afterConsent: true)
+            return nil
+          case .failure(let failure):
+            return failure.message
+          }
+        } onReady: {
+          guard consentOpen else { return }
+          consentOpen = false
+          startOnFreeModel(afterConsent: true)
+        } onClose: {
+          consentOpen = false
+        }
+      }
+    }
+  }
+
+  /// What came of the code (or key) sent; the field stays for another try.
+  @ViewBuilder private var codeLine: some View {
+    switch codeState {
+    case .idle:
+      EmptyView()
+    case .checking:
+      HStack(spacing: 6) {
+        ProgressView().controlSize(.mini)
+        line(isKey ? "Saving the key…" : "Checking the code…")
+      }
+    case .refused(let reason):
+      line(reason, tone: ADEColor.danger)
+    case .accepted:
+      line("Code accepted. Starting the chat…")
+    case .sent:
+      line(isKey ? "Key saved. The chat starts when the computer reads it." : "Code sent. The chat starts when the sign-in is done.")
+    }
+  }
+
+  /// The ways past the step, each only when the server says so, and what the wait costs.
+  @ViewBuilder private var waysOut: some View {
+    if let freeModel = signIn.freeModel, launchId != nil {
+      VStack(alignment: .leading, spacing: 3) {
+        Button { startOnFreeModel() } label: {
+          HStack(spacing: 6) {
+            if freeModelBusy { ProgressView().controlSize(.mini) }
+            Text("Start with \(freeModel.label) instead")
+          }
+        }
+        .buttonStyle(ADEKitButtonStyle())
+        .disabled(freeModelBusy)
+        line("Free with ads, on this computer.", muted: true)
+        if let freeModelError {
+          line(freeModelError, tone: ADEColor.danger)
+        }
+      }
+      .padding(.top, 2)
+    }
+    if signIn.ownComputer {
+      line("Signed in on your own computer? Turn on Share my sign-ins in Settings › \(Brand.cloudName), and this step goes away.", muted: true)
+    }
+    if let sentence = signIn.charge?.sentence {
+      line(sentence, muted: true)
+    }
+  }
+
+  private func line(_ text: String, muted: Bool = false, tone: Color? = nil) -> some View {
+    Text(text)
+      .font(.system(size: muted ? 11.5 : 12.5))
+      .foregroundStyle(tone ?? (muted ? ADEColor.textMuted : ADEColor.textSecondary))
+      .fixedSize(horizontal: false, vertical: true)
+  }
+
+  /// One request per tap. A consent refusal opens the sheet only when a fresh
+  /// read of the account says there is no yes yet; a refusal right after a
+  /// yes, or with the account still agreeing, shows a sentence and stops.
+  private func startOnFreeModel(afterConsent: Bool = false) {
+    guard let launchId, let freeModel = signIn.freeModel, !freeModelBusy else { return }
+    freeModelBusy = true
+    freeModelError = nil
+    Task {
+      defer { freeModelBusy = false }
+      switch await launches.startOnFreeModel(launchId, freeModel: freeModel, using: syncService) {
+      case .started: break
+      case .failed(let message): freeModelError = message
+      case .needsConsent(let message):
+        // Refused again right after a yes: the server's sentence, and stop.
+        guard !afterConsent else { freeModelError = message; return }
+        let stuck = "\(Brand.name) couldn't start \(freeModel.label). Try again in a moment."
+        if let client = await syncService.cloudServerClient(), let owner = AccountService.shared.currentPairingAuthorization {
+          await AccountCloudStore.shared.refresh(client: client, owner: owner)
+        }
+        guard let state = AccountCloudStore.shared.account?.freeModels, state.lists(freeModel.modelId) else {
+          freeModelError = "\(Brand.name) Free Models aren't open for this account right now."
+          return
+        }
+        guard !state.granted else { freeModelError = stuck; return }
+        consentOpen = true
       }
     }
   }
@@ -105,36 +263,42 @@ struct CloudSignInStepDetail: View {
   private func submit() {
     let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty, !busy else { return }
-    busy = true
+    codeState = .checking
     error = nil
     fieldFocused = false
     Task {
-      defer { busy = false }
       guard let client = await syncService.cloudServerClient() else {
+        codeState = .idle
         error = "Sign in to \(Brand.name) again, then try again."
         return
       }
       do {
-        if signIn.kind == "api_key" {
+        if isKey {
           guard let signInId = signIn.signInId else {
+            codeState = .idle
             error = "\(Brand.cloudName) didn't say which key to save."
             return
           }
           _ = try await client.saveAccountSignIn(signInId, key: text)
+          codeState = .sent
         } else {
           guard let instanceId, let jobId = signIn.jobId else {
+            codeState = .idle
             error = "The computer isn't ready for the code yet. Try again in a moment."
             return
           }
-          if let refusal = try await client.sendSignInCode(instanceId: instanceId, jobId: jobId, code: text) {
-            error = refusal
+          switch try await client.sendSignInCode(instanceId: instanceId, jobId: jobId, code: text) {
+          case .refused(let reason):
+            codeState = .refused(reason)
             return
+          case .accepted: codeState = .accepted
+          case .sent: codeState = .sent
           }
         }
         value = ""
-        sent = true
         await onDone()
       } catch {
+        codeState = .idle
         self.error = cloudServerFailureMessage(error)
       }
     }
@@ -178,6 +342,32 @@ func cloudLaneState(fleetKey: String?, sync: SyncService, store: AccountCloudSto
   return .asleep
 }
 
+/// A cloud lane computer's Mac phase and the sentence the server can't-wake
+/// state carries, from its account-server row. Read only; never wakes it.
+struct CloudLaneComputerWords: Equatable {
+  /// Where the Mac is; nil on Linux.
+  var macPhase: CloudMacPhase? = nil
+  /// The server's sentence for the Mac's state, or why its start failed.
+  var macSentence: String? = nil
+  /// The server can't wake or send to it now (`computer_unavailable`).
+  var unavailable: String? = nil
+
+  init(macPhase: CloudMacPhase? = nil, macSentence: String? = nil, unavailable: String? = nil) {
+    self.macPhase = macPhase
+    self.macSentence = macSentence
+    self.unavailable = unavailable
+  }
+
+  init(_ instance: CloudServerInstance?) {
+    guard let instance else { return }
+    if instance.isMac {
+      macPhase = CloudMacPhase(instance.mac, state: cloudPhoneMachineState(serverStatus: instance.status))
+      macSentence = CloudMacWords.sentence(instance.mac)
+    }
+    unavailable = instance.unavailable
+  }
+}
+
 /// "Deleted in N days" for the idle cleanup's warning, in whole days (at least 1).
 func cloudDeletingSoonDays(deletesAt: Double, now: Date = Date()) -> Int {
   let left = deletesAt / 1000 - now.timeIntervalSince1970
@@ -206,7 +396,11 @@ struct CloudLaneStateLines: View {
     // A chat's next message makes the new computer: its line offers the size,
     // once the account's sizes are known (no menu with nothing in it).
     let tiers = cloudPhoneTiers(store.account?.catalog)
-    let sizeKey = state == .deleted && context == .chat && !tiers.isEmpty
+    let deleted = state == .deleted
+      ? cloudDeletedComputerFacts(fleetKey: fleetKey, sync: syncService, store: store) ?? .unknown
+      : .unknown
+    // A kept Mac lane has one size: no size menu.
+    let sizeKey = state == .deleted && context == .chat && !tiers.isEmpty && !deleted.mac
       ? fleetKey.flatMap { syncService.cloudAccountMachineKey(fleetKey: $0)?.lowercased() }
       : nil
     CloudLaneStateLinesContent(
@@ -214,9 +408,8 @@ struct CloudLaneStateLines: View {
       showsRestingState: showsRestingState,
       deletingDays: deleting.map { cloudDeletingSoonDays(deletesAt: $0.deletesAt) },
       deletingSizeLabel: cloudQueueSizeLabel(account: store.account),
-      deleted: state == .deleted
-        ? cloudDeletedComputerFacts(fleetKey: fleetKey, sync: syncService, store: store) ?? .unknown
-        : .unknown,
+      deleted: deleted,
+      computer: CloudLaneComputerWords(instance),
       context: context,
       sizePick: sizeKey.map { key in
         CloudNewComputerSizePick(
@@ -224,7 +417,7 @@ struct CloudLaneStateLines: View {
           picked: store.newComputerSizes[key],
           pick: { store.pickNewComputerSize(machineKey: key, sizeId: $0) },
           words: CloudBalanceWords(store.account),
-          leftMilli: store.account.map { $0.hours.leftMilli + max(0, $0.earnedHours?.leftMilli ?? 0) }
+          leftMilli: store.account?.hoursLeftMilli
         )
       },
       keeping: keeping,
@@ -246,8 +439,8 @@ struct CloudLaneStateLines: View {
   }
 }
 
-/// A cloud chat's computer in its header: asleep, waking or awake, as the
-/// desktop chat header's cloud button shows it. Its menu says the state and,
+/// A cloud lane's computer in a chat's or terminal's header: asleep, waking
+/// or awake, as the desktop header's cloud button shows it. Its menu says the state and,
 /// while asleep, offers Wake now. Reading it never wakes anything; a failed
 /// wake, a refusal or a deleted computer stay lines at the top
 /// (`CloudLaneStateLines`), so this shows nothing for those.
@@ -255,6 +448,9 @@ struct CloudLaneHeaderStateButton: View {
   let fleetKey: String?
   /// On the side rail's toolbar (a labelled item), not the glass header.
   var inToolbar = false
+  /// In a terminal's top bar: a message there doesn't wake the computer, and
+  /// no state lines show a failed wake or a refusal, so the button does.
+  var inTerminal = false
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject private var store = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
@@ -262,14 +458,40 @@ struct CloudLaneHeaderStateButton: View {
   private struct Shown {
     let word: String
     let symbol: String
+    /// Offers Wake now.
     let asleep: Bool
+    /// The server's sentence for a failed wake or a refusal (terminal only).
+    var problem: String? = nil
+  }
+
+  private var computer: CloudLaneComputerWords {
+    CloudLaneComputerWords(syncService.cloudServerInstance(fleetKey: fleetKey))
   }
 
   private var shown: Shown? {
-    switch cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store) {
+    let state = cloudLaneState(fleetKey: fleetKey, sync: syncService, store: store)
+    let computer = computer
+    // Can't wake now, or a Mac whose start failed: the lines at the top say it.
+    if state == .asleep, computer.unavailable != nil { return nil }
+    if let phase = computer.macPhase {
+      switch state {
+      case .asleep? where phase == .startFailed || phase == .driveLost: return nil
+      // Still saving its drive: no Start until it has stopped.
+      case .asleep? where phase == .stopping: return Shown(word: phase.label, symbol: "hourglass", asleep: false)
+      case .asleep?: return Shown(word: CloudMacPhase.stopped.label, symbol: "stop.circle", asleep: true)
+      case .waking?: return Shown(word: phase == .queued ? phase.label : CloudMacPhase.starting.label, symbol: "hourglass", asleep: false)
+      case .awake?: return Shown(word: CloudMacPhase.running.label, symbol: "apple.logo", asleep: false)
+      default: return nil
+      }
+    }
+    switch state {
     case .asleep?: return Shown(word: "Asleep", symbol: "moon.zzz", asleep: true)
     case .waking?: return Shown(word: "Waking", symbol: "sun.horizon", asleep: false)
     case .awake?: return Shown(word: "Awake", symbol: "icloud", asleep: false)
+    case .wakeFailed(let message)? where inTerminal:
+      return Shown(word: "Couldn't wake", symbol: "exclamationmark.icloud", asleep: true, problem: message)
+    case .refused(let message)? where inTerminal:
+      return Shown(word: "Refused", symbol: "exclamationmark.icloud", asleep: false, problem: message)
     default: return nil
     }
   }
@@ -285,9 +507,41 @@ struct CloudLaneHeaderStateButton: View {
   }
 
   private func menu(_ shown: Shown, fleetKey: String) -> some View {
-    Menu {
-      if shown.asleep {
-        Section("Asleep · you're reading the saved copy. Sending a message wakes it too.") {
+    let mac = computer.macPhase != nil
+    return Menu {
+      if let problem = shown.problem {
+        Section(problem) {
+          if shown.asleep {
+            Button {
+              ADEHaptics.light()
+              wake(fleetKey)
+            } label: {
+              Label("Try again", systemImage: "arrow.clockwise")
+            }
+          }
+        }
+      } else if shown.asleep, mac {
+        Section(inTerminal ? "Stopped · start it to use this terminal." : "Stopped · you're reading the saved copy. Sending a message starts the Mac \(CloudMacWords.startWords).") {
+          Button {
+            ADEHaptics.light()
+            wake(fleetKey)
+          } label: {
+            Label("Start now", systemImage: "play.circle")
+          }
+        }
+      } else if mac {
+        Section("\(CloudMacWords.name): \(shown.word)") {
+          Text(computer.macSentence ?? (shown.word == CloudMacPhase.running.label ? "The Mac is on." : shown.word))
+        }
+        // Pricing v3: what this Mac costs now (a minute), and why it has the full price while ads are on.
+        if computer.macPhase == .running, let price = priceNow(fleetKey, mac: true) {
+          Section {
+            Label(price.line, systemImage: "gauge.with.dots.needle.33percent")
+            if let reason = price.reason { Text(reason) }
+          }
+        }
+      } else if shown.asleep {
+        Section(inTerminal ? "Asleep · wake it to use this terminal." : "Asleep · you're reading the saved copy. Sending a message wakes it too.") {
           Button {
             ADEHaptics.light()
             wake(fleetKey)
@@ -297,7 +551,14 @@ struct CloudLaneHeaderStateButton: View {
         }
       } else {
         Section("\(shown.word) on \(Brand.cloudName)") {
-          Label(shown.word == "Waking" ? "Waking this chat's computer…" : "This chat's computer is up", systemImage: shown.symbol)
+          Label(shown.word == "Waking" ? "Waking this lane's computer…" : "This lane's computer is up", systemImage: shown.symbol)
+        }
+        // Pricing v3: what this chat's computer costs now, and why it has the full price while ads are on.
+        if let price = priceNow(fleetKey) {
+          Section {
+            Label(price.line, systemImage: "gauge.with.dots.needle.33percent")
+            if let reason = price.reason { Text(reason) }
+          }
         }
       }
     } label: {
@@ -307,12 +568,21 @@ struct CloudLaneHeaderStateButton: View {
         WorkChatGlassCircleLabel(systemName: shown.symbol, glyphSize: 16, tint: shown.asleep ? ADEColor.textSecondary : ADEColor.textPrimary)
       }
     }
-    .accessibilityLabel("\(Brand.cloudName) computer, \(shown.word.lowercased())")
-    .accessibilityHint(shown.asleep ? "Shows Wake now" : "Shows the computer's state")
+    .accessibilityLabel("\(mac ? CloudMacWords.name : "\(Brand.cloudName) computer"), \(shown.word.lowercased())")
+    .accessibilityHint(shown.asleep ? (mac ? "Shows Start now" : "Shows Wake now") : "Shows the computer's state")
     .accessibilityIdentifier("Work.Chat.Header.CloudState")
   }
 
-  /// A doing action: wakes the chat's computer. A failure shows as the
+  /// What this chat's own computer costs now (its machine's instance, never the tab's).
+  /// A Mac (`mac`) reads its price a minute; the server's row carries it an hour.
+  private func priceNow(_ fleetKey: String, mac: Bool = false) -> (line: String, reason: String?)? {
+    guard let adWords = CloudAdPriceWords(store.account),
+          let listed = adWords.pricing.computer(syncService.cloudServerInstance(fleetKey: fleetKey)?.id) else { return nil }
+    let price = mac ? CloudMacWords.pricePerMinute(listed) : listed
+    return (adWords.priceNow(price, unit: mac ? .minute : .hour), adWords.reasonLine(price))
+  }
+
+  /// A doing action: wakes the lane's computer. A failure shows as the
   /// wake-failed line (`cloudWakeFailure`), the only banner left in a chat.
   private func wake(_ fleetKey: String) {
     let sync = syncService
@@ -339,6 +609,8 @@ struct CloudLaneStateLinesContent: View {
   /// What the `.deleted` line says: what happened and what makes the new
   /// computer, or why ADE can't make one.
   var deleted: CloudDeletedComputerFacts = .unknown
+  /// The computer's Mac phase and can't-wake sentence; empty on Linux.
+  var computer = CloudLaneComputerWords()
   var context: CloudLaneLineContext = .chat
   /// The `.deleted` chat line's size menu for the new computer; nil shows none.
   var sizePick: CloudNewComputerSizePick? = nil
@@ -352,6 +624,33 @@ struct CloudLaneStateLinesContent: View {
   var body: some View {
     VStack(spacing: 6) {
       switch state {
+      case .asleep? where computer.unavailable != nil:
+        // The server can't wake or send to it now: its sentence, with no wake.
+        line(symbol: "exclamationmark.icloud", title: CloudMacWords.unavailableLabel, detail: computer.unavailable ?? CloudMacWords.unavailableSentence)
+      case .asleep? where computer.macPhase == .startFailed || computer.macPhase == .driveLost:
+        line(
+          symbol: "exclamationmark.triangle",
+          title: computer.macPhase?.label ?? "",
+          detail: computer.macSentence ?? CloudMacWords.stateSentence("stopped") ?? ""
+        )
+      case .waking? where showsRestingState && computer.macPhase != nil:
+        line(
+          symbol: "hourglass",
+          title: computer.macPhase == .queued ? CloudMacPhase.queued.label : "Starting the Mac",
+          detail: computer.macSentence ?? CloudMacWords.stateSentence(computer.macPhase == .queued ? "queued" : "starting") ?? ""
+        )
+      case .asleep? where showsRestingState && computer.macPhase == .stopping:
+        line(
+          symbol: "hourglass",
+          title: "Stopping the Mac",
+          detail: computer.macSentence ?? CloudMacWords.stateSentence("stopping") ?? ""
+        )
+      case .asleep? where showsRestingState && computer.macPhase != nil:
+        line(
+          symbol: "stop.circle",
+          title: "Mac stopped",
+          detail: "You're reading the saved copy. Sending a message starts the Mac again \(CloudMacWords.startWords)."
+        )
       case .waking? where showsRestingState:
         CloudComputerWakeBanner(machineName: "your \(Brand.cloudName) computer")
       case .wakeFailed(let message)?:

@@ -161,13 +161,13 @@ import type {
   CtoCloudHomeEvent,
   CtoCloudHomeMethod,
 } from "../shared/ctoCloudHome";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudAdProofAnswer, CloudAdSentRequest, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus, CloudFreeModelsSeenRequest, CloudFreeModelsState } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatProofArgs, CloudSavedChatProofResult, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { CloudCarriedSignIns, CloudLaneBackup, CloudLaunchRecord as AccountCloudLaunchRecord, CloudModelCatalog } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
-import type { CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
+import type { CloudLaunchFreeModelResult, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -14619,12 +14619,18 @@ const adeBridge = {
     setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
       ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
-    setSponsoredConsent: (consent: CloudSponsoredChoice, confirmed?: boolean): Promise<CloudSponsoredState | null> =>
-      ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent, confirmed: confirmed === true }),
+    setSponsoredConsent: (consent: CloudSponsoredChoice, confirmed?: boolean, noticeSeen?: boolean): Promise<CloudSponsoredState | null> =>
+      ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent, confirmed: confirmed === true, noticeSeen: noticeSeen === true }),
+    // Pricing v3's message proof: account level, no pin (`instanceId` names the chat's own computer).
+    sponsoredSent: (input: CloudAdSentRequest): Promise<CloudAdProofAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredSent, input),
     sponsoredSeen: (input: CloudSponsoredSeenRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredSeen, input),
     sponsoredHide: (input: CloudSponsoredHideRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredHide, input),
     sponsoredAd: (input: CloudSponsoredAdRequest): Promise<CloudSponsoredAdAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredAd, input),
     sponsoredViewed: (impUrl: string): Promise<boolean> => ipcRenderer.invoke(IPC.cloudSponsoredViewed, { impUrl }),
+    // ADE Free Models: account level, no pin (the chat may be on any machine).
+    setFreeModelsConsent: (consent: CloudSponsoredConsent): Promise<CloudFreeModelsState | null> =>
+      ipcRenderer.invoke(IPC.cloudFreeModelsConsent, { consent }),
+    freeModelsSeen: (input: CloudFreeModelsSeenRequest): Promise<boolean> => ipcRenderer.invoke(IPC.cloudFreeModelsSeen, input),
     openCheckout: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick): Promise<CloudOpenCheckoutResult> =>
       ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan, ...(cleanup ? { cleanup } : {}) } : undefined),
     pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>
@@ -14655,6 +14661,8 @@ const adeBridge = {
     /** Through the account server, to that computer: no pin. */
     sendLaunchSignInCode: (args: { instanceId: string; jobId: string; code: string }): Promise<CloudRemoteSignInStatus> =>
       ipcRenderer.invoke(IPC.cloudLaunchSignInCode, args),
+    /** A launch waiting in its sign-in step starts on DAEX Free Models instead: account-level, by its id, no pin. */
+    launchFreeModel: (args: { launchId: string }): Promise<CloudLaunchFreeModelResult> => ipcRenderer.invoke(IPC.cloudLaunchFreeModel, args),
     /** The account's message queue for an existing ADE Cloud chat: account-level, by the chat's machine key, so no pin. */
     sendChatMessage: (args: CloudChatSendRequest): Promise<CloudChatSendAnswer> => ipcRenderer.invoke(IPC.cloudChatMessageSend, args),
     /** A launch the queue started, by its id: account-level, no pin. */
@@ -15414,8 +15422,9 @@ const adeBridge = {
       return runtime.handled ? runtime.result : null;
     },
     /** "Still watching" on a cloud computer, to the machine the tool is on. */
-    noteWatching: (pin?: OpenProjectBinding | null): Promise<void> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "work_tools", "noteWatching", {}, async () => undefined),
+    // `tool`: which Work tool is open; a launch's sign-in wait counts only a screen or a preview as use.
+    noteWatching: (pin?: OpenProjectBinding | null, tool?: string): Promise<void> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "work_tools", "noteWatching", tool ? { args: { tool } } : {}, async () => undefined),
     setActiveTool: async (
       laneId: string,
       tool: WorkToolId | null,

@@ -15,6 +15,8 @@
  *    with its saved work; Settings › ADE Cloud also lists saved work from a deleted project's lane.
  *  - `idlepaid`: Plus, one lane unused 7 days (deleted in 3 days, no ignored-files summary yet).
  *  - `idleheld`: Free plan, one lane ADE didn't delete because it couldn't save its work (over 50 MB).
+ *    `&mockCloudHeld=<kind>` stores the reason of that kind instead (`CloudIdleHeldKind`), or `old`:
+ *    a reason the person can't act on, stored before the rename (it says "ADE").
  *  - `pastdue`: Plus with its last payment failed (free plan rules until it's paid).
  *  - `limit`: Free plan using both its computers (one has no lane): a new lane opens the computer limit card.
  *  - `upgraded`: Plus a moment after checkout, with this computer last seeing Free
@@ -26,6 +28,12 @@
  * Every account answers in credits (one balance the iPhone draws from too);
  * `&mockPhone=on` gives a Free account the ADE Cloud iPhone; and
  * `&mockPhoneProvider=auto|nomac|revyl` makes the account a tester with that pick.
+ * `&mockMac=1` offers the DAEX Cloud Mac (`catalog.mac`) and adds a Mac lane in
+ * each state (waiting, starting, on, stopping, stopped, a failed start, a lost
+ * drive); `&mockMac=offer` offers it with no Mac lane yet; `&mockMac=broke` offers it at zero credits.
+ * `&mockMacLane=running|queued|starting|stopped` (with `mockCloudLaneMachine=1`) makes the chat's
+ * lane computer (checkout-redesign) a Mac in that state. With `&mockPricing=`, the Mac carries its
+ * ad price too and each Mac its price row.
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
@@ -35,6 +43,8 @@ import {
   CLOUD_MACHINE_DEFAULT_NAME,
   cloudFreeGithubSentence,
   cloudFreePlanRefusedSentence,
+  formatCloudFreeGithubDay,
+  type CloudFreeModelsLock,
   type CloudFreePlanGithubState,
   planCleanupSentence,
   type CloudAccountState,
@@ -45,7 +55,17 @@ import {
   type CloudSponsoredChoice,
   type CloudSponsoredConsent,
 } from "../shared/adeCloud";
+import { ADE_FREE_MODELS } from "../shared/adeFreeModels";
 import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import {
+  CLOUD_MAC_SHAPE,
+  CLOUD_MAC_START_FAILED_SENTENCES,
+  CLOUD_MAC_STATE_SENTENCES,
+  CLOUD_MAC_UNSUPPORTED,
+  type CloudMacOffer,
+  type CloudMacStartFailure,
+  type CloudMacStateName,
+} from "../../../account-directory/src/cloud/contract";
 import type {
   CloudKeptLaneRestoreArgs,
   CloudKeptLaneRestorePreview,
@@ -55,8 +75,20 @@ import type {
 
 const mockRestores = new Map<string, { record: CloudKeptLaneRestoreRecord; startedAt: number; refused: boolean }>();
 import {
+  CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE,
+  CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE,
+  CLOUD_BACKUP_NO_COMMIT_SENTENCE,
   CLOUD_BACKUP_NOT_SAVED_SENTENCE,
+  CLOUD_BACKUP_STAGED_ONLY_SENTENCE,
+  CLOUD_BACKUP_SUBMODULE_SENTENCE,
   CLOUD_BACKUP_TOO_LARGE_SENTENCE,
+  CLOUD_BACKUP_UNTIL_THEN_SUFFIX,
+  CLOUD_SAVE_ADE_TOO_OLD_SENTENCE,
+  CLOUD_SAVE_PREPARE_FAILED_SENTENCE,
+  idleHeldKindOf,
+  type CloudAdsState,
+  type CloudComputerPrice,
+  type CloudFullPriceReason,
   type CloudLaneBackup,
   type CloudLaneBackupFacts,
 } from "../../../account-directory/src/cloud/contract";
@@ -82,8 +114,8 @@ function mockBackup(facts: Pick<CloudLaneBackupFacts, "branchRef" | "laneName" |
 }
 import { CLOUD_PLAN_SEEN_STORAGE_KEY } from "./components/settings/cloudDashboard/cloudPlanMoment";
 
-type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "limit" | "upgraded" | "emptyplus";
-const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld", "pastdue", "limit", "upgraded", "emptyplus"];
+type Scenario = "free" | "empty" | "plus" | "pro" | "max" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "limit" | "upgraded" | "emptyplus";
+const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "max", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld", "pastdue", "limit", "upgraded", "emptyplus"];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -95,6 +127,23 @@ function param(name: string): string | null {
     return new URLSearchParams(INITIAL_SEARCH).get(name);
   } catch {
     return null;
+  }
+}
+
+/** The `idleheld` preview's stored reason for `&mockCloudHeld=<kind>`, as the server stores one. */
+function heldReasonPreview(kind: string | null): string {
+  const lane = (reason: string) => `${CLOUD_BACKUP_NOT_SAVED_SENTENCE} pricing-page: ${reason}`;
+  switch (kind) {
+    case "account_full": return lane(CLOUD_BACKUP_ACCOUNT_FULL_SENTENCE);
+    case "staged_only": return lane(CLOUD_BACKUP_STAGED_ONLY_SENTENCE);
+    case "submodule": return lane(CLOUD_BACKUP_SUBMODULE_SENTENCE);
+    case "no_commit": return lane(CLOUD_BACKUP_NO_COMMIT_SENTENCE);
+    case "fix_named": return lane(`Git LFS files can't travel; push them first. ${CLOUD_BACKUP_UNTIL_THEN_SUFFIX}`);
+    case "stop_agent": return CLOUD_SAVE_PREPARE_FAILED_SENTENCE;
+    case "none": return lane(CLOUD_BACKUP_GITHUB_UNREACHABLE_SENTENCE);
+    case "open_once": return CLOUD_SAVE_ADE_TOO_OLD_SENTENCE;
+    case "old": return "ADE couldn't save this lane's work. pricing-page: ADE couldn't reach GitHub to check this lane's work. It checks again at the next rest.";
+    default: return lane(CLOUD_BACKUP_TOO_LARGE_SENTENCE);
   }
 }
 
@@ -182,8 +231,64 @@ function machine(spec: LaneSpec, now: number): CloudLaneMachine {
 
 const round = (gb: number) => Math.round(gb * 10) / 10;
 
+/** The DAEX Cloud Mac offer as the server sends it (`CloudMacOffer`), at Pricing v2's scale. */
+const MOCK_MAC_OFFER: CloudMacOffer = {
+  label: "Mac",
+  ...CLOUD_MAC_SHAPE,
+  creditMilliPerMinute: 500,
+  stopAfterIdleMinutes: 5,
+  startSeconds: { min: 20, max: 45 },
+  summary: "A macOS computer for Xcode and the iOS Simulator.",
+  keeps: "A Mac stops 5 minutes after work ends. Only its 20 GB drive is kept; anything outside it is gone.",
+};
+
+/** One Mac lane per state, for `&mockMac=1`. */
+function mockMacMachines(now: number): CloudLaneMachine[] {
+  const specs: Array<{ id: string; lane: string; state: CloudMacStateName; status: string; failure?: CloudMacStartFailure; usedGb: number | null; agoMs: number }> = [
+    { id: "mac-q1", lane: "ios-onboarding", state: "queued", status: "starting", usedGb: 7.4, agoMs: 2 * 60_000 },
+    { id: "mac-s1", lane: "widget-extension", state: "starting", status: "starting", usedGb: 3.1, agoMs: 20_000 },
+    { id: "mac-r1", lane: "swiftui-previews", state: "running", status: "running", usedGb: 9.8, agoMs: 12 * 60_000 },
+    { id: "mac-x1", lane: "watch-app", state: "stopping", status: "stopped", usedGb: 5.2, agoMs: 60_000 },
+    { id: "mac-z1", lane: "app-store-shots", state: "stopped", status: "stopped", usedGb: 7.4, agoMs: 3 * HOUR },
+    { id: "mac-f1", lane: "testflight-fix", state: "stopped", status: "stopped", failure: "queue_expired", usedGb: 4.0, agoMs: 70 * 60_000 },
+    { id: "mac-l1", lane: "old-mac-lane", state: "stopped", status: "stopped", failure: "drive_lost", usedGb: null, agoMs: 2 * DAY },
+  ];
+  return specs.map((spec) => asMockMac(
+    machine({ id: spec.id, lane: spec.lane, tier: "medium", diskGb: 20, state: spec.status === "running" ? "running" : spec.status === "starting" ? "starting" : "stopped", lastActiveAgoMs: spec.agoMs, createdAgoMs: 4 * DAY }, now),
+    spec,
+    now,
+  ));
+}
+
+/** A mock computer as a DAEX Cloud Mac in one state (`mac` as the server sends it). */
+function asMockMac(
+  base: CloudLaneMachine,
+  spec: { state: CloudMacStateName; status: string; failure?: CloudMacStartFailure; usedGb: number | null; agoMs: number },
+  now: number,
+): CloudLaneMachine {
+  return {
+    ...base,
+    status: spec.status,
+    type: "box",
+    resources: { cpu: CLOUD_MAC_SHAPE.cpu, memoryGb: CLOUD_MAC_SHAPE.memoryGb, diskGb: CLOUD_MAC_SHAPE.driveGb },
+    shapeId: null,
+    hoursRate: null,
+    diskUsage: null,
+    awakeSinceMs: spec.state === "running" ? now - spec.agoMs : null,
+    os: "mac",
+    unsupported: [...CLOUD_MAC_UNSUPPORTED],
+    mac: {
+      state: spec.state,
+      since: now - spec.agoMs,
+      message: spec.failure ? CLOUD_MAC_START_FAILED_SENTENCES[spec.failure] : CLOUD_MAC_STATE_SENTENCES[spec.state],
+      ...(spec.failure ? { startFailed: true, failure: spec.failure } : {}),
+      drive: { sizeGb: CLOUD_MAC_SHAPE.driveGb, usedGb: spec.usedGb, savedAt: spec.usedGb == null ? null : now - spec.agoMs },
+    },
+  };
+}
+
 type Fixture = {
-  planId: "free" | "plus" | "pro";
+  planId: "free" | "plus" | "pro" | "max";
   usedMilli: number;
   lanes: LaneSpec[];
   without: Array<{ name: string; reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit" }>;
@@ -341,6 +446,8 @@ function fixture(scenario: Scenario): Fixture {
         })),
         without: [],
       };
+    case "max":
+      return { ...fixture("pro"), planId: "max", usedMilli: 1_210_000 };
     case "downgrade":
       return { ...fixture("pro"), downgrade: true };
     case "pastdue":
@@ -391,7 +498,7 @@ function fixture(scenario: Scenario): Fixture {
           inMs: scenario === "idle" ? DAY - HOUR : 4 * HOUR,
           days: 3,
           ignored: { checkedAt: Date.now() - 2 * DAY, paths: [".env", ".env.local", "prisma/dev.db"], more: 2, rebuildable: 3 },
-          ...(scenario === "idleheld" ? { held: `${CLOUD_BACKUP_NOT_SAVED_SENTENCE} pricing-page: ${CLOUD_BACKUP_TOO_LARGE_SENTENCE}` } : {}),
+          ...(scenario === "idleheld" ? { held: heldReasonPreview(param("mockCloudHeld")) } : {}),
         }],
       };
     case "idlepaid":
@@ -425,6 +532,24 @@ function mockGithub(kind: string | null, now: number): Record<string, unknown> |
   if (kind === "new") return held("too_new", now + 19 * DAY, "octo-new");
   if (kind === "used") return held("used", null, "octo-shared");
   if (kind === "checking") return held("checking", null, null);
+  return null;
+}
+
+/** `?mockFreeModels=locked-*|checking`: ADE Free Models under the GitHub rule, with the server's sentences. */
+function mockFreeModelsLock(kind: string | null, now: number): CloudFreeModelsLock | null {
+  const at = now + 19 * DAY;
+  if (kind === "locked-too-new" || kind === "locked-on") {
+    return { reason: "too_new", oldEnoughAt: at, githubLogin: "octo-new", canUnlockWithCard: true, sentence: `Your GitHub account is new, so ${BRAND.NAME} Free Models unlock on ${formatCloudFreeGithubDay(at)}. Add a card (no charge) to unlock them now.` };
+  }
+  if (kind === "locked-no-github") {
+    return { reason: "no_github", oldEnoughAt: null, githubLogin: null, canUnlockWithCard: true, sentence: `${BRAND.NAME} Free Models need a GitHub account at least 30 days old, or a payment card. Connect GitHub, or add a card (no charge) to unlock them.` };
+  }
+  if (kind === "locked-used") {
+    return { reason: "used", oldEnoughAt: null, githubLogin: "octo-shared", canUnlockWithCard: true, sentence: `This GitHub account already unlocked ${BRAND.NAME} Free Models on another ${BRAND.NAME} account. Add a card (no charge) to unlock them here.` };
+  }
+  if (kind === "checking") {
+    return { reason: "checking", oldEnoughAt: null, githubLogin: null, canUnlockWithCard: false, sentence: `Checking your GitHub account… ${BRAND.NAME} Free Models unlock once that's done.` };
+  }
   return null;
 }
 
@@ -478,8 +603,10 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       percentUsed: percent,
       state: left <= 0 && !fix.extraHours && (fix.earnedMilli ?? 0) <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
-    extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    phone: fix.planId === "free" ? undefined : { access: "on" },
+    // As the server counts it: extra credits are only what was used past the plan's credits.
+    extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.extraHours ? Math.max(0, fix.usedMilli - includedMilli) : 0 },
+    // The server gives the iPhone by its list or switch, never by plan: Free has it too.
+    phone: { access: "on" },
     // No account disk; the plan limits computers, asleep or not, and the server names the next plan up.
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
@@ -500,7 +627,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
         warnedAt: now - DAY,
         idleDays: entry.days,
         ignoredFiles: entry.ignored,
-        held: entry.held ? { at: now - 2 * HOUR, reason: entry.held } : null,
+        held: entry.held ? { at: now - 2 * HOUR, reason: entry.held, kind: idleHeldKindOf(entry.held) } : null,
       };
     }),
     deletedInstanceIds: [],
@@ -603,9 +730,23 @@ export function applyBrowserMockCloud(ade: any): void {
   // Read once: the app routes away from the first URL and drops its query.
   const savedParam = param("mockCloudSaved");
   const now = Date.now();
-  const fix = fixture(scenario);
-  const machines = fix.lanes.map((spec) => machine(spec, now));
+  const macParam = param("mockMac");
+  // `&mockMac=broke`: the Mac offered, no credits left and no extra credits (the pick's zero-credit notice).
+  const fix = macParam === "broke"
+    ? { ...fixture(scenario), usedMilli: 1_000_000_000, extraHours: false, earnedMilli: undefined }
+    : fixture(scenario);
+  // `&mockMacLane=running|queued|starting|stopped`: the computer of the `mockCloudLaneMachine=1` chat (checkout-redesign) is a Mac.
+  const macLaneParam = param("mockMacLane") as CloudMacStateName | null;
+  const macLaneState = macLaneParam && macLaneParam in CLOUD_MAC_STATE_SENTENCES ? macLaneParam : null;
+  const machines = fix.lanes.map((spec) => {
+    const box = machine(spec, now);
+    if (!macLaneState || spec.lane !== "checkout-redesign") return box;
+    const status = macLaneState === "running" ? "running" : macLaneState === "queued" || macLaneState === "starting" ? "starting" : "stopped";
+    return asMockMac({ ...box, state: status === "running" ? "running" : status === "starting" ? "starting" : "stopped" }, { state: macLaneState, status, usedGb: 7.4, agoMs: 3 * 60_000 }, now);
+  });
+  if (macParam === "1") machines.push(...mockMacMachines(now));
   let state = account(fix, machines, now);
+  if (macParam === "1" || macParam === "offer" || macParam === "broke" || macLaneState) state = { ...state, catalog: { ...state.catalog, mac: MOCK_MAC_OFFER } };
   // Credits: the iPhone has used some of the balance.
   const withCredits = (next: CloudAccountState): CloudAccountState => {
     let out = next;
@@ -663,6 +804,80 @@ export function applyBrowserMockCloud(ade: any): void {
   if (state.sponsored && (formatParam === "below_reply" || formatParam === "above_prompt" || formatParam === "inline")) {
     state = { ...state, sponsored: { ...state.sponsored, format: formatParam } };
   }
+  // Pricing v3 (`&mockPricing=`): `on` / `off` (the notice answered, ads on or off), `notice` (a region
+  // where ads start on, notice not seen), `ask` (a region that asks first, not seen), `none` (no ads in
+  // this country), `zero` (a discount of 0, ads on). `&mockPriceReasons=1|2` gives the awake computers each
+  // full-price reason in turn.
+  const pricingParam = param("mockPricing");
+  const pricingKinds = ["on", "off", "notice", "ask", "none", "zero"] as const;
+  type PricingKind = (typeof pricingKinds)[number];
+  const pricingKind = (pricingKinds as readonly string[]).includes(pricingParam ?? "") ? pricingParam as PricingKind : null;
+  // `1`: the ad price, a CLI session, no chat in use; `2`: an automation, an outside agent, unverified.
+  const reasonsPage = Number(param("mockPriceReasons") ?? 0);
+  const reasonsParam = reasonsPage === 1 || reasonsPage === 2;
+  const specByInstance = new Map(fix.lanes.map((spec, index) => [machines[index]!.instanceId, spec]));
+  /** The account's prices now, as the server works them out, for the ads state it holds. */
+  const pricedState = (next: CloudAccountState, ads: CloudAdsState): CloudAccountState => {
+    const catalog = next.catalog;
+    const reasons: Array<CloudFullPriceReason | null> = [null, "cli_session", "not_in_use", "automation", "outside_agent", "unverified"];
+    let awakeIndex = reasonsPage === 2 ? 3 : 0;
+    const computers: CloudComputerPrice[] = machines.map((box) => {
+      const size = catalog.sizes.find((entry) => entry.tier === specByInstance.get(box.instanceId)?.tier);
+      // A Mac's row carries its minute rate an hour (times 60), as the server sends it.
+      const macRate = box.os === "mac" ? catalog.mac ?? null : null;
+      const full = macRate ? macRate.creditMilliPerMinute * 60 : size?.multiplierMilli ?? 0;
+      const ad = macRate ? (macRate.adCreditMilliPerMinute ?? macRate.creditMilliPerMinute) * 60 : size?.adMultiplierMilli ?? full;
+      const awake = box.state === "running";
+      const picked = awake && reasonsParam ? reasons[awakeIndex++ % reasons.length]! : null;
+      const reason: CloudFullPriceReason | null = !ads.available ? "no_ads_here" : !ads.on ? "ads_off" : !awake ? "not_in_use" : picked;
+      const now = reason == null ? "ad" as const : "full" as const;
+      return { instanceId: box.instanceId, now, reason, adUntil: now === "ad" ? Date.now() + 40 * 60_000 : null, rateMilli: now === "ad" ? ad : full, otherRateMilli: now === "ad" ? full : ad };
+    });
+    // The server's iPhone rate under Pricing v3 (5 credits a minute).
+    return { ...next, credits: { phoneMilliPerMinute: catalog.phone?.milliPerMinute ?? 500 }, pricing: { creditScale: catalog.creditScale ?? 10, ads, computers, phone: null } };
+  };
+  if (pricingKind) {
+    const discountPct = pricingKind === "zero" ? 0 : 20;
+    const free = state.plan === "free";
+    const available = pricingKind !== "none";
+    const noticeSeen = pricingKind === "on" || pricingKind === "off" || pricingKind === "zero";
+    const on = available && (pricingKind === "on" || pricingKind === "zero");
+    const v3 = cloudCatalog({ pro: true, max: true }, state.planId ?? "free", { v3: { discountPct, smallFullMilli: free ? 500 : 0, freeSmallMilli: 500 } });
+    // A Mac offered before keeps its offer, now with its ad price (the server's `adCreditMilliPerMinute`).
+    const mac = state.catalog.mac;
+    const catalog = mac ? { ...v3, mac: { ...mac, adCreditMilliPerMinute: Math.round((mac.creditMilliPerMinute * (100 - discountPct)) / 100) } } : v3;
+    state = {
+      ...state,
+      catalog,
+      // The server answers the old sponsored state too; the ad request follows it.
+      sponsored: { ads: true, consent: on ? "granted" : noticeSeen ? "declined" : null, test: true, format: state.sponsored?.format ?? "below_reply" },
+    };
+    state = pricedState(state, { available, on, startsOn: pricingKind !== "ask", noticeSeen, discountPct, windowMinutes: 60 });
+  }
+  // `&mockFreeModels=ask|on|declined|abroad`: ADE Free Models for this account, test ads only, on any
+  // plan. `ask` opens the one-time sheet on the first pick; `abroad` lists them as unavailable (country).
+  // `locked-too-new|locked-no-github|locked-used|checking`: the GitHub rule locks them (not yet asked);
+  // "Add a card" unlocks them 6 s later, as a card saved in the browser would. `slowed|paused`: on,
+  // with the no-cards throttle (`locked-on` is locked after an earlier yes).
+  const freeModelsParam = param("mockFreeModels");
+  const freeLock = mockFreeModelsLock(freeModelsParam, now);
+  const freeThrottle = freeModelsParam === "slowed" || freeModelsParam === "paused" ? freeModelsParam : null;
+  if (freeModelsParam === "ask" || freeModelsParam === "on" || freeModelsParam === "declined" || freeModelsParam === "abroad" || freeLock || freeThrottle) {
+    const granted = freeModelsParam === "on" || freeModelsParam === "locked-on" || freeThrottle != null;
+    state = {
+      ...state,
+      freeModels: {
+        modelIds: ADE_FREE_MODELS.map((model) => model.id),
+        available: freeModelsParam !== "abroad",
+        ...(freeModelsParam === "abroad" ? { reason: "country" as const } : {}),
+        consent: granted ? "granted" : freeModelsParam === "declined" ? "declined" : null,
+        format: state.sponsored?.format ?? "below_reply",
+        test: true,
+        ...(freeLock ? { locked: freeLock } : {}),
+        ...(freeThrottle ? { throttle: freeThrottle } : {}),
+      },
+    };
+  }
   // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
   // (once per tab, as a real checkout coming back is seen once).
   if (scenario === "upgraded") {
@@ -710,19 +925,44 @@ export function applyBrowserMockCloud(ade: any): void {
     deletedInstanceIds: [],
     message: null,
   });
+  // `&mockCloudLatency=400`: each account read answers after this many ms, as the account server does (load timing).
+  const latency = Math.max(0, Number(param("mockCloudLatency")) || 0);
+  const lag = () => (latency ? new Promise<void>((resolve) => window.setTimeout(resolve, latency)) : Promise.resolve());
   const base = ade.cloud ?? {};
   ade.cloud = {
     ...base,
-    getStatus: async () => ({ connected: true, signedOut: false, instanceCount: machines.length, runningCount: result().runningCount, error: null }),
-    listMachines: async () => result(),
+    getStatus: async () => {
+      await lag();
+      return { connected: true, signedOut: false, instanceCount: machines.length, runningCount: result().runningCount, error: null };
+    },
+    listMachines: async () => {
+      await lag();
+      return result();
+    },
     onStatusChanged: (cb: () => void) => {
       statusListeners.add(cb);
       return () => statusListeners.delete(cb);
     },
     getAgentLimits: base.getAgentLimits ?? (async () => ({ maxShape: "4x8", machinesPerDay: 3, unattendedHours: true, askBeforeVm: true })),
     setAgentLimits: base.setAgentLimits ?? (async (limits: unknown) => limits),
-    setSponsoredConsent: async (choice: CloudSponsoredChoice, confirmed?: boolean) => {
+    setSponsoredConsent: async (choice: CloudSponsoredChoice, confirmed?: boolean, noticeSeen?: boolean) => {
       if (!state.sponsored) return null;
+      // Pricing v3: the switch and the notice's answers move the account's ads, and every price with them.
+      if (state.pricing) {
+        const ads = state.pricing.ads;
+        // As the server (US rules): after a no, a yes needs the second confirm (409 `sponsored_confirm`).
+        if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
+          throw new Error("Turning ads back on takes a second confirm. Try again.");
+        }
+        const on = ads.available && (choice === "granted" || choice === "notice");
+        const { confirmYes: _wasConfirmYes, ...rest } = state.sponsored;
+        state = pricedState(
+          { ...state, sponsored: { ...rest, consent: on ? "granted" : "declined", ...(on ? {} : { confirmYes: true }) } },
+          { ...ads, on, noticeSeen: ads.noticeSeen || noticeSeen === true },
+        );
+        for (const listener of statusListeners) listener();
+        return state.sponsored ?? null;
+      }
       // As the server: after a no, a yes needs the second confirm.
       if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
         throw new Error(`Turning sponsored cards back on takes a second confirm. Try again, or update ${BRAND.NAME} if it doesn't ask.`);
@@ -737,11 +977,20 @@ export function applyBrowserMockCloud(ade: any): void {
       return state.sponsored ?? null;
     },
     sponsoredSeen: async () => undefined,
+    setFreeModelsConsent: async (consent: CloudSponsoredConsent) => {
+      if (!state.freeModels) return null;
+      state = { ...state, freeModels: { ...state.freeModels, consent } };
+      for (const listener of statusListeners) listener();
+      return state.freeModels ?? null;
+    },
+    freeModelsSeen: async () => true,
     sponsoredHide: async () => undefined,
     sponsoredViewed: async () => true,
-    sponsoredAd: async () => {
+    sponsoredAd: async (input?: { instanceId: string | null }) => {
       await new Promise((resolve) => window.setTimeout(resolve, 600));
-      if (state.sponsored?.consent !== "granted") return { ad: null, reason: "consent" as const };
+      // An ADE Free Models chat (no computer) shows cards on the free-models answer.
+      const consented = input?.instanceId === null ? state.freeModels?.consent === "granted" : state.sponsored?.consent === "granted";
+      if (!consented) return { ad: null, reason: "consent" as const };
       return {
         ad: {
           id: "mock-ad-1",
@@ -900,6 +1149,22 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     openFreeUnlock: async () => {
       console.info("[browser mock] cloud.openFreeUnlock");
+      // As a card saved in the browser: the account reads unlocked a few seconds later.
+      window.setTimeout(() => {
+        if (state.freeModels?.locked) {
+          const { locked: _locked, ...freeModels } = state.freeModels;
+          state = { ...state, freeModels };
+        }
+        const freePlan = state.freePlan;
+        if (freePlan?.github && freePlan.github.state !== "ok" && freePlan.github.canUnlockWithCard) {
+          state = {
+            ...state,
+            freePlan: { ...freePlan, github: { state: "ok", oldEnoughAt: null, canUnlockWithCard: false, githubLogin: null, sentence: null } },
+            hours: { ...state.hours, includedMilli: CATALOG.plans.free!.includedMilli, leftMilli: CATALOG.plans.free!.includedMilli, percentUsed: 0, state: "none" },
+          };
+        }
+        for (const listener of statusListeners) listener();
+      }, 6_000);
       return { opened: true, unlocked: false };
     },
     // `idle`: saved chats of computers ADE deleted, so Work and the chat show

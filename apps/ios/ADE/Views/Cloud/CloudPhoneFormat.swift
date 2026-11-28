@@ -26,7 +26,7 @@ func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [CloudHoursNote
     notes.append(.init(text: line, tone: .warn))
   }
   if let earned = account.earnedHours, earned.leftMilli > 0 {
-    notes.append(.init(text: "+\(words.amount(earned.leftMilli)) earned", tone: .lamp))
+    notes.append(.init(text: "+\(words.amount(earned.leftMilli)) from invites", tone: .lamp))
   }
   // Extra credits have their own tile on the hero ("When credits run out").
   if let forecast = cloudHoursForecast(account, now: now) {
@@ -56,6 +56,18 @@ func cloudFreeGithubLine(_ account: CloudPhoneAccount) -> String? {
   default:
     return nil
   }
+}
+
+/// The GitHub rule holds this Free account's credits: the hold, said where
+/// the person tries to use ADE Cloud (a new cloud chat, a lane's state, a
+/// refused send) instead of "out of credits". The card is named in words
+/// only (`cloudCardElsewhereLine`): no button or link to payment from the
+/// app. Nil on a paid plan and when nothing is held.
+func cloudFreeGithubHoldLine(_ account: CloudPhoneAccount) -> String? {
+  guard account.plan == "free", let github = account.freePlan?.github,
+        let state = github.state, state != "ok", let line = cloudFreeGithubLine(account) else { return nil }
+  guard state == "too_new", github.canUnlockWithCard != false else { return line }
+  return "\(line) You can start them sooner from \(Brand.name) on your computer."
 }
 
 /// "December 13", in UTC like the server and the desktop, so every screen names the same day.
@@ -135,9 +147,8 @@ func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
 /// keep it: a message in the lane, or "Keep it" on the computer's page.
 func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
   let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
-  if let held = entry.held {
-    return "\(subject) wasn't deleted: \(Brand.name) couldn't save its work. \(held.reason) Open the lane once so \(Brand.name) saves its work when the computer rests, or delete the lane if you don't need it. \(Brand.name) checks again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
-  }
+  // A kept computer has its own card (`CloudIdleHeldWords`); as one line, its two sentences.
+  if let held = CloudIdleHeldWords(entry, now: now) { return "\(held.title) \(held.action)" }
   let save = entry.laneName != nil
     ? "Its work that isn't on GitHub is saved in \(Brand.cloudName), and the lane and its chats stay."
     : "Its work that isn't on GitHub is saved in \(Brand.cloudName) first."
@@ -148,19 +159,115 @@ func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double
 /// The ignored files a delete loses, in one short sentence (with a leading space), or "" when none were found.
 func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles?) -> String {
   guard let ignored else { return " Files git ignores, such as .env, aren't saved." }
-  let list: String?
-  if ignored.paths.isEmpty {
-    list = ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil
-  } else {
-    let shown = ignored.paths.joined(separator: ", ")
-    list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
-  }
+  let list = cloudIgnoredFilesList(ignored)
   if ignored.incomplete == true {
     guard let list else { return " \(Brand.name) couldn't read every lane to see which files git ignores, such as .env; those aren't saved." }
     return " Files git ignores aren't saved, so these won't be kept: \(list). \(Brand.name) couldn't read every lane, so there may be more."
   }
   guard let list else { return "" }
   return " Files git ignores aren't saved, so these won't be kept: \(list)."
+}
+
+/// The files git ignores as a list (`ignoredFilesList`): ".env, data.db and 3
+/// more", "4 files"; nil when none were found.
+func cloudIgnoredFilesList(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles) -> String? {
+  if ignored.paths.isEmpty { return ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil }
+  let shown = ignored.paths.joined(separator: ", ")
+  return ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
+}
+
+/// A computer the idle cleanup kept because it couldn't save its work
+/// (ADE-223), in the words every surface uses (`idleHeldWords` in the account
+/// server's contract). The server decides the kind; a missing or unknown one
+/// reads as `open_once`. Nil for an entry that isn't held.
+struct CloudIdleHeldWords: Equatable {
+  static let kinds: Set<String> = ["too_large", "account_full", "staged_only", "submodule", "no_commit", "fix_named", "stop_agent", "none", "open_once"]
+  static let confirmLabel = "Delete computer"
+
+  let kind: String
+  /// "web's computer", or the computer's name with no lane.
+  let subject: String
+  let hasLane: Bool
+  /// Sentence 1: what happened.
+  let title: String
+  /// Sentence 2: what ends the hold, then the way out.
+  let action: String
+  /// "Why?": the rule, the reason, the files git ignores, the next check.
+  let why: [String]
+  let confirmTitle: String
+  let confirmBody: String
+
+  init?(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) {
+    guard let held = entry.held else { return nil }
+    let laneName = entry.laneName.flatMap { nonEmptyTrimmed($0) }
+    let kind = held.kind.flatMap { Self.kinds.contains($0) ? $0 : nil } ?? "open_once"
+    let subject = laneName.map { "\($0)'s computer" } ?? entry.displayName
+    self.kind = kind
+    self.subject = subject
+    hasLane = laneName != nil
+    title = "\(Brand.name) didn't delete \(subject) because it couldn't save its work."
+    action = Self.action(kind, hasLane: laneName != nil)
+
+    let notSaved = "\(Brand.name) couldn't save this lane's work."
+    var reason = held.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Reasons stored before the rename open with the former name.
+    for name in [Brand.name, Brand.formerName] {
+      let prefix = "\(name) couldn't save this lane's work."
+      if reason.hasPrefix(prefix) {
+        reason = String(reason.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        break
+      }
+    }
+    if let laneName, reason.hasPrefix("\(laneName): ") { reason = String(reason.dropFirst(laneName.count + 2)) }
+    // A read that missed some lane and found nothing reads as not read yet:
+    // it doesn't mean no files git ignores are there.
+    let ignored = entry.ignoredFiles.flatMap { $0.incomplete == true && cloudIgnoredFilesList($0) == nil ? nil : $0 }
+    let list = ignored.flatMap(cloudIgnoredFilesList)
+    let ignoredLine: String? = {
+      guard let ignored else { return "Files git ignores, such as .env, are never saved." }
+      guard let list else { return nil }
+      return "Files git ignores are never saved: \(list).\(ignored.incomplete == true ? " \(Brand.name) couldn't read every lane, so there may be more." : "")"
+    }()
+    let whose = laneName != nil ? "lane's " : ""
+    let when = cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)
+    why = [
+      entry.idleDays.map { "\(Brand.cloudName) deletes a computer after \($0) days without use, and saves its \(whose)work first." }
+        ?? "\(Brand.cloudName) deletes a computer that isn't used, and saves its \(whose)work first.",
+      reason.isEmpty ? notSaved : reason,
+    ] + (ignoredLine.map { [$0] } ?? []) + [
+      kind == "none" ? "\(Brand.name) tries again by itself \(when)." : "\(Brand.name) checks again \(when).",
+    ]
+
+    let lost = ignored == nil ? "such as .env" : list
+    confirmTitle = "Delete \(subject) without saving its work?"
+    if laneName != nil {
+      let branch = entry.branch.flatMap { nonEmptyTrimmed($0) } ?? "the lane's branch"
+      confirmBody = "Its work that isn't on GitHub is lost for good: changes not pushed to \(branch)\(lost.map { ", and files git ignores (\($0))" } ?? ""). The lane and its chats stay; your next message makes a new computer from \(branch) on GitHub."
+    } else {
+      confirmBody = "Its work that isn't on GitHub is lost for good\(lost.map { ", with files git ignores (\($0))" } ?? "")."
+    }
+  }
+
+  /// The toast after "Delete anyway" worked.
+  var deletedTitle: String { "Deleted \(subject)." }
+  var deletedDetail: String? { hasLane ? "The lane and its chats stay. Your next message makes a new computer." : nil }
+
+  private static func action(_ kind: String, hasLane: Bool) -> String {
+    switch kind {
+    case "too_large": return "Push its work to GitHub, or delete it anyway."
+    case "account_full": return "Push or delete other lanes you don't need, or delete it anyway."
+    case "staged_only": return "Open the lane and commit or unstage its staged changes, or delete it anyway."
+    case "submodule": return "Open the lane and push the changes in its submodule, or delete it anyway."
+    case "no_commit": return "Open the lane and make its first commit, or delete it anyway."
+    case "fix_named": return "Open the lane and fix what Why? names, or delete it anyway."
+    case "stop_agent": return "Open the lane and stop its agent, or delete it anyway."
+    case "none": return "Delete it anyway, or keep it."
+    default:
+      return hasLane
+        ? "Open the lane once so \(Brand.name) can save its work, or delete it anyway."
+        : "Use it once so \(Brand.name) can save its work, or delete it anyway."
+    }
+  }
 }
 
 /// Why timed wake-ups were cancelled and how they come back
@@ -201,7 +308,7 @@ func cloudHoursForecast(_ account: CloudPhoneAccount, now: Date) -> String? {
   // Nothing used yet this period (a plan just bought, a month just reset): no pace to speak of.
   guard let recent = account.recentUse, recent.days > 0, recent.usedMilli > 0, (account.hours.usedMilli ?? 1) > 0,
         let periodEnd = account.billing?.periodEnd else { return nil }
-  let left = Double(account.hours.leftMilli)
+  let left = Double(account.hoursLeftMilli)
   guard left > 0 else { return nil }
   let perDay = recent.usedMilli / recent.days
   let endsAt = now.timeIntervalSince1970 * 1000 + (left / perDay) * 86_400_000
@@ -238,6 +345,11 @@ func cloudMachineOld(_ machine: CloudPhoneMachine, now: Date) -> Bool {
 /// hours are time on a size, and disk shows only on a computer whose disk is
 /// nearly full.
 func cloudMachineLine(_ machine: CloudPhoneMachine, tier: CloudPhoneTier?, now: Date, words: CloudBalanceWords) -> String {
+  // A Mac has one shape and no tier: "Mac · 6 CPU · 8 GB".
+  if machine.isMac {
+    guard let resources = machine.resources else { return "Mac" }
+    return "Mac · \(resources.cpu) CPU · \(cloudGbText(resources.memoryGb)) GB"
+  }
   guard let tier else { return machine.size ?? "" }
   if !tier.usesHours { return "\(tier.label) · \(words.smallNever)" }
   return tier.full ? "\(tier.label) · Full computer" : tier.label
@@ -245,11 +357,15 @@ func cloudMachineLine(_ machine: CloudPhoneMachine, tier: CloudPhoneTier?, now: 
 
 func cloudLastRun(_ machine: CloudPhoneMachine, now: Date) -> String {
   if machine.isAwake { return "Running now" }
+  // A Mac on its way: its state word says it (the sentence is on its page).
+  if let phase = machine.macPhase, phase != .stopped { return "" }
   guard let last = machine.lastActiveAtMs else { return machine.resources == nil ? "" : "Not used yet" }
   return "Ran \(cloudAgo(last, now: now))"
 }
 
 func cloudStateTone(_ machine: CloudPhoneMachine) -> ADEKitTone {
+  if machine.unavailable != nil, !machine.isAwake { return .warn }
+  if let phase = machine.macPhase { return phase.tone }
   if machine.isAwake { return .ok }
   if machine.isMoving { return .warn }
   if machine.isAsleep { return .neutral }
@@ -270,6 +386,34 @@ struct CloudPhoneTier: Identifiable, Equatable {
   let memoryGb: Double
   let multiplierMilli: Int
   let diskMaxGb: Double?
+  /// Pricing v3: the ad price (`adMultiplierMilli`); nil while Pricing v3 doesn't reach the account.
+  var adMultiplierMilli: Int? = nil
+
+  /// The full and ad price, for `CloudAdPriceWords.rate`. Without an ad price both are the full one.
+  var ratePair: CloudRatePair { CloudRatePair(fullMilli: multiplierMilli, adMilli: adMultiplierMilli ?? multiplierMilli) }
+
+  /// This size at the rate the account pays now (Pricing v3), as the
+  /// desktop's size table counts "Left at this size": the ad price while ads
+  /// are offered here and on, else the full price. An ad price of 0 (Free's
+  /// Small with ads) uses no credits: "Unlimited". Without `pricing`, as today.
+  /// Every "left on it" line and size list counts time with it.
+  func atPriceNow(_ pricing: CloudPricingState?) -> CloudPhoneTier {
+    guard let pricing, pricing.ads.available, pricing.ads.on, let ad = adMultiplierMilli, ad != multiplierMilli else { return self }
+    return atRate(ad)
+  }
+
+  /// One computer of this size at the rate the server says it pays now
+  /// (`pricing.computers[].rateMilli`): a computer kept at the full price
+  /// while ads are on counts its time at the full price. With no row for it,
+  /// the size's price now (`atPriceNow`).
+  func atComputerPriceNow(_ pricing: CloudPricingState?, instanceId: String?) -> CloudPhoneTier {
+    if let listed = pricing?.computer(instanceId) { return atRate(listed.rateMilli) }
+    return atPriceNow(pricing)
+  }
+
+  private func atRate(_ milli: Int) -> CloudPhoneTier {
+    CloudPhoneTier(id: id, label: label, type: type, cpu: cpu, memoryGb: memoryGb, multiplierMilli: max(0, milli), diskMaxGb: diskMaxGb, adMultiplierMilli: adMultiplierMilli)
+  }
 
   /// Small on a Pricing v2 server: it never uses hours (`multiplierMilli` 0),
   /// unless the account's catalog rates it (Free, sponsored cards off).
@@ -354,7 +498,8 @@ func cloudPhoneTiers(_ catalog: CloudPhoneAccount.Catalog?) -> [CloudPhoneTier] 
       cpu: size.cpu,
       memoryGb: size.memoryGb,
       multiplierMilli: size.multiplierMilli,
-      diskMaxGb: size.diskMaxGb
+      diskMaxGb: size.diskMaxGb,
+      adMultiplierMilli: size.adMultiplierMilli
     )
   }
 }
@@ -432,8 +577,10 @@ func cloudHoursOnSizes(_ milli: Int, tiers: [CloudPhoneTier]) -> String? {
 /// unlimited (`cloudSmallRateMilli`). Small uses hours only on Free with
 /// sponsored cards off while the server's `smallNeedsCards` rule is on: the
 /// account's catalog then rates it above 0. Read the catalog, never assume 0.
-func cloudSmallTierUsingHours(_ account: CloudPhoneAccount) -> CloudPhoneTier? {
+@MainActor func cloudSmallTierUsingHours(_ account: CloudPhoneAccount) -> CloudPhoneTier? {
   guard let small = cloudPhoneTiers(account.catalog).first(where: { $0.id == "small" }), small.usesHours else { return nil }
+  // Pricing v3: Free's Small is free at the ad price, while ads are on here.
+  if let pricing = cloudPricing(), pricing.ads.available, pricing.ads.on, small.adMultiplierMilli == 0 { return nil }
   return small
 }
 
@@ -449,14 +596,51 @@ let cloudSmallFairUseSentence = "Small computers are for your own work and fall 
 struct CloudBalanceWords: Equatable {
   /// What a minute on the ADE Cloud iPhone uses, in thousandths of a credit.
   let phoneMilliPerMinute: Int
+  /// Pricing v3's shown scale (`creditScale`): shown credits = milli / 1000 x
+  /// scale. 1 (the old unit) until the server sends one. Read from the
+  /// account, never a constant of the app.
+  let scale: Int
 
   /// The words before the account is read: one credit a minute on the iPhone.
   static let credits = CloudBalanceWords(phoneMilliPerMinute: 1000)
 
-  init(phoneMilliPerMinute: Int) { self.phoneMilliPerMinute = phoneMilliPerMinute }
+  init(phoneMilliPerMinute: Int, scale: Int = 1) {
+    self.phoneMilliPerMinute = phoneMilliPerMinute
+    self.scale = max(1, scale)
+  }
   init(_ account: CloudPhoneAccount?) {
     let perMinute = account?.credits?.phoneMilliPerMinute ?? 0
     phoneMilliPerMinute = perMinute > 0 ? perMinute : CloudBalanceWords.credits.phoneMilliPerMinute
+    scale = max(1, account?.pricing?.creditScale ?? account?.catalog?.creditScale ?? 1)
+  }
+
+  /// A balance or used amount at the account's scale: "4,180". Under Pricing
+  /// v3 (scale above 1) always whole credits, rounded down; at the
+  /// old unit today's tenths ("2.5"). Rates use `CloudAdPriceWords`.
+  func number(_ milli: Int) -> String {
+    guard scale > 1 else { return cloudCredits(milli, scale: scale) }
+    return wholeCredits(milli).formatted(.number.locale(Locale(identifier: "en_US")))
+  }
+
+  /// Whole shown credits, rounded down.
+  func wholeCredits(_ milli: Int) -> Int { max(0, milli) * scale / 1000 }
+
+  /// The parts of one total in whole credits that add up to the total's
+  /// whole credits (largest remainder). `fixed` keeps its own
+  /// rounded-down value (the balance the big number shows); the others share
+  /// what is left of the total. At the old unit each part is shown as is.
+  func wholeParts(_ millis: [Int], total: Int, fixed: Int?) -> [String] {
+    guard scale > 1 else { return millis.map(number) }
+    var shown = millis.map(wholeCredits)
+    let others = millis.indices.filter { $0 != fixed }
+    let target = wholeCredits(total) - (fixed.map { shown[$0] } ?? 0)
+    var missing = target - others.reduce(0) { $0 + shown[$1] }
+    let byRemainder = others.sorted { (max(0, millis[$0]) * scale) % 1000 > (max(0, millis[$1]) * scale) % 1000 }
+    for index in byRemainder where missing > 0 && (max(0, millis[index]) * scale) % 1000 > 0 {
+      shown[index] += 1
+      missing -= 1
+    }
+    return shown.map { $0.formatted(.number.locale(Locale(identifier: "en_US"))) }
   }
 
   /// "credits".
@@ -476,7 +660,7 @@ struct CloudBalanceWords: Equatable {
 
   /// A number of them with the unit: "42.5 credits", "1 credit".
   func amount(_ milli: Int) -> String {
-    let number = cloudHours(milli)
+    let number = number(milli)
     return "\(number) \(number == "1" ? "credit" : "credits")"
   }
 
@@ -524,12 +708,15 @@ struct CloudBalanceWords: Equatable {
   var smallUnlimitedSentence: String { "Unlimited Small computers. \(theyNeverUse)." }
 
   /// What one of them is (`CLOUD_CREDIT_UNIT_SENTENCE`).
-  var unitSentence: String {
-    "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
+  /// What one credit is at the old unit; nil under Pricing v3 (scale above 1),
+  /// whose plans card names the rates instead of a unit.
+  var unitSentence: String? {
+    guard scale == 1 else { return nil }
+    return "A credit is an hour on a Medium computer or a minute on the \(Brand.cloudName) iPhone. Small computers use none."
   }
 
   /// A plan's month: "100 credits a month".
-  func monthly(_ milli: Int) -> String { "\(cloudHours(milli)) \(unit) a month" }
+  func monthly(_ milli: Int) -> String { "\(number(milli)) \(unit) a month" }
 
   /// The hero's label over the number left.
   var leftTitle: String { "Credits left this month" }
@@ -587,8 +774,9 @@ struct CloudBalanceWords: Equatable {
   }
 
   /// Under Start phone: where its time comes from.
-  func phoneStartNote(device: String) -> String {
-    "Starts an \(device) simulator in the cloud. It uses \(phoneRate) of your \(Brand.cloudName) credits."
+  /// `rate`: Pricing v3's pair ("4 credits a minute with ads · 5 with no ads"); today's rate without it.
+  func phoneStartNote(device: String, rate: String? = nil) -> String {
+    "Starts an \(device) simulator in the cloud. It uses \(rate ?? phoneRate) of your \(Brand.cloudName) credits."
   }
 }
 
@@ -664,11 +852,11 @@ struct CloudPlanMoment: Equatable {
   var title: String { "You're on \(cloudPlanLabel(planId))" }
 
   var detail: String {
-    let amount = cloudHours(includedMilli)
+    let amount = words.number(includedMilli)
     var line = computerLimit.map { "\(cloudComputersPhrase($0)) and \(words.monthly(includedMilli)). Renews \(cloudDate(renewsAt))." }
       ?? "\(words.monthly(includedMilli)). Renews \(cloudDate(renewsAt))."
     if let replaced = replacedFreeMilli {
-      line += " Your \(cloudHours(replaced)) unused \(words.free) were replaced by \(cloudPlanLabel(planId))'s \(amount)."
+      line += " Your \(words.number(replaced)) unused \(words.free) were replaced by \(cloudPlanLabel(planId))'s \(amount)."
     }
     return line
   }
@@ -818,6 +1006,180 @@ func cloudCapitalized(_ phrase: String) -> String {
 }
 
 extension CloudPhoneAccount {
-  /// The credits left, the plan's and the earned ones, as the ADE Cloud page counts them (`cloudHoursLeftMilli`).
+  /// The credits the person can spend, the plan's and invites', as every "hours left" and "minutes left" counts them (desktop `cloudHoursLeftMilli`).
   var hoursLeftMilli: Int { hours.leftMilli + max(0, earnedHours?.leftMilli ?? 0) }
+}
+
+// MARK: - DAEX Cloud Mac
+
+/// Where a Mac is (`cloudMacPhaseOf` on desktop): the server's `mac` state,
+/// with a start that ended with no Mac and a lost drive as their own phases.
+enum CloudMacPhase: String, Equatable {
+  case queued, starting, running, stopping, stopped
+  case startFailed = "start_failed"
+  case driveLost = "drive_lost"
+
+  /// `state` is the phone's computer state (`running`, `starting`, `asleep`, …), read while `mac` is absent.
+  init(_ mac: CloudMacState?, state: String?) {
+    if let mac {
+      if mac.failure == "drive_lost" { self = .driveLost; return }
+      if mac.startFailed == true, !["running", "starting", "queued"].contains(mac.state) { self = .startFailed; return }
+      self = CloudMacPhase(rawValue: mac.state) ?? .stopped
+      return
+    }
+    switch state {
+    case "running": self = .running
+    case "starting", "provisioning", "waking": self = .starting
+    case "stopping": self = .stopping
+    default: self = .stopped
+    }
+  }
+
+  /// The short word (`CLOUD_MAC_PHASE_LABEL`).
+  var label: String {
+    switch self {
+    case .queued: return "Waiting for a Mac"
+    case .starting: return "Starting"
+    case .running: return "On"
+    case .stopping: return "Stopping"
+    case .stopped: return "Stopped"
+    case .startFailed: return "Couldn't start"
+    case .driveLost: return "Drive lost"
+    }
+  }
+
+  var tone: ADEKitTone {
+    switch self {
+    case .running: return .ok
+    case .queued, .starting, .stopping: return .warn
+    case .stopped: return .neutral
+    case .startFailed, .driveLost: return .crit
+    }
+  }
+
+  /// On its way up or down: no Start and no Stop now.
+  var isMoving: Bool { self == .queued || self == .starting || self == .stopping }
+}
+
+/// Every word the phone says about a DAEX Cloud Mac (`shared/cloudMac.ts`).
+/// The server decides each fact; this only words them. Change both together.
+enum CloudMacWords {
+  static let name = "\(Brand.cloudName) Mac"
+  /// `CLOUD_MAC_START_WORDS`: how long a start takes, never the catalog's seconds.
+  static let startWords = "in under a minute"
+  /// `CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`, for a server that sent no message.
+  static let unavailableSentence = "This lane's computer isn't available right now, so \(Brand.name) can't wake it or send it messages. The lane, its work and its chats are kept."
+  static let unavailableLabel = "Not available"
+
+  /// `CLOUD_MAC_STATE_SENTENCES`, for a state the server sent no message with.
+  static func stateSentence(_ state: String) -> String? {
+    switch state {
+    case "queued": return "Waiting for a free Mac. It starts as soon as one is free, and nothing is charged while it waits."
+    case "starting": return "Starting the Mac with this lane's drive. It's ready \(startWords)."
+    case "running": return "The Mac is on."
+    case "stopping": return "Work stopped, so the Mac is saving its drive and stopping."
+    case "stopped": return "The Mac is stopped and its drive is kept. The next message starts it again \(startWords)."
+    default: return nil
+    }
+  }
+
+  /// Why the server refuses `action` on a Mac (`CLOUD_MAC_UNSUPPORTED_SENTENCES`).
+  static func unsupportedSentence(_ action: String) -> String {
+    switch action {
+    case "resize": return "A \(name) has one size, so it can't change size."
+    case "disk_grow": return "A \(name)'s drive can't grow. Free up space on it instead."
+    case "copy": return "A \(name) can't be copied. Start a new Mac lane from the same branch instead."
+    case "move": return "A lane on a \(name) can't move to another computer. Push its branch and start a new lane there."
+    case "update": return "A \(name) updates \(Brand.name) each time it starts, so there is nothing to update now."
+    case "backup": return "A \(name) keeps its drive between starts and has no snapshots. Your lane's work is saved as for any cloud lane."
+    default: return "A \(name) can't do this."
+    }
+  }
+
+  /// The server's sentence for the state (or why the start failed).
+  static func sentence(_ mac: CloudMacState?) -> String? {
+    guard let mac else { return nil }
+    if let message = mac.message { return message }
+    return mac.startFailed == true ? nil : stateSentence(mac.state)
+  }
+
+  /// "7.4 of 20 GB": the drive as the last stop saved it, or its size before the first save.
+  static func driveText(_ mac: CloudMacState?) -> String? {
+    guard let drive = mac?.drive else { return nil }
+    guard let used = drive.usedGb else { return "\(cloudGbText(drive.sizeGb)) GB drive" }
+    let shown = used >= 10 ? used.rounded() : (used * 10).rounded() / 10
+    return "\(cloudGbText(shown)) of \(cloudGbText(drive.sizeGb)) GB"
+  }
+
+  /// "6 CPU · 8 GB · 20 GB drive".
+  static func shapeText(_ offer: CloudMacOffer) -> String {
+    "\(offer.cpu) CPU · \(cloudGbText(offer.memoryGb)) GB · \(cloudGbText(offer.driveGb)) GB drive"
+  }
+
+  /// The Mac's price, as every price on the page reads it: "4 credits a minute
+  /// with ads · 5 with no ads" under Pricing v3 (`ad`), else "5 credits a minute".
+  static func rateText(_ offer: CloudMacOffer, words: CloudBalanceWords, ad: CloudAdPriceWords? = nil) -> String {
+    if let ad { return ad.rate(ratePair(offer), unit: .minute) }
+    return "\(words.amount(Int(offer.creditMilliPerMinute.rounded()))) a minute"
+  }
+
+  /// The Mac's two prices a minute; one price (the full one twice) without an ad price.
+  static func ratePair(_ offer: CloudMacOffer) -> CloudRatePair {
+    let full = Int(offer.creditMilliPerMinute.rounded())
+    return CloudRatePair(fullMilli: full, adMilli: offer.adCreditMilliPerMinute.map { Int($0.rounded()) } ?? full)
+  }
+
+  /// The rate a Mac uses now: its ad price while ads are on (and two prices show), else the full one.
+  private static func rateNow(_ offer: CloudMacOffer, ad: CloudAdPriceWords?) -> Double {
+    guard let ad, ad.pricing.showsTwoPrices, ad.pricing.ads.on, let adRate = offer.adCreditMilliPerMinute,
+          adRate > 0, adRate < offer.creditMilliPerMinute else { return offer.creditMilliPerMinute }
+    return adRate
+  }
+
+  private static func minutesText(_ leftMilli: Int, per rate: Double) -> String {
+    let minutes = Int((Double(max(0, leftMilli)) / max(1, rate)).rounded(.down))
+    let hours = minutes / 60
+    let rest = minutes % 60
+    if hours == 0 { return "\(minutes) min" }
+    let h = hours.formatted(.number.locale(Locale(identifier: "en_US")))
+    // From 10 hours on, whole hours read faster: "83 h", not "83 h 20 min".
+    return rest > 0 && hours < 10 ? "\(h) h \(rest) min" : "\(h) h"
+  }
+
+  /// How long `leftMilli` lasts on a Mac at the price paid now, rounded down:
+  /// "1 h 40 min", "45 min", "20 h". Pass every credit the person can spend.
+  static func timeAt(_ offer: CloudMacOffer, leftMilli: Int, ad: CloudAdPriceWords? = nil) -> String {
+    minutesText(leftMilli, per: rateNow(offer, ad: ad))
+  }
+
+  /// A plan's credits as time on a Mac, both ways: "up to 2 h 5 min of Mac with
+  /// ads · 1 h 40 min with no ads" while ads are on, "1 h 40 min of Mac" otherwise.
+  static func planLine(_ offer: CloudMacOffer, includedMilli: Int, ad: CloudAdPriceWords? = nil) -> String? {
+    guard includedMilli > 0 else { return nil }
+    let full = minutesText(includedMilli, per: offer.creditMilliPerMinute)
+    let now = rateNow(offer, ad: ad)
+    if now == offer.creditMilliPerMinute { return "\(full) of Mac" }
+    return "up to \(minutesText(includedMilli, per: now)) of Mac with ads · \(full) with no ads"
+  }
+
+  /// A Mac's price now from the server's row, which carries it an hour (its minute rate times 60), per minute.
+  static func pricePerMinute(_ price: CloudPricingState.Price) -> CloudPricingState.Price {
+    CloudPricingState.Price(now: price.now, reason: price.reason, rateMilli: price.rateMilli / 60, otherRateMilli: price.otherRateMilli / 60, instanceId: price.instanceId, phoneId: price.phoneId)
+  }
+
+  /// Why `provider` can't start on a Mac (`cloudMacProviderRefusal`), or nil.
+  static func providerRefusal(_ offer: CloudMacOffer?, provider: String?, cli: Bool, label: String? = nil) -> String? {
+    guard let offer, let provider, let entry = offer.providers.first(where: { $0.provider == provider }) else { return nil }
+    if cli ? entry.cli : entry.chat { return nil }
+    if let sentence = entry.sentence.flatMap({ nonEmptyTrimmed($0) }) { return sentence }
+    let shown = label.flatMap { nonEmptyTrimmed($0) } ?? provider
+    return cli
+      ? "\(shown) CLI sessions don't run on a \(name) yet. Pick Linux, or another CLI."
+      : "\(shown) doesn't run on a \(name) yet. Pick Linux, or another model."
+  }
+}
+
+extension CloudPhoneAccount {
+  /// The account's Mac offer, or nil: no Mac shows while the catalog leaves it out.
+  var macOffer: CloudMacOffer? { catalog?.mac }
 }

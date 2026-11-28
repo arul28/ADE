@@ -13,8 +13,29 @@ import {
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../../../../shared/cloudLaneLaunch";
 import { cloudTierHoursAt, cloudTierOfMachine, cloudTierRank, cloudTiers, type CloudTier } from "../../../../shared/cloudTiers";
-import { cloudUnitWords, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { cloudCreditScaleOf, cloudUnitWords, cloudWholeParts, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
+import {
+  cloudAdsViewOf,
+  cloudComputerPriceOf,
+  cloudFullPriceReasonLine,
+  cloudHoursBothText,
+  cloudPriceNowText,
+  cloudPricingOf,
+  cloudRateText,
+  cloudTierRatePair,
+} from "../../../../shared/cloudAdPriceWords";
 import { formatAgo } from "../../../lib/format";
+import {
+  CLOUD_MAC_PHASE_LABEL,
+  cloudMacDriveText,
+  cloudMacOfferOf,
+  cloudMacPhaseOf,
+  cloudMacPhaseTone,
+  cloudMacPricePerMinute,
+  cloudMacRateText,
+  cloudMacSentence,
+  type CloudMacPhase,
+} from "../../../../shared/cloudMac";
 
 /**
  * The ADE Cloud dashboard's facts, from reads already in memory (the account's
@@ -42,6 +63,13 @@ export type DashLane = {
   /** 1 (Small) to 4 (X-Large); 1 when the size is unknown. */
   tierRank: number;
   rateLabel: string | null;
+  /**
+   * Pricing v3: what the computer costs now ("8 credits an hour with ads · 10
+   * with no ads") and, at the full price while ads are on, why in one line.
+   * Null without Pricing v3 (the size's rate shows instead) and for a lane
+   * with no computer.
+   */
+  price: { text: string; reason: string | null } | null;
   /** The disk it holds against the plan (its size), or 0 for a lane without a computer. */
   diskGb: number;
   state: DashLaneState;
@@ -57,7 +85,38 @@ export type DashLane = {
   noLane: boolean;
   /** The idle cleanup's warning for its computer (or its kept-after-a-failed-save state), else null. */
   idle: CloudIdleCleanupEntry | null;
+  /** A DAEX Cloud Mac's own state, from the server's `mac` (null on Linux and for a lane without a computer). */
+  mac: DashMac | null;
+  /** The server's sentence for a computer it can't wake or send to now (`CloudMachine.unavailable`). */
+  unavailable: string | null;
+  /** A Mac computer, or a lane whose next computer is a Mac (`type: "mac"`, sent only while the server offers one). */
+  isMac: boolean;
 };
+
+/** A Mac row's state: the word, the server's sentence, and its drive as the last stop saved it. */
+export type DashMac = {
+  phase: CloudMacPhase;
+  label: string;
+  sentence: string | null;
+  /** "7.4 of 20 GB", or null before its first save. */
+  drive: string | null;
+  savedAt: number | null;
+};
+
+function dashMacOf(machine: CloudLaneMachine): DashMac | null {
+  if (machine.os !== "mac") return null;
+  const phase = cloudMacPhaseOf(machine.mac, machine.status);
+  return {
+    phase,
+    label: CLOUD_MAC_PHASE_LABEL[phase],
+    sentence: cloudMacSentence(machine.mac),
+    drive: cloudMacDriveText(machine.mac),
+    savedAt: machine.mac?.drive.savedAt ?? null,
+  };
+}
+
+/** A Mac phase as the State column's dot. */
+const MAC_DOT: Readonly<Record<ReturnType<typeof cloudMacPhaseTone>, DashLaneState>> = { on: "awake", busy: "starting", off: "asleep", bad: "failed" };
 
 function stateOf(machine: CloudMachine): DashLaneState {
   if (machine.update?.state === "updating") return "updating";
@@ -92,10 +151,27 @@ export function dashLanes(input: {
   const tiers = cloudTiers(cloudCatalogOf(input.account));
   const words = cloudUnitWords(input.account);
   const idle = new Map((input.account?.dueForDeletion ?? []).map((entry) => [entry.instanceId, entry]));
+  const priced = cloudPricingOf(input.account) != null;
+  const view = cloudAdsViewOf(input.account);
+  const macOffer = cloudMacOfferOf(input.account);
+  // The server lists every computer's price now; one it doesn't list yet shows its size's two prices.
+  // A Mac's price comes an hour from the server and reads a minute; unlisted, the catalog's two Mac prices.
+  const priceOf = (machine: CloudLaneMachine, tier: CloudTier | null, mac: boolean): DashLane["price"] => {
+    if (!priced) return null;
+    const listed = cloudComputerPriceOf(input.account, machine.instanceId);
+    if (listed && mac) {
+      const now = cloudMacPricePerMinute(listed);
+      return { text: cloudPriceNowText(now, view, words, "minute"), reason: cloudFullPriceReasonLine(now, view) };
+    }
+    if (listed) return { text: cloudPriceNowText(listed, view, words), reason: cloudFullPriceReasonLine(listed, view) };
+    if (mac) return macOffer ? { text: cloudMacRateText(macOffer, words, view), reason: null } : null;
+    return tier ? { text: cloudRateText(cloudTierRatePair(tier), view, words), reason: null } : null;
+  };
   // Every computer the account pays for: a lane's own, and one that holds no lane.
   const withComputer = input.machines
     .map((machine): DashLane => {
-      const tier = cloudTierOfMachine(machine, tiers);
+      const mac = dashMacOf(machine);
+      const tier = mac ? null : cloudTierOfMachine(machine, tiers);
       const lastActiveAt = machine.lastActiveAtMs ?? null;
       return {
         key: machine.instanceId,
@@ -103,9 +179,14 @@ export function dashLanes(input: {
         name: machine.lane?.laneName ?? noLaneName(machine),
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
-        rateLabel: rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
-        diskGb: machine.resources?.diskGb ?? 0,
-        state: stateOf(machine),
+        // Under Pricing v3 the "Costs now" cell says the price; the size stands alone.
+        rateLabel: priced ? null
+          : mac ? macOffer ? cloudMacRateText(macOffer, words) : null
+          : rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
+        price: priceOf(machine, tier, mac != null),
+        // A Mac's drive isn't plan disk (the server counts it apart).
+        diskGb: mac ? 0 : machine.resources?.diskGb ?? 0,
+        state: mac ? MAC_DOT[cloudMacPhaseTone(mac.phase)] : stateOf(machine),
         lastActiveAt,
         old: lastActiveAt != null ? input.now - lastActiveAt >= CLOUD_LANE_OLD_MS : machine.createdAtMs != null && input.now - machine.createdAtMs >= CLOUD_LANE_OLD_MS,
         usage: machine.diskUsage ?? null,
@@ -115,6 +196,9 @@ export function dashLanes(input: {
         without: null,
         noLane: !machine.lane,
         idle: idle.get(machine.instanceId) ?? null,
+        mac,
+        isMac: mac != null,
+        unavailable: machine.unavailable ?? null,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -130,6 +214,7 @@ export function dashLanes(input: {
         tierRank: tier ? cloudTierRank(tier.id) : 1,
         // No computer, so nothing uses credits: the size is the one its next computer starts at.
         rateLabel: null,
+        price: null,
         diskGb: 0,
         state: "none",
         lastActiveAt: null,
@@ -141,6 +226,9 @@ export function dashLanes(input: {
         without: lane,
         noLane: false,
         idle: null,
+        mac: null,
+        isMac: lane.type === "mac" && macOffer != null,
+        unavailable: null,
       };
     });
   // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.
@@ -211,10 +299,12 @@ export function heroBalanceParts(account: CloudAccountState): HeroBarPart[] {
   const computersTotal = Math.max(0, account.hours.usedMilli - phoneTotal);
   // An account without the iPhone (and nothing on it this period) has no iPhone part to show.
   const hasPhone = account.phone?.access === "on" || phoneTotal > 0;
+  // Pricing v3: whole credits that add up (Computers 434 + iPhone 290 + Left 276 = 1,000).
+  const [computersShown, phoneShown, leftShown] = cloudWholeParts([computersTotal, hasPhone ? phoneTotal : 0, left], cloudCreditScaleOf(account));
   return [
-    { key: "computers", label: "Computers", milli: used - phone, shownMilli: computersTotal },
-    ...(hasPhone ? [{ key: "phone" as const, label: "iPhone", milli: phone, shownMilli: phoneTotal }] : []),
-    { key: "left", label: "Left", milli: left, shownMilli: left },
+    { key: "computers", label: "Computers", milli: used - phone, shownMilli: computersShown! },
+    ...(hasPhone ? [{ key: "phone" as const, label: "iPhone", milli: phone, shownMilli: phoneShown! }] : []),
+    { key: "left", label: "Left", milli: left, shownMilli: leftShown! },
   ];
 }
 
@@ -223,11 +313,18 @@ export function heroBalanceParts(account: CloudAccountState): HeroBarPart[] {
  * credits left buy. The iPhone part only for an account that has it.
  */
 export function heroCreditsWorth(account: CloudAccountState, words: CloudUnitWords = cloudUnitWords(account)): string | null {
-  // The plan's own credits left, the hero's big number (earned ones are shown apart).
-  const left = Math.max(0, account.hours.leftMilli);
+  // Every credit the person can spend (the plan's and invites'), as "Left at this size" counts them (`cloudHoursLeftMilli`).
+  const left = Math.max(0, cloudHoursLeftMilli(account));
   const medium = cloudTiers(cloudCatalogOf(account)).find((tier) => tier.id === "medium");
   const mediumHours = medium ? cloudTierHoursAt(medium, left).replace(/ h$/, "") : null;
   // "About 0 hours" says nothing: with (nearly) nothing left the hero's own notice says what stops.
+  // Pricing v3 with ads on: one clear line on a Medium, both times ("Up to 54 hours on a Medium with ads · 43 with no ads.");
+  // the iPhone's two prices are in the price table.
+  const view = cloudAdsViewOf(account);
+  const both = medium && view?.on && view.available && medium.adMultiplierMilli != null && medium.adMultiplierMilli > 0 && medium.adMultiplierMilli < medium.multiplierMilli
+    ? cloudHoursBothText(left, cloudTierRatePair(medium), view, "a Medium")
+    : null;
+  if (both && mediumHours && mediumHours !== "0") return `${both.charAt(0).toUpperCase()}${both.slice(1)}.`;
   const onMedium = mediumHours && mediumHours !== "0" ? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
   const minutes = account.phone?.access === "on" ? Math.floor(left / words.phoneMilliPerMinute) : null;
   const onPhone = minutes ? `${minutes.toLocaleString("en-US")} iPhone ${minutes === 1 ? "minute" : "minutes"}` : null;
@@ -267,10 +364,10 @@ export const STATE_LABEL: Record<DashLaneState, string> = {
   none: "No computer",
 };
 
-/** Lanes for "Free up space": biggest first, then the longest unused. */
+/** Lanes for "Free up space": biggest first, then the longest unused. A Mac holds no plan disk, so it isn't one. */
 export function cleanupOrder(lanes: readonly DashLane[]): DashLane[] {
   return lanes
-    .filter((lane) => lane.instanceId)
+    .filter((lane) => lane.instanceId && !lane.mac)
     .slice()
     .sort((left, right) => right.diskGb - left.diskGb || (left.lastActiveAt ?? 0) - (right.lastActiveAt ?? 0));
 }

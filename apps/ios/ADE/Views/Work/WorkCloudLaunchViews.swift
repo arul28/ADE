@@ -50,7 +50,8 @@ func workCloudLaunchProviderLabel(_ entry: AccountCloudLaunchStore.Entry, catalo
 
 /// The launch's setup steps; a start that failed failed at the computer.
 func workCloudLaunchSteps(_ entry: AccountCloudLaunchStore.Entry) -> CloudSetupStepStates {
-  var states = cloudSetupStepStates(entry.record)
+  // Following a lost answer (a Retry too): a fresh start, not the old record's steps.
+  var states = cloudSetupStepStates(entry.answerLost == nil ? entry.record : nil)
   if entry.startError != nil { states.computer = .failed }
   return states
 }
@@ -63,12 +64,17 @@ func workCloudLaunchStatusLine(_ entry: AccountCloudLaunchStore.Entry, providerL
   if record?.state == "needs_approval" { return "Confirm the computer's sign-in" }
   if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel)" }
   let steps = workCloudLaunchSteps(entry)
+  // A Mac waits for a free one, then starts: its own words while it is made.
+  let startingWords: String = {
+    guard record?.os == "mac" else { return "Starting the computer" }
+    return record?.mac?.state == "queued" ? CloudMacPhase.queued.label : "Starting the Mac"
+  }()
   if entry.isLane {
     if record?.reachedRunning == true { return "Lane ready" }
-    return steps.computer == .done ? "Checking out the branch" : "Starting the computer"
+    return steps.computer == .done ? "Checking out the branch" : startingWords
   }
   if record?.sessionId != nil || steps.send == .done { return "Opening the chat" }
-  if steps.computer != .done { return "Starting the computer" }
+  if steps.computer != .done { return startingWords }
   if steps.repo != .done { return "Cloning the repo" }
   return "Starting the agent"
 }
@@ -488,7 +494,7 @@ struct WorkCloudLaunchSetupCard: View {
           stepLine("person.badge.key", "Sign in to \(providerLabel)", steps.signIn,
                    detail: steps.signIn == .waiting ? "Waiting for you" : nil)
           if steps.signIn == .waiting, let signIn = record?.signIn {
-            CloudSignInStepDetail(signIn: signIn, instanceId: record?.instanceId) {
+            CloudSignInStepDetail(signIn: signIn, instanceId: record?.instanceId, launchId: entry.launchId) {
               await launches.refresh(entry.launchId, using: syncService)
             }
             .padding(.leading, 32)
@@ -550,10 +556,12 @@ struct WorkCloudLaunchSetupCard: View {
   /// The line under the steps: why it failed or stopped, else what happens
   /// next on a lane launch (a chat launch says it above its composer).
   private var note: String? {
+    // The server's note after a wait in the sign-in step ("Nothing was charged for the wait.").
+    let endNote = record?.endNote.map { " \($0)" } ?? ""
     if entry.cancelled {
-      return entry.isLane ? "Making this computer was stopped." : "This chat was cancelled. Its messages were not sent."
+      return (entry.isLane ? "Making this computer was stopped." : "This chat was cancelled. Its messages were not sent.") + endNote
     }
-    if entry.failed { return entry.startError ?? record?.error ?? "\(Brand.cloudName) didn't say why." }
+    if entry.failed { return (entry.startError ?? record?.error ?? "\(Brand.cloudName) didn't say why.") + (entry.startError == nil ? endNote : "") }
     guard entry.isLane else { return nil }
     return running
       ? "It lists with your lanes again, on the same branch."
@@ -580,7 +588,7 @@ struct WorkCloudLaunchSetupCard: View {
     if entry.failed { return "Couldn't start the chat" }
     if record?.sessionId != nil { return "Opening the chat" }
     if record?.state == "needs_approval" { return "Confirm the computer" }
-    if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel) to go on" }
+    if record?.state == "waiting_for_sign_in" { return "Sign in to \(providerLabel) to start the chat" }
     return "Setting up \(Brand.cloudName)"
   }
 
@@ -687,5 +695,36 @@ struct WorkCloudLaunchSetupCard: View {
         .padding(.top, 6)
       }
     }
+  }
+}
+
+/// Linux or a DAEX Cloud Mac for a new cloud lane, as the desktop's pick.
+/// Shown only while the catalog offers a Mac; a person picks it each time
+/// (Linux first). `refusal`: why the picked model can't run on a Mac, said
+/// before the start.
+struct CloudOsPick: View {
+  let offer: CloudMacOffer
+  @Binding var mac: Bool
+  let words: CloudBalanceWords
+  let refusal: String?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Picker("Runs on", selection: $mac) {
+        Text("Linux").tag(false)
+        Text("Mac").tag(true)
+      }
+      .pickerStyle(.segmented)
+      .frame(maxWidth: 200)
+      .accessibilityLabel("Runs on")
+      if mac {
+        Text(refusal ?? "\(CloudMacWords.shapeText(offer)) · \(CloudMacWords.rateText(offer, words: words)) · starts \(CloudMacWords.startWords)")
+          .font(.caption)
+          .foregroundStyle(refusal == nil ? ADEColor.textSecondary : ADEColor.warning)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .adeInspectable("Cloud.OsPick")
   }
 }

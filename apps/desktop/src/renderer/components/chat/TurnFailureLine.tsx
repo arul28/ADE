@@ -22,6 +22,7 @@ export function TurnFailureLine({
   repeatCount = 1,
   disabled,
   onRetry,
+  action,
 }: {
   presentation: ChatErrorPresentation;
   /** Overrides the presentation's title (a model at capacity). */
@@ -31,6 +32,8 @@ export function TurnFailureLine({
   disabled: boolean;
   /** Resolves to an error message when the retry could not start. */
   onRetry?: () => Promise<string | null>;
+  /** The one step that fixes this failure (unlocking ADE Free Models), as a quiet link before Retry. */
+  action?: { label: string; onClick: () => void };
 }) {
   const [retryPending, setRetryPending] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -62,6 +65,11 @@ export function TurnFailureLine({
         <span className="font-medium" style={{ color: tone.text }}>{title ?? presentation.title}</span>
         {repeatCount > 1 ? (
           <span className="tabular-nums text-fg/40" title={`Failed the same way ${repeatCount} times`}>×{repeatCount}</span>
+        ) : null}
+        {action ? (
+          <button type="button" className={LINK_CLASS} onClick={action.onClick}>
+            {action.label}
+          </button>
         ) : null}
         {onRetry ? (
           <button type="button" className={LINK_CLASS} disabled={disabled || retryPending} onClick={() => { void retry(); }}>

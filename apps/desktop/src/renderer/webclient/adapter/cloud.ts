@@ -21,7 +21,7 @@ import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
 import type { CloudAgentLimitsState } from "../../../../../account-directory/src/cloud/contract";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
-import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
+import { launchFreeModelVia, type AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
 import type { BrowserAccountClient } from "../account/client";
 import type { CloudAccessIpcAnswer } from "../../../shared/adeCloudMachine";
 import type { CloudKeptLaneRestorePreview, CloudKeptLaneRestoreRecord } from "../../../shared/cloudKeptLaneRestore";
@@ -383,6 +383,12 @@ export function createWebCloudNamespace(
       if (!api) throw new Error("Account sign-in isn't configured for this web client.");
       return await api.sendSignInCode(instanceId, jobId, code);
     },
+    // "Start with a free model instead" on a waiting launch: an account call by the launch id.
+    launchFreeModel: async ({ launchId }) => {
+      const api = accountClient.cloudApi();
+      if (!api) throw new Error("Account sign-in isn't configured for this web client.");
+      return await launchFreeModelVia(api, launchId);
+    },
     // A lane's computer, all through the account server (no computer of the person's needed).
     laneLife: (async ({ method, args }: { method: string; args?: unknown }) => {
       const api = accountClient.cloudApi();
@@ -398,7 +404,7 @@ export function createWebCloudNamespace(
         case "workState":
           return await life.workState(needInstance());
         case "deleteLane":
-          return await life.deleteLane({ instanceId: needInstance(), skipCheck: record.skipCheck === true, keepChats: record.keepChats === true });
+          return await life.deleteLane({ instanceId: needInstance(), skipCheck: record.skipCheck === true, keepChats: record.keepChats === true, keepLane: record.keepLane === true });
         case "freeLane":
           return await life.freeLane({ instanceId: needInstance() });
         case "lanesWithoutComputer":
@@ -576,7 +582,16 @@ export function createWebCloudNamespace(
     setExtraHours: (enabled) => billing.setExtraHours(enabled),
     // Sponsored cards: straight from this browser to the account server, which
     // reads the browser's own address and user agent. Account level, no pin.
-    setSponsoredConsent: async (consent, confirmed) => (await accountClient.cloudApi()?.setSponsoredConsent(consent, confirmed === true)) ?? null,
+    setSponsoredConsent: async (consent, confirmed, noticeSeen) => (await accountClient.cloudApi()?.setSponsoredConsent(consent, confirmed === true, noticeSeen === true)) ?? null,
+    sponsoredSent: async (input) => {
+      const api = accountClient.cloudApi();
+      if (!api) return { counted: false };
+      return api.sponsoredSent(input).catch((error: unknown) => {
+        // A lost proof prices the computer without ads: Sentry sees it, rate-limited per event.
+        forwardSignalToSentry("web.cloud_sponsored_sent_failed", { message: error instanceof Error ? error.message : String(error) });
+        return { counted: false };
+      });
+    },
     sponsoredSeen: async (input) => {
       await accountClient.cloudApi()?.sponsoredSeen(input).catch(() => undefined);
     },
@@ -594,6 +609,13 @@ export function createWebCloudNamespace(
       if (!isGravityUrl(impUrl)) return false;
       // An opaque answer is all a page gets; only a network failure is worth sending again.
       return fetch(impUrl, { mode: "no-cors", credentials: "omit", keepalive: true }).then(() => true, () => false);
+    },
+    // ADE Free Models: account level, no pin, straight to the account server like the cards.
+    setFreeModelsConsent: async (consent) => (await accountClient.cloudApi()?.freeModelsConsent(consent)) ?? null,
+    freeModelsSeen: async (input) => {
+      const api = accountClient.cloudApi();
+      if (!api) return false;
+      return api.freeModelsSeen(input).then(() => true, () => false);
     },
     setPhoneProvider: (provider) => billing.setPhoneProvider(provider),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),

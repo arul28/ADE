@@ -6,10 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { revylSpentMicros } from "../src/cloud/phoneRoute";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_ACCOUNT_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_CHAT_PROOF_MAX_BYTES, CLOUD_CHAT_PROOF_MAX_PER_CHAT, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, CLOUD_MAC_SHAPE, CLOUD_PRICING_HEADER, CLOUD_PRICING_VERSION, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord, type CloudIdleHeldKind, CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT, CLOUD_SIGN_IN_CODE_REFUSED, CLOUD_SIGN_IN_MAX_CODES, CLOUD_SIGN_IN_TOO_MANY_CODES, CLOUD_LAUNCH_COMPUTER_STOPPED, CLOUD_LAUNCH_OUT_OF_CREDITS, CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT, CLOUD_MAC_START_FAILED_SENTENCES } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { CLOUD_MENTION_SNAPSHOT_MAX_BYTES } from "../../desktop/src/shared/cloudMentionSnapshot";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
+import { handlePublicPricing, settlePhoneAtEnd } from "../src/cloud/adPrice";
+import { phoneCreditMilliOf } from "../src/cloud/credits";
 import { smallCloudLookAlarms, syncAllSmallRates } from "../src/cloud/sponsoredSmall";
 import { expireAccountTests } from "../src/cloud/ownerAccounts";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
@@ -18,6 +20,10 @@ import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { CloudProviderError, createCloudProvider } from "../src/cloud/provider";
 import { startCloudUpdate } from "../src/cloud/updates";
 import { failUnjoinedLaunches, MACHINE_LAUNCH_MIN_VERSION_SETTING } from "../src/cloud/launches";
+import { chargeSignInWait } from "../src/cloud/signInWait";
+import { enforceBlockOnComputer } from "../src/cloud/safety";
+import { ACCOUNT_BLOCKED_MESSAGE } from "../src/cloud/blocks";
+import { rateMoveStatements } from "../src/cloud/adPrice";
 import { runCloudMoves } from "../src/cloud/moves";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { prepareStopBackupReportId, runCloudMinuteCron } from "../src/cloud/cron";
@@ -27,7 +33,8 @@ import { createComputer, forkComputer, handleCloudRequest } from "../src/cloud/r
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import { runAccountErasureRepeats } from "../src/accountErasure";
 import { handleRequest as handleDirectoryRequest, type Env as DirectoryEnv } from "../src/directory";
-import { applyCloudPlanChange, type CloudEnv, type ComputerRow } from "../src/cloud/store";
+import { applyCloudPlanChange, liveUsedMilli, type CloudEnv, type ComputerRow } from "../src/cloud/store";
+import { MAC_MILLI_PER_MINUTE } from "../src/cloud/plans";
 import { runDailyCostReport } from "../src/cloud/costReport";
 import { grantAad, seal, tokenKey } from "../src/githubApp/seal";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
@@ -41,7 +48,8 @@ import { registerBody, request as directoryRequest } from "./helpers";
  */
 
 const NOW = Date.UTC(2026, 10, 9, 12, 0, 0);
-const HOUR = 60 * 60_000;
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const OWNER = "user_owner";
 const OTHER = "user_other";
@@ -82,8 +90,14 @@ function sqliteD1() {
       if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
       return { success: true, meta: { changes: Number(db.prepare(sql).run(...params).changes) } };
     },
-    first: async <T>() => (db.prepare(sql).get(...params) ?? null) as T | null,
-    all: async <T>() => ({ success: true, results: db.prepare(sql).all(...params) as T[] }),
+    first: async <T>() => {
+      if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
+      return (db.prepare(sql).get(...params) ?? null) as T | null;
+    },
+    all: async <T>() => {
+      if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
+      return { success: true, results: db.prepare(sql).all(...params) as T[] };
+    },
     apply: () => {
       if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
       // As in D1, a read in a batch answers its rows.
@@ -467,6 +481,28 @@ describe("ADE Cloud account", () => {
     // The day's record and the account agree, so the daily reconcile can't correct a phantom charge.
     expect(meteredMilli(harness)).toBe(expectedMilli);
     expect(computer(harness).awake_since).toBeNull();
+  });
+
+  // A launch's computer has nothing to check in with until it signed in. A person who approved after the
+  // no-check-in limit gets a computer that is past it the moment the launch moves on: the tick that sees the
+  // launch leave `joining` before the first check-in lands must not sleep it. Linux and Mac alike.
+  it.each<[string, Row, boolean]>([
+    ["still joining in its window", { state: "needs_approval", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE }, false],
+    ["joined and moved on a minute ago", { state: "waiting_for_sign_in", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - MINUTE }, false],
+    ["joined and moved on long ago, still never checked in", { state: "waiting_for_sign_in", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - 15 * MINUTE }, true],
+    ["failed a minute ago", { state: "failed", join_used_at: NOW - 15 * MINUTE, join_expires_at: NOW + 15 * MINUTE, updated_at: NOW - MINUTE }, true],
+  ])("a launch's computer that never checked in, awake 20 minutes, its launch %s", async (_label, launch, slept) => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { awake_since: NOW - 20 * MINUTE, status_changed_at: NOW - 20 * MINUTE });
+    provide(harness);
+    harness.insert("cloud_launches", {
+      launch_id: "4d5e6f7a-8b9c-4d0e-9f1a-2b3c4d5e6f70", user_id: OWNER, kind: "chat", instance_id: INSTANCE,
+      created_at: NOW - 20 * MINUTE, updated_at: NOW - 15 * MINUTE, expires_at: NOW + DAY, ...launch,
+    });
+
+    await harness.tick();
+
+    expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/sleep$`))).toHaveLength(slept ? 1 : 0);
   });
 
   // A sleep freezes the computer: a turn it cuts must be stopped and saved first,
@@ -1835,27 +1871,38 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
   const included = (user = OWNER) => harness.row("select included_milli from cloud_accounts where user_id = ?", user).included_milli;
   const githubClaims = () => harness.rows("select github_user_id, user_id from cloud_free_github_claims order by github_user_id");
 
-  it.each<[string, () => Promise<void>, { state: string; included: number; claims: Row[]; create: number }]>([
+  // `lock`: ADE Free Models follow the same rule (`freeModelsLockOf`): its reason, or null when unlocked.
+  it.each<[string, () => Promise<void>, { state: string; included: number; claims: Row[]; create: number; lock: string | null }]>([
     ["no GitHub connected: no free hours, and a create is refused",
-      async () => {}, { state: "no_github", included: 0, claims: [], create: 402 }],
+      async () => {}, { state: "no_github", included: 0, claims: [], create: 402, lock: "no_github" }],
     ["a GitHub account younger than 30 days waits, with the card option",
-      () => connectGithub(OWNER, 77, 10), { state: "too_new", included: 0, claims: [], create: 402 }],
+      () => connectGithub(OWNER, 77, 10), { state: "too_new", included: 0, claims: [], create: 402, lock: "too_new" }],
     ["a GitHub account another ADE account claimed is refused; the first keeps it",
       async () => { await connectGithub(OWNER, 77, 40); harness.insert("cloud_free_github_claims", { github_user_id: 77, user_id: OTHER, claimed_at: NOW - DAY }); },
-      { state: "used", included: 0, claims: [{ github_user_id: 77, user_id: OTHER }], create: 402 }],
+      { state: "used", included: 0, claims: [{ github_user_id: 77, user_id: OTHER }], create: 402, lock: "used" }],
     ["a GitHub account 30 days old claims the free plan",
-      () => connectGithub(OWNER, 77, 40), { state: "ok", included: 100_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201 }],
+      () => connectGithub(OWNER, 77, 40), { state: "ok", included: 100_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201, lock: null }],
     ["a revoked GitHub connection whose age is still stored gets no free hours",
       async () => { await connectGithub(OWNER, 77, 40); harness.exec("update github_app_grants set state = 'needs_reauth', state_reason = 'bad_refresh_token' where user_id = ?", OWNER); },
-      { state: "no_github", included: 0, claims: [], create: 402 }],
+      { state: "no_github", included: 0, claims: [], create: 402, lock: "no_github" }],
     ["a former paid customer's card counts for a new GitHub account",
       async () => { await connectGithub(OWNER, 77, 10); harness.exec("update cloud_accounts set stripe_subscription_id = 'sub_old' where user_id = ?", OWNER); },
-      { state: "ok", included: 100_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201 }],
+      { state: "ok", included: 100_000, claims: [{ github_user_id: 77, user_id: OWNER }], create: 201, lock: null }],
     ["an account that used ADE Cloud before the rules keeps its hours with no GitHub",
       async () => { harness.exec("update cloud_accounts set free_github_exempt = 1 where user_id = ?", OWNER); },
-      { state: "ok", included: 100_000, claims: [], create: 201 }],
+      { state: "ok", included: 100_000, claims: [], create: 201, lock: null }],
+    ["a card saved with no charge unlocks ADE Free Models for a GitHub account another ADE account used, never its free hours",
+      async () => {
+        await connectGithub(OWNER, 77, 40);
+        harness.insert("cloud_free_github_claims", { github_user_id: 77, user_id: OTHER, claimed_at: NOW - DAY });
+        harness.exec("update cloud_accounts set free_card_unlocked_at = ? where user_id = ?", NOW, OWNER);
+      },
+      { state: "used", included: 0, claims: [{ github_user_id: 77, user_id: OTHER }], create: 402, lock: null }],
   ])("free plan per GitHub account: %s", async (_label, arrange, expected) => {
     withGithub();
+    // ADE Free Models reach every account.
+    Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all", GRAVITY_LIVE: "1" });
+    for (const key of ["gravity_inference", "gravity_live"]) harness.insert("cloud_settings", { key, value: key === "gravity_live" ? "on" : "all", updated_at: NOW });
     seedAccount(harness, OWNER);
     seedAccount(harness, OTHER);
     await arrange();
@@ -1863,10 +1910,14 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     const state = await stateOf();
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
     const create = await harness.send(OWNER, "POST", "/cloud/instances", createBody);
+    const refusal = create.status === 402 ? ((await create.json()) as { error: Row & { freeGithub?: Row } }).error : null;
 
-    expect({ state: state.freePlan?.github?.state, included: included(), claims: githubClaims(), create: create.status }).toEqual(expected);
+    expect({ state: state.freePlan?.github?.state, included: included(), claims: githubClaims(), create: create.status, lock: state.freeModels?.locked?.reason ?? null }).toEqual(expected);
+    // Refused for the hold, not for credits spent: the refusal names it, in the dashboard's words.
+    if (refusal) expect([refusal.code, refusal.message, refusal.freeGithub?.state]).toEqual(["out_of_hours", state.freePlan?.github?.sentence, expected.state]);
     if (expected.state === "too_new") {
       expect(state.freePlan?.github).toMatchObject({ canUnlockWithCard: true, oldEnoughAt: clock + 20 * DAY });
+      expect(state.freeModels?.locked).toMatchObject({ canUnlockWithCard: true, oldEnoughAt: clock + 20 * DAY, githubLogin: "gh77" });
     }
   });
 
@@ -1882,12 +1933,18 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     }, { state: "checking", included: 0 }],
   ])("in production, the GitHub rules fail closed: %s", async (_label, arrange, expected) => {
     harness.env.SENTRY_ENVIRONMENT = "production";
+    Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all", GRAVITY_LIVE: "1" });
+    for (const key of ["gravity_inference", "gravity_live"]) harness.insert("cloud_settings", { key, value: key === "gravity_live" ? "on" : "all", updated_at: NOW });
     seedAccount(harness, OWNER);
     arrange();
 
     const state = await stateOf();
 
     expect({ state: state.freePlan?.github?.state, included: included() }).toEqual(expected);
+    // ADE Free Models wait on the same check, with nothing to unlock until it is done.
+    const lock = state.freeModels?.locked;
+    expect(lock ? { reason: lock.reason, canUnlockWithCard: lock.canUnlockWithCard } : null)
+      .toEqual(expected.state === "ok" ? null : { reason: expected.state, canUnlockWithCard: expected.state !== "checking" });
   });
 
   const WARNED = { warned_80_at: NOW - 2 * HOUR, warned_95_at: NOW - HOUR, warned_zero_at: NOW - HOUR };
@@ -2371,7 +2428,7 @@ describe("ADE Cloud idle cleanup", () => {
     if (!held) expect(emails()).toEqual([]);
     if (held) {
       expect(String(computer(harness).idle_held_reason)).toContain("DAEX couldn't save this lane's work.");
-      expect(emails().map((email) => email.subject)).toEqual(["DAEX Cloud didn't delete pricing-page: its work couldn't be saved"]);
+      expect(emails().map((email) => email.subject)).toEqual(["DAEX didn't delete pricing-page's computer because it couldn't save its work"]);
       // A day later it reads again, and still deletes and wakes nothing.
       clock = NOW + DAY;
       await run();
@@ -2384,6 +2441,20 @@ describe("ADE Cloud idle cleanup", () => {
       expect(wakes()).toEqual([]);
       expect(deletes()).toHaveLength(1);
     }
+  });
+
+  // The kind reaches the desktop and the phone: read from the stored reason
+  // with the product name ignored, so what an older computer stored as "ADE …" maps the same.
+  it.each<[string, string, CloudIdleHeldKind]>([
+    ["a reason that names what to fix", "DAEX couldn't save this lane's work. pricing-page: Git LFS files can't travel; push them first. DAEX can't save this lane's work until then.", "fix_named"],
+    ["a reason stored before the rename that the person can't act on", "ADE couldn't save this lane's work. pricing-page: ADE couldn't reach GitHub to check this lane's work. It checks again at the next rest.", "none"],
+    ["a reason it doesn't know", "DAEX couldn't save this lane's work. pricing-page: something new went wrong.", "open_once"],
+  ])("a held computer's kind on the account: %s", async (_label, reason, kind) => {
+    seedIdle(3 * DAY + HOUR, { ...dueRow, idle_held_at: NOW - HOUR, idle_held_reason: reason, idle_held_count: 1 });
+
+    const account = (await (await harness.send(OWNER, "GET", "/cloud/account")).json()) as CloudAccountState;
+
+    expect(account.dueForDeletion?.map((entry) => entry.held?.kind)).toEqual([kind]);
   });
 
   it("a person who starts the computer while the cleanup reads it keeps it, awake", async () => {
@@ -2982,6 +3053,314 @@ describe("ADE Cloud server launcher", () => {
     const answered = await harness.send(OWNER, "GET", "/cloud/account", undefined, { origin: WEB });
     expect(answered.status).toBe(200);
     expect(answered.headers.get("access-control-allow-origin")).toBe(WEB);
+  });
+
+  /*
+   * A start's provider sign-in wait (`signInWait.ts`): free time on its
+   * computer from the computer's start, at most 3 an account a UTC day, until
+   * someone uses the computer or the sign-in finishes (then charged as before).
+   * A Medium here: 1000 milli an hour.
+   */
+  describe("a start's provider sign-in wait", () => {
+    const MADE = "madenew12345";
+    const MIN = 60_000;
+    const milliFor = (minutes: number) => Math.round((minutes * MIN * 1000) / HOUR);
+    const signIn = (at: number) => ({
+      provider: "codex", label: "Codex", kind: "device", jobId: "job-aaaaaaaa", url: "https://auth.example.test/device",
+      userCode: "ABCD-1234", needsPastedCode: false, signInId: null, reason: null, expiresAt: at + 30 * MIN,
+    });
+    const stages = (body: Row) => harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, body);
+    const at = (minutes: number) => { clock = NOW + minutes * MIN; };
+    /** The scheduled sweep deletes a launch's computer once the launch failed (`failUnjoinedLaunches`). */
+    const endFailed = async () => {
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      expect(computer(harness, MADE).deleted_at).toBe(clock);
+    };
+    const cancel = async () => expect((await harness.send(OWNER, "DELETE", `/cloud/launches/${LAUNCH}`)).status).toBe(200);
+    const read = async () => (await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { signIn: { charge: unknown; freeModel: unknown } | null; endNote: string | null };
+    /** The computer started at NOW; its join and clone took 3 minutes, then it waits. */
+    const startWaiting = async () => {
+      harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
+      at(3);
+      expect((await stages({ state: "waiting_for_sign_in", signIn: signIn(clock) })).status).toBe(200);
+    };
+    const freeModelsOn = () => {
+      Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
+      harness.insert("cloud_settings", { key: "gravity_inference", value: "testers", updated_at: NOW });
+      harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+      harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, country: "US", terms_version: 1 });
+    };
+    const opensToday = (count: number) => {
+      for (let index = 0; index < count; index += 1) {
+        harness.insert("cloud_launches", { launch_id: `earlier-${index}`, user_id: OWNER, state: "cancelled", kind: "chat", sign_in_free_at: NOW - HOUR, sign_in_free_opened_at: NOW - HOUR + index, created_at: NOW - HOUR, updated_at: NOW - HOUR, expires_at: NOW + DAY });
+      }
+    };
+
+    it.each<[string, () => void, () => Promise<void>, number]>([
+      ["the computer's own timeout, then its delete, is free", () => {}, async () => {
+        at(33);
+        expect((await stages({ state: "failed", error: CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
+        await endFailed();
+      }, 0],
+      ["a released computer's timeout in the earlier words, then its delete, is free", () => {}, async () => {
+        at(33);
+        expect((await stages({ state: "failed", error: LEGACY_CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
+        await endFailed();
+      }, 0],
+      ["a cancel is free", () => {}, async () => { at(10); await cancel(); }, 0],
+      ["a move to a free model, then a cancel, is free", freeModelsOn, async () => {
+        at(5);
+        expect((await harness.send(OWNER, "POST", `/cloud/launches/${LAUNCH}/free-model`, {})).status).toBe(200);
+        at(6);
+        await cancel();
+      }, 0],
+      ["a move to a free model, then a failed setup and the client's Retry of its first request: one new computer, on the free model, the wait free", freeModelsOn, async () => {
+        at(5);
+        expect((await harness.send(OWNER, "POST", `/cloud/launches/${LAUNCH}/free-model`, {})).status).toBe(200);
+        at(6);
+        expect((await stages({ state: "failed", error: "The clone failed." })).status).toBe(200);
+        // The client sends its own copy of the first request (the first provider) again.
+        const retried = await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium", retry: true });
+        expect(retried.status).toBe(201);
+        expect(((await retried.json()) as { request: { chat: Row } }).request.chat).toMatchObject({ provider: "opencode", modelId: "opencode/ade-free/deepseek-v4.1-flash", prompt: launchBody.chat.prompt });
+        expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
+        expect(madeCalls()).toHaveLength(2);
+      }, 0],
+      ["a finished sign-in charges the whole wait from the computer's start, as before", () => {}, async () => {
+        at(20);
+        expect((await stages({ state: "joined" })).status).toBe(200);
+      }, milliFor(20)],
+      ["a fourth wait the same day is charged", () => opensToday(3), async () => { at(10); await cancel(); }, milliFor(10)],
+      ["the first remote work during the wait (`/use`) charges from that moment", () => {}, async () => {
+        at(12);
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/use`, {})).status).toBe(200);
+        at(20);
+        await cancel();
+      }, milliFor(8)],
+      ["a terminal in the brain's activity report charges from that report", () => {}, async () => {
+        at(12);
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/activity`, { busy: true, idleSince: null, sleepsAt: null, runningAgents: 0, reportedAt: clock, openTerminals: 1 })).status).toBe(200);
+        at(20);
+        await cancel();
+      }, milliFor(8)],
+      ["work during the wait, then a finished sign-in, charges the whole wait once", () => {}, async () => {
+        at(12);
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/use`, {})).status).toBe(200);
+        at(20);
+        expect((await stages({ state: "joined" })).status).toBe(200);
+        // The stretch that runs on after the sign-in is charged from 20 minutes, not again from 12.
+        at(30);
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/stop`, {})).status).toBe(200);
+      }, milliFor(30)],
+    ])("%s", async (_label, before, end, expected) => {
+      before();
+      await startWaiting();
+      await end();
+      expect(usedMilli(harness)).toBe(expected);
+    });
+
+    const paidPlan = () => harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+    const creditsRunOut = async () => {
+      harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+      await harness.tick();
+    };
+    it.each<[string, () => void, () => Promise<void>, string]>([
+      ["the credits ran out during the join", paidPlan, creditsRunOut, CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.credits],
+      // Retry makes a Medium again, which 0 credits refuses: the way out is a new start on Small.
+      ["the credits ran out on Free with ads on, on a Medium", () => {
+        Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_ADS: "all", PRICING_V3: "all" });
+        harness.insert("cloud_settings", { key: "gravity_ads", value: "all", updated_at: NOW });
+        harness.insert("cloud_settings", { key: "pricing_v3", value: "all", updated_at: NOW });
+        harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW - DAY, notice_seen_at: NOW - DAY });
+      }, creditsRunOut, CLOUD_LAUNCH_OUT_OF_CREDITS + CLOUD_LAUNCH_OUT_OF_CREDITS_WAY_OUT.ads_on_bigger],
+      ["a block", paidPlan, async () => {
+        harness.insert("cloud_blocks", { user_id: OWNER, reason: "spam", created_at: clock });
+        await enforceBlockOnComputer(harness.env, createCloudProvider("provider-key"), harness.row("select * from cloud_computers where instance_id = ?", MADE) as never, clock);
+      }, ACCOUNT_BLOCKED_MESSAGE],
+      ["another stop", paidPlan, async () => {
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/stop`, {})).status).toBe(200);
+      }, CLOUD_LAUNCH_COMPUTER_STOPPED],
+    ])("a computer stopped before its chat started ends the launch at the next tick with why (%s), and nothing is charged after the stop", async (_label, account, stop, sentence) => {
+      account();
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
+      at(1);
+      await stop();
+      expect(computer(harness, MADE).status).toBe("stopped");
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      const record = (await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { state: string; error: string | null };
+      expect([record.state, record.error]).toEqual(["failed", sentence]);
+      const used = usedMilli(harness);
+      at(40);
+      await harness.tick();
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      expect(usedMilli(harness)).toBe(used);
+    });
+
+    it.each<[string, boolean, string | null, string, string, string | null, boolean?]>([
+      ["back within the grace: the launch goes on", true, null, "seen_by_tick", "joining", null],
+      ["still stopped after the grace: the launch ends with Retry", false, null, "seen_by_tick", "failed", CLOUD_LAUNCH_COMPUTER_STOPPED],
+      ["a Mac whose start failed for good: the launch ends at the next tick with the Mac's sentence", false, "queue_expired", "seen_by_tick", "failed", CLOUD_MAC_START_FAILED_SENTENCES.queue_expired],
+      ["a late report after a Mac's end leaves the launch failed", false, "queue_expired", "seen_by_tick", "failed", CLOUD_MAC_START_FAILED_SENTENCES.queue_expired, true],
+      // The boot cap ends its own launch first (`bootFailed`); one that never did ends after the grace.
+      ["the boot cap's own stop waits the grace, then ends with the Mac's sentence", false, "unavailable", "boot_failed", "failed", CLOUD_MAC_START_FAILED_SENTENCES.unavailable],
+    ])("a stop the server didn't make (the provider's, a Mac's) waits 10 minutes before it ends a launch: %s", async (_label, cameBack, macStartFailed, stopReason, state, error, lateReport) => {
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", launchBody)).status).toBe(201);
+      at(1);
+      // What the tick writes when the provider says stopped on its own (`seen_by_tick`).
+      harness.exec("update cloud_computers set status = 'stopped', status_changed_at = ? where instance_id = ?", clock, MADE);
+      harness.insert("cloud_power_log", { instance_id: MADE, user_id: OWNER, action: "stop", reason: stopReason, created_at: clock });
+      if (macStartFailed) harness.exec("update cloud_computers set provider = 'nomac', mac_start_failed = ? where instance_id = ?", macStartFailed, MADE);
+      const sweep = () => failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      if (macStartFailed && stopReason !== "boot_failed") {
+        at(2);
+        await sweep();
+        expect(harness.row("select state, error from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state, error });
+        if (lateReport) {
+          at(3);
+          expect((await stages({ state: "joined" })).status).toBe(409);
+          expect(harness.row("select state, error from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state, error });
+        }
+        return;
+      }
+      at(2);
+      await sweep();
+      expect(harness.row("select state from cloud_launches where launch_id = ?", LAUNCH).state).toBe("joining");
+      at(9);
+      await sweep();
+      expect(harness.row("select state from cloud_launches where launch_id = ?", LAUNCH).state).toBe("joining");
+      if (cameBack) harness.exec("update cloud_computers set status = 'running', status_changed_at = ? where instance_id = ?", clock, MADE);
+      at(12);
+      await sweep();
+      expect(harness.row("select state, error from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state, error });
+    });
+
+    it("a free sign-in wait at 0 credits keeps its computer: the zero stop skips the free window, and the step goes on", async () => {
+      await startWaiting();
+      harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+      at(5);
+      await harness.tick();
+      await failUnjoinedLaunches(harness.env, { provider: createCloudProvider("provider-key"), now: clock });
+      expect(providerCalls(harness, /POST .*\/instances\/madenew12345\/stop$/)).toHaveLength(0);
+      expect(((await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()) as { state: string }).state).toBe("waiting_for_sign_in");
+    });
+
+    it("an older computer (its step names no end) gets no free wait: a cancel is charged as before", async () => {
+      harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_status = 'active', included_milli = 300000 where user_id = ?", OWNER);
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeId: "medium" })).status).toBe(201);
+      at(3);
+      const { expiresAt: _end, ...older } = signIn(clock);
+      expect((await stages({ state: "waiting_for_sign_in", signIn: older })).status).toBe(200);
+      at(10);
+      await cancel();
+      expect(usedMilli(harness)).toBe(milliFor(10));
+    });
+
+    it("the move to a free model: only the person, once, the same message on the same computer", async () => {
+      freeModelsOn();
+      await startWaiting();
+      const move = (body: Row = {}) => harness.send(OWNER, "POST", `/cloud/launches/${LAUNCH}/free-model`, body);
+      // An outside agent never takes it for the person.
+      expect((await move({ origin: "mcp" })).status).toBe(403);
+      const moved = await move();
+      expect(moved.status).toBe(200);
+      const chat = ((await moved.json()) as { request: { chat: Row } }).request.chat;
+      expect(chat).toMatchObject({ provider: "opencode", modelId: "opencode/ade-free/deepseek-v4.1-flash", prompt: launchBody.chat.prompt });
+      // A second call answers the same record; nothing new is made.
+      const again = await move();
+      expect(again.status).toBe(200);
+      expect(((await again.json()) as { request: { chat: Row } }).request.chat).toEqual(chat);
+      expect(madeCalls()).toHaveLength(1);
+      // Once the step ended, a launch that never moved can't.
+      harness.exec("update cloud_launches set state = 'joined', request_json = replace(request_json, 'opencode/ade-free/deepseek-v4.1-flash', 'gpt-5') where launch_id = ?", LAUNCH);
+      expect((await move()).status).toBe(409);
+    });
+
+    it("a pasted code gets the computer's verdict (an older computer's stays pending), and one sign-in takes at most 10 codes", async () => {
+      await startWaiting();
+      let answer: Row = { state: "failed", verdict: "refused", reason: "Invalid code" };
+      harness.net.hooks.exec = (_id, command) => (command.includes("sign-in-code") ? { exit_code: 0, stdout: JSON.stringify(answer) } : null);
+      const send = async () => {
+        const response = await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/sign-ins/job-aaaaaaaa/code`, { code: "abc-123" });
+        return [response.status, await response.json()] as const;
+      };
+      // Refused: the sentence that says what to do next, whatever the provider printed.
+      expect(await send()).toEqual([200, expect.objectContaining({ state: "failed", verdict: "refused", reason: CLOUD_SIGN_IN_CODE_REFUSED })]);
+      answer = { state: "pending", verdict: "accepted" };
+      expect(await send()).toEqual([200, expect.objectContaining({ state: "pending", verdict: "accepted" })]);
+      answer = { state: "pending" };
+      const [, older] = await send();
+      expect(older).toMatchObject({ state: "pending" });
+      expect(older).not.toHaveProperty("verdict");
+      for (let sent = 3; sent < CLOUD_SIGN_IN_MAX_CODES; sent += 1) expect((await send())[0]).toBe(200);
+      expect(await send()).toEqual([429, { error: expect.objectContaining({ code: "sign_in_too_many_codes", message: CLOUD_SIGN_IN_TOO_MANY_CODES }) }]);
+      // The window is an hour: later, the same sign-in takes codes again.
+      clock += HOUR + MIN;
+      expect((await send())[0]).toBe(200);
+    });
+
+    it("the step says what the wait costs, and a launch that ended in it says nothing was charged", async () => {
+      await startWaiting();
+      expect((await read()).signIn?.charge).toEqual({ free: true, sentence: "Nothing is charged if you cancel here." });
+      at(10);
+      await cancel();
+      expect((await read()).endNote).toBe("Nothing was charged for the wait.");
+    });
+
+    it("once someone used the computer, the step says it uses credits, and the end claims no free wait", async () => {
+      await startWaiting();
+      at(12);
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${MADE}/use`, {})).status).toBe(200);
+      expect((await read()).signIn?.charge).toEqual({ free: false, sentence: "This Medium computer uses credits while it waits." });
+      at(20);
+      await cancel();
+      expect((await read()).endNote).toBeNull();
+    });
+
+    it("the fourth wait of a day says it uses credits before anything is charged", async () => {
+      opensToday(3);
+      await startWaiting();
+      expect((await read()).signIn?.charge).toEqual({ free: false, sentence: "This Medium computer uses credits while it waits." });
+    });
+
+    it("the next day's reconcile charges no minute of a free wait back", async () => {
+      await startWaiting();
+      at(33);
+      expect((await stages({ state: "failed", error: CLOUD_LAUNCH_SIGN_IN_TIMED_OUT })).status).toBe(200);
+      await endFailed();
+      expect(harness.row("select free_ms from cloud_computer_days where instance_id = ?", MADE)).toEqual({ free_ms: 33 * MIN });
+      harness.insert("cloud_settings", { key: "last_daily_day", value: "2026-11-08", updated_at: NOW });
+      const network = harness.net.fetchStub;
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        // The provider bills every awake minute of the day, the free wait too.
+        if (url.startsWith(`${PROVIDER}/usage?`)) return new Response(JSON.stringify({ instances: url.includes("from=2026-11-09") ? [{ id: MADE, awake_minutes: 33, total_micros: 100_000 }] : [] }), { status: 200 });
+        return network(input, init);
+      });
+      clock = NOW + DAY;
+      await harness.tick();
+      expect(harness.row("select value from cloud_settings where key = 'last_daily_day'").value).toBe("2026-11-10");
+      expect(usedMilli(harness)).toBe(0);
+    });
+
+    // A rate move during the wait (Pricing v3 off: an ad rate back to the full one; on: the full rate to the ad
+    // one) restarts the stretch at `max(awake_since, edge)`: the window's future start stays, nothing lost or doubled.
+    it.each<[string, { from: number; fromAd: number | null; to: number; toAd: number | null }]>([
+      ["Pricing v3 off", { from: 800, fromAd: 1000, to: 1000, toAd: null }],
+      ["Pricing v3 on", { from: 1000, fromAd: null, to: 800, toAd: 1000 }],
+    ])("a rate move during the wait keeps it free (%s), and a finished sign-in charges it once at the new rate", async (_label, rates) => {
+      await startWaiting();
+      harness.exec("update cloud_computers set multiplier_milli = ?, ad_full_milli = ? where instance_id = ?", rates.from, rates.fromAd, MADE);
+      at(5);
+      const row = computer(harness, MADE) as unknown as ComputerRow;
+      const windowEnd = row.awake_since;
+      await harness.env.DB.batch(rateMoveStatements(harness.env as never, row, rates.to, rates.toAd, clock));
+      expect(computer(harness, MADE)).toMatchObject({ multiplier_milli: rates.to, awake_since: windowEnd, free_wake_until: windowEnd });
+      expect(usedMilli(harness)).toBe(0);
+      at(20);
+      expect((await stages({ state: "joined" })).status).toBe(200);
+      expect(usedMilli(harness)).toBe(Math.round((20 * MIN * rates.to) / HOUR));
+    });
   });
 });
 
@@ -4710,6 +5089,18 @@ describe("ADE Cloud iPhone", () => {
     return handleNomacWebhook(new Request("https://directory.test/cloud/nomac/webhook", { method: "POST", headers: { "nomac-signature": `t=${t},v1=${v1}` }, body: raw }), harness.env, clock);
   }
 
+  it("a phone's charge is never below its billed minutes at its lowest ad rate, whatever its row says its ad minutes took off", async () => {
+    seedPhoneAccount();
+    const startedAt = clock - 5 * 60_000;
+    // Pricing v3: 500 a minute, minutes taken off at 400; a row that says far more was taken off than 5 minutes can.
+    seedPhone("ses_floor", 0, startedAt, "live", true, { rate_milli: 500, ad_saved_milli: 50_000, ad_rate_milli: 400 });
+    const usedBefore = Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli);
+    expect((await nomacDelivery("ses_floor", startedAt, "phone.ended", { state: "ended", ended_at: new Date(clock).toISOString(), cost: { billed_seconds: 300, accrued_microunits: "0" } })).status).toBe(200);
+    // Its final charge: 5 minutes at 400, into the balance once.
+    expect(Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli)).toBe(usedBefore + 2_000);
+    expect(phoneCreditMilliOf({ ...harness.row("select * from cloud_phones where phone_id = 'ses_floor'"), state: "live", ready_at: startedAt } as never, clock)).toBe(2_000);
+  });
+
   it("a phone found with no row (its start's answer was lost) is billed in credits", async () => {
     seedPhoneAccount();
     expect((await nomacDelivery("ses_lost", clock - 9 * 60_000)).status).toBe(200);
@@ -4962,6 +5353,9 @@ describe("ADE Cloud iPhone", () => {
     seedPhoneAccount({ extra_enabled: 0 });
     harness.exec("update cloud_accounts set used_milli = included_milli - 5000 where user_id = ?", OWNER);
     seedPhone("ses_live", 5, clock - 5 * 60_000, "live");
+    // Pricing v3 on since the phone began: a new phone would bill 500 a minute, this one still bills 1,000 (its row's rate), so it stops at its own.
+    Object.assign(harness.env, { PRICING_V3: "all" });
+    harness.insert("cloud_settings", { key: "pricing_v3", value: "all", updated_at: NOW });
     const nomacCalls: string[] = [];
     let state = "ready";
     const network = harness.net.fetchStub;
@@ -6139,6 +6533,14 @@ describe("sponsored cards", () => {
     Object.assign(harness.env, { GRAVITY_LIVE: "1" });
     setting("gravity_live", "on");
   };
+  // ADE Free Models (`freeModels.ts`) reach the account: both keys, the deploy ceiling, and the account a tester.
+  const freeModelsOn = () => {
+    Object.assign(harness.env, { GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
+    setting("gravity_inference", "testers");
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+  };
+  const freeModelChat = (chatId: string, overrides: Row = {}) =>
+    harness.insert("cloud_free_model_chats", { user_id: OWNER, chat_id: chatId, first_at: NOW, last_at: NOW, requests: 1, ...overrides });
 
   beforeEach(() => {
     gravityCalls = [];
@@ -6221,11 +6623,42 @@ describe("sponsored cards", () => {
     ["the chat doesn't run on that computer", () => undefined, { chatId: "chat-elsewhere" }, "not_cloud"],
     ["the chat is a subagent's", () => { harness.exec("update cloud_chat_copies set parent_chat_id = 'chat-0' where chat_id = 'chat-1'"); }, {}, "not_cloud"],
     ["the account used today's ads", () => { harness.insert("cloud_sponsored_days", { day: new Date(NOW).toISOString().slice(0, 10), user_id: OWNER, kind: "ad_request", count: 120 }); }, {}, "limit"],
+    ["a chat ADE Free Models served, without the account's yes to them", () => { freeModelsOn(); freeModelChat("chat-1"); }, { instanceId: null }, "consent"],
+    ["a chat ADE Free Models never served names no computer", () => { freeModelsOn(); }, { instanceId: null }, "not_cloud"],
+    ["a chat ADE Free Models served, used today's free-model cards", () => {
+      freeModelsOn();
+      freeModelChat("chat-1");
+      harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, terms_version: 1 });
+      harness.insert("cloud_sponsored_days", { day: new Date(NOW).toISOString().slice(0, 10), user_id: OWNER, kind: "fm_ad", count: 400 });
+    }, { instanceId: null }, "limit"],
   ])("no card and nothing sent to Gravity when %s", async (_label, arrange, overrides, reason) => {
     arrange();
     const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody(overrides))).json();
     expect(answer).toEqual({ ad: null, reason });
     expect(gravityCalls).toEqual([]);
+  });
+
+  it("a chat ADE Free Models served gets cards on a paid plan and on the person's own machine, with their own yes and the last call's usage", async () => {
+    freeModelsOn();
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'pro' where user_id = ?", OWNER);
+    // The Free plan's answer doesn't count here; the answer to ADE Free Models does.
+    harness.exec("delete from cloud_sponsored_consent");
+    harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, terms_version: 1 });
+    freeModelChat("chat-free", { last_usage_json: JSON.stringify({ model: "@cf/zai-org/glm-5.3-flash", inputTokens: 1200, cachedInputTokens: 200, outputTokens: 80 }) });
+    const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody({ instanceId: null, chatId: "chat-free" }))).json() as { ad: Row | null };
+    expect(answer.ad).toMatchObject({ brand: "Neon" });
+    expect(gravityCalls).toHaveLength(1);
+    expect(gravityCalls[0]!.body).toMatchObject({
+      user: { hashed_email: "f".repeat(64) },
+      usage: { model: "@cf/zai-org/glm-5.3-flash", inputTokens: 1200, cachedInputTokens: 200, outputTokens: 80 },
+    });
+    // Counted against the free-model cards' own day, not the Free plan's.
+    expect(harness.rows("select kind, count from cloud_sponsored_days where user_id = ? and kind in ('fm_ad', 'ad_request')", OWNER)).toEqual([{ kind: "fm_ad", count: 1 }]);
+    // The paid plan's other chats get none, and a chat served more than a day ago is like any other again.
+    expect(await (await send(OWNER, "/cloud/sponsored/ad", adBody({ turnId: "turn-2" }))).json()).toEqual({ ad: null, reason: "plan" });
+    clock = NOW + DAY + 60_000;
+    expect(await (await send(OWNER, "/cloud/sponsored/ad", adBody({ instanceId: null, chatId: "chat-free", turnId: "turn-3" }))).json()).toEqual({ ad: null, reason: "plan" });
+    expect(gravityCalls).toHaveLength(1);
   });
 
   // Gravity's renderer: only a client that draws Gravity's design gets it, and only what that renderer draws.
@@ -6358,7 +6791,7 @@ describe("sponsored cards", () => {
     expect([max.account.inForce, (await accountState()).hours.includedMilli]).toEqual([expect.objectContaining({ plan: "max", hours: 2000 }), 2_000_000]);
   });
 
-  it("where ads reach Free, a no runs Small at half a Medium-hour, a yes at none, each charged for its own stretch; an older no is asked again; ads off frees Small", async () => {
+  it("where ads reach Free, a no runs Small at half a Medium-hour, a card asked for under a yes at none, each charged for its own stretch; an older no is asked again; ads off frees Small", async () => {
     harness.env.CLOUD_OWNER_TOKEN = "owner-token-test";
     harness.exec("update cloud_computers set multiplier_milli = 0 where instance_id = ?", INSTANCE);
     expect((await owner("settings", { key: "gravity_ads", value: "all" })).status).toBe(200);
@@ -6399,29 +6832,46 @@ describe("sponsored cards", () => {
     expect([declined.sponsored?.smallNeedsCards, declined.catalog.sizes.find((size) => size.tier === "small")?.multiplierMilli]).toEqual([true, 500]);
     clock += HOUR;
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    const fromUS = fromWhere({ country: "US", regionCode: "TX" });
+    const fromCanada = fromWhere({ country: "CA" });
+    // A look is a card asked for under a finished reply in a cloud chat, a new reply each time.
+    let turns = 0;
+    const look = (from: typeof fromBrazil, turnId = `look-${(turns += 1)}`) =>
+      from("POST", "/cloud/sponsored/ad", adBody({ turnId })).then((response) => response.json() as Promise<{ ad: Row | null; reason?: string }>);
+    const looks = async (from: typeof fromBrazil) => expect((await look(from)).ad).toMatchObject({ brand: "Neon" });
+    const lookedAt = () => harness.row("select looked_at from cloud_sponsored_consent where user_id = ?", OWNER).looked_at;
+    // The yes is no look, and neither is the chat or a terminal open: Small uses credits until a card is asked for.
+    expect(await (await fromUS("POST", "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE })).json()).toEqual({ ok: true });
+    expect([computer(harness).multiplier_milli, lookedAt()]).toEqual([500, null]);
+    // One from the US frees Small at once, whatever Gravity answers (here no card to show).
+    gravityAnswer = {};
+    expect(await look(fromUS)).toEqual({ ad: null, reason: "no_fill" });
+    gravityAnswer = AD;
     expect([computer(harness).multiplier_milli, usedMilli(harness) - used]).toEqual([0, 500]);
-    // An hour on the yes adds nothing to the meter.
+    // An hour on the look adds nothing to the meter.
     clock += HOUR;
     expect((await accountState()).hours.usedMilli - used).toBe(500);
-    // The yes keeps Small free only while the person opens a cloud chat from the US: 7 days without
+    // The yes keeps Small free only while cards are asked for from the US: 7 days without
     // (away, or a yes given once through a VPN) and Small uses credits until the next one.
     clock += 7 * DAY + HOUR;
     expect(await syncAllSmallRates(harness.env as never, clock)).toBe(1);
     expect(computer(harness).multiplier_milli).toBe(500);
     expect((await accountState()).sponsored).toMatchObject({ consent: "granted", smallNeedsLook: true });
-    const fromUS = fromWhere({ country: "US", regionCode: "TX" });
-    const fromCanada = fromWhere({ country: "CA" });
-    const look = (from: typeof fromBrazil) => from("POST", "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE }).then((response) => response.json());
-    // No look from where Gravity shows no cards; Canada shows cards, but there Small uses credits.
-    expect(await look(fromBrazil)).toEqual({ ok: false });
-    expect(await look(fromCanada)).toEqual({ ok: true });
+    // No card where Gravity shows none; Canada shows cards, but there Small uses credits.
+    expect(await look(fromBrazil)).toEqual({ ad: null, reason: "country" });
+    await looks(fromCanada);
     expect(computer(harness).multiplier_milli).toBe(500);
     const inCanada = ((await (await fromCanada("GET", "/cloud/account")).json()) as CloudAccountState).sponsored;
     expect([inCanada?.smallOutsideUS, inCanada?.smallNeedsCards]).toEqual([true, undefined]);
-    // A look from the US frees Small at once.
-    expect(await look(fromUS)).toEqual({ ok: true });
+    // A card asked for from the US frees Small at once.
+    await looks(fromUS);
     expect(computer(harness).multiplier_milli).toBe(0);
     expect((await accountState()).sponsored?.smallNeedsLook).toBeUndefined();
+    // The same reply asked again (a reload, a second screen) is the same look: it moves nothing.
+    const looked = lookedAt();
+    clock += 2 * HOUR;
+    expect((await look(fromUS, `look-${turns}`)).ad).toMatchObject({ brand: "Neon" });
+    expect(lookedAt()).toBe(looked);
     // A yes again from abroad keeps that US look: on a trip, Small stays free for the week.
     expect((await fromCanada("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
     expect(computer(harness).multiplier_milli).toBe(0);
@@ -6439,28 +6889,30 @@ describe("sponsored cards", () => {
       harness.rows("select 1 from cloud_abuse_events where kind = 'small_cloud_look'").length,
     ];
     clock += HOUR;
-    expect(await look(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }))).toEqual({ ok: true });
+    await looks(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }));
     expect(tripped()).toEqual([0, 0]);
     // With no live Small on the account, the look keeps nothing free: no alert.
     harness.exec("update cloud_computers set cpu = 4, memory_gb = 8 where instance_id = ?", INSTANCE);
     clock += HOUR;
-    expect(await look(fromComputer)).toEqual({ ok: true });
+    await looks(fromComputer);
     expect(tripped()).toEqual([0, 0]);
     harness.exec("update cloud_computers set cpu = 2, memory_gb = 4 where instance_id = ?", INSTANCE);
     clock += HOUR;
-    expect(await look(fromComputer)).toEqual({ ok: true });
+    await looks(fromComputer);
     expect([computer(harness).multiplier_milli, ...tripped()]).toEqual([0, 1, 1]);
     // The next one that week is the same alert.
     clock += HOUR;
-    expect(await look(fromComputer)).toEqual({ ok: true });
+    await looks(fromComputer);
     expect(tripped()).toEqual([1, 1]);
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
     clock += HOUR;
-    expect(await look(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }))).toEqual({ ok: true });
+    await looks(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }));
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toEqual([]);
-    // A yes from the US restarts the week too, so one from the computer's network trips it as well (a new week, a new alert).
+    // A yes from the computer's network is no look: nothing restarts and nothing trips. Its next card does (a new week, a new alert).
     clock += 7 * DAY;
     expect((await fromComputer("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    expect(tripped()).toEqual([1, 1]);
+    await looks(fromComputer);
     expect([computer(harness).multiplier_milli, ...tripped()]).toEqual([0, 2, 2]);
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
     // An activity report sent through another network (it uses the account's own sign-in) rewrites the
@@ -6473,7 +6925,7 @@ describe("sponsored cards", () => {
     seedComputer(harness, { instance_id: "cloud-e", user_id: "user_e", join_asn: DATACENTER, created_at: clock - DAY });
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
     clock += 7 * DAY;
-    expect(await look(fromComputer)).toEqual({ ok: true });
+    await looks(fromComputer);
     expect(tripped()).toEqual([3, 3]);
     harness.exec("delete from cloud_computers where user_id in ('user_b', 'user_c', 'user_d', 'user_e')");
     // A no keeps nothing of where the person looked from: the look's network goes with its time.
@@ -6528,11 +6980,13 @@ describe("sponsored cards", () => {
     expect(await state(US)).toMatchObject({ consent: "declined", gpcOff: true });
     expect((await state(US))?.startsOn).toBeUndefined();
     harness.exec("delete from cloud_sponsored_consent");
-    // Told in the US: the yes is saved as the notice's, Small runs free, and cards go to Gravity from there.
+    // Told in the US: the yes is saved as the notice's and cards go to Gravity from there. The notice is no
+    // look: Small runs free from the first card asked for.
     expect(await choose(US, "notice")).toBe(200);
     expect(saved()).toEqual({ consent: "granted", source: "notice", country: "US" });
-    expect(computer(harness).multiplier_milli).toBe(0);
+    expect(computer(harness).multiplier_milli).toBe(500);
     expect(((await (await from(US, "POST", "/cloud/sponsored/ad", adBody())).json()) as { ad: Row | null }).ad).toMatchObject({ brand: "Neon" });
+    expect(computer(harness).multiplier_milli).toBe(0);
     // From the UK or California that yes doesn't hold: the person is asked, and no card goes to Gravity.
     expect((await state("GB"))?.consent).toBeNull();
     expect((await state("US-CA"))?.consent).toBeNull();
@@ -6669,5 +7123,907 @@ describe("sponsored cards", () => {
     clock = NOW + 11 * 60_000;
     expect(await (await index()).json()).toEqual({ pick: null, reason: "nobody_watching" });
     expect(gravityCalls).toHaveLength(1);
+  });
+});
+
+describe("ADE Free Models", () => {
+  const KEY = "gr_inf_secret_key_1";
+  const CHAT = "/cloud/free-models/v1/chat/completions";
+  const PERSON_IP = "203.0.113.7";
+  const MACHINE_IP = "198.51.100.9";
+  const GRAVITY_DEEPSEEK = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
+  const SSE = [
+    `data: {"id":"c1","object":"chat.completion.chunk","model":"${GRAVITY_DEEPSEEK}","choices":[{"index":0,"delta":{"content":"Hi"}}],"usage":null}`,
+    `data: {"id":"c1","object":"chat.completion.chunk","model":"${GRAVITY_DEEPSEEK}","choices":[],"usage":{"prompt_tokens":1500,"completion_tokens":40,"total_tokens":1540,"prompt_tokens_details":{"cached_tokens":1000}}}`,
+    "data: [DONE]",
+    "",
+  ].join("\n\n");
+  /** The stream in small, uneven pieces, as a network delivers it. */
+  const streamed = () => new Response(new ReadableStream({
+    start(controller) {
+      const bytes = new TextEncoder().encode(SSE);
+      for (let at = 0; at < bytes.length; at += 37) controller.enqueue(bytes.slice(at, at + 37));
+      controller.close();
+    },
+  }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  type Call = { url: string; authorization: string | null; body: Row };
+  let inference: Call[];
+  let adRequests: Row[];
+  let upstream: () => Response;
+  const setting = (key: string, value: string) => harness.exec("insert or replace into cloud_settings (key, value, updated_at) values (?, ?, ?)", key, value, NOW);
+  const chat = (body: Row = {}, headers: Record<string, string> = {}) => harness.send(OWNER, "POST", CHAT, {
+    model: "ade-free/deepseek-v4.1-flash", messages: [{ role: "user", content: "hi" }], stream: true, ...body,
+  }, { "x-ade-chat-id": "chat-1", "cf-connecting-ip": MACHINE_IP, ...headers });
+  const DEVICE = { type: "desktop", os: "macos", osVersion: "15.1", ua: "ADE/1.2.133" };
+  /** A request from the person's own device, in the US unless `cf` says otherwise. */
+  const fromPerson = (method: string, path: string, body?: Row, cf: Row = { country: "US", regionCode: "TX" }) => {
+    const request = new Request(`https://directory.test${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": PERSON_IP },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    Object.defineProperty(request, "cf", { value: cf });
+    return handleCloudRequest(request, harness.env);
+  };
+
+  beforeEach(() => {
+    inference = [];
+    adRequests = [];
+    upstream = streamed;
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.startsWith("https://inference.trygravity.ai/")) {
+        inference.push({ url, authorization: new Headers(init?.headers).get("authorization"), body: JSON.parse(String(init?.body)) as Row });
+        return upstream();
+      }
+      if (/trygravity\./.test(url)) {
+        adRequests.push(JSON.parse(String(init?.body)) as Row);
+        return new Response(JSON.stringify([{ adText: "Serverless Postgres.", title: "Neon", brandName: "Neon", clickUrl: "https://api.trygravity.ai/track/click?p=1" }]), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return inner(input as RequestInfo, init);
+    });
+    Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_INFERENCE_KEY: KEY, GRAVITY_INFERENCE: "all", GRAVITY_LIVE: "1" });
+    setting("gravity_inference", "all");
+    setting("gravity_live", "on");
+    seedAccount(harness, OWNER, { plan: "paid", paid_plan: "pro" });
+    harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW, country: "US", terms_version: 1 });
+    harness.insert("cloud_free_model_viewers", { user_id: OWNER, chat_id: "chat-1", ip: PERSON_IP, ua: "ADE/1", device_type: "desktop", os: "macos", country: "US", seen_at: NOW });
+  });
+
+  it.each<[string, () => void, Row, Record<string, string>, number, string]>([
+    ["the switch is off", () => { setting("gravity_inference", "off"); }, {}, {}, 403, "free_models_off"],
+    ["the inference key is missing", () => { delete (harness.env as unknown as Row).GRAVITY_INFERENCE_KEY; }, {}, {}, 403, "free_models_off"],
+    ["ads are test ads and the account is no tester", () => { setting("gravity_live", "off"); }, {}, {}, 403, "free_models_off"],
+    ["the account never agreed", () => { harness.exec("delete from cloud_free_model_consent"); }, {}, {}, 403, "free_models_consent"],
+    ["the account agreed to older terms", () => { harness.exec("update cloud_free_model_consent set terms_version = 0"); }, {}, {}, 403, "free_models_consent"],
+    // The Free plan's GitHub rule (`freeModelsHoldOf`): the stored hold, checked before the yes.
+    ["a Free account's GitHub account is too new", () => { harness.exec("update cloud_accounts set plan = 'free', free_github_hold = 'github_too_new'"); }, {}, {}, 403, "free_models_locked"],
+    ["a Free account's GitHub check is still running", () => { harness.exec("update cloud_accounts set plan = 'free', free_github_hold = 'github_checking'"); }, {}, {}, 403, "free_models_locked"],
+    ["a paid plan past due (Free's rules) with no card is held", () => { harness.exec("update cloud_accounts set stripe_status = 'past_due', free_github_hold = 'no_github'"); }, {}, {}, 403, "free_models_locked"],
+    ["a held account that never agreed hears of the lock first", () => { harness.exec("update cloud_accounts set plan = 'free', free_github_hold = 'no_github'"); harness.exec("delete from cloud_free_model_consent"); }, {}, {}, 403, "free_models_locked"],
+    // No cards (`freeModelsMeter.ts`): calls or input tokens with no card asked for.
+    ["the account made 400 calls with no card asked for", () => { harness.insert("cloud_free_model_meters", { user_id: OWNER, calls: 400, input_tokens: 0, since_at: NOW - HOUR, updated_at: NOW }); }, {}, {}, 403, "free_models_no_cards"],
+    ["the account sent 32M input tokens with no card asked for", () => { harness.insert("cloud_free_model_meters", { user_id: OWNER, calls: 10, input_tokens: 32_000_000, since_at: NOW - HOUR, updated_at: NOW }); }, {}, {}, 403, "free_models_no_cards"],
+    ["the call names no chat", () => undefined, {}, { "x-ade-chat-id": "" }, 403, "free_models_not_watched"],
+    ["nobody looked at the chat for 11 minutes", () => { harness.exec("update cloud_free_model_viewers set seen_at = ?", NOW - 11 * 60_000); }, {}, {}, 403, "free_models_not_watched"],
+    ["a running turn's watcher left over an hour ago", () => {
+      harness.exec("update cloud_free_model_viewers set seen_at = ?", NOW - 61 * 60_000);
+      harness.insert("cloud_free_model_chats", { user_id: OWNER, chat_id: "chat-1", first_at: NOW - HOUR, last_at: NOW - 60_000, requests: 9 });
+    }, {}, {}, 403, "free_models_not_watched"],
+    ["the person watches from outside the US and Canada", () => { harness.exec("update cloud_free_model_viewers set country = 'BR'"); }, {}, {}, 403, "free_models_country"],
+    ["the account used its minute", () => { harness.insert("cloud_request_windows", { user_id: OWNER, bucket: "free_models", window_start: Math.floor(NOW / 60_000) * 60_000, count: 50 }); }, {}, {}, 403, "free_models_limit"],
+    ["every account together used ADE's minute", () => { harness.insert("cloud_request_windows", { user_id: "*", bucket: "free_models_all", window_start: Math.floor(NOW / 60_000) * 60_000, count: 550 }); }, {}, {}, 403, "free_models_limit"],
+    ["the account used its day", () => { harness.insert("cloud_sponsored_days", { day: new Date(NOW).toISOString().slice(0, 10), user_id: OWNER, kind: "fm_request", count: 2900 }); }, {}, {}, 403, "free_models_limit"],
+    ["the model isn't one of them", () => undefined, { model: "gpt-5.5" }, {}, 400, "free_models_unknown_model"],
+    ["the request is past Gravity's size", () => undefined, { messages: [{ role: "user", content: "x".repeat(8 * 1024 * 1024) }] }, {}, 413, "free_models_too_large"],
+  ])("refused, and nothing sent to Gravity, when %s", async (_label, arrange, body, headers, status, code) => {
+    arrange();
+    const response = await chat(body, headers);
+    expect([response.status, ((await response.json()) as { error: Row }).error.code]).toEqual([status, code]);
+    expect(inference).toEqual([]);
+  });
+
+  it("sends the call with the chat's ad session, the watching person's address and the usage asked for, and keeps the usage for the chat's next card", async () => {
+    harness.exec("delete from cloud_free_model_viewers");
+    // The person opens the chat at home; the chat runs on another machine, elsewhere.
+    expect(await (await fromPerson("POST", "/cloud/free-models/seen", { chatId: "chat-1", device: DEVICE })).json()).toEqual({ ok: true });
+    const response = await chat({ n: 3, max_tokens: 100_000, stream_options: { include_usage: false } });
+    expect(response.status).toBe(200);
+    // The stream comes back as Gravity sent it.
+    expect(await response.text()).toBe(SSE);
+    expect(inference).toHaveLength(1);
+    const sent = inference[0]!;
+    expect([sent.url, sent.authorization]).toEqual(["https://inference.trygravity.ai/v1/chat/completions", `Bearer ${KEY}`]);
+    expect(sent.body).toMatchObject({ model: GRAVITY_DEEPSEEK, max_tokens: 65_536, stream: true, stream_options: { include_usage: true }, email_hash: "e".repeat(64), user_ip: PERSON_IP });
+    expect(sent.body.n).toBeUndefined();
+    expect(JSON.stringify(sent.body)).not.toContain(OWNER);
+    // The usage of the last call is on the chat's row.
+    expect(harness.row("select requests, input_tokens, cached_input_tokens, output_tokens, last_usage_json from cloud_free_model_chats where user_id = ? and chat_id = 'chat-1'", OWNER)).toEqual({
+      requests: 1, input_tokens: 1500, cached_input_tokens: 1000, output_tokens: 40,
+      last_usage_json: JSON.stringify({ model: GRAVITY_DEEPSEEK, inputTokens: 1500, cachedInputTokens: 1000, outputTokens: 40 }),
+    });
+    // The chat's card, asked from the person's own machine on a paid plan: the same Gravity session, with that usage.
+    const card = await (await fromPerson("POST", "/cloud/sponsored/ad", {
+      instanceId: null, chatId: "chat-1", turnId: "turn-1", device: DEVICE, messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "Hi" }],
+    })).json() as { ad: Row | null };
+    expect(card.ad).toMatchObject({ brand: "Neon" });
+    expect(adRequests).toHaveLength(1);
+    expect(adRequests[0]).toMatchObject({ sessionId: sent.body.session_id, usage: { model: GRAVITY_DEEPSEEK, inputTokens: 1500, cachedInputTokens: 1000, outputTokens: 40 } });
+    // A turn that runs on: the record is 30 minutes old, the last call a minute ago.
+    clock = NOW + 30 * 60_000;
+    harness.exec("update cloud_free_model_chats set last_at = ?", clock - 60_000);
+    expect((await chat()).status).toBe(200);
+    expect(inference[1]!.body.session_id).toBe(sent.body.session_id);
+  });
+
+  it("a person's ADE Cloud launch counts as watching its first chat until that chat reports itself; an automation's launch never does", async () => {
+    harness.exec("delete from cloud_free_model_viewers");
+    const launch = (launchId: string, madeBy?: Row) => fromPerson("POST", "/cloud/launches", {
+      launchId, kind: "chat", sizeId: "small", project: { origin: "https://github.com/Acme/Widgets.git" },
+      lane: { id: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", name: "Try a free model" },
+      chat: { provider: "opencode", modelId: "opencode/ade-free/glm-5.3-flash", permissions: "full-auto", prompt: "Hi." },
+      ...(madeBy ? { madeBy } : {}),
+    });
+    await launch("0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a11", { kind: "automation", ruleId: "rule-1" });
+    expect(((await (await chat({}, { "x-ade-chat-id": "chat-new" })).json()) as { error: Row }).error.code).toBe("free_models_not_watched");
+    await launch("0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10");
+    // The new computer's first call: the launching person's address goes, once, to that one chat.
+    expect((await chat({}, { "x-ade-chat-id": "chat-new" })).status).toBe(200);
+    expect(inference[0]!.body.user_ip).toBe(PERSON_IP);
+    expect(((await (await chat({}, { "x-ade-chat-id": "chat-other" })).json()) as { error: Row }).error.code).toBe("free_models_not_watched");
+    expect(inference).toHaveLength(1);
+  });
+
+  it("the GitHub rule locks a held Free account: listed but locked, a card saved with no charge unlocks it at once, and a paid plan never is", async () => {
+    // In production with no GitHub App to ask, the stored hold stays as it is (`freePlanGithub.ts`).
+    harness.env.SENTRY_ENVIRONMENT = "production";
+    harness.exec("update cloud_accounts set plan = 'free', stripe_customer_id = 'cus_1', free_github_hold = 'no_github' where user_id = ?", OWNER);
+    const state = async () => ((await (await fromPerson("GET", "/cloud/account")).json()) as CloudAccountState).freeModels;
+    const code = async (response: Response) => ((await response.json()) as { error: Row }).error.code;
+    expect(await code(await chat())).toBe("free_models_locked");
+    expect(await state()).toMatchObject({ modelIds: ["opencode/ade-free/deepseek-v4.1-flash", "opencode/ade-free/glm-5.3-flash"], consent: "granted", locked: { reason: "no_github", canUnlockWithCard: true } });
+    // The card is asked for in the browser even with no GitHub (it unlocks these models, not the free credits).
+    harness.net.once.push(
+      { match: /GET .*\/customers\/cus_1\/payment_methods/, reply: harness.net.reply({ data: [] }) },
+      { match: /POST .*\/checkout\/sessions$/, reply: harness.net.reply({ id: "cs_1", url: "https://checkout.stripe.test/setup" }) },
+    );
+    expect(await (await harness.send(OWNER, "POST", "/cloud/billing/free-unlock", {})).json()).toEqual({ url: "https://checkout.stripe.test/setup", unlocked: false });
+    expect(inference).toEqual([]);
+    // Once it is saved, the next call goes, and every machine reads them unlocked.
+    harness.exec("update cloud_accounts set free_card_unlocked_at = ? where user_id = ?", NOW, OWNER);
+    expect((await chat()).status).toBe(200);
+    expect((await state())?.locked).toBeUndefined();
+    // A paid plan, with any hold left from Free, is never locked.
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', free_card_unlocked_at = null, free_github_hold = 'github_used' where user_id = ?", OWNER);
+    expect((await chat()).status).toBe(200);
+    expect((await state())?.locked).toBeUndefined();
+  });
+
+  it("no cards, no free tokens: an account calling with no card asked for is slowed, then paused, across every chat it makes up, until its next card request", async () => {
+    const code = async (response: Response) => ((await response.json()) as { error: Row }).error.code;
+    const state = async () => ((await (await fromPerson("GET", "/cloud/account")).json()) as CloudAccountState).freeModels;
+    const meter = () => harness.row("select calls, input_tokens from cloud_free_model_meters where user_id = ?", OWNER);
+    const otherChat = { "x-ade-chat-id": "chat-2" };
+    harness.insert("cloud_free_model_viewers", { user_id: OWNER, chat_id: "chat-2", ip: PERSON_IP, ua: "ADE/1", device_type: "desktop", os: "macos", country: "US", seen_at: NOW });
+    // A chat's first call starts the meter at one call, its tokens once the answer is in.
+    const first = await chat();
+    expect([first.status, await first.text()]).toEqual([200, SSE]);
+    expect(meter()).toEqual({ calls: 1, input_tokens: 1500 });
+    expect((await state())?.throttle).toBeUndefined();
+    // 199 calls on: the next one goes as usual, and the account is slowed from there.
+    harness.exec("update cloud_free_model_meters set calls = 199 where user_id = ?", OWNER);
+    expect((await chat()).status).toBe(200);
+    expect((await state())?.throttle).toBe("slowed");
+    // Slowed: two calls a minute across every chat, then a 429 OpenCode waits out until the next minute.
+    expect((await chat({}, otherChat)).status).toBe(200);
+    expect((await chat()).status).toBe(200);
+    const waited = await chat({}, otherChat);
+    expect([waited.status, waited.headers.get("retry-after"), await code(waited)]).toEqual([429, "60", "free_models_no_cards"]);
+    clock += 60_000;
+    expect((await chat({}, otherChat)).status).toBe(200);
+    // 400 calls: paused on every chat, a new one too.
+    harness.exec("update cloud_free_model_meters set calls = 400 where user_id = ?", OWNER);
+    expect([await code(await chat()), await code(await chat({}, otherChat))]).toEqual(["free_models_no_cards", "free_models_no_cards"]);
+    expect((await state())?.throttle).toBe("paused");
+    // A brand-new chat refused while paused still counts as one these models serve, so the ad its
+    // refused reply asks for (the person's message alone) lifts the pause.
+    harness.insert("cloud_free_model_viewers", { user_id: OWNER, chat_id: "chat-3", ip: PERSON_IP, ua: "ADE/1", device_type: "desktop", os: "macos", country: "US", seen_at: NOW });
+    expect(await code(await chat({}, { "x-ade-chat-id": "chat-3" }))).toBe("free_models_no_cards");
+    const recovery = await fromPerson("POST", "/cloud/sponsored/ad", {
+      instanceId: null, chatId: "chat-3", turnId: "turn-refused", device: DEVICE, messages: [{ role: "user", content: "hi" }],
+    }).then((response) => response.json() as Promise<{ ad: Row | null; reason?: string }>);
+    expect(recovery.reason).not.toBe("not_cloud");
+    expect(meter()).toEqual({ calls: 0, input_tokens: 0 });
+    harness.exec("update cloud_free_model_meters set calls = 400 where user_id = ?", OWNER);
+    adRequests.length = 0;
+    // The owner's report counts each account once a stretch.
+    expect(harness.rows("select kind, count from cloud_sponsored_days where user_id = '*' and kind in ('fm_slowed', 'fm_paused') order by kind")).toEqual([{ kind: "fm_paused", count: 1 }, { kind: "fm_slowed", count: 1 }]);
+    // A card asked for under a finished reply in one of these chats starts it over, whatever Gravity answers.
+    const card = (turnId: string) => fromPerson("POST", "/cloud/sponsored/ad", {
+      instanceId: null, chatId: "chat-2", turnId, device: DEVICE, messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "Hi" }],
+    }).then((response) => response.json() as Promise<{ ad: Row | null }>);
+    expect((await card("turn-1")).ad).toMatchObject({ brand: "Neon" });
+    expect(meter()).toEqual({ calls: 0, input_tokens: 0 });
+    expect((await chat()).status).toBe(200);
+    expect((await state())?.throttle).toBeUndefined();
+    // Asked again for the same reply (a reload, a second screen): the same answer, and nothing starts over.
+    harness.exec("update cloud_free_model_meters set calls = 400 where user_id = ?", OWNER);
+    expect((await card("turn-1")).ad).toMatchObject({ brand: "Neon" });
+    expect(await code(await chat())).toBe("free_models_no_cards");
+    expect(adRequests).toHaveLength(1);
+    // A day with no call going through starts it over by itself: a pause never holds an account for good.
+    clock += DAY + 60_000;
+    harness.exec("update cloud_free_model_viewers set seen_at = ?", clock);
+    expect((await chat()).status).toBe(200);
+    expect(meter()).toMatchObject({ calls: 1 });
+  });
+
+  it.each<[string, number, Row, number, string]>([
+    ["Gravity's retry-safe busy answer stays a 429", 429, { code: "provider_rate_limited", message: "busy" }, 429, "provider_rate_limited"],
+    ["the person's limit at Gravity is a 4xx OpenCode doesn't retry", 429, { code: "rate_limit_error", message: "limit" }, 403, "free_models_limit"],
+    ["a context too long becomes OpenAI's code, for OpenCode to compact", 400, { code: "context_length_exceeded", message: "prompt is too long" }, 400, "context_length_exceeded"],
+    ["a refused key is unavailable, with nothing of Gravity's words", 401, { code: "invalid_api_key", message: `Invalid key ${KEY}` }, 424, "free_models_unavailable"],
+    ["Gravity failing is unavailable, never a 5xx", 503, { code: "upstream_error", message: "down" }, 424, "free_models_unavailable"],
+  ])("%s", async (_label, gravityStatus, error, status, code) => {
+    upstream = () => new Response(JSON.stringify({ error }), { status: gravityStatus, headers: { "content-type": "application/json" } });
+    const response = await chat();
+    const text = await response.text();
+    expect([response.status, (JSON.parse(text) as { error: Row }).error.code]).toEqual([status, code]);
+    expect(text).not.toContain(KEY);
+  });
+
+  it("the account state has them only while the switch and keys reach the account; a no on one machine stops them and forgets where the person watched from", async () => {
+    const state = async (cf?: Row) => ((await (await fromPerson("GET", "/cloud/account", undefined, cf)).json()) as CloudAccountState).freeModels;
+    expect(await state()).toEqual({ modelIds: ["opencode/ade-free/deepseek-v4.1-flash", "opencode/ade-free/glm-5.3-flash"], available: true, consent: "granted", format: "below_reply", test: false });
+    expect(await state({ country: "BR" })).toMatchObject({ available: false, reason: "country" });
+    expect((await fromPerson("PUT", "/cloud/free-models/consent", { consent: "declined" })).status).toBe(200);
+    expect([harness.row("select consent, email_hash from cloud_free_model_consent where user_id = ?", OWNER), harness.rows("select * from cloud_free_model_viewers")]).toEqual([{ consent: "declined", email_hash: null }, []]);
+    expect((await state())?.consent).toBe("declined");
+    expect(((await (await chat()).json()) as { error: Row }).error.code).toBe("free_models_consent");
+    delete (harness.env as unknown as Row).GRAVITY_INFERENCE_KEY;
+    expect(await state()).toBeUndefined();
+    expect(inference).toEqual([]);
+  });
+});
+
+describe("Pricing v3's ad price", () => {
+  const HOME = 7922;
+  const CLOUD_NET = 24940;
+  const setting = (key: string, value: string) => harness.exec("insert or replace into cloud_settings (key, value, updated_at) values (?, ?, ?)", key, value, NOW - DAY);
+  const from = (asn: number) => (method: string, path: string, body?: Row) => {
+    const request = new Request(`https://directory.test${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": "203.0.113.7" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    Object.defineProperty(request, "cf", { value: { country: "US", regionCode: "TX", asn } });
+    return handleCloudRequest(request, harness.env);
+  };
+  const fromHome = from(HOME);
+  const sent = async (body: Row, send = fromHome) => (await send("POST", "/cloud/sponsored/sent", { instanceId: INSTANCE, chatId: "chat-1", ...body })).json() as Promise<Row>;
+  const priced = (id = INSTANCE) => {
+    const row = computer(harness, id);
+    return { rate: row.multiplier_milli, adFull: row.ad_full_milli };
+  };
+  const saveChat = (chatId: string, instanceId = INSTANCE, machineKey = `mk-${instanceId}`) =>
+    harness.insert("cloud_chat_copies", { user_id: OWNER, machine_key: machineKey, chat_id: chatId, instance_id: instanceId, r2_key: `chats/${chatId}`, updated_at: NOW });
+  const codeOf = async (response: Response) => [response.status, ((await response.clone().json()) as { error?: { code?: string } }).error?.code ?? null];
+
+  beforeEach(() => {
+    Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_ADS: "all", PRICING_V3: "all" });
+    setting("gravity_ads", "all");
+    setting("pricing_v3", "all");
+    seedAccount(harness, OWNER);
+    harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW - DAY, notice_seen_at: NOW - DAY });
+  });
+
+  it("at 0 credits, a person's message wakes Free's Small at the price with ads; a wake with no message, an outside agent's, or with ads off stays refused; a paid plan's Small always wakes", async () => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+    harness.env.CLOUD_CHATS = memoryBucket();
+    seedComputer(harness, { status: "stopped", awake_since: null, multiplier_milli: 500, machine_key: "key-a", ade_features: "chat_queue" });
+    provide(harness, INSTANCE, "stopped");
+    saveChat("chat-1", INSTANCE, "key-a");
+    harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+    const start = (body: Row) => fromHome("POST", `/cloud/instances/${INSTANCE}/start`, body);
+    const asleep = () => {
+      harness.exec("update cloud_computers set status = 'stopped', awake_since = null, multiplier_milli = 500, ad_full_milli = null where instance_id = ?", INSTANCE);
+      harness.exec("delete from cloud_ad_targets");
+      provide(harness, INSTANCE, "stopped");
+    };
+
+    // No message: Free's Small has its full price, which 0 credits can't pay.
+    expect(await codeOf(await start({}))).toEqual([402, "out_of_hours"]);
+    // An outside agent naming a message proves nothing (on Free it is refused as an outside agent).
+    expect((await start({ origin: "mcp", adProof: { chatId: "chat-1", messageId: "m-0" } })).status).toBe(403);
+    expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([]);
+    // A person's message is the proof: the wake goes, at the price with ads.
+    expect((await start({ adProof: { chatId: "chat-1", messageId: "m-1" } })).status).toBe(200);
+    expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([{ turn_id: "msg:m-1" }]);
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+
+    // The chat queue's wake: a person's message is its proof too; an outside agent's isn't.
+    asleep();
+    const queue = (body: Row) => fromHome("POST", "/cloud/chats/key-a/chat-1/messages", { text: "Fix the footer.", ...body });
+    expect(await codeOf(await queue({ messageId: "q-0", origin: "mcp" }))).toEqual([403, "outside_agent_free_plan"]);
+    expect((await queue({ messageId: "q-1" })).status).toBe(201);
+    expect(harness.rows("select turn_id from cloud_ad_proofs where turn_id like 'msg:q-%'")).toEqual([{ turn_id: "msg:q-1" }]);
+
+    // Ads off: the message proves nothing, and the wake is refused.
+    asleep();
+    harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER);
+    expect(await codeOf(await start({ adProof: { chatId: "chat-1", messageId: "m-2" } }))).toEqual([402, "out_of_hours"]);
+    // An DAEX Free Models chat's ad shows with ads off: its message wakes the Small too.
+    Object.assign(harness.env, { GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
+    setting("gravity_inference", "testers");
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+    harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, country: "US", terms_version: 1 });
+    harness.insert("cloud_free_model_chats", { user_id: OWNER, chat_id: "chat-fm", first_at: clock, last_at: clock, requests: 1 });
+    saveChat("chat-fm", INSTANCE, "key-a");
+    expect((await start({ adProof: { chatId: "chat-fm", messageId: "m-3" } })).status).toBe(200);
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+
+    // A paid plan's Small costs nothing at either price: it wakes at 0 credits with no message and ads off.
+    asleep();
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_customer_id = 'cus_1', stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", OWNER);
+    harness.exec("update cloud_computers set multiplier_milli = 0 where instance_id = ?", INSTANCE);
+    expect((await start({})).status).toBe(200);
+  });
+
+  it("a proof for a chat no computer saved holds the price with ads 10 minutes, six a day per computer; a Free Models proof counts only where its chat is saved", async () => {
+    seedComputer(harness, { multiplier_milli: 500 });
+    seedComputer(harness, { instance_id: "cloud-two", multiplier_milli: 500 });
+    provide(harness);
+    provide(harness, "cloud-two");
+    saveChat("chat-1");
+    // A saved chat's message: the whole window (60 minutes).
+    expect(await sent({ messageId: "m-1" })).toEqual({ counted: true });
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+    clock += 59 * 60_000;
+    await harness.tick();
+    expect(priced().rate).toBe(0);
+    clock += 2 * 60_000;
+    await harness.tick();
+    expect(priced()).toEqual({ rate: 500, adFull: null });
+
+    // A chat no computer saved: 10 minutes.
+    expect(await sent({ chatId: "chat-new", messageId: "n-1" })).toEqual({ counted: true });
+    expect(priced().rate).toBe(0);
+    clock += 9 * 60_000;
+    await harness.tick();
+    expect(priced().rate).toBe(0);
+    clock += 2 * 60_000;
+    await harness.tick();
+    expect(priced().rate).toBe(500);
+    // The same message again once its chat is saved is a repeat, never a second (whole) window.
+    saveChat("chat-new");
+    expect(await sent({ chatId: "chat-new", messageId: "n-1" })).toEqual({ counted: false, reason: "repeat" });
+    expect(priced().rate).toBe(500);
+    // Six a UTC day per computer, then none: another computer has its own six.
+    for (let n = 2; n <= 6; n += 1) expect(await sent({ chatId: `chat-new-${n}`, messageId: `n-${n}` })).toEqual({ counted: true });
+    expect(await sent({ chatId: "chat-new-7", messageId: "n-7" })).toEqual({ counted: false, reason: "not_cloud" });
+    expect(await sent({ instanceId: "cloud-two", chatId: "chat-new-7", messageId: "n-7" })).toEqual({ counted: true });
+    // A chat another computer saved is not this computer's.
+    expect(await sent({ instanceId: "cloud-two", chatId: "chat-1", messageId: "m-2" })).toEqual({ counted: false, reason: "not_cloud" });
+
+    // An DAEX Free Models chat's ad shows with ads off: its proof counts for the computer that saved it, and only that one.
+    harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER);
+    Object.assign(harness.env, { GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
+    setting("gravity_inference", "testers");
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+    harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, country: "US", terms_version: 1 });
+    for (const chat of ["chat-fm", "chat-fm-new"]) harness.insert("cloud_free_model_chats", { user_id: OWNER, chat_id: chat, first_at: clock, last_at: clock, requests: 1 });
+    saveChat("chat-fm");
+    expect(await sent({ instanceId: "cloud-two", chatId: "chat-fm", messageId: "f-1" })).toEqual({ counted: false, reason: "not_cloud" });
+    expect(await sent({ instanceId: "cloud-two", chatId: "chat-fm-new", messageId: "f-2" })).toEqual({ counted: false, reason: "not_cloud" });
+    expect(harness.row("select fm_proof_at from cloud_ad_targets where target = 'cloud-two'").fm_proof_at).toBeNull();
+    expect(await sent({ chatId: "chat-fm", messageId: "f-3" })).toEqual({ counted: true });
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+  });
+
+  it("an outside agent's computer keeps the full price until the idle report after a busy one, whatever order reports come in, or 30 minutes with no turn", async () => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+    harness.env.CLOUD_CHATS = memoryBucket();
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'plus', stripe_customer_id = 'cus_1', stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", OWNER);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    // A computer an outside agent made (DAEX MCP), awake, its brain checking in.
+    expect((await fromHome("POST", "/cloud/instances", { type: "default", resources: { cpu: 4, memory: 8 }, metadata: { ade_made_by_agent: "mcp" } })).status).toBe(201);
+    const id = String(harness.rows("select instance_id from cloud_computers")[0]!.instance_id);
+    harness.exec("update cloud_computers set status = 'running', awake_since = ?, status_changed_at = ?, machine_key = 'key-x', ade_features = 'chat_queue' where instance_id = ?", clock, clock, id);
+    harness.insert("machines", { user_id: OWNER, machine_key: "key-x", last_seen_at: clock });
+    provide(harness, id, "running");
+    saveChat("chat-x", id, "key-x");
+    const seen = () => harness.exec("update machines set last_seen_at = ? where machine_key = 'key-x'", clock);
+    const report = (busy: boolean, reportedAt: number) =>
+      // From the computer's own network (a report sets it), never the person's.
+      from(CLOUD_NET)("POST", `/cloud/instances/${id}/activity`, { busy, idleSince: busy ? null : reportedAt - 1000, sleepsAt: busy ? null : reportedAt + HOUR, runningAgents: busy ? 1 : 0, reportedAt });
+    const onAd = () => priced(id).adFull != null;
+
+    // A person's proof: the agent's work holds the full price while its turn may still begin.
+    expect(await sent({ instanceId: id, chatId: "chat-x", messageId: "p-1" })).toEqual({ counted: true });
+    expect(onAd()).toBe(false);
+    // No turn in 30 minutes: the price with ads.
+    clock += 29 * 60_000;
+    seen();
+    await harness.tick();
+    expect(onAd()).toBe(false);
+    clock += 2 * 60_000;
+    seen();
+    await harness.tick();
+    expect(onAd()).toBe(true);
+
+    // An outside agent's message through the account: the full price again.
+    expect(await sent({ instanceId: id, chatId: "chat-x", messageId: "p-2" })).toEqual({ counted: true });
+    expect((await fromHome("POST", "/cloud/chats/key-x/chat-x/messages", { messageId: "a-1", text: "Run the tests.", origin: "mcp" })).status).toBe(201);
+    expect(onAd()).toBe(false);
+    // Idle before the turn began (the brain hadn't picked the message up): still full.
+    clock += 60_000;
+    expect((await report(false, clock)).status).toBe(200);
+    expect(onAd()).toBe(false);
+    clock += 60_000;
+    const busyAt = clock;
+    expect((await report(true, busyAt)).status).toBe(200);
+    expect(onAd()).toBe(false);
+    // An idle report written before the busy one, arriving late, never ends it.
+    clock += 60_000;
+    expect((await report(false, busyAt - 30_000)).status).toBe(200);
+    expect(onAd()).toBe(false);
+    // The idle report after the turn ends it: the price with ads.
+    expect((await report(false, clock)).status).toBe(200);
+    expect(onAd()).toBe(true);
+  });
+
+  it("a window's end moved in the tick is charged once: the rest of the tick reads the rate and stretch it wrote", async () => {
+    // A Medium at the price with ads for 6 hours; its window ended a minute ago.
+    seedComputer(harness, { cpu: 4, memory_gb: 8, awake_since: clock - 6 * HOUR, status_changed_at: clock - 6 * HOUR, last_awake_at: clock - 6 * HOUR });
+    provide(harness).resources = { cpu: 4, memory: 8, disk: 4 };
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk-tick", last_seen_at: clock });
+    harness.exec("update cloud_computers set machine_key = 'mk-tick' where instance_id = ?", INSTANCE);
+    saveChat("chat-1");
+    clock -= 61 * 60_000;
+    expect(await sent({ messageId: "m-1" })).toEqual({ counted: true });
+    harness.exec("update cloud_computers set awake_since = ? where instance_id = ?", NOW - 6 * HOUR, INSTANCE);
+    const ad = priced();
+    expect(ad.adFull).not.toBeNull();
+    // Just under 80% once the stretch is charged once (counted twice, it would pass 80%).
+    const expected = Math.round((6 * HOUR - 60_000) * Number(ad.rate) / HOUR);
+    const before = 80_000 - expected - 200;
+    harness.exec("update cloud_accounts set used_milli = ? where user_id = ?", before, OWNER);
+    clock = NOW;
+    harness.exec("update machines set last_seen_at = ? where machine_key = 'mk-tick'", clock);
+    await harness.tick();
+    // Back on the full price from the window's end, the stretch before it charged once at the price with ads.
+    expect(priced()).toEqual({ rate: ad.adFull, adFull: null });
+    // (and the minute since its end at the full price).
+    expect(usedMilli(harness) - before).toBe(expected + Math.round(60_000 * Number(ad.adFull) / HOUR));
+    // So the tick's own settle counted it once: still under 80%, no warning yet.
+    expect(harness.row("select warned_80_at from cloud_accounts where user_id = ?", OWNER).warned_80_at).toBeNull();
+  });
+
+  // A new lane's first message, from a person, is its new computer's proof: before the hours check, and for the price from the first minute.
+  const LAUNCH_ID = "0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10";
+  type FirstCase = { path: "launch" | "create" | "create-old" | "resting"; plan?: "pro"; size?: "medium"; zero?: boolean; madeBy?: Row; adsOff?: boolean; v3Off?: boolean };
+  it.each<[string, FirstCase, number, { rate: number; adFull: number | null } | null, boolean]>([
+    ["a launch, Free with ads on, credits left", { path: "launch" }, 201, { rate: 0, adFull: 500 }, true],
+    ["a launch, Free with ads on, 0 credits", { path: "launch", zero: true }, 201, { rate: 0, adFull: 500 }, true],
+    ["the app's create with adProof, Free with ads on, credits left", { path: "create" }, 201, { rate: 0, adFull: 500 }, true],
+    ["the app's create with adProof, Free with ads on, 0 credits", { path: "create", zero: true }, 201, { rate: 0, adFull: 500 }, true],
+    ["a person's message to a resting chat (its computer deleted), Free with ads on, 0 credits", { path: "resting", zero: true }, 201, { rate: 0, adFull: 500 }, true],
+    ["an outside agent's message to a resting chat, Free with ads on", { path: "resting", madeBy: { origin: "mcp" } }, 403, null, false],
+    ["an older app's create (no adProof), Free with ads on, 0 credits", { path: "create-old", zero: true }, 402, null, false],
+    ["a launch, Pro with ads on, a Medium", { path: "launch", plan: "pro", size: "medium" }, 201, { rate: 800, adFull: 1000 }, true],
+    ["an automation's launch, Free with ads on", { path: "launch", madeBy: { kind: "automation" } }, 201, { rate: 500, adFull: null }, false],
+    ["a launch, Free with ads off, 0 credits", { path: "launch", zero: true, adsOff: true }, 402, null, false],
+    ["a launch, Free with ads on, a Medium at 0 credits (its ad price uses credits)", { path: "launch", size: "medium", zero: true }, 402, null, false],
+    ["a launch with Pricing v3 off, Free with cards on and a US look this week, 0 credits (today's Small)", { path: "launch", zero: true, v3Off: true }, 201, { rate: 0, adFull: null }, false],
+  ])("%s", async (_label, c, status, price, proved) => {
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    if (c.v3Off) {
+      setting("pricing_v3", "off");
+      harness.exec("update cloud_sponsored_consent set looked_at = ? where user_id = ?", NOW - DAY, OWNER);
+    }
+    if (c.plan === "pro") harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'pro', stripe_customer_id = 'cus_1', stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", OWNER);
+    if (c.zero) harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+    if (c.adsOff) harness.exec("update cloud_sponsored_consent set consent = 'declined' where user_id = ?", OWNER);
+    const resources = c.size === "medium" ? { cpu: 4, memory: 8 } : { cpu: 2, memory: 4 };
+    if (c.path === "resting") {
+      // A chat whose computer idle cleanup deleted: its saved copy names the lane, the agent and the repository.
+      harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+      harness.env.CLOUD_CHATS = memoryBucket();
+      seedComputer(harness, { machine_key: "key-gone", lane_id: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", lane_name: "Fix", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix" });
+      expect((await fromHome("PUT", "/cloud/chats/key-gone/c1/parts/1", {
+        instanceId: INSTANCE, text: "{}\n", row: { lastSeq: 1, laneId: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", projectKey: "github.com/acme/widgets", provider: "claude", model: "claude-sonnet" },
+      })).status).toBe(200);
+      harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
+    }
+    const answer = c.path === "resting"
+      ? await fromHome("POST", "/cloud/chats/key-gone/c1/messages", { messageId: "first-1", text: "Go on.", ...(c.madeBy ?? {}) })
+      : c.path === "launch"
+      ? await fromHome("POST", "/cloud/launches", {
+        launchId: LAUNCH_ID, kind: "chat", sizeId: c.size ?? "small", project: { origin: "https://github.com/Acme/Widgets.git" },
+        lane: { id: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", name: "Fix" },
+        chat: { provider: "codex", modelId: "gpt-5", permissions: "full-auto", prompt: "Fix it.", messageId: "first-1" },
+        ...(c.madeBy ? { madeBy: c.madeBy } : {}),
+      })
+      : await fromHome("POST", "/cloud/instances", { type: "default", resources, metadata: {}, ...(c.path === "create" ? { adProof: { chatId: "chat-new", messageId: "first-1" } } : {}) });
+    expect(answer.status).toBe(status);
+    const made = harness.rows("select instance_id, multiplier_milli, ad_full_milli from cloud_computers where deleted_at is null");
+    expect(made.map((row) => ({ rate: row.multiplier_milli, adFull: row.ad_full_milli }))[0] ?? null).toEqual(price);
+    expect(harness.rows("select chat_id, turn_id, instance_id from cloud_ad_proofs"))
+      .toEqual(proved ? [{ chat_id: c.path === "launch" ? LAUNCH_ID : c.path === "resting" ? "c1" : "chat-new", turn_id: "msg:first-1", instance_id: made[0]!.instance_id }] : []);
+    // The app's later `/sent` of the same message, under its own chat's id, is a repeat.
+    if (proved) {
+      saveChat("chat-app", String(made[0]!.instance_id));
+      expect(await sent({ instanceId: made[0]!.instance_id, chatId: "chat-app", messageId: "first-1" })).toEqual({ counted: false, reason: "repeat" });
+    }
+  });
+
+  // A create that dies after the provider made the computer (a request cut off at the app's timeout) never ran its last steps.
+  it.each<[string, "adoption" | "finish", "replay" | "tick"]>([
+    ["it died before its adoption; the app asks again", "adoption", "replay"],
+    ["it died after its adoption; the app asks again", "finish", "replay"],
+    ["it died after its adoption; nobody asks again", "finish", "tick"],
+  ])("a create priced at the ad price for a first message keeps that price and counts the message once: %s", async (_label, dies, then) => {
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    // Free at 0 credits with ads on: only the ad price lets its Small run.
+    harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+    const body = { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_request_id: "req-first" }, adProof: { chatId: "chat-new", messageId: "first-1" } };
+    harness.injectFault((sql) => (dies === "adoption" ? /update cloud_computers set instance_id = \?/ : /select instance_id, created_at, ad_first_proof/).test(sql));
+    const died = await fromHome("POST", "/cloud/instances", body).catch(() => null);
+    harness.injectFault(null);
+    expect(died?.status ?? 500).toBeGreaterThanOrEqual(500);
+    expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([]);
+    // From its reservation it holds the gate's price: no full-price stretch before the message counts.
+    expect(harness.rows("select multiplier_milli as rate, ad_full_milli as adFull from cloud_computers where deleted_at is null")).toEqual([{ rate: 0, adFull: 500 }]);
+
+    if (then === "replay") {
+      // A repeat naming another message gets nothing for it; the message the gate checked counts once, however many repeats.
+      expect((await fromHome("POST", "/cloud/instances", { ...body, adProof: { chatId: "chat-x", messageId: "other-1" } })).status).toBe(200);
+      expect((await fromHome("POST", "/cloud/instances", body)).status).toBe(200);
+      expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([{ turn_id: "msg:first-1" }]);
+    }
+    await harness.tick();
+    expect(harness.rows("select chat_id, turn_id, instance_id from cloud_ad_proofs")).toEqual([{ chat_id: "chat-new", turn_id: "msg:first-1", instance_id: "madenew12345" }]);
+    expect(harness.row("select sum(count) as n from cloud_sponsored_days where kind like 'sent:%'").n).toBe(1);
+    expect(harness.row("select status, multiplier_milli as rate, ad_full_milli as adFull, ad_first_proof as stored, zero_stop_started_at as zeroStop from cloud_computers where instance_id = 'madenew12345'"))
+      .toEqual({ status: "running", rate: 0, adFull: 500, stored: null, zeroStop: null });
+  });
+
+  it("a blocked account's computer returned by a repeat of its create is stopped", async () => {
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    const body = { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_request_id: "req-blocked" } };
+    harness.injectFault((sql) => /update cloud_computers set instance_id = \?/.test(sql));
+    expect((await fromHome("POST", "/cloud/instances", body).catch(() => null))?.status ?? 500).toBeGreaterThanOrEqual(500);
+    harness.injectFault(null);
+    // The block lands while the provider makes it; the repeat comes inside the router's "not blocked" memory.
+    harness.insert("cloud_blocks", { user_id: OWNER, reason: "abuse", created_at: clock });
+    expect((await fromHome("POST", "/cloud/instances", body)).status).toBe(200);
+    expect(computer(harness, "madenew12345").status).toBe("stopped");
+  });
+
+  it("a proof from the network of the account's own computers doesn't count; from the provider's network otherwise it counts and the owner hears of it", async () => {
+    seedComputer(harness, { multiplier_milli: 500, net_asn: CLOUD_NET });
+    saveChat("chat-1");
+    const alerts = (kind: string) => harness.rows("select 1 from cloud_owner_alerts where kind = ?", kind).length;
+    expect(await sent({ messageId: "m-1" }, from(CLOUD_NET))).toEqual({ counted: false, reason: "unverified" });
+    expect(priced()).toEqual({ rate: 500, adFull: null });
+    expect(harness.rows("select turn_id from cloud_ad_proofs")).toEqual([]);
+    expect(alerts("ad_cloud_request")).toBe(1);
+    // A network one of its computers joined from in the last 30 days is its own too.
+    harness.exec("update cloud_computers set net_asn = null, join_asn = ? where instance_id = ?", CLOUD_NET, INSTANCE);
+    harness.exec("update cloud_computers set created_at = ? where instance_id = ?", clock - 29 * DAY, INSTANCE);
+    expect(await sent({ messageId: "m-2" }, from(CLOUD_NET))).toEqual({ counted: false, reason: "unverified" });
+
+    // The same network where only another account's computer is: it counts, and the owner is told.
+    harness.exec("update cloud_computers set join_asn = null where instance_id = ?", INSTANCE);
+    seedComputer(harness, { instance_id: "cloud-else", user_id: OTHER, net_asn: CLOUD_NET });
+    expect(await sent({ messageId: "m-3" }, from(CLOUD_NET))).toEqual({ counted: true });
+    expect(priced()).toEqual({ rate: 0, adFull: 500 });
+    expect(alerts("ad_cloud_network")).toBe(1);
+    // A home network: counts, no alert.
+    expect(await sent({ messageId: "m-4" })).toEqual({ counted: true });
+    expect(alerts("ad_cloud_network")).toBe(1);
+  });
+
+  it("a cloud iPhone's minute is taken off at most once, however often its price moves inside it", async () => {
+    // A live v3 phone (500 a minute, 400 with ads: 100 off a minute) with a proof in its window, still starting.
+    harness.insert("cloud_phones", {
+      phone_id: "ses_ad", user_id: OWNER, device: "iphone", state: "live", created_at: clock, ready_at: null, billed_seconds: 0,
+      cost_micros: 0, free: 0, updated_at: clock, credits: 1, credited_milli: 0, rate_milli: 500,
+    });
+    harness.insert("cloud_ad_targets", { target: "phone:ses_ad", user_id: OWNER, proof_at: clock, updated_at: clock });
+    const saved = () => Number(harness.row("select ad_saved_milli from cloud_phones where phone_id = 'ses_ad'").ad_saved_milli);
+    // It bills from when it is ready: until then no minute comes off.
+    await harness.tick();
+    clock += 2 * 60_000;
+    await harness.tick();
+    expect(saved()).toBe(0);
+    harness.exec("update cloud_phones set ready_at = ? where phone_id = 'ses_ad'", clock);
+    await harness.tick();
+    expect(saved()).toBe(100);
+    // Ads off and on again, many times inside its first minute.
+    for (let n = 0; n < 5; n += 1) {
+      expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
+      expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    }
+    // Pricing v3 off and on again.
+    setting("pricing_v3", "off");
+    await harness.tick();
+    setting("pricing_v3", "all");
+    await harness.tick();
+    expect(saved()).toBe(100);
+    // Its second minute, then its end inside it: one more minute off, no more.
+    clock += 90_000;
+    await harness.tick();
+    await settlePhoneAtEnd(harness.env, "ses_ad", clock);
+    expect(saved()).toBe(200);
+    harness.exec("update cloud_phones set state = 'ended', ended_at = ?, billed_seconds = 120 where phone_id = 'ses_ad'", clock);
+    expect(phoneCreditMilliOf(harness.row("select * from cloud_phones where phone_id = 'ses_ad'") as never, clock)).toBe(800);
+  });
+
+  it("answers about sponsored cards have their own hourly limit per account", async () => {
+    for (let n = 0; n < 20; n += 1) expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: n % 2 ? "granted" : "declined", confirmed: true })).status).toBe(200);
+    expect(await codeOf(await fromHome("PUT", "/cloud/sponsored/consent", { consent: "declined" }))).toEqual([429, "rate_limited"]);
+    clock += HOUR;
+    expect((await fromHome("PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
+  });
+  describe("a DAEX Cloud Mac", () => {
+    const MAC = "mac0123456789abcdef0123456789abcdef";
+    const session: Row = { id: "ses_mac", state: "ready", label: `adem:${MAC}` };
+    const t0 = NOW;
+
+    beforeEach(() => {
+      Object.assign(session, { state: "ready", ready_at: new Date(t0 - MINUTE).toISOString(), created_at: new Date(t0 - 2 * MINUTE).toISOString(), shutdown_at: null });
+      Object.assign(harness.env, { NOMAC_API_KEY: "nmk_test", MAC_COMPUTERS: "all" });
+      setting("mac_computers", "all");
+      // NoMac's Mac API: the one session, read and listed. Anything else (the drive upkeep) is refused.
+      const network = globalThis.fetch;
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (!url.startsWith("https://nomac.app/")) return network(input, init);
+        const call = `${init?.method ?? "GET"} ${url.replace("https://nomac.app/api/v1", "")}`;
+        if (call === "GET /mac/sessions/ses_mac") return new Response(JSON.stringify({ session }), { status: 200 });
+        if (call.startsWith("GET /mac/sessions?")) return new Response(JSON.stringify({ sessions: [session] }), { status: 200 });
+        // A stop: the session ends.
+        if (call === "DELETE /mac/sessions/ses_mac?confirm=true") {
+          Object.assign(session, { state: "ended", shutdown_at: new Date(clock).toISOString() });
+          return new Response(JSON.stringify({ session }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 });
+      });
+    });
+
+    const seedMac = (overrides: Row = {}) => {
+      seedComputer(harness, {
+        instance_id: MAC, provider: "nomac", os: "mac", type: "mac", cpu: CLOUD_MAC_SHAPE.cpu, memory_gb: CLOUD_MAC_SHAPE.memoryGb, disk_gb: CLOUD_MAC_SHAPE.driveGb,
+        multiplier_milli: MAC_MILLI_PER_MINUTE * 60, status: "running", status_changed_at: t0, awake_since: t0, last_awake_at: t0,
+        mac_state: "running", mac_state_at: t0, mac_session_id: "ses_mac", mac_label: `adem:${MAC}`, mac_booted_session: "ses_mac", machine_key: "mk-mac",
+        ...overrides,
+      });
+      harness.insert("machines", { user_id: OWNER, machine_key: "mk-mac", last_seen_at: clock });
+    };
+    /** A minute tick at `at`, its brain having checked in. */
+    const tickAt = async (at: number) => {
+      clock = at;
+      harness.exec("update machines set last_seen_at = ? where machine_key = 'mk-mac'", clock);
+      await harness.tick();
+    };
+    /** What the account used, settled and live (a running Mac counts its minute begun as whole, as its stop charges it). */
+    const used = () => liveUsedMilli(harness.row("select * from cloud_accounts where user_id = ?", OWNER) as never, [computer(harness, MAC) as never], clock);
+    /** NoMac ends the session at `at`; the next tick hears it. */
+    const endAt = (at: number) => Object.assign(session, { state: "ended", shutdown_at: new Date(at).toISOString() });
+
+    // How it ends: NoMac ends it, the person stops it, or DAEX's zero stop. Each logs its own reason (the launch end
+    // and the owner report read it) and settles the stretch once.
+    it.each<[string, boolean, number, "nomac" | "user" | "out_of_hours", string]>([
+      ["no ads (the full price): 5 credits a minute, NoMac ends it", false, 500, "nomac", "seen_by_tick"],
+      ["with ads (a person's message in its window): 4 credits a minute, NoMac ends it", true, 400, "nomac", "seen_by_tick"],
+      ["no ads, the person stops it", false, 500, "user", "user"],
+      ["no ads, its credits run out (the zero stop)", false, 500, "out_of_hours", "out_of_hours"],
+    ])("a Mac minute %s, through the computers' own rate and stretch code", async (_label, ads, perMinute, end, reason) => {
+      seedMac();
+      // The zero stop: exactly ten minutes of credits left.
+      if (end === "out_of_hours") harness.exec("update cloud_accounts set used_milli = included_milli - ? where user_id = ?", 10 * perMinute, OWNER);
+      const before = usedMilli(harness);
+      if (ads) {
+        saveChat("chat-mac", MAC, "mk-mac");
+        expect(await sent({ instanceId: MAC, chatId: "chat-mac", messageId: "m-mac" })).toEqual({ counted: true });
+        expect(priced(MAC)).toEqual({ rate: 400 * 60, adFull: 500 * 60 });
+      }
+      await tickAt(t0 + 5 * MINUTE);
+      expect(priced(MAC)).toEqual(ads ? { rate: 400 * 60, adFull: 500 * 60 } : { rate: 500 * 60, adFull: null });
+      // Ten minutes in: ten whole minutes, settled at its stop.
+      if (end === "nomac") {
+        endAt(t0 + 10 * MINUTE);
+        await tickAt(t0 + 11 * MINUTE);
+      } else if (end === "user") {
+        clock = t0 + 10 * MINUTE;
+        expect((await fromHome("POST", `/cloud/instances/${MAC}/stop`)).status).toBe(200);
+      } else {
+        await tickAt(t0 + 10 * MINUTE);
+      }
+      expect(computer(harness, MAC)).toMatchObject({ status: "stopped", awake_since: null });
+      expect(usedMilli(harness) - before).toBe(10 * perMinute);
+      expect(meteredMilli(harness, MAC)).toBe(10 * perMinute);
+      expect(harness.rows("select reason from cloud_power_log where instance_id = ? and action = 'stop'", MAC)).toEqual([{ reason }]);
+    });
+
+    it("a move between the prices inside a stretch charges every minute once: the minute begun goes on at the new price", async () => {
+      seedMac();
+      const before = usedMilli(harness);
+      // Two and a half minutes at the full price, then a person's message: the ad price from there.
+      clock = t0 + 2.5 * MINUTE;
+      saveChat("chat-mac", MAC, "mk-mac");
+      expect(await sent({ instanceId: MAC, chatId: "chat-mac", messageId: "m-mac" })).toEqual({ counted: true });
+      expect(priced(MAC).rate).toBe(400 * 60);
+      // The two whole minutes are charged at the full price; the third goes on at the ad price.
+      expect(usedMilli(harness) - before).toBe(2 * 500);
+      expect(computer(harness, MAC).awake_since).toBe(t0 + 2 * MINUTE);
+      await tickAt(t0 + 5 * MINUTE);
+      expect(used() - before).toBe(2 * 500 + 3 * 400);
+      // Stopped 10.5 minutes in: 11 minutes charged in all, 2 full and 9 with ads.
+      endAt(t0 + 10.5 * MINUTE);
+      await tickAt(t0 + 11 * MINUTE);
+      expect(computer(harness, MAC).status).toBe("stopped");
+      expect(usedMilli(harness) - before).toBe(2 * 500 + 9 * 400);
+    });
+
+    it("a Mac's free sign-in wait that ends inside a minute charges that minute once", async () => {
+      // A launch's free sign-in wait from t0 (its window open to 30 minutes); the sign-in finishes 20.5 minutes in.
+      const until = t0 + 30 * MINUTE;
+      seedMac({ awake_since: until, free_wake_started_at: t0, free_wake_until: until });
+      harness.insert("cloud_launches", { launch_id: "launch-mac", user_id: OWNER, state: "waiting_for_sign_in", kind: "chat", instance_id: MAC, sign_in_free_at: t0, sign_in_free_opened_at: t0, created_at: t0, updated_at: t0, expires_at: t0 + DAY });
+      const before = usedMilli(harness);
+      clock = t0 + 20.5 * MINUTE;
+      await chargeSignInWait(harness.env, harness.row("select * from cloud_launches where launch_id = 'launch-mac'") as never, clock);
+      // The wait's 20 whole minutes; the minute begun goes on in the open stretch.
+      expect(usedMilli(harness) - before).toBe(20 * 500);
+      expect(computer(harness, MAC).awake_since).toBe(t0 + 20 * MINUTE);
+      // NoMac ends it 30 minutes in: 30 minutes in all, none twice.
+      endAt(t0 + 30 * MINUTE);
+      await tickAt(t0 + 31 * MINUTE);
+      expect(computer(harness, MAC).status).toBe("stopped");
+      expect(usedMilli(harness) - before).toBe(30 * 500);
+    });
+
+    it("a Mac the webhook moves to running is on its price at once: with ads on and a proof in its window, minute one costs 4, not 5", async () => {
+      seedMac({ status: "starting", awake_since: null, mac_state: "starting" });
+      // A person's message already counted for it (its window open); its row still holds the full rate.
+      harness.insert("cloud_ad_targets", { target: MAC, user_id: OWNER, proof_at: clock, updated_at: clock });
+      expect(priced(MAC)).toEqual({ rate: 500 * 60, adFull: null });
+      const before = usedMilli(harness);
+      // NoMac says ready, signed as NoMac signs.
+      harness.env.NOMAC_WEBHOOK_SECRET = "whsec_test";
+      clock = t0 + 10_000;
+      const raw = JSON.stringify({ id: "evt_mac_ready", type: "mac.ready", data: { session: { ...session, ready_at: new Date(clock).toISOString() } } });
+      const t = Math.floor(clock / 1000);
+      const v1 = createHmac("sha256", "whsec_test").update(`${t}.${raw}`).digest("hex");
+      const delivered = await handleNomacWebhook(new Request("https://directory.test/cloud/nomac/webhook", { method: "POST", headers: { "nomac-signature": `t=${t},v1=${v1}` }, body: raw }), harness.env, clock);
+      expect(delivered.status).toBe(200);
+      expect(computer(harness, MAC)).toMatchObject({ status: "running", awake_since: clock });
+      expect(priced(MAC)).toEqual({ rate: 400 * 60, adFull: 500 * 60 });
+      // Stopped 50 s in, before any tick: one minute, at the price with ads.
+      endAt(clock + 50_000);
+      await tickAt(clock + 55_000);
+      expect(computer(harness, MAC).status).toBe("stopped");
+      expect(usedMilli(harness) - before).toBe(400);
+    });
+
+    it("a queued Mac charges nothing; its charge starts at the tick that sees it ready", async () => {
+      seedMac({ status: "starting", awake_since: null, mac_state: "queued" });
+      Object.assign(session, { state: "queued", ready_at: null });
+      const before = usedMilli(harness);
+      for (let minute = 1; minute <= 20; minute += 1) await tickAt(t0 + minute * MINUTE);
+      expect(computer(harness, MAC)).toMatchObject({ status: "starting", awake_since: null });
+      expect(used()).toBe(before);
+      // Ready: the tick moves it to running and starts its charge there.
+      Object.assign(session, { state: "ready", ready_at: new Date(t0 + 20.5 * MINUTE).toISOString() });
+      await tickAt(t0 + 21 * MINUTE);
+      expect(computer(harness, MAC)).toMatchObject({ status: "running", awake_since: t0 + 21 * MINUTE });
+      expect(used()).toBe(before);
+      await tickAt(t0 + 24 * MINUTE);
+      expect(used() - before).toBe(3 * 500);
+    });
+
+    it("a stopped Mac charges nothing, over days and daily runs: its drive costs no credits, and its upkeep is DAEX's", async () => {
+      seedMac({ status: "stopped", awake_since: null, mac_state: "stopped", mac_session_id: null });
+      endAt(t0 - HOUR);
+      const before = usedMilli(harness);
+      for (const at of [t0 + MINUTE, t0 + HOUR, t0 + DAY, t0 + 2 * DAY + 3 * HOUR]) await tickAt(at);
+      expect(usedMilli(harness)).toBe(before);
+      expect(meteredMilli(harness, MAC)).toBe(0);
+    });
+
+    it("the answers: the catalog's Mac carries its ad price under Pricing v3; the website hears of the Mac only at `all`; both switches off read as today", async () => {
+      const account = async () => (await harness.send(OWNER, "GET", "/cloud/account", undefined, { [CLOUD_PRICING_HEADER]: CLOUD_PRICING_VERSION })).json() as Promise<CloudAccountState>;
+      const site = async () => {
+        clock += MINUTE; // past the read's settings cache
+        return (await handlePublicPricing(new Request("https://directory.test/public/pricing"), harness.env)).json();
+      };
+      expect((await account()).catalog.mac).toMatchObject({ creditMilliPerMinute: 500, adCreditMilliPerMinute: 400 });
+      expect(await site()).toMatchObject({ pricingV3: true, mac: true });
+      // Testers only: the website shows no Mac.
+      setting("mac_computers", "testers");
+      expect(await site()).toMatchObject({ pricingV3: true, mac: false });
+      // No NoMac key: off, whatever the setting says.
+      setting("mac_computers", "all");
+      delete harness.env.NOMAC_API_KEY;
+      expect(await site()).toMatchObject({ pricingV3: true, mac: false });
+      harness.env.NOMAC_API_KEY = "nmk_test";
+      // Pricing v3 off: the Mac at one price, in today's unit.
+      setting("pricing_v3", "off");
+      const v2 = await account();
+      expect(v2.catalog.mac?.creditMilliPerMinute).toBe(500);
+      expect(v2.catalog.mac).not.toHaveProperty("adCreditMilliPerMinute");
+      // Both off: today's answers.
+      setting("mac_computers", "off");
+      const today = await account();
+      expect(today.catalog).not.toHaveProperty("mac");
+      expect(today.catalog).not.toHaveProperty("creditScale");
+      expect(today).not.toHaveProperty("pricing");
+      expect(await site()).toEqual({ pricingV3: false });
+    });
+  });
+});
+
+describe("a DAEX Cloud Mac's reads", () => {
+  const MAC = "mac0123456789abcdef0123456789abcdef";
+  const sessionReads: number[] = [];
+
+  beforeEach(() => {
+    sessionReads.length = 0;
+    Object.assign(harness.env, { NOMAC_API_KEY: "nmk_test", MAC_COMPUTERS: "all" });
+    harness.insert("cloud_settings", { key: "mac_computers", value: "all", updated_at: NOW - DAY });
+    seedAccount(harness, OWNER);
+    // A Mac DAEX last saw starting; NoMac has it ready now (its boot already done).
+    seedComputer(harness, {
+      instance_id: MAC, provider: "nomac", os: "mac", type: "mac", cpu: CLOUD_MAC_SHAPE.cpu, memory_gb: CLOUD_MAC_SHAPE.memoryGb, disk_gb: CLOUD_MAC_SHAPE.driveGb,
+      multiplier_milli: 30_000, status: "starting", awake_since: null, last_awake_at: null, mac_state: "starting", mac_state_at: NOW - MINUTE,
+      mac_session_id: "ses_mac", mac_label: `adem:${MAC}`, mac_booted_session: "ses_mac", machine_key: "mk-mac",
+    });
+    harness.insert("machines", { user_id: OWNER, machine_key: "mk-mac", last_seen_at: NOW });
+    const session = { id: "ses_mac", state: "ready", label: `adem:${MAC}`, ready_at: new Date(NOW - 30_000).toISOString(), created_at: new Date(NOW - MINUTE).toISOString() };
+    const network = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith("https://nomac.app/")) return network(input, init);
+      const call = `${init?.method ?? "GET"} ${url.replace("https://nomac.app/api/v1", "")}`;
+      if (call === "GET /mac/sessions/ses_mac") {
+        sessionReads.push(clock);
+        return new Response(JSON.stringify({ session }), { status: 200 });
+      }
+      if (call.startsWith("GET /mac/sessions?")) return new Response(JSON.stringify({ sessions: [session] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404 });
+    });
+  });
+
+  // Every app on every device polls the same Mac: a client's read must never cost a provider call per poll,
+  // and it must never be what starts the charge (only the tick and the webhook move a Mac to running).
+  it("a client's read asks NoMac at most once a Mac in 10 s and writes nothing; the tick moves it to running and starts its charge", async () => {
+    const background: Promise<unknown>[] = [];
+    const read = async () => {
+      const answer = await handleCloudRequest(new Request(`https://directory.test/cloud/instances/${MAC}`, { headers: { authorization: `Bearer ${tokens[OWNER]}` } }), harness.env, (work) => { background.push(work); });
+      await Promise.all(background);
+      expect(answer.status).toBe(200);
+      return ((await answer.json()) as { status: string }).status;
+    };
+
+    expect(await read()).toBe("starting");
+    clock += 5_000;
+    expect(await read()).toBe("starting");
+    expect(sessionReads).toEqual([NOW]);
+    expect(computer(harness, MAC)).toMatchObject({ status: "starting", awake_since: null, mac_state: "starting" });
+    // Past the hold: one more read, still no write.
+    clock += 6_000;
+    expect(await read()).toBe("starting");
+    expect(sessionReads).toEqual([NOW, NOW + 11_000]);
+    expect(computer(harness, MAC)).toMatchObject({ status: "starting", awake_since: null });
+
+    // The tick: running from its own time, the charge from there.
+    clock = NOW + MINUTE;
+    harness.exec("update machines set last_seen_at = ? where machine_key = 'mk-mac'", clock);
+    await harness.tick();
+    expect(computer(harness, MAC)).toMatchObject({ status: "running", awake_since: NOW + MINUTE, mac_state: "running" });
   });
 });

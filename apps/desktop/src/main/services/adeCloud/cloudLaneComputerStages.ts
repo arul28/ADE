@@ -16,7 +16,7 @@ import type {
   ChatLaunchStageStatus,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
-import { cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_MAC_SHAPE, cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
 import type {
   CloudLaunchAttachment,
   CloudLaunchRecord,
@@ -43,6 +43,9 @@ import { deleteComputersForRequest, pairAndConnectWithRetry } from "./cloudCompu
 import { launchFileName } from "./cloudLaunchFileCopies";
 import type { CloudProvider } from "./cloudProvider";
 import { BRAND } from "../../../shared/brand";
+
+/** The server's stage for the provider sign-in step (`SIGN_IN_STAGE` in the computer's ade-cli); the card has no row for it. */
+const SIGN_IN_STAGE_ID = "sign_in";
 
 /**
  * The computer half of an ADE Cloud lane launch (`cloudLaneLaunchService.ts`),
@@ -143,6 +146,8 @@ export function createCloudLaneComputerStages(
   const tierWords = (tier: CloudTier | null): string | null => (tier ? `${tier.label} · ${tier.cpu} CPU, ${tier.memoryGb} GB` : null);
   /** The computer row's words: its size, and why it is bigger than the size asked for. */
   const computerWords = (record: CloudLaneLaunchRecord): string | null => {
+    // A DAEX Cloud Mac has one shape, and no size note.
+    if (record.snapshot.cloud.os === "mac") return `Mac · ${CLOUD_MAC_SHAPE.cpu} CPU, ${CLOUD_MAC_SHAPE.memoryGb} GB`;
     const words = tierWords(record.tier);
     const note = record.snapshot.cloud.sizeNote?.trim();
     return note ? (words ? `${words}. ${note}` : note) : words;
@@ -235,7 +240,10 @@ export function createCloudLaneComputerStages(
       // A CLI launch goes as the lane (`cli` stays in `launch.kind`): a server or computer before it runs the lane alone.
       kind: kind === "cli" ? "lane" : kind,
       sizeId: snapshot.cloud.sizeId as CloudServerLaunchRequest["sizeId"],
-      ...(snapshot.cloud.sizeChoice ? { sizeChoice: snapshot.cloud.sizeChoice } : {}),
+      // A Mac has one size: `sizeId` still goes (the server ignores it) and the choice is `picked`.
+      ...(snapshot.cloud.os === "mac"
+        ? { os: "mac" as const }
+        : snapshot.cloud.sizeChoice ? { sizeChoice: snapshot.cloud.sizeChoice } : {}),
       project: { origin: record.project.identity },
       lane: { id: snapshot.laneId, ...cloudLaunchLaneFields(snapshot.laneName, launch.laneConfig) },
       ...(kind === "chat" && create && launch.chat
@@ -327,7 +335,9 @@ export function createCloudLaneComputerStages(
     const repository = record.project.identity.replace(/^github\.com\//i, "");
     const state = server.state;
     const computerMade = Boolean(server.instanceId) && state !== "making";
-    show("computer", computerMade ? "done" : "running", computerWords(record));
+    // A Mac waits in the server's queue, then starts: the row says the server's sentence while it does.
+    const macWaiting = !computerMade && server.os === "mac" ? server.mac?.message?.trim() || null : null;
+    show("computer", computerMade ? "done" : "running", macWaiting ?? computerWords(record));
     if (!computerMade) return;
     // Waiting on a sign-in comes after the join: the computer is in the account already.
     const joined = state === "joined" || state === "waiting_for_sign_in" || state === "running" || state === "done" || reported.get("join")?.status === "done";
@@ -345,7 +355,19 @@ export function createCloudLaneComputerStages(
     // The computer waits for the chat's provider sign-in: the card shows the link and code.
     const waiting = state === "waiting_for_sign_in" ? server.signIn ?? null : null;
     const signIn = waiting
-      ? { label: waiting.label, url: waiting.url, userCode: waiting.userCode, reason: waiting.reason, jobId: waiting.jobId ?? null, needsPastedCode: waiting.needsPastedCode === true }
+      ? {
+        label: waiting.label,
+        url: waiting.url,
+        userCode: waiting.userCode,
+        reason: waiting.reason,
+        jobId: waiting.jobId ?? null,
+        needsPastedCode: waiting.needsPastedCode === true,
+        provider: waiting.provider ?? null,
+        expiresAt: waiting.expiresAt ?? null,
+        freeModel: waiting.freeModel ?? null,
+        ownComputer: waiting.ownComputer === true,
+        charge: waiting.charge ?? null,
+      }
       : null;
     if (JSON.stringify(record.snapshot.cloud.signIn ?? null) !== JSON.stringify(signIn)) {
       if (signIn) record.snapshot.cloud.signIn = signIn;
@@ -373,10 +395,12 @@ export function createCloudLaneComputerStages(
   };
 
   /** The sentence for a launch the server or its computer ended, from the computer's own words when it has them. */
-  const serverFailure = (server: CloudLaunchRecord): LaunchStepError => {
-    if (server.state === "cancelled") return new LaunchStepError(`This launch was cancelled on ${BRAND.CLOUD_NAME}.`);
+  const serverFailure = (server: CloudLaunchRecord, onSignIn: boolean): LaunchStepError => {
+    // A launch that ended in its sign-in step says whether its wait was charged (the server's `endNote`).
+    const note = server.endNote ? ` ${server.endNote}` : "";
+    if (server.state === "cancelled") return new LaunchStepError(`This launch was cancelled on ${BRAND.CLOUD_NAME}.${note}`, null, onSignIn);
     const failed = server.stages.find((stage) => stage.status === "failed");
-    return new LaunchStepError(clip(server.error ?? failed?.error ?? "The new computer couldn't start the lane.", 400));
+    return new LaunchStepError(`${clip(server.error ?? failed?.error ?? "The new computer couldn't start the lane.", 400)}${note}`, null, onSignIn);
   };
 
   /** Pairs and connects, retrying while the computer's account row and relay route come up. */
@@ -503,6 +527,9 @@ export function createCloudLaneComputerStages(
           logger.info("cloud_lane_launch.computer_created", { launchId, instanceId: server.instanceId, tier: record.tier?.id ?? null });
           persist(record);
         }
+        // Read before the record is shown: a launch the server ended clears its sign-in.
+        const endedOnSignIn = record.snapshot.cloud.signIn != null
+          || server.stages.some((stage) => stage.id === SIGN_IN_STAGE_ID && (stage.status === "running" || stage.status === "failed"));
         showServerRecord(record, server);
         if (server.state === "failed" && record.snapshot.cloud.instanceId && server.stages.some((stage) => stage.id === "agent" && stage.status !== "pending")) {
           // The computer's own launch failed after its agent began: that launch
@@ -519,7 +546,7 @@ export function createCloudLaneComputerStages(
           assertActive(record, signal);
           if (snapshot) return snapshot;
         }
-        if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server);
+        if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server, endedOnSignIn);
         // A provider sign-in waits on a person: the time to find the launch starts again after it.
         if (server.state === "waiting_for_sign_in") clonedAt = null;
         const signedIn = server.state === "joined" || server.state === "running" || server.state === "done";

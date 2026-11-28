@@ -54,13 +54,17 @@ struct CloudIphoneStatus: Decodable, Equatable {
   let supported: Bool
   /// Why it is not usable, in the host's words.
   let reason: String?
+  /// The chat of this brain's latest call to the live phone (`CloudPhoneStatusView.chatSessionId`):
+  /// that chat holds it (Pricing v3's ad price follows it). Nil before any call, once it
+  /// ended, from a brain that doesn't drive it, or from an older brain.
+  let chatSessionId: String?
 
   var isOn: Bool { access == "on" }
   var isStarting: Bool { phone?.state == "starting" }
   var isReady: Bool { phone?.state == "ready" }
 
   private enum CodingKeys: String, CodingKey {
-    case access, minutes, phone, capabilities, supported, reason
+    case access, minutes, phone, capabilities, supported, reason, chatSessionId
   }
 
   init(from decoder: Decoder) throws {
@@ -71,6 +75,7 @@ struct CloudIphoneStatus: Decodable, Equatable {
     capabilities = (try? c.decode([String].self, forKey: .capabilities)) ?? []
     supported = (try? c.decode(Bool.self, forKey: .supported)) ?? false
     reason = try? c.decodeIfPresent(String.self, forKey: .reason)
+    chatSessionId = try? c.decodeIfPresent(String.self, forKey: .chatSessionId)
   }
 }
 

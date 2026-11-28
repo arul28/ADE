@@ -2,6 +2,7 @@
 // Model Registry — single source of truth for all AI models
 // ---------------------------------------------------------------------------
 
+import { ADE_FREE_OPENCODE_PROVIDER_ID, adeFreeModelByAlias } from "./adeFreeModels";
 import type { CodexAccessProgram } from "./codexDaybreak";
 import bundledModelManifestJson from "./model-manifest.json";
 import { compareTextInsensitive } from "./formatting";
@@ -3250,9 +3251,22 @@ function constructDynamicModelDescriptor(normalized: string): ModelDescriptor | 
   }
   const openCodeDecoded = decodeOpenCodeRegistryId(normalized);
   if (openCodeDecoded) {
+    // ADE Free Models: OpenCode never lists them (ADE adds their provider at
+    // launch), so their name and window come from ADE's own table.
+    const adeFree = openCodeDecoded.openCodeProviderId === ADE_FREE_OPENCODE_PROVIDER_ID
+      ? adeFreeModelByAlias(openCodeDecoded.openCodeModelId)
+      : null;
     return createDynamicOpenCodeModelDescriptor("", {
       openCodeProviderId: openCodeDecoded.openCodeProviderId,
       openCodeModelId: openCodeDecoded.openCodeModelId,
+      ...(adeFree
+        ? {
+          displayName: adeFree.displayName,
+          contextWindow: adeFree.contextWindow,
+          maxOutputTokens: adeFree.maxOutputTokens,
+          capabilities: adeFree.capabilities,
+        }
+        : {}),
     });
   }
   const local = parseDynamicLocalModelRef(normalized);

@@ -29,6 +29,13 @@ type Snapshot = Omit<CloudMachinesState, "refresh">;
 const EMPTY: Snapshot = { result: null, loading: false, loadError: null };
 
 let snapshot = EMPTY;
+/**
+ * The last answer with an account, kept after the last surface closes, for
+ * Settings › DAEX Cloud to draw at once on its next open while its fresh
+ * read runs (`lastCloudMachinesResult`). In memory only, dropped on another
+ * account: never a copy anything decides from.
+ */
+let retained: CloudMachinesResult | null = null;
 const listeners = new Set<() => void>();
 /**
  * Surfaces that want the quick re-reads while a box settles (the machine
@@ -84,6 +91,8 @@ function load(): void {
       if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
       // And the account, for the header, the invite pill and Settings › Account.
       noteCloudAccountRead(result);
+      if (result?.state === "ok" && result.account) retained = result;
+      else if (result?.state === "not_connected" || result?.state === "access_refused") retained = null;
       publish({ result, loadError: null });
       scheduleSettlingRead(result);
     },
@@ -98,6 +107,7 @@ function load(): void {
 // Another account, or none: the last account's computers leave the shared list
 // now, and a surface still open reads the new account's.
 onAccountScopeChange(() => {
+  retained = null;
   publish({ result: null, loadError: null });
   if (listeners.size > 0) load();
 });
@@ -139,6 +149,15 @@ function subscribeWith(listener: () => void, settle: boolean): () => void {
 }
 
 /**
+ * The last list with an account this window read, even with no surface open:
+ * only for drawing a page at once while its own fresh read runs. Null after
+ * a sign-out, another account, or lost access.
+ */
+export function lastCloudMachinesResult(): CloudMachinesResult | null {
+  return retained;
+}
+
+/**
  * The list as last read, while some surface keeps it current (it is read again
  * on cloud events and window focus). Null when nothing watches it, since a
  * snapshot nobody refreshes can predate a create or a move.
@@ -170,6 +189,8 @@ export function refreshCloudMachines(): void {
       // An unread list (the web app with no computer online) is not "no computers": keep the last index.
       if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
       noteCloudAccountRead(result);
+      if (result?.state === "ok" && result.account) retained = result;
+      else if (result?.state === "not_connected" || result?.state === "access_refused") retained = null;
     },
     (error: unknown) => captureError(error, { fingerprint: ["cloud", "machines_refresh"], handled: true }),
   );

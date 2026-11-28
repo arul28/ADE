@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
+import { cloudMacPhaseOf, cloudMachineAllows, isCloudMacMachine, type CloudComputerAction } from "../../../shared/cloudMac";
 import { ArrowClockwise, ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, PlugsConnected, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
   CLOUD_SHAPES,
@@ -29,6 +30,8 @@ import { cloudBoxWork, type CloudBoxWork } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import { useCloudMachines, watchedCloudMachines } from "./useCloudMachines";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudTiers } from "../../../shared/cloudTiers";
+import { cloudAdsViewOf, cloudPricingOf, cloudRateText, cloudTierRatePair } from "../../../shared/cloudAdPriceWords";
 import { BRAND } from "../../../shared/brand";
 
 /** What one box is doing in the list right now, shown on its card. */
@@ -99,16 +102,32 @@ function chatsLine(count: number, name: string): string {
   return `${count === 1 ? "A chat is" : `${count} chats are`} running on ${name}.`;
 }
 
+/** What is running where a Sleep was asked for: chats (the machine list, a chat header) or the CLI session whose header it is. */
+export type CloudSleepRunning = "chats" | "session";
+
 /**
  * Asks before a sleep when chats are running on the computer: sleep freezes
  * everything, so a turn in progress may fail. True with nothing running.
- * Every Sleep asks this way (the machine list, a cloud lane's chat header).
+ * Every Sleep asks this way (the machine list, a cloud lane's chat or CLI
+ * session header).
  */
-export async function confirmCloudSleep(name: string, runningChats: number): Promise<boolean> {
-  if (runningChats <= 0) return true;
+export async function confirmCloudSleep(name: string, running: number, what: CloudSleepRunning = "chats", mac = false): Promise<boolean> {
+  if (running <= 0) return true;
+  // A Mac's sleep is its stop: its drive is saved, and the next message starts a new Mac with it.
+  if (mac) {
+    return await confirmDialog({
+      title: `Stop ${name}?`,
+      message: what === "session"
+        ? `This session is running on ${name}. Stopping ends everything on the Mac, so its work in progress may not finish. The drive is saved; your next message starts the Mac again.`
+        : `${chatsLine(running, name)} Stopping ends the turns in progress, and they show as Stopped. The drive is saved; your next message starts the Mac again.`,
+      confirmLabel: "Stop",
+    });
+  }
   return await confirmDialog({
     title: `Sleep ${name}?`,
-    message: `${chatsLine(runningChats, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no credits while asleep.`,
+    message: what === "session"
+      ? `This session is running on ${name}. Sleep stops everything on the computer, so its work in progress may not finish. It uses no credits while asleep.`
+      : `${chatsLine(running, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no credits while asleep.`,
     confirmLabel: "Sleep",
   });
 }
@@ -213,7 +232,7 @@ export function useCloudBoxActions(args: {
   }, [refresh, setError, setPending]);
 
   const sleep = useCallback(async (ctx: CloudBoxContext) => {
-    if (!(await confirmCloudSleep(ctx.name, ctx.work.runningChats))) return;
+    if (!(await confirmCloudSleep(ctx.name, ctx.work.runningChats, "chats", isCloudMacMachine(ctx.box)))) return;
     await run(ctx, "sleep");
   }, [run]);
 
@@ -361,7 +380,14 @@ export function useCloudBoxActions(args: {
     const copyMachine = window.ade.cloud?.copyMachine;
     if (!copyMachine) return;
     // The cards that offer Copy keep the list watched, so its account gives the words.
-    const rate = ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate, cloudUnitWords(watchedCloudMachines()?.account)) : null;
+    // A copy is a new computer at the same size: its rate is the size's, both prices under Pricing v3.
+    const account = watchedCloudMachines()?.account;
+    const words = cloudUnitWords(account);
+    const view = cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+    const shape = view && ctx.box.shapeId ? cloudShapeById(ctx.box.shapeId) : null;
+    const tier = shape ? cloudTiers(cloudCatalogOf(account)).find((entry) => entry.cpu === shape.cpu && entry.memoryGb === shape.memoryGb && entry.multiplierMilli === Math.round((ctx.box.hoursRate ?? -1) * 1000)) : null;
+    const rate = tier ? `uses ${cloudRateText(cloudTierRatePair(tier), view, words)}`
+      : ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate, words) : null;
     const ok = await confirmDialog({
       title: `Copy ${ctx.name}?`,
       message: `${BRAND.NAME} makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate} while awake` : ""}. A big disk takes a few minutes.`,
@@ -435,10 +461,18 @@ export function useCloudBoxActions(args: {
     const busy = pendingById[box.instanceId] != null;
     const suspended = box.pastDue;
     const items: MachineAction[] = [];
+    // The server lists what this computer refuses (a Mac: size, copy, move, update, backups).
+    const allows = (action: CloudComputerAction) => cloudMachineAllows(box, action);
+    const mac = isCloudMacMachine(box);
     if (box.state === "running") {
-      items.push({ key: "cloud-sleep", label: "Sleep", icon: <Moon size={14} />, disabled: busy, onSelect: () => void sleep(ctx) });
+      // A Mac's sleep is its stop: the server saves its drive and lets the Mac go.
+      items.push({ key: "cloud-sleep", label: mac ? "Stop now" : "Sleep", icon: <Moon size={14} />, disabled: busy, onSelect: () => void sleep(ctx) });
     }
-    if ((box.state === "asleep" || box.state === "stopped") && !suspended) {
+    // A computer the server can't wake now says why on its row (`unavailable`), with no Wake;
+    // so does a Mac whose drive is gone or that is still saving it.
+    const macPhase = mac ? cloudMacPhaseOf(box.mac, box.state) : null;
+    const macCantStart = macPhase === "drive_lost" || macPhase === "stopping";
+    if ((box.state === "asleep" || box.state === "stopped") && !suspended && !box.unavailable && !macCantStart) {
       items.push({
         key: "cloud-wake",
         label: box.state === "stopped" ? "Start" : "Wake",
@@ -447,11 +481,13 @@ export function useCloudBoxActions(args: {
         onSelect: () => void run(ctx, "wake"),
       });
     }
-    if (box.state === "running" && box.resources) {
+    if (box.state === "running" && box.resources && allows("resize")) {
       items.push({ key: "cloud-resize", label: "Resize…", icon: <ArrowsOutSimple size={14} />, disabled: busy, onSelect: () => setResizing(ctx) });
     }
-    if (box.machineKey && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
+    if (box.machineKey && allows("copy") && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "cloud-copy", label: "Copy…", icon: <Copy size={14} />, disabled: busy, onSelect: () => void copyBox(ctx) });
+    }
+    if (box.machineKey && allows("move") && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({
         key: "cloud-move",
         label: box.type === "vm" ? "Move to a standard computer…" : "Move to a full computer…",
@@ -460,10 +496,10 @@ export function useCloudBoxActions(args: {
         onSelect: () => void moveBox(ctx),
       });
     }
-    if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
+    if (allows("update") && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "cloud-update", label: "Update this computer", icon: <ArrowClockwise size={14} />, disabled: busy, onSelect: () => void updateBox(ctx) });
     }
-    if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
+    if (allows("backup") && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
       items.push({ key: "cloud-backup", label: "Back up now", icon: <CloudArrowUp size={14} />, disabled: busy, onSelect: () => void run(ctx, "backup") });
     }
     // A box that joined once (it carries its machine key) and left the account.
@@ -566,6 +602,8 @@ function CloudResizeDialog({
   const account = useCloudMachines(true).result?.account;
   const catalog = cloudCatalogOf(account);
   const words = cloudUnitWords(account);
+  const view = cloudPricingOf(account) ? cloudAdsViewOf(account) : null;
+  const tiers = cloudTiers(catalog);
   const running = work.runningChats > 0;
   return (
     <Dialog
@@ -590,7 +628,10 @@ function CloudResizeDialog({
         ) : null}
         <div role="radiogroup" aria-label="Size" className="ade-cx-cloud-shapes">
           {CLOUD_SHAPES.map((shape) => {
-            const rate = capitalizeCloudPhrase(formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog), words));
+            const full = cloudHoursRate(kind, shape.id, catalog);
+            // Under Pricing v3, both prices of the size (the one the person pays now first).
+            const tier = view ? tiers.find((entry) => entry.cpu === shape.cpu && entry.memoryGb === shape.memoryGb && entry.multiplierMilli === Math.round(full * 1000)) : null;
+            const rate = tier ? cloudRateText(cloudTierRatePair(tier), view, words) : capitalizeCloudPhrase(formatCloudHoursRate(full, words));
             const isCurrent = shape.id === current;
             return (
               <button

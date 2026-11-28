@@ -9,6 +9,7 @@
  * goes on with every window closed.
  */
 
+import type { CloudMacPhase } from "./cloudMac";
 import type { AdeCardPayload } from "./adeCard";
 import type { CloudTierId } from "./cloudTiers";
 import type { CloudLaneWithoutComputer } from "./cloudLaneLaunch";
@@ -67,6 +68,12 @@ export type CloudLaneDeleteOptions = {
    * move carried to another machine. The rest stay readable from ADE Cloud.
    */
   onlyChats?: readonly string[];
+  /**
+   * "Delete anyway" on a computer the idle cleanup kept: only the computer
+   * goes, and the lane and its saved chats stay (a lane without a computer).
+   * Nothing is checked, saved or pushed first.
+   */
+  keepLane?: boolean;
 };
 
 export type CloudLaneDeleteResult = {
@@ -367,6 +374,8 @@ export type CloudLaneEntry = {
     /** The idle cleanup's planned delete (ISO); "Keep it" (`ade cloud lanes keep`) stops it. */
     deletesAt: string | null;
     diskGb: number | null;
+    /** A DAEX Cloud Mac's phase and word (absent on Linux): `state` stays in the shared states, this says it as a Mac does. */
+    mac?: { phase: CloudMacPhase; label: string };
   } | null;
   /** Why and when its computer went, for `computer_deleted`; `sentence` is the one line people read. */
   deleted: { at: string | null; fate: CloudComputerFate; sentence: string } | null;

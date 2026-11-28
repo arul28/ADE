@@ -247,15 +247,35 @@ export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
  * makes a new computer. The ADE Cloud page and Manage lane both call this.
  * Resolves true when the computer was freed.
  */
-export async function freeCloudLaneWithConfirm(input: { instanceId: string; laneName: string; onDone?: () => void; /** The caller already said what happens and the person confirmed (the limit card). */ confirmed?: boolean }): Promise<boolean> {
-  const { instanceId, laneName } = input;
-  const ok = input.confirmed === true || await confirmDialog({
-    title: `Free the computer of ${laneName}?`,
-    message: `${BRAND.NAME} pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.`,
-    icon: <CloudMark size={16} brand />,
-    confirmLabel: "Free the computer",
-    cancelLabel: "Cancel",
-  });
+export async function freeCloudLaneWithConfirm(input: {
+  instanceId: string;
+  laneName: string;
+  onDone?: () => void;
+  /** The caller already said what happens and the person confirmed (the limit card). */
+  confirmed?: boolean;
+  /**
+   * A DAEX Cloud Mac: the free deletes the Mac and its drive. The server's job
+   * pushes the lane's work first (`frees.ts`), starting a stopped Mac to do it;
+   * it refuses a Mac whose drive is lost, so that one is never offered here.
+   */
+  mac?: { stopped: boolean } | null;
+}): Promise<boolean> {
+  const { instanceId, laneName, mac } = input;
+  const ok = input.confirmed === true || await confirmDialog(mac
+    ? {
+      title: `Delete the Mac of ${laneName} and its drive?`,
+      message: `${mac.stopped ? `${BRAND.NAME} starts the Mac (this uses credits for a few minutes), pushes` : `${BRAND.NAME} pushes`} the lane's work to its branch on GitHub, then deletes the Mac and its drive. The lane, its chats and the work it pushed stay; anything else on the drive is gone. Your next message starts a new Mac.`,
+      icon: <CloudMark size={16} brand />,
+      confirmLabel: "Delete the Mac",
+      cancelLabel: "Cancel",
+    }
+    : {
+      title: `Free the computer of ${laneName}?`,
+      message: `${BRAND.NAME} pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.`,
+      icon: <CloudMark size={16} brand />,
+      confirmLabel: "Free the computer",
+      cancelLabel: "Cancel",
+    });
   if (!ok) return false;
   // Waking it, pushing and removing it take minutes: say so until it ends, as a delete does.
   const toastId = `cloud-lane-free:${instanceId}`;

@@ -25,6 +25,14 @@ npm run build
 npm run preview
 ```
 
+## Cloud prices
+
+`/pricing` and the home page's cloud section show today's prices, or Pricing v3's when the account server says so. One request per page load reads `GET /public/pricing` (`src/lib/siteOffer.ts`); on `/` and `/pricing` a script in `index.html` starts it beside the site's code (`siteOfferEarlyScript` in `vite.config.ts`). A missing, slow (over 4 s) or unreadable answer shows today's prices, and `/pricing` holds its prices for at most 600 ms so they don't change under the reader.
+
+`src/lib/pricingView.ts` turns the answer and the "With ads / No ads" control into the numbers on the page. The rates, the credit scale and the ad rounding come from the account server's `plans.ts`, never from copies here. The control shows only where the answer has `ads`; with no `ads` (or a discount of 0) the page says nothing about ads.
+
+To see each visitor locally, run `npm run dev` and open `/pricing?offer=us`, `?offer=ca`, `?offer=world` or `?offer=off` (add `&mac=1`, `&pct=`, `&window=`). This works only in `vite dev`; a build always asks the server.
+
 ## Product analytics
 
 The marketing site sends only manual, allowlisted PostHog capture events. It does not load the PostHog browser SDK, so autocapture, automatic pageviews, session replay, surveys, feature flags, and person profiles are not present. Conversion CTAs use `ade_marketing_cta_clicked` and are not duplicated as feature events. URLs, query strings, fragments, referrers, link destinations, visible text, and raw errors are excluded.

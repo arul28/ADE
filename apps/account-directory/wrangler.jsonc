@@ -126,6 +126,27 @@
   // unset, none: the contract has no daily limit). Turning ads on is
   // the owner's call, asked for on its own.
   //
+  // SECRET — GRAVITY_INFERENCE_KEY (ADE Free Models, src/cloud/freeModels.ts)
+  // Gravity's inference key (`gr_inf_…`): the proxy to Gravity's hosted
+  // models. Only this Worker holds it. Set out of band, here and with
+  // `--env production`; apply migrations/0071_free_models.sql first. Also
+  // needs GRAVITY_API_KEY (the cards that pay for these chats). Vars: the
+  // instant `gravity_inference` setting (off | testers | all, starts off) is
+  // held under GRAVITY_INFERENCE (unset or `off`: a hard off; `all` reaches
+  // non-testers only while `gravity_live` is in force);
+  // GRAVITY_INFERENCE_COUNTRIES (default `US,CA`, where Gravity serves its
+  // models); GRAVITY_INFERENCE_BASE (default
+  // `https://inference.trygravity.ai/v1`). Left unset in every environment
+  // until the owner adds the key and turns it on.
+  //
+  // VAR — PRICING_V3 (the ad price, src/cloud/adPrice.ts)
+  // The highest the instant `pricing_v3` setting (off | testers | all, starts
+  // off) may go. Unset or `off`: a hard off, every answer is today's. `all` in
+  // both environments: the stored setting (off until the owner flips it with
+  // scripts/cloud-owner.mjs) is the lock.
+  // `ad_discount_pct` and `ad_window_minutes` are instant settings with no
+  // ceiling (scripts/cloud-owner.mjs).
+  //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
   // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key
   // that encrypts saved chats. Set out of band. Rotating it makes existing saved
@@ -164,11 +185,27 @@
     // production's provider key (`isOwnEnvironment`, src/cloud/store.ts).
     "CLOUD_ENVIRONMENT": "development",
     "ONLINE_WINDOW_MS": "150000",
+    // The DAEX Cloud Mac (src/cloud/macSwitch.ts): the ceiling of the instant
+    // `mac_computers` setting, which starts off (no row reads off); that
+    // setting is the lock, flipped by the owner with scripts/cloud-owner.mjs.
+    // `off` here is the hard off. NOMAC_API_KEY is a secret; without it the
+    // Mac is off whatever this says.
+    "MAC_COMPUTERS": "all",
+    // This development Worker's own URL: a DAEX Cloud Mac it starts signs in
+    // here, not to production (the brain's default). Not set in production.
+    "MAC_DIRECTORY_URL": "https://ade-account-directory.arulsharma1028.workers.dev",
+    // This Worker's own start of every Mac label at NoMac: production (unset)
+    // uses `adem:`, so the two Workers on one NoMac key never stop each other's
+    // Macs (macProvider.ts, the orphan sweep).
+    "MAC_LABEL_PREFIX": "ademdev:",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
     // events in). SENTRY_RELEASE is set at deploy, not here. No
     // SENTRY_ENVIRONMENT here: this development Worker and `wrangler dev`
     // report as `development`, which src/sentry.ts never sends.
     "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
+    // Pricing v3's ceiling (src/cloud/adPrice.ts); the instant `pricing_v3`
+    // setting starts off and is the lock. Unset or `off`: a hard off.
+    "PRICING_V3": "all",
     // Exact hosted web-client origin allowed to read /account/machines.
     // Set to the production HTTPS origin before deployment.
     "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
@@ -355,6 +392,13 @@
         // ads stay Gravity's free test ads. GRAVITY_API_KEY is a secret.
         "GRAVITY_ADS": "all",
         "GRAVITY_LIVE": "1",
+        // Pricing v3 (src/cloud/adPrice.ts): the ceiling of the instant
+        // `pricing_v3` setting, which starts off (no row reads off). The owner
+        // flips that setting; `off` here (or unset) is the hard off.
+        "PRICING_V3": "all",
+        // The DAEX Cloud Mac's ceiling, restated (vars aren't inherited): the
+        // instant `mac_computers` setting starts off and is the lock.
+        "MAC_COMPUTERS": "all",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.

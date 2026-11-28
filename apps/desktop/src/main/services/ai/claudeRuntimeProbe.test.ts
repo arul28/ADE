@@ -22,6 +22,7 @@ vi.mock("./claudeCodeExecutable", () => ({
 vi.mock("../../../../../ade-cli/src/services/tools/onDemand", () => ({
   pinnedToolDownload: (tool: string) => mockState.pinnedToolDownload(tool),
   pinnedToolFetchInFlight: () => false,
+  registerDeletedPinFallback: () => {},
 }));
 
 vi.mock("./providerRuntimeHealth", () => ({

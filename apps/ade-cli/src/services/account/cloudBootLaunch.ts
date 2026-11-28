@@ -51,6 +51,7 @@ import type {
 import {
   cloudChatMessageSettingsOf,
   cloudLaneColorOf,
+  cloudSignInWaitMsFor,
   CLOUD_AUTOMATION_RUN_STAGE,
   CLOUD_LAUNCH_ENV,
   CLOUD_LAUNCH_JOIN_FILE,
@@ -74,7 +75,7 @@ import type { ProjectRegistry } from "../projects/projectRegistry";
 import type { AccountAuthService, AccountAuthStatus } from "./accountAuthService";
 import type { HeadlessApprovalResult } from "./cloudHeadlessApproval";
 import { deliverQueuedMessagesWithRetry, isFinalRefusal } from "./cloudLaunchMessages";
-import { SIGN_IN_STAGE, SIGN_IN_WAIT_MS, waitForProviderSignIn, type ProviderReady } from "./cloudLaunchSignInWait";
+import { SIGN_IN_STAGE, waitForProviderSignIn, type ProviderReady } from "./cloudLaunchSignInWait";
 import { BRAND } from "../../../../desktop/src/shared/brand";
 
 type Logger = {
@@ -111,6 +112,8 @@ export type CloudBootLaunchDeps = {
   hold?: <T>(run: () => Promise<T>) => Promise<T>;
   /** Holds the computer awake for one named step, up to `ttlMs` (the provider sign-in wait outlasts `hold`'s limit). */
   holdFor?: <T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>;
+  /** Told when the provider sign-in wait begins and ends: the first remote work during it goes to the server at once. */
+  onSignInWait?: (waiting: boolean) => void;
   /**
    * Resolves once the launch's chat ended its run (its turn finished, or it
    * stopped). For an automation's run (C9) the computer then reports the
@@ -125,8 +128,11 @@ export type CloudBootLaunchDeps = {
   providerReady?: ProviderReady;
   /** The provider's own sign-in for a person on another screen (`ade providers sign-in --remote`). */
   remoteSignIn?: {
-    start: (provider: string) => Promise<CloudRemoteSignInStatus>;
+    /** `timeoutMs`: how long the provider's sign-in may run (the wait's own end), so its link holds for the whole wait. */
+    start: (provider: string, options?: { timeoutMs?: number }) => Promise<CloudRemoteSignInStatus>;
     status: (jobId: string) => Promise<CloudRemoteSignInStatus>;
+    /** Stops a sign-in the wait started, once the wait ends. Left out: it runs to its own timeout. */
+    cancel?: (jobId: string) => Promise<void>;
   };
   /** Pulls the account vault now, so a key or a pass saved on another screen is read. */
   refreshVault?: () => Promise<void>;
@@ -662,8 +668,17 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       if (request.chat && deps.providerReady) {
         const provider = request.chat.provider;
         // The wait can outlast `hold`'s limit: its own hold keeps the computer awake through it.
-        const signIn = () => waitForProviderSignIn(deps, provider, report, startStages, sleep);
-        const waited = await (deps.holdFor?.("provider_sign_in", SIGN_IN_WAIT_MS + 10 * 60_000, signIn) ?? signIn());
+        // The server sets the length in the request it wrote (a cloud Mac waits 10 minutes, others 30).
+        const waitMs = cloudSignInWaitMsFor(request);
+        const signIn = async () => {
+          deps.onSignInWait?.(true);
+          try {
+            return await waitForProviderSignIn(deps, provider, report, startStages, sleep, request.chat?.modelId ?? null, waitMs);
+          } finally {
+            deps.onSignInWait?.(false);
+          }
+        };
+        const waited = await (deps.holdFor?.("provider_sign_in", waitMs + 10 * 60_000, signIn) ?? signIn());
         if (waited.kind === "cancelled") {
           writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId });
           return;
@@ -680,7 +695,11 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
           writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId, ...(landed ? {} : { unsent: update }) });
           return;
         }
-        if (waited.waited) startStages.push(doneStage(SIGN_IN_STAGE, request.chat.provider));
+        if (waited.kind === "switched") {
+          // The person moved the chat to a DAEX Free Model from the step: the same first message starts on it, here.
+          request.chat = { ...request.chat, provider: waited.provider, modelId: waited.model, effort: null, fast: false };
+          startStages.push(doneStage(SIGN_IN_STAGE, waited.provider));
+        } else if (waited.waited) startStages.push(doneStage(SIGN_IN_STAGE, request.chat.provider));
       }
       // Fork-continue: the launch makes the lane only; the chat is the restored one, not a new one.
       // `follow` restores it once the lane is ready, so the setup's stages are reported meanwhile.
@@ -847,10 +866,17 @@ async function join(deps: CloudBootLaunchDeps, sleep: (ms: number) => Promise<vo
     logger.info("cloud_boot_launch.headless_approval", { launchId, result: opened });
     if (opened === "signed_in" && await waitSignedIn(deps, login, joinEnds, sleep)) return true;
     // A person has to confirm: one tap in their own browser, a fresh code each 10 minutes, inside the join window.
+    // The join's own sign-in link claimed the first code, and an approval page refuses a claimed code ("Sign-in
+    // already started"), so the person gets a fresh one from the first round on.
     let current = login;
+    try {
+      current = await deps.account.startDeviceLogin();
+    } catch (error) {
+      logger.warn("cloud_boot_launch.device_login_failed", { launchId, error: errorText(error) });
+    }
     for (let round = 0; round < APPROVAL_ROUNDS && windowOpen(); round += 1) {
       try {
-        const answer = await api.joinLaunch(launchId, instanceId, { nonce: joinCode, needsApproval: true, ...(round ? { userCode: current.userCode } : {}) });
+        const answer = await api.joinLaunch(launchId, instanceId, { nonce: joinCode, needsApproval: true, userCode: current.userCode });
         if (typeof answer.joinExpiresAt === "number") joinEnds = answer.joinExpiresAt;
       } catch (error) {
         const code = error instanceof CloudApiError ? error.code : "unknown";
@@ -1185,6 +1211,8 @@ export type CloudBootLaunchHost = {
   /** This brain's ADE Cloud client (`cloudBrainAccess`). */
   cloudClient: () => Promise<CloudProvider | null>;
   holdCloudWork: HoldCloudWork | null;
+  /** Told when the provider sign-in wait begins and ends (`CloudComputerRest.noteSignInWait`). */
+  onSignInWait?: (waiting: boolean) => void;
   /** An automation's run (C9): resolves when the run's chat ends (`CloudBootLaunchDeps.waitForChatEnd`). */
   waitForChatEnd?: CloudBootLaunchDeps["waitForChatEnd"];
   /** A chat whose provider isn't signed in waits for the person's sign-in (`CloudBootLaunchDeps`). */
@@ -1338,6 +1366,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       },
       hold: host.holdCloudWork ? (run) => host.holdCloudWork!("lane_launch", 30 * 60_000, run) : undefined,
       holdFor: host.holdCloudWork ?? undefined,
+      ...(host.onSignInWait ? { onSignInWait: host.onSignInWait } : {}),
     });
   })().catch((error: unknown) => {
     logger.warn("cloud_boot_launch.failed", { error: errorText(error) });

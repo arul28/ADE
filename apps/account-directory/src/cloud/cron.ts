@@ -1,3 +1,5 @@
+import { syncAdPricesInTick, syncPhonePricesInTick } from "./adPrice";
+import type { GravityEnv } from "./gravity";
 import { carryLaunchMessagesForComputer, expireChatMessages } from "./chatMessages";
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
@@ -15,7 +17,10 @@ import type { CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { REVYL_COST_DAYS_BACK, recordRevylDayCosts } from "./phoneRevyl";
 import { AWAKE_COMPUTER_CAP, DISK_COST_MICROS_PER_GB_DAY, cloudSizeFor, usesHours, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
-import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
+import { CloudProviderError, TRY_AGAIN_CODE, type CloudProvider } from "./provider";
+import { createComputerProvider } from "./computerProvider";
+import { runMacDriveUpkeep } from "./macDrives";
+import { isMacRow, runMacTick } from "./macProvider";
 import { runPlanLimitChecks } from "./planCleanup";
 import { enforceBlocksInTick } from "./safety";
 import { computersJoiningLaunches } from "./launches";
@@ -105,8 +110,23 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   await stopPhonesDue(env, now).catch((error: unknown) => {
     reportCloudFailure("cloud.phone_stops_failed", { message: error instanceof Error ? error.message : "unknown" });
   });
+  // Pricing v3: each cloud iPhone on its price now, with or without computers (`adPrice.ts`). Never throws.
+  await syncPhonePricesInTick(env as GravityEnv, now);
+  // The DAEX Cloud Mac (`macProvider.ts`): held starts, extends, the switch going back, orphans. Its own NoMac
+  // reads, beside the Linux tick (never ahead of it: a slow NoMac must not make the zero stop late), awaited at the end.
+  const macTick = runMacTick(env, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.mac_tick_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
+  try {
+    await runComputerTick(env, now, options, waitUntil);
+  } finally {
+    await macTick;
+  }
+}
+
+async function runComputerTick(env: CloudEnv, now: number, options: { provider?: CloudProvider }, waitUntil: CloudWaitUntil | undefined): Promise<void> {
   const key = env.AGENT37_API_KEY?.trim();
-  if (!key) return;
+  if (!key && !env.NOMAC_API_KEY?.trim()) return;
   const rows = await env.DB.prepare(`
     select c.*, m.last_seen_at as last_seen_at
     from cloud_computers c
@@ -114,7 +134,9 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
     where c.deleted_at is null
   `).all<TickComputer>();
   const computers = rows.results ?? [];
-  const provider = options.provider ?? createCloudProvider(key);
+  // The router: a Mac's row goes to NoMac, every other computer to Agent 37 (`createComputerProvider`).
+  const provider = options.provider ?? createComputerProvider(env);
+  if (!provider) return;
   // The account jobs (disk days to bill, the month's cost against the owner's limit) run with no computer left too.
   if (computers.length === 0) {
     await runOwnerChecks(env, provider, [], [], now);
@@ -192,6 +214,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   }
   statements.push(...await diskDayStatements(env, diskConfirmed, now));
   if (statements.length) await env.DB.batch(statements);
+  // Pricing v3: each running computer on its price now; a window that ended goes back at its end (`adPrice.ts`).
+  await syncAdPricesInTick(env as GravityEnv, live, now);
   // A chat launch's follow-ups that waited for the computer's key join its chat.
   for (const instanceId of keyed) await carryLaunchMessagesForComputer(env, instanceId, now);
 
@@ -205,7 +229,8 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   await settleAccounts(env, provider, live, now);
   // Rollbacks for updates that never reported in. A resting computer is never updated here (that would wake it).
   try {
-    await runCloudAutoUpdates(env, provider, live, now);
+    // A Mac has no template update: its drive brings its own DAEX (`boot.sh`).
+    await runCloudAutoUpdates(env, provider, live.filter((computer) => !isMacRow(computer)), now);
   } catch (error) {
     reportCloudFailure("cloud.auto_updates_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
@@ -234,11 +259,13 @@ function shapeFromProviderStatements(env: CloudEnv, computer: TickComputer, inst
   if (size.multiplierMilli !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
     statements.push(...restartStretchStatements(env, computer, now));
   }
-  statements.push(env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, multiplier_milli = ? where instance_id = ? and cpu = ? and memory_gb = ?")
+  // Off any ad price: Pricing v3's step later in this tick puts the new size on its price (`syncAdPricesInTick`).
+  statements.push(env.DB.prepare("update cloud_computers set cpu = ?, memory_gb = ?, multiplier_milli = ?, ad_full_milli = null where instance_id = ? and cpu = ? and memory_gb = ?")
     .bind(size.cpu, size.memoryGb, size.multiplierMilli, computer.instance_id, computer.cpu, computer.memory_gb));
   computer.cpu = size.cpu;
   computer.memory_gb = size.memoryGb;
   computer.multiplier_milli = size.multiplierMilli;
+  computer.ad_full_milli = null;
   return statements;
 }
 
@@ -397,7 +424,7 @@ async function stopAll(env: CloudEnv, provider: CloudProvider, computers: TickCo
 async function stopWithRetry(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number, reason: string): Promise<boolean> {
   for (let attempt = 0; attempt < STOP_RETRIES; attempt += 1) {
     try {
-      const status = await provider.stopInstance(computer.instance_id);
+      const status = await provider.stopInstance(computer.instance_id, reason);
       const statements = statusChangeStatements(env, computer, status, now, reason);
       if (statements.length) await env.DB.batch(statements);
       return true;
@@ -442,7 +469,8 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
   const unseen = computers.filter((computer) => {
     if (computer.status !== "running" || computer.awake_since == null) return false;
     if (computer.free_wake_until != null && computer.free_wake_until > now) return false;
-    const lastSign = Math.max(computer.last_seen_at ?? 0, computer.awake_since);
+    // Its wake, not its stretch: a rate move (Pricing v3) or the daily settle restarts the stretch, not the clock.
+    const lastSign = Math.max(computer.last_seen_at ?? 0, computer.status_changed_at ?? computer.awake_since);
     return now - lastSign > NO_CHECK_IN_MS;
   });
   if (unseen.length === 0) return;
@@ -460,7 +488,7 @@ async function sleepUnseen(env: CloudEnv, provider: CloudProvider, computers: Ti
     && (joining ? !joining.has(computer.instance_id) : computer.last_seen_at != null);
   await Promise.all(unseen.filter(sleeps).map(async (computer) => {
     try {
-      const status = await provider.sleepInstance(computer.instance_id);
+      const status = await provider.sleepInstance(computer.instance_id, "no_check_in");
       const statements = statusChangeStatements(env, computer, status, now, "no_check_in");
       if (statements.length) await env.DB.batch(statements);
       logCloud("cloud.slept_no_check_in", { instanceId: computer.instance_id });
@@ -600,6 +628,8 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
     }
   };
   await step("disk_baseline", () => writeDiskBaseline(env, computers, now));
+  // A kept Mac drive NoMac would delete after 30 unused days gets a short session (ADE pays; `macDrives.ts`).
+  await step("mac_drive_upkeep", async () => { await runMacDriveUpkeep(env, now); });
   // Revyl's builds for the last few days (a day that failed or filled in late is read again), before the report reads them.
   const revylDays = Array.from({ length: REVYL_COST_DAYS_BACK }, (_, index) => utcDay(Date.parse(`${today}T00:00:00Z`) - (REVYL_COST_DAYS_BACK - index) * 86_400_000));
   await step("revyl_day_costs", () => recordRevylDayCosts(env, revylDays, now));

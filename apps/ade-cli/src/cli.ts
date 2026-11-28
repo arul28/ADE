@@ -24,7 +24,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import { cloudUnitWords } from "../../desktop/src/shared/cloudUnitWords";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
@@ -768,7 +768,7 @@ import { cloudMoveSendRefusal, isCloudMoveRefusal, isRemoteTurnStart } from "./s
 import { REMOTE_WORK_HOLD_REASON, createCloudRemoteWorkHold } from "./services/power/cloudRemoteWorkHold";
 import { CLOUD_COMPUTER_MOVING_CODE, CLOUD_COMPUTER_MOVING_SENTENCE } from "../../account-directory/src/cloud/contract";
 import { encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
-import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { isAdeCloudComputer, isAdeCloudMac } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { endProviderLoginGateHold, holdProviderLoginGate } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
@@ -895,6 +895,8 @@ export type GlobalOptions = {
   machineClone?: boolean;
   /** `--size` with `--machine cloud`: the new ADE Cloud computer's size (the person's saved size for new lanes when unset). */
   cloudSize?: string | null;
+  /** `--os mac` with `--machine cloud`: a DAEX Cloud Mac for this start only (never a saved default). */
+  cloudOs?: "linux" | "mac" | null;
   /**
    * Set by `cliMachineTargeting` when a `--machine` shell start or Apple call
    * runs in this chat's work copy there (no `--lane`): how a sync readies it
@@ -1862,14 +1864,17 @@ const CHAT_CLOUD_HELP = `    $ daex chat create --machine cloud --size medium --
                                                     whose setup needs more memory moves to Medium once, and the
                                                     repo starts at Medium after that). --lane-name <name>
                                                     names the lane and its computer (default: from the prompt).
-                                                    Asks you first. Ctrl-C stops only the waiting; the
+                                                    --os mac starts a ${BRAND.CLOUD_NAME} Mac instead (one size, no
+                                                    --size; only where daex cloud status offers a Mac). With no
+                                                    --os it is Linux. Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
                                                     failed step. daex chat launch-status|launch-cancel <id>
                                                     --machine cloud checks it or stops it.
 `;
 
-const LANES_CLOUD_HELP = `  daex lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
+const LANES_CLOUD_HELP = `  daex lanes create --machine cloud [--size small|medium|large|xlarge | --os mac] [--launch-id <id>] --name <name> [...]
                    (the lane alone, with no chat, on its own new ${BRAND.CLOUD_NAME} computer; asks you first.
+                   --os mac: a ${BRAND.CLOUD_NAME} Mac, one size; no --os is Linux.
                    No --size: the size you saved for new lanes (a Small whose setup needs more memory moves
                    to Medium once, and the repo starts at Medium after that). The same --launch-id again follows it or
                    goes on from a failed step. A Linear issue needs its whole JSON. No --description
@@ -5278,19 +5283,20 @@ ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List mach
   the rest run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
 
-  Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud credits, and
-  so do you once their first chat runs on ${BRAND.CLOUD_NAME} (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
+  Invites: a friend who enters your link gets extra free cloud credits (daex cloud invite says how many), and
+  so do you once their first chat runs on ${BRAND.CLOUD_NAME} (${CLOUD_REFERRAL_REWARD_LIMIT} invites at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
-  Earned credits never expire; they are used after the plan's credits and before
+  Credits from invites never expire; they are used after the plan's credits and before
   extra credits. The free plan is given once per computer and once per GitHub
   account, which must be at least 30 days old (or add a card, no charge).
 
   Plans: Free, Plus, Pro and Max. \`daex cloud status\` lists each with its price,
   cloud computers and credits, from ${BRAND.CLOUD_NAME} itself. Change it in Settings › ${BRAND.CLOUD_NAME} › Plans.
-  Unlimited Small computers on every plan: they never use your credits. Bigger
-  computers use credits: a credit is an hour on a Medium computer or a minute
-  on the ${BRAND.CLOUD_NAME} iPhone, so the same credits last less on a Large or an
-  X-Large (status shows them as time on each).
+  Small computers never use credits on paid plans; on Free they are free with
+  ads where ads are offered. Bigger computers and the ${BRAND.CLOUD_NAME} iPhone use
+  credits, so the same credits last less on a Large or an X-Large. \`daex cloud
+  status\` shows each size's price (with ads and with no ads, where ads are
+  offered) and the credits left as time on each size.
   Each plan has a number of cloud computers, asleep or not. At the limit a new
   lane is refused: free up a computer from another lane (daex cloud lanes free
   <lane>: the lane and its chats stay, and it gets a new computer at its next
@@ -22334,13 +22340,15 @@ function formatCloudAccount(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const account = isRecord(raw) ? raw : {};
   const hours = isRecord(account.hours) ? account.hours : {};
-  const hoursOf = (milli: unknown) => (typeof milli === "number" ? formatCloudHours(milli) : "—");
+  // Pricing v3 (the account carries `pricing`): whole credits at its scale, and no credit sentence.
+  const v3 = isRecord(account.pricing);
+  const words = cloudUnitWords(account as Pick<CloudAccountState, "credits"> & { pricing?: CloudAccountState["pricing"] });
+  const hoursOf = (milli: unknown) => (typeof milli === "number" ? words.num(milli) : "—");
   const billing = isRecord(account.billing) ? account.billing : {};
   const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
   const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
   const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
-  const words = cloudUnitWords(account as Pick<CloudAccountState, "credits">);
   const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} credits left, resets ${resets}`;
   // Cloud computers asleep or not, of the plan's limit.
   const counted = isRecord(account.computers)
@@ -22349,10 +22357,12 @@ function formatCloudAccount(value: unknown): string {
   const computers = counted ? ` ${counted.total} of ${counted.limit} cloud computers in use (asleep or not).` : "";
   // One balance, which the ADE Cloud iPhone draws from too.
   const unitLine = ` Medium computers use ${words.count(1)} an hour, Large ${words.count(2.5)}, X-Large ${words.count(4)}; the ${BRAND.CLOUD_NAME} iPhone ${words.count(words.phoneMilliPerMinute / 1000)} a minute.`;
-  const smallLine = `\nUnlimited Small computers. They never use your credits.${unitLine}${computers}`;
+  const smallLine = v3
+    ? `\nSmall computers are free on paid plans, and on Free with ads. Each size's price: daex cloud status.${computers}`
+    : `\nUnlimited Small computers. They never use your credits.${unitLine}${computers}`;
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
-  const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned ${words.noun} left (they never expire).` : "";
+  const earnedLine = earned.grantedMilli > 0 ? `\n${words.num(earned.leftMilli)} earned ${words.noun} left (they never expire).` : "";
   const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
   const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
   // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
@@ -22360,7 +22370,9 @@ function formatCloudAccount(value: unknown): string {
   const githubLine = github && github.state !== "ok" && github.sentence
     ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? ` Add the card in Settings › ${BRAND.CLOUD_NAME}.` : ""}`
     : "";
-  const out = "out of credits (Small keeps working; bigger computers and the iPhone stop)";
+  const out = v3
+    ? "out of credits (bigger computers and the iPhone stop; Small keeps working on paid plans, and on Free in chats with ads)"
+    : "out of credits (Small keeps working; bigger computers and the iPhone stop)";
   return (hours.state === "zero" ? `${plan}: ${out}. ${left}` : `${plan}: ${left}`) + smallLine + earnedLine + freeLine + githubLine;
 }
 
@@ -22372,10 +22384,12 @@ function formatCloudInvite(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const referral = readCloudReferralSummary(raw);
   if (!referral) return JSON.stringify(raw, null, 2);
+  // Pricing v3: the account's credit scale (an older brain sends none: 1).
+  const scale = isRecord(raw) && typeof raw.creditScale === "number" && raw.creditScale > 0 ? raw.creditScale : 1;
   const lines = [
     `Your invite link: ${referral.link}`,
-    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud credits, and so do you once their first chat runs on ${BRAND.CLOUD_NAME}.`,
-    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} credits earned.`,
+    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli, scale)} extra free cloud credits, and so do you once their first chat runs on ${BRAND.CLOUD_NAME}.`,
+    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} invites used, ${formatCloudHours(referral.hoursEarnedMilli, scale)} credits from invites.`,
   ];
   if (referral.canEnterCode && referral.enterCodeUntil != null) {
     lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);
@@ -31438,8 +31452,9 @@ async function runServe(
           if (!client) throw new Error(`no ${BRAND.CLOUD_NAME} access`);
           await client.requestIdleSleep(instanceId, { backupReportId: extras?.backupReportId ?? null });
         },
-        growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
-        diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
+        // A DAEX Cloud Mac's drive has one size: it never grows.
+        growDiskIfNeeded: async (stillIdle) => (isAdeCloudMac() ? false : await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false),
+        diskGrowDueNow: () => (isAdeCloudMac() ? false : cloudDiskGrower?.growDueNow() ?? false),
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Copies and Git summaries before the sleep: the lane reads the same with no computer awake.
         saveForRest: async (stillIdle: () => boolean): Promise<string | null> => (cloudRest ? await cloudRest.saveAtIdle(stillIdle) : null),
@@ -31463,6 +31478,7 @@ async function runServe(
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
+        reportBusy: async () => { await cloudComputerReports?.reportBusy(); },
         sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
         // The status menu's idle clock is the keep-awake's own.
         onIdleFacts: cloudActivityReporter ? (idle) => cloudActivityReporter?.noteIdle(idle) : undefined,
@@ -32988,6 +33004,7 @@ async function runServe(
         start: (args) => runner.start(args),
         status: (loginId) => runner.status(loginId),
         submitCode: (loginId, code) => runner.submitCode(loginId, code),
+        cancel: (loginId) => runner.cancel(loginId),
       };
     },
     // Claude's pass (`claude setup-token`) through this machine's own cloud
@@ -33002,9 +33019,10 @@ async function runServe(
           return status?.claude ?? null;
         };
         return {
-          start: () => call("cloud_sign_in_start", {}),
+          start: (options?: { timeoutMs?: number }) => call("cloud_sign_in_start", options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
           status: () => call("cloud_sign_in_status"),
           submitCode: (code: string) => call("cloud_sign_in_code", { code }),
+          cancel: () => call("cloud_sign_in_cancel"),
         };
       })().catch((error: unknown) => {
         // A failed build is tried again on the next sign-in.
@@ -33050,9 +33068,27 @@ async function runServe(
   const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunch(layout.adeDir, headlessProjectLogger, process.env) : null;
   // A chat whose provider isn't signed in here waits for the person's sign-in
   // (a launch, and a message queued for an existing chat).
-  const cloudProviderReady = createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options));
+  const cloudProviderReady = createProviderReady(
+    async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options),
+    process.env,
+    // Each agent CLI's sign-in on disk, also before its first download, and Muse's own read.
+    async ({ force }) => {
+      const { detectCliAuthStatuses } = await import("../../desktop/src/main/services/ai/authDetector");
+      const { inspectMuseCredentials } = await import("../../desktop/src/main/services/ai/museAuth");
+      const statuses = await detectCliAuthStatuses({ force, skipAuthProbe: true });
+      const muse = inspectMuseCredentials();
+      return [
+        ...statuses.map((status) => ({ cli: status.cli, authenticated: status.authenticated, verified: status.verified })),
+        { cli: "muse", authenticated: muse.source != null, verified: false },
+      ];
+    },
+  );
   const cloudRemoteSignIn = remoteProviderSignIn
-    ? { start: (provider: string) => remoteProviderSignIn.start(provider), status: (jobId: string) => remoteProviderSignIn.status(jobId) }
+    ? {
+      start: (provider: string, options?: { timeoutMs?: number }) => remoteProviderSignIn.start(provider, options),
+      status: (jobId: string) => remoteProviderSignIn.status(jobId),
+      cancel: (jobId: string) => remoteProviderSignIn.cancel(jobId),
+    }
     : undefined;
   // Pulls the vault, then runs one sign-in pass on it, so a pass or key saved
   // on another screen is applied here now (the Claude pass reconcile hears the pass).
@@ -33170,6 +33206,8 @@ async function runServe(
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
       holdCloudWork: holdCloudWork ?? null,
+      // The wait is free on the server until someone uses the computer: the first remote work is told at once.
+      ...(cloudRest ? { onSignInWait: (waiting: boolean) => cloudRest.noteSignInWait(waiting) } : {}),
       providerReady: cloudProviderReady,
       remoteSignIn: cloudRemoteSignIn,
       refreshVault: cloudRefreshVault,
@@ -33339,6 +33377,10 @@ async function runServe(
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
         return (await chat?.getSessionSummary(sessionId).catch(() => null))?.provider ?? null;
       },
+      chatModelId: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        return (await chat?.getSessionSummary(sessionId).catch(() => null))?.modelId ?? null;
+      },
       waitForChatIdle: waitCloudChatIdle,
       sendChatMessage: sendCloudChatMessage,
       applyChatSettings: applyCloudChatSettings,
@@ -33389,6 +33431,17 @@ async function runServe(
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
   // and status polls do not: an idle window polling one must not bill it all month.
+  // A launch's sign-in wait is free until someone uses the computer (`signInWait.ts` on the server):
+  // a person who only has Files, Git or a terminal's output open (the desktop's once-a-minute
+  // "still watching") hasn't used it; a screen, a preview, a device or any write has. Outside the
+  // wait every "still watching" counts as before. An older desktop names no tool: it counts.
+  const READ_ONLY_WATCH_TOOLS = new Set(["files", "git", "terminal", "side-chat"]);
+  const isWatchingReadOnlyTool = (params: unknown): boolean => {
+    if (!isRecord(params) || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
+    const { domain, action, args } = params.arguments;
+    if (domain !== "work_tools" || action !== "noteWatching" || !isRecord(args)) return false;
+    return typeof args.tool === "string" && READ_ONLY_WATCH_TOOLS.has(args.tool);
+  };
   const remoteUseKind = (params: unknown): "work" | "typing" | null => {
     if (!isRecord(params) || !isRecord(params.arguments)) return null;
     if (params.name === "work_copy_file") return "work";
@@ -33418,7 +33471,7 @@ async function runServe(
         // The server's idle cleanup may be saving this computer for its delete
         // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
         // Typing is refused then too, but never reported: it is not use.
-        const refusal = await cloudRest?.noteRemoteWork({ report: useKind === "work" });
+        const refusal = await cloudRest?.noteRemoteWork({ report: useKind === "work", signInUse: !isWatchingReadOnlyTool(request.params) });
         if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
       // Counted for a grow's restart now; held awake once it outlasts a short wait (a push with a slow hook).

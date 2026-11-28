@@ -51,7 +51,8 @@ import {
   type LocalProviderFamily,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { backgroundUtilityReasoningEffort } from "../../../shared/backgroundUtilityModel";
+import { backgroundUtilityModelAllowed, backgroundUtilityReasoningEffort } from "../../../shared/backgroundUtilityModel";
+import { ADE_FREE_MODELS_UNWATCHED_MESSAGE } from "../freeModels/adeFreeModelsLaunch";
 import { disabledProviderSet, isProviderDisabled } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
 import { applyPersistedAcpModelCatalogs, warmAcpModelCatalog } from "../chat/acpHost/acpModelDiscovery";
@@ -1926,6 +1927,8 @@ export function createAiIntegrationService(args: {
     if (!descriptor) {
       throw new Error(`Unknown model '${modelId}'. ${unknownModelHint()}`);
     }
+    // A one-off task has no chat someone has open, which an ADE Free Model needs.
+    if (!backgroundUtilityModelAllowed(descriptor.id)) throw new Error(ADE_FREE_MODELS_UNWATCHED_MESSAGE);
 
     const accountEnv = resolveTaskAccountEnv(descriptor, args.providerAccount);
     const start = Date.now();

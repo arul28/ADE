@@ -154,6 +154,7 @@ import {
   useCloudLanesWithoutComputerRows,
   type CloudLaneRowNote,
 } from "../cloudLane/cloudLanesWithoutComputer";
+import { useCloudLanePriceNotes } from "../cloudLane/cloudLanePriceNotes";
 import { openDraftAndFocusWorkInput } from "../work/workShortcuts";
 import { plainErrorText } from "../../lib/plainError";
 import { BRAND } from "../../../shared/brand";
@@ -1352,13 +1353,22 @@ export const SessionListPane = React.memo(function SessionListPane({
   // never one per row, and each map keeps its identity while its marks hold.
   const cloudLanesWithoutComputer = useCloudLanesWithoutComputerRows();
   const { deletedByLaneId, deletingSoonByLaneId } = useCloudLaneRowNotes(cloudLanesWithoutComputer);
-  const laneNoteOf = useCallback(
+  // Pricing v3: what an awake cloud lane's computer costs now, when no mark above says more.
+  const priceByLaneId = useCloudLanePriceNotes();
+  const laneMarkOf = useCallback(
     (row: Pick<CrossMachineLaneRow, "computerGone"> | null | undefined, laneId: string): CloudLaneRowNote | null => (
       row?.computerGone
         ? deletedByLaneId.get(laneId) ?? COMPUTER_DELETED_ROW_NOTE
         : deletingSoonByLaneId.get(laneId) ?? null
     ),
     [deletedByLaneId, deletingSoonByLaneId],
+  );
+  // Lane headers only: a session card that names its lane carries the marks, never the price.
+  const laneNoteOf = useCallback(
+    (row: Pick<CrossMachineLaneRow, "computerGone"> | null | undefined, laneId: string): CloudLaneRowNote | null => (
+      laneMarkOf(row, laneId) ?? (row?.computerGone ? null : priceByLaneId.get(laneId) ?? null)
+    ),
+    [laneMarkOf, priceByLaneId],
   );
   // No copy of the repository online: the list reads nothing and says so.
   const tabCopyPin = useTabCopyPin();
@@ -2864,7 +2874,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     // Work of an ADE Cloud computer that is only asleep opens normally and
     // reads its saved copy; only an action in it wakes the computer.
     const cloudResting = foreignRow != null && !foreignRow.online && foreignRow.cloudResting === true;
-    const laneNote = laneNoteOf(foreignRow, session.laneId);
+    const laneNote = laneMarkOf(foreignRow, session.laneId);
     const savedCopyReadable = session.cloudSavedCopy === true && foreignRow != null && !foreignRow.online;
     const disabledReason = (foreignRow && !savedCopyReadable && !cloudResting
       ? machineBlockedReason({ machineName: foreignRow.machineName, online: foreignRow.online, routable: foreignRow.binding != null })

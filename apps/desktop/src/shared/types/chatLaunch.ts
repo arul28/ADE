@@ -151,6 +151,8 @@ export type ChatLaunchCloudState = {
   sizeId: string;
   /** How the size was chosen (`CloudLaunchSizeChoice`); absent is `picked`. */
   sizeChoice?: "default" | "picked" | "capped";
+  /** A DAEX Cloud Mac (`CloudServerLaunchRequest.os`); absent is Linux. */
+  os?: "linux" | "mac";
   /** Why the computer is bigger than the size asked for, in plain words ("Medium: this repo's setup needed more than 4 GB before."). */
   sizeNote?: string | null;
   /** The repository the lane clones, `github.com/owner/repo`: which project's views show this launch. */
@@ -208,6 +210,16 @@ export type ChatLaunchCloudState = {
     jobId?: string | null;
     /** The provider shows a code after sign-in that goes back to the computer (Claude). */
     needsPastedCode?: boolean;
+    /** The chat's provider id (`claude`, `codex`, …), for the step's words. */
+    provider?: string | null;
+    /** When the computer stops waiting (ms since epoch); the card says how many minutes are left. */
+    expiresAt?: number | null;
+    /** The free model "Start with … instead" moves this launch to, while the account can use DAEX Free Models; null otherwise. */
+    freeModel?: { modelId: string; label: string } | null;
+    /** The account has a computer of its own: the card names Share my sign-ins. */
+    ownComputer?: boolean;
+    /** What the wait costs, in the server's words (free: "Nothing is charged…"); null on a size that uses no credits. */
+    charge?: { free: boolean; sentence: string } | null;
   };
 };
 
@@ -420,6 +432,12 @@ export type ChatLaunchCloudTarget = {
    * more memory. Absent is `picked`: the size stays.
    */
   sizeChoice?: "default" | "picked" | "capped";
+  /**
+   * `mac`: a DAEX Cloud Mac, only when a person picked it for this start or a
+   * caller asked for it by name (a saved default never makes a Mac for an
+   * agent). Absent is Linux. `sizeId` is still sent and ignored on a Mac.
+   */
+  os?: "linux" | "mac";
   /**
    * The project's git origin as the launching window knows it (the one its
    * composer checked before Send), so main clones the same repository the

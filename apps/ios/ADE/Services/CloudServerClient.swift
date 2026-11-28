@@ -36,6 +36,9 @@ enum CloudRefusalCode {
     "linear_needs_renewal", "plan_past_due", "too_many_messages", "message_taken",
     "computer_limit", "outside_agent_free_plan", "phone_needs_update", "phone_cant",
     "phone_busy", "phone_credits_out", "phone_not_on_account",
+    // A held Free account's refusal, should a server send it apart from `out_of_hours`.
+    "free_github_hold",
+    "mac_unsupported", "mac_busy", "computer_unavailable",
   ]
 
   /// Refusals of the Linear, Jira and limits routes (`CLOUD_INTEGRATION_ERROR_CODES`,
@@ -44,6 +47,8 @@ enum CloudRefusalCode {
   static let reads: Set<String> = [
     "linear_not_connected", "linear_renewing", "jira_not_connected", "jira_site_unsupported",
     "integration_failed", "limits_changed",
+    // "Start with … instead" on a launch waiting on a sign-in.
+    "launch_not_waiting", "free_models_unavailable", "free_models_consent",
   ]
 }
 
@@ -77,6 +82,19 @@ struct CloudServerInstance: Decodable, Equatable {
   /// The files git ignores on it, as it last read them: a delete loses them.
   /// Nil before its first read and from older servers.
   let ignoredFiles: CloudPhoneAccount.IdleCleanup.IgnoredFiles?
+  /// `mac` on a DAEX Cloud Mac; nil on Linux and from an older server.
+  let os: String?
+  /// A Mac's own state; nil on Linux.
+  let mac: CloudMacState?
+  /// What the server refuses on this computer; empty allows everything.
+  let unsupported: [String]
+  /// Why it reads as it does (`statusReason`); `computer_unavailable` means no wake and no send now.
+  let statusReason: StatusReason?
+
+  struct StatusReason: Decodable, Equatable {
+    let code: String?
+    let message: String?
+  }
 
   struct Resources: Decodable, Equatable {
     let cpu: Int
@@ -87,6 +105,7 @@ struct CloudServerInstance: Decodable, Equatable {
   private enum CodingKeys: String, CodingKey {
     case id, name, status, pastDue, idleSaving, metadata, laneWork, type, resources, lastActiveAt, created, diskUsage
     case templateVersion, targetTemplate, updateState, ignoredFiles
+    case os, mac, unsupported, statusReason
   }
 
   init(id: String, name: String?, status: String, pastDue: Bool, idleSaving: Bool = false, metadata: [String: String], laneWork: CloudPhoneMachine.LaneWork? = nil) {
@@ -106,6 +125,10 @@ struct CloudServerInstance: Decodable, Equatable {
     targetTemplate = nil
     updateState = nil
     ignoredFiles = nil
+    os = nil
+    mac = nil
+    unsupported = []
+    statusReason = nil
   }
 
   init(from decoder: Decoder) throws {
@@ -126,7 +149,24 @@ struct CloudServerInstance: Decodable, Equatable {
     targetTemplate = c.lenient(String.self, forKey: .targetTemplate)
     updateState = c.lenient(String.self, forKey: .updateState)
     ignoredFiles = c.lenient(CloudPhoneAccount.IdleCleanup.IgnoredFiles.self, forKey: .ignoredFiles)
+    os = c.lenient(String.self, forKey: .os)
+    mac = os == "mac" ? c.lenient(CloudMacState.self, forKey: .mac) : nil
+    unsupported = c.lenient([String].self, forKey: .unsupported) ?? []
+    statusReason = c.lenient(StatusReason.self, forKey: .statusReason)
   }
+
+  var isMac: Bool { os == "mac" }
+  /// A Mac saving its drive: the server reads it stopped, but it can't start until that ends.
+  var macStopping: Bool { isMac && mac?.state == CloudMacPhase.stopping.rawValue }
+  /// A Mac whose drive is gone: it can never start again (its saved work is in Lanes without a computer).
+  var macDriveLost: Bool { isMac && mac?.failure == CloudMacPhase.driveLost.rawValue }
+  /// The server can't wake or send to it now: its sentence (`CLOUD_COMPUTER_UNAVAILABLE_SENTENCE`), else nil.
+  var unavailable: String? {
+    guard statusReason?.code == "computer_unavailable" else { return nil }
+    return statusReason?.message.flatMap { nonEmptyTrimmed($0) } ?? CloudMacWords.unavailableSentence
+  }
+  /// Whether the server lets this computer take `action` (the client never decides it).
+  func allows(_ action: String) -> Bool { !unsupported.contains(action) }
 
   /// Its channel has a newer image and no update is under way: Update moves it there.
   var updateBehind: Bool {
@@ -563,9 +603,12 @@ struct CloudServerClient {
   /// (`DELETE /cloud/instances/:id`, a person's delete: no `who`). Needs no
   /// wake. With `keepLaneBranch` the server keeps the lane as a lane without
   /// a computer on that branch (a free, `reason: "freed"`).
-  func deleteInstance(_ instanceId: String, keepLaneBranch: String? = nil) async throws {
-    var payload: [String: Any] = ["reason": keepLaneBranch == nil ? "user" : "freed"]
-    if let keepLaneBranch { payload["keepLane"] = ["branchRef": keepLaneBranch] }
+  /// `keepLane`: the lane and its chats stay as a lane without a computer.
+  /// With no branch the server takes the lane's branch from its own row.
+  func deleteInstance(_ instanceId: String, keepLaneBranch: String? = nil, keepLane: Bool = false) async throws {
+    let keeps = keepLane || keepLaneBranch != nil
+    var payload: [String: Any] = ["reason": keeps ? "freed" : "user"]
+    if keeps { payload["keepLane"] = ["branchRef": keepLaneBranch.map { $0 as Any } ?? NSNull()] }
     let body = try JSONSerialization.data(withJSONObject: payload)
     _ = try await send("DELETE", "cloud/instances/\(segment(instanceId))", body: body, timeout: 60)
   }
@@ -796,6 +839,9 @@ struct CloudServerClient {
       request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
       request.setValue("application/json", forHTTPHeaderField: "Accept")
       request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
+      // Every call says this build knows Pricing v3: without it the server
+      // answers as it does an older build (no `pricing`, Free's old ad rules).
+      request.setValue(cloudPricingVersion, forHTTPHeaderField: cloudPricingHeader)
       if let body {
         request.httpBody = body
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -1102,9 +1148,9 @@ extension CloudServerClient {
   /// or `deleted`), as `cloudMachines.run("delete")` does. A repeat delete's
   /// 404 is what a delete wants. False when the delete was taken but isn't
   /// finished yet.
-  func deleteInstanceConfirmed(_ instanceId: String, keepLaneBranch: String? = nil) async throws -> Bool {
+  func deleteInstanceConfirmed(_ instanceId: String, keepLaneBranch: String? = nil, keepLane: Bool = false) async throws -> Bool {
     do {
-      try await deleteInstance(instanceId, keepLaneBranch: keepLaneBranch)
+      try await deleteInstance(instanceId, keepLaneBranch: keepLaneBranch, keepLane: keepLane)
     } catch Failure.noAccess {
       // Already gone.
     }

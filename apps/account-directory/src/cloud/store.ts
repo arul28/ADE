@@ -49,6 +49,16 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   CLOUD_OWNER_TOKEN?: string;
   /** Secret. NoMac's account key (`nmk_…`) for the ADE Cloud iPhone (`phoneNomac.ts`). Unset: the phone answers `off`. */
   NOMAC_API_KEY?: string;
+  /** The ceiling of the `mac_computers` setting (`wrangler.jsonc`); unset or `off`, a hard off. */
+  MAC_COMPUTERS?: string;
+  /** A test Worker's own URL, given to a Mac's brain as its account server (`bootMac`); unset in production. */
+  MAC_DIRECTORY_URL?: string;
+  /** This Worker's Clerk (public identifiers, `callerToken.ts`): a test Worker's Mac signs in with them (`bootMac`). */
+  CLERK_ISSUER?: string;
+  CLERK_JWKS_URL?: string;
+  CLERK_OAUTH_CLIENT_ID?: string;
+  /** This environment's start of every Mac label at NoMac (`macProvider.ts`); unset: production's `adem:`. */
+  MAC_LABEL_PREFIX?: string;
   /** Secret. NoMac's embed secret (`nme_…`): signs each view link for its account alone. Unset: the link alone is the permission. */
   NOMAC_EMBED_SECRET?: string;
   /** Secret. Signs NoMac's webhook deliveries (`/cloud/nomac/webhook`). Unset: the webhook answers 503 and the ten-minute check settles phones alone. */
@@ -170,6 +180,13 @@ export type ComputerRow = {
   net_asn?: number | null;
   /** The network it joined from (its launch join, the computer's own; `sponsoredSmall.ts`). */
   join_asn?: number | null;
+  /** Pricing v3 (`adPrice.ts`, migration 0073): its full rate while it runs at the ad price; null (or absent) at the full price. */
+  ad_full_milli?: number | null;
+  /**
+   * Pricing v3 (migration 0077): the first message its create was priced at the ad price for
+   * (`[chat id, message id]`), until it counts as its proof (`countStoredFirstProof`).
+   */
+  ad_first_proof?: string | null;
   /** While a move runs: the computer it moves (see `MOVE_GRACE_MS`). */
   moving_from: string | null;
   /** When an owner's block cut it off the internet (migration 0037, `safety.ts`); null again on unblock. */
@@ -245,6 +262,30 @@ export type ComputerRow = {
   backup_problems_json?: string | null;
   /** It went to rest right after a report that saved every lane; any wake clears it. */
   backup_rest_at?: number | null;
+  /*
+   * The DAEX Cloud Mac (migration 0080, `macProvider.ts`). Null on every
+   * Linux computer: `provider` null is Agent 37 and `os` null is linux.
+   */
+  provider?: string | null;
+  os?: string | null;
+  /** The NoMac session it has now; null while it is stopped with only its drive. */
+  mac_session_id?: string | null;
+  mac_label?: string | null;
+  /** `CloudMacStateName`, when it entered it, and why the last start ended with no Mac. */
+  mac_state?: string | null;
+  mac_state_at?: number | null;
+  mac_start_failed?: string | null;
+  mac_booted_session?: string | null;
+  mac_hard_deadline_at?: number | null;
+  mac_drive_used_bytes?: number | null;
+  mac_drive_saved_at?: number | null;
+  mac_last_session_at?: number | null;
+  mac_metadata_json?: string | null;
+  mac_boot_env_json?: string | null;
+  mac_touched_at?: number | null;
+  mac_start_token?: string | null;
+  mac_boot_job_id?: string | null;
+  mac_boot_failures?: number | null;
 };
 
 export type AccountRow = {
@@ -364,17 +405,46 @@ const REQUESTS_PER_MINUTE = {
   settings: 120,
   /** Sponsored cards and the Index (`gravity.ts`): a few per finished reply and open chat; this stops a loop. */
   sponsored: 30,
+  /** Pricing v3's message proofs (`/cloud/sponsored/sent`, `adProof.ts`): one per message a person sends, on every device. */
+  sponsored_sent: 60,
+  /**
+   * ADE Free Models' model calls (`freeModels.ts`), per account: under
+   * Gravity's 60 a minute for one person, with room for a tool loop.
+   */
+  free_models: 50,
+  /** Every account's ADE Free Models calls together (counted under `*`): under Gravity's 600 a minute for ADE. */
+  free_models_all: 550,
+  /** A slowed account's ADE Free Models calls (`freeModelsMeter.ts`): no cards asked for in too long. */
+  free_models_slowed: 2,
+  /** ADE Free Models' answer and "this chat is open" notes: a few per open chat and minute. */
+  free_models_seen: 60,
 } as const;
 
-export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE;
+/** Requests one account may make in an hour, per bucket (`takeRequest`). */
+const REQUESTS_PER_HOUR = {
+  /**
+   * Answers about sponsored cards (`PUT /cloud/sponsored/consent`): a person
+   * answers a few times at most. Each answer moves the account's prices
+   * (Pricing v3), restarting each running computer's stretch.
+   */
+  sponsored_consent: 20,
+} as const;
+
+export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE | keyof typeof REQUESTS_PER_HOUR;
+
+const requestLimitOf = (bucket: CloudRequestBucket): { limit: number; windowMs: number } =>
+  bucket in REQUESTS_PER_HOUR
+    ? { limit: REQUESTS_PER_HOUR[bucket as keyof typeof REQUESTS_PER_HOUR], windowMs: 60 * 60_000 }
+    : { limit: REQUESTS_PER_MINUTE[bucket as keyof typeof REQUESTS_PER_MINUTE], windowMs: 60_000 };
 
 /**
- * Counts one request against the account's minute for `bucket`. True when it
- * is within the bucket's limit. One row per account and bucket
- * (`cloud_request_windows`); a new minute resets it.
+ * Counts one request against the account's minute (or hour) for `bucket`.
+ * True when it is within the bucket's limit. One row per account and bucket
+ * (`cloud_request_windows`); a new window resets it.
  */
 export async function takeRequest(env: CloudDb, userId: string, bucket: CloudRequestBucket, now: number): Promise<boolean> {
-  const windowStart = Math.floor(now / 60_000) * 60_000;
+  const { limit, windowMs } = requestLimitOf(bucket);
+  const windowStart = Math.floor(now / windowMs) * windowMs;
   const row = await env.DB.prepare(`
     insert into cloud_request_windows (user_id, bucket, window_start, count) values (?, ?, ?, 1)
     on conflict (user_id, bucket) do update set
@@ -382,9 +452,9 @@ export async function takeRequest(env: CloudDb, userId: string, bucket: CloudReq
       window_start = excluded.window_start
     returning count
   `).bind(userId, bucket, windowStart).first<{ count: number }>();
-  if ((row?.count ?? 1) <= REQUESTS_PER_MINUTE[bucket]) return true;
-  // Once a minute per bucket, at the first refused request.
-  if (row?.count === REQUESTS_PER_MINUTE[bucket] + 1) logCloud("cloud.rate_limited", { bucket });
+  if ((row?.count ?? 1) <= limit) return true;
+  // Once a window per bucket, at the first refused request.
+  if (row?.count === limit + 1) logCloud("cloud.rate_limited", { bucket });
   return false;
 }
 
@@ -622,10 +692,25 @@ export function statusGuard(computer: Pick<ComputerRow, "instance_id" | "status"
     : { sql: "exists (select 1 from cloud_computers where instance_id = ? and status = ? and awake_since = ?)", binds: [computer.instance_id, computer.status, computer.awake_since] };
 }
 
-/** Closes the part of the open stretch up to `upTo` and charges it. Empty when nothing is open. */
-export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: number, guard?: StatusGuard): D1PreparedStatement[] {
+/**
+ * Where a stretch's charge ends. A Mac is billed by the whole minute, as its
+ * provider bills ADE: a stretch that closes (a stop, a delete) rounds up to
+ * the next minute, and one that only settles part of itself (a restart at a
+ * rate change or a period's turn, `partial`) charges the whole minutes so far
+ * and leaves the rest open. Every other computer is charged to the ms.
+ */
+export function stretchChargeEnd(computer: Pick<ComputerRow, "awake_since" | "provider">, upTo: number, partial: boolean): number {
+  const start = computer.awake_since;
+  if (start == null || computer.provider !== "nomac" || upTo <= start) return upTo;
+  const minutes = (upTo - start) / 60_000;
+  return start + (partial ? Math.floor(minutes) : Math.ceil(minutes)) * 60_000;
+}
+
+/** Closes the part of the open stretch up to `upTo` and charges it. Empty when nothing is open. `partial`: see `stretchChargeEnd`. */
+export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: number, guard?: StatusGuard, { partial = false }: { partial?: boolean } = {}): D1PreparedStatement[] {
   const start = computer.awake_since;
   if (start == null) return [];
+  upTo = stretchChargeEnd(computer, upTo, partial);
   const statements: D1PreparedStatement[] = [];
   let chargedMilli = 0;
   const shape = { type: computer.type, cpu: computer.cpu, memoryGb: computer.memory_gb };
@@ -634,18 +719,23 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
     chargedMilli += milli;
     // What the provider charges for this stretch, for the owner's daily report.
     const costMicros = computeCostMicrosFor(ms, shape);
+    // At the ad price (Pricing v3, `adPrice.ts`): what the discount took off, for the owner's report.
+    const adMs = computer.ad_full_milli != null ? ms : 0;
+    const adDiscount = computer.ad_full_milli != null ? Math.max(0, hoursMilliFor(ms, computer.ad_full_milli) - milli) : 0;
     // The stretch is stamped with the account's plan as it is now: run on free-plan rules, its cost also counts as free use (the owner's cap).
     statements.push(env.DB.prepare(`
-      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros, free_cost_micros)
-      select ?, ?, ?, ?, ?, ?, ?, ${freeShareSql("?", "?")}
+      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros, ad_ms, ad_discount_milli, free_cost_micros)
+      select ?, ?, ?, ?, ?, ?, ?, ?, ?, ${freeShareSql("?", "?")}
       where ${guard ? guard.sql : "1"}
       on conflict (instance_id, day) do update set
         metered_ms = metered_ms + excluded.metered_ms,
         metered_milli = metered_milli + excluded.metered_milli,
         multiplier_milli = excluded.multiplier_milli,
         cost_micros = cost_micros + excluded.cost_micros,
+        ad_ms = ad_ms + excluded.ad_ms,
+        ad_discount_milli = ad_discount_milli + excluded.ad_discount_milli,
         free_cost_micros = free_cost_micros + excluded.free_cost_micros
-    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, computer.user_id, costMicros, ...(guard?.binds ?? [])));
+    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, adMs, adDiscount, computer.user_id, costMicros, ...(guard?.binds ?? [])));
   }
   if (chargedMilli > 0) {
     statements.push(env.DB.prepare(`update cloud_accounts set used_milli = used_milli + ?, updated_at = ? where user_id = ?${guard ? ` and ${guard.sql}` : ""}`)
@@ -656,17 +746,29 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
 
 /** Charges the open stretch up to `now` and starts a new one there, guarded against a status change since this row was read. */
 export function restartStretchStatements(env: CloudEnv, computer: ComputerRow, now: number): D1PreparedStatement[] {
+  return restartStretchAtStatements(env, computer, now);
+}
+
+/**
+ * `restartStretchStatements` at `at` (from the stretch's start up to the
+ * caller's now): the time before `at` is charged at the rate the row reads,
+ * the new stretch starts at `at`. Pricing v3 restarts at the exact end of a
+ * computer's ad window (`adPrice.ts`), so no minute is charged twice or lost.
+ */
+export function restartStretchAtStatements(env: CloudEnv, computer: ComputerRow, at: number): D1PreparedStatement[] {
   const guard = statusGuard(computer);
+  // A Mac's new stretch starts at the last whole minute charged: the part minute goes on at the new rate.
+  const restartAt = stretchChargeEnd(computer, at, true);
   const statements = [
-    ...settleStatements(env, computer, now, guard),
-    env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`).bind(now, computer.instance_id, ...guard.binds),
+    ...settleStatements(env, computer, at, guard, { partial: true }),
+    env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`).bind(restartAt, computer.instance_id, ...guard.binds),
   ];
-  computer.awake_since = now;
+  computer.awake_since = restartAt;
   return statements;
 }
 
 /** The free time of a closing stretch (an automatic update's window), so the daily reconcile doesn't charge it. */
-export function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
+export function freeWakeStatements(env: CloudDb, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
   if (computer.free_wake_started_at == null || computer.free_wake_until == null) return [];
   const freeEnd = Math.min(closedAt, computer.free_wake_until);
   return splitByUtcDay(computer.free_wake_started_at, freeEnd).map(({ day, ms }) =>
@@ -678,8 +780,9 @@ export function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedA
     `).bind(computer.instance_id, day, computer.user_id, ms, computer.multiplier_milli, ...guard.binds));
 }
 
-function liveMilli(computer: Pick<ComputerRow, "awake_since" | "multiplier_milli">, now: number): number {
-  return computer.awake_since == null ? 0 : hoursMilliFor(now - computer.awake_since, computer.multiplier_milli);
+function liveMilli(computer: Pick<ComputerRow, "awake_since" | "multiplier_milli" | "provider">, now: number): number {
+  // A running Mac counts its minute so far as whole, as its stop will charge it.
+  return computer.awake_since == null ? 0 : hoursMilliFor(stretchChargeEnd(computer, now, false) - computer.awake_since, computer.multiplier_milli);
 }
 
 /** The power action a status change reads as, or null when it is not one. */
@@ -750,6 +853,10 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
   const nextMetered = isMeteredStatus(status);
   if (wasMetered && !nextMetered) {
     statements.push(...settleStatements(env, computer, now, guard), ...freeWakeStatements(env, computer, now, guard));
+    // Pricing v3 (`adPrice.ts`): the full-price work its brain reported, and an outside agent's
+    // message, end with the stretch awake.
+    statements.push(env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, outside_at = null, outside_busy_at = null, updated_at = ? where target = ? and (coalesce(full_work, '[]') <> '[]' or outside_at is not null)")
+      .bind(now, now, computer.instance_id));
     // A free wake that didn't count as use (an automatic update's window) leaves
     // `last_awake_at` before its start; closing it keeps the 30-day delete clock where it was.
     const freeWakeNotUse = computer.free_wake_started_at != null
@@ -814,14 +921,19 @@ export const LEGACY_LAUNCH_COMPUTER_DELETED = "This launch's ADE Cloud computer 
 
 /** Settles an open stretch and marks the computer deleted, for after the provider's delete. */
 export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
-  // Guarded: two deletes of one computer charge its last stretch once.
-  const statements = settleStatements(env, computer, now, statusGuard(computer));
+  // Guarded: two deletes of one computer charge its last stretch once. A free
+  // window it held (an update's, a launch's sign-in wait) goes into `free_ms`,
+  // so the daily reconcile doesn't charge it back.
+  const guard = statusGuard(computer);
+  const statements = [...settleStatements(env, computer, now, guard), ...freeWakeStatements(env, computer, now, guard)];
   computer.awake_since = null;
+  computer.free_wake_started_at = null;
+  computer.free_wake_until = null;
   computer.deleted_at = now;
   // The disk breakdown, the lane's work (branch names, pull request state), the lane's facts, the
   // ignored file names and the backup report (lane names) go with the computer.
   statements.push(env.DB.prepare(`
-    update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ?, disk_usage_json = null, lane_work_json = null,
+    update cloud_computers set deleted_at = ?, awake_since = null, free_wake_started_at = null, free_wake_until = null, status = 'deleted', status_changed_at = ?, disk_usage_json = null, lane_work_json = null,
       lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null,
       idle_held_reason = null, ignored_files_json = null,
       backup_report_id = null, backup_report_state = null, backup_report_at = null, backup_problems_json = null, backup_rest_at = null
@@ -1159,7 +1271,7 @@ export function computerLimitPlanOf(account: Pick<AccountRow, "plan" | "paid_pla
  * moves at once from an account at its limit must not both pass: the second
  * sees the first's pair as two and meets the limit.
  */
-export function accountComputerCountSql(userIdSql: string, { moveFrom = null, cutoff }: { moveFrom?: string | null; cutoff: number }): { sql: string; binds: unknown[] } {
+export function accountComputerCountSql(userIdSql: string, { moveFrom = null, cutoff, hideMacs = false }: { moveFrom?: string | null; cutoff: number; hideMacs?: boolean }): { sql: string; binds: unknown[] } {
   const counts = (alias: string) => `(${alias}.instance_id not like '${PENDING_PREFIX}%' or ${alias}.created_at > ?)`;
   const moveSources = moveFrom != null;
   return {
@@ -1168,7 +1280,10 @@ export function accountComputerCountSql(userIdSql: string, { moveFrom = null, cu
       + (moveSources
         ? " and (cc.moving_from is null or cc.moving_from <> ?)"
         : ` and not exists (select 1 from cloud_computers cm where cm.moving_from = cc.instance_id and cm.deleted_at is null and ${counts("cm")})`)
-      + ` and ${counts("cc")})`,
+      + ` and ${counts("cc")}`
+      // A Mac the switch no longer shows this account doesn't count (`macReaches`): it holds only its drive.
+      + (hideMacs ? " and cc.type <> 'mac'" : "")
+      + ")",
     binds: moveSources ? [moveFrom, moveFrom, cutoff] : ["", cutoff, cutoff],
   };
 }
@@ -1178,7 +1293,8 @@ const countsTowardLimit = (computer: Pick<ComputerRow, "instance_id" | "created_
   !isPendingId(computer.instance_id) || computer.created_at > now - PENDING_TIMEOUT_MS;
 
 /** The computers `computers` (one account's, not deleted) count toward the limit; as `accountComputerCountSql` with nothing left out. */
-export function countedComputers(computers: Pick<ComputerRow, "instance_id" | "moving_from" | "created_at">[], now: number): number {
+export function countedComputers(all: Pick<ComputerRow, "instance_id" | "moving_from" | "created_at" | "type">[], now: number, { hideMacs = false }: { hideMacs?: boolean } = {}): number {
+  const computers = hideMacs ? all.filter((computer) => computer.type !== "mac") : all;
   const moving = new Set(computers.filter((computer) => computer.moving_from != null && countsTowardLimit(computer, now)).map((computer) => computer.moving_from));
   return computers.filter((computer) => !moving.has(computer.instance_id) && countsTowardLimit(computer, now)).length;
 }
@@ -1188,8 +1304,8 @@ export function countedComputers(computers: Pick<ComputerRow, "instance_id" | "m
  * move's own check: that source is left out and other moves' sources count
  * (`accountComputerCountSql` with `moveFrom`).
  */
-export async function accountComputerCount(env: CloudDb, userId: string, now: number, moveFrom: string | null = null): Promise<number> {
-  const count = accountComputerCountSql("?", { moveFrom, cutoff: now - PENDING_TIMEOUT_MS });
+export async function accountComputerCount(env: CloudDb, userId: string, now: number, moveFrom: string | null = null, hideMacs = false): Promise<number> {
+  const count = accountComputerCountSql("?", { moveFrom, cutoff: now - PENDING_TIMEOUT_MS, hideMacs });
   const row = await env.DB.prepare(`select ${count.sql} as n`).bind(userId, ...count.binds).first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -1222,14 +1338,16 @@ export function freeShareSql(userIdSql: string, costSql: string): string {
 export function accountDiskSql(userIdSql: string, options: { except?: boolean; billable?: boolean } = {}): string {
   const disk = options.billable ? "case when dc.disk_reserved_at is null then dc.disk_gb else coalesce(dc.disk_confirmed_gb, dc.disk_gb) end" : "dc.disk_gb";
   return `(select coalesce(sum(${disk}), 0) from cloud_computers dc where dc.user_id = ${userIdSql} and dc.deleted_at is null`
+    // A Mac's drive comes with the Mac (its minute price); it is no disk of the plan.
+    + " and dc.type <> 'mac'"
     + " and not exists (select 1 from cloud_computers dm where dm.moving_from = dc.instance_id and dm.deleted_at is null)"
     + `${options.billable ? ` and dc.instance_id not like '${PENDING_PREFIX}%'` : ""}${options.except ? " and dc.instance_id <> ?" : ""})`;
 }
 
 /** The disk `computers` (one account's, not deleted) count toward the plan; as `accountDiskSql`. */
-export function countedDiskGb(computers: Pick<ComputerRow, "instance_id" | "disk_gb" | "moving_from">[]): number {
+export function countedDiskGb(computers: Pick<ComputerRow, "instance_id" | "disk_gb" | "moving_from" | "type">[]): number {
   const moving = new Set(computers.map((computer) => computer.moving_from).filter((id) => id != null));
-  return computers.reduce((sum, computer) => (moving.has(computer.instance_id) ? sum : sum + computer.disk_gb), 0);
+  return computers.reduce((sum, computer) => (moving.has(computer.instance_id) || computer.type === "mac" ? sum : sum + computer.disk_gb), 0);
 }
 
 /** Disk the account's computers hold now, reservations included; `except` leaves one computer out. */
@@ -1401,52 +1519,83 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
     account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
     if (!account) throw new Error("cloud account row missing after insert");
     // Only on the account's first appearance, and only while the owner has testers waiting.
-    if (account.created_at === now) await claimPhoneBetaInvite(env, userId, now);
+    if (account.created_at === now) await claimTesterInvites(env, userId, now);
   }
   return raiseFreeHours(env, await rollPeriodIfDue(env, account, now), now);
 }
 
 /**
- * Puts `userId` on the ADE Cloud iPhone beta list, keeping `email` (the
- * address the owner typed) when one is given and the one it had otherwise.
- * Shared by the owner's add, a waiting email's claim and its hourly retry.
- * `whilePending`: a claim adds only while that waiting email is still there,
- * in the same write, so an owner's remove during the Clerk lookup holds. The
- * row's `provider` is the tester's own pick (`phones.ts`): never set here.
+ * The owner's lists of testers by email: the ADE Cloud iPhone's beta
+ * (`phoneBeta.ts`) and the DAEX Cloud Mac's (`macSwitch.ts`). Each is a pair
+ * of tables of one shape: the accounts on it (`user_id`, the `email` the
+ * owner typed, `added_at`) and the emails no account had yet
+ * (`email`, `added_at`, `checked_at`). One mechanism adds, claims, retries
+ * and removes for both (`handleOwnerTesterList` in `phoneBeta.ts`).
  */
-export function phoneBetaAddStatement(db: D1Database, userId: string, email: string | null, now: number, { whilePending = false }: { whilePending?: boolean } = {}): D1PreparedStatement {
-  const upsert = "on conflict(user_id) do update set email = coalesce(excluded.email, cloud_phone_beta.email)";
+export type TesterList = {
+  /** The accounts on the list. A constant, never input: it is put in the SQL. */
+  table: "cloud_phone_beta" | "cloud_mac_testers";
+  /** The emails waiting for an account. */
+  pendingTable: "cloud_phone_beta_pending" | "cloud_mac_testers_pending";
+  /** The log and Sentry name of its events (`cloud.<event>_claimed`). */
+  event: "phone_beta" | "mac_tester";
+};
+
+export const PHONE_TESTERS: TesterList = { table: "cloud_phone_beta", pendingTable: "cloud_phone_beta_pending", event: "phone_beta" };
+export const MAC_TESTERS: TesterList = { table: "cloud_mac_testers", pendingTable: "cloud_mac_testers_pending", event: "mac_tester" };
+const TESTER_LISTS: readonly TesterList[] = [PHONE_TESTERS, MAC_TESTERS];
+
+/**
+ * Puts `userId` on a tester list, keeping `email` (the address the owner
+ * typed) when one is given and the one it had otherwise. Shared by the
+ * owner's add, a waiting email's claim and its hourly retry. `whilePending`:
+ * a claim adds only while that waiting email is still there, in the same
+ * write, so an owner's remove during the Clerk lookup holds. The phone row's
+ * `provider` is the tester's own pick (`phones.ts`): never set here.
+ */
+export function testerAddStatement(db: D1Database, list: TesterList, userId: string, email: string | null, now: number, { whilePending = false }: { whilePending?: boolean } = {}): D1PreparedStatement {
+  const upsert = `on conflict(user_id) do update set email = coalesce(excluded.email, ${list.table}.email)`;
   return whilePending
-    ? db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) select ?, ?, ? from cloud_phone_beta_pending where email = ? ${upsert}`)
+    ? db.prepare(`insert into ${list.table} (user_id, email, added_at) select ?, ?, ? from ${list.pendingTable} where email = ? ${upsert}`)
       .bind(userId, email, now, email)
-    : db.prepare(`insert into cloud_phone_beta (user_id, email, added_at) values (?, ?, ?) ${upsert}`).bind(userId, email, now);
+    : db.prepare(`insert into ${list.table} (user_id, email, added_at) values (?, ?, ?) ${upsert}`).bind(userId, email, now);
 }
 
 /**
- * The owner adds ADE Cloud iPhone testers by email, before or after they sign
- * up (`POST /cloud/owner/phone-beta`). An email no ADE account had yet waits
- * in `cloud_phone_beta_pending` (migration 0052); the account that first
- * appears with it moves onto the beta list here. Its email is read from Clerk
- * once, and only while some email waits, so an account read never asks Clerk.
- * Best effort: a failure leaves the email waiting and reports it; the owner
- * check asks Clerk again for each waiting email (`resolvePendingPhoneBeta` in
- * `phoneBeta.ts`), so a failed read or an address verified later still lands.
+ * The owner adds testers by email, before or after they sign up. An email no
+ * ADE account had yet waits in its list's pending table; the account that
+ * first appears with it moves onto the list here. Its email is read from
+ * Clerk once, and only while some email waits on some list, so an account
+ * read never asks Clerk. Best effort: a failure leaves the email waiting and
+ * reports it; the owner check asks Clerk again for each waiting email
+ * (`resolvePendingTesters` in `phoneBeta.ts`), so a failed read or an
+ * address verified later still lands.
  */
-async function claimPhoneBetaInvite(env: CloudEnv, userId: string, now: number): Promise<void> {
+async function claimTesterInvites(env: CloudEnv, userId: string, now: number): Promise<void> {
   try {
-    const waiting = await env.DB.prepare("select 1 as waiting from cloud_phone_beta_pending limit 1").first<{ waiting: number }>();
-    if (!waiting) return;
+    const waitingLists: TesterList[] = [];
+    for (const list of TESTER_LISTS) {
+      // A list whose table isn't there yet (a Worker ahead of its migration) is skipped, never a failed sign-up.
+      const waiting = await env.DB.prepare(`select 1 as waiting from ${list.pendingTable} limit 1`).first<{ waiting: number }>().catch((error: unknown) => {
+        reportCloudFailure("cloud.tester_list_unreadable", { list: list.event, message: error instanceof Error ? error.message : "unknown" });
+        return null;
+      });
+      if (waiting) waitingLists.push(list);
+    }
+    if (!waitingLists.length) return;
     const user = await readClerkUser(env, userId);
     const emails = (user?.emails ?? []).map((email) => email.trim().toLowerCase()).filter(Boolean);
     if (!emails.length) return;
-    const found = await env.DB.prepare("select email from cloud_phone_beta_pending where email in (select value from json_each(?)) limit 1")
-      .bind(JSON.stringify(emails)).first<{ email: string }>();
-    if (!found) return;
-    await env.DB.batch([
-      phoneBetaAddStatement(env.DB, userId, found.email, now, { whilePending: true }),
-      env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(found.email),
-    ]);
-    logCloud("cloud.phone_beta_claimed", { userId });
+    for (const list of waitingLists) {
+      const found = await env.DB.prepare(`select email from ${list.pendingTable} where email in (select value from json_each(?)) limit 1`)
+        .bind(JSON.stringify(emails)).first<{ email: string }>();
+      if (!found) continue;
+      await env.DB.batch([
+        testerAddStatement(env.DB, list, userId, found.email, now, { whilePending: true }),
+        env.DB.prepare(`delete from ${list.pendingTable} where email = ?`).bind(found.email),
+      ]);
+      logCloud(`cloud.${list.event}_claimed`, { userId });
+    }
   } catch (error) {
     reportCloudFailure("cloud.phone_beta_claim_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
   }
@@ -1503,11 +1652,12 @@ async function startFreshPeriod(
 ): Promise<AccountRow> {
   const computers = await listComputers(env, account.user_id);
   const statements: D1PreparedStatement[] = [];
-  for (const computer of computers) statements.push(...settleStatements(env, computer, now));
-  // Open stretches restart at the boundary (a free update window keeps its future start).
+  for (const computer of computers) statements.push(...settleStatements(env, computer, now, undefined, { partial: true }));
+  // Open stretches restart at the boundary (a free update window keeps its future start); a Mac's at its last whole minute charged.
   statements.push(env.DB.prepare(`
-    update cloud_computers set awake_since = ? where user_id = ? and awake_since is not null and awake_since <= ?
-  `).bind(now, account.user_id, now));
+    update cloud_computers set awake_since = case when provider = 'nomac' then awake_since + ((cast(? as integer) - awake_since) / 60000) * 60000 else ? end
+    where user_id = ? and awake_since is not null and awake_since <= ?
+  `).bind(now, now, account.user_id, now));
   // A running credits phone's minutes its provider hasn't billed yet go into the ending period, at its time
   // so far, before the earned draw reads `used_milli`; its later answers add nothing to the new period
   // (`phoneCreditStatements` counts a phone only in the period it started). Held to the period read, so
@@ -1519,12 +1669,12 @@ async function startFreshPeriod(
       where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
     ), 0)
     where user_id = ? and period_start = ?
-  `).bind(now, ...phonePeriod, ...phonePeriod));
+  `).bind(now, now, ...phonePeriod, ...phonePeriod));
   statements.push(env.DB.prepare(`
     update cloud_phones set credited_milli = max(credited_milli, ${PHONE_CREDIT_MILLI_AT_SQL})
     where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
       and exists (select 1 from cloud_accounts where user_id = ? and period_start = ?)
-  `).bind(now, ...phonePeriod, ...phonePeriod));
+  `).bind(now, now, ...phonePeriod, ...phonePeriod));
   // After the settles above, before `used_milli` resets below; both columns read the row as it was.
   statements.push(env.DB.prepare(`
     update cloud_accounts set earned_used_milli = earned_used_milli + ${EARNED_DRAW_SQL}

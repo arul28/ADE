@@ -20,7 +20,6 @@ import {
   cloudPlanComputerLimitOf,
   formatCloudCentsPerHour,
   formatCloudDate,
-  formatCloudHours,
   type CloudAccountState,
   type CloudPaidPlanId,
   type CloudPlanCleanup,
@@ -35,6 +34,8 @@ import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { cloudHoursOnSizesLine, cloudTiers } from "../../../../shared/cloudTiers";
+import { cloudAdsViewOf, cloudPricingOf } from "../../../../shared/cloudAdPriceWords";
+import { cloudMacOfferOf, cloudMacPlanLine, cloudMacPlanShort } from "../../../../shared/cloudMac";
 import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { CloudPhoneProviderPick } from "./CloudPhoneProviderPick";
 import { SettingsToggle } from "../primitives/SettingsControls";
@@ -122,7 +123,10 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   const { billing, extraHours, sponsored } = account;
   // Shown where cards can show, and to an account that said yes, so a paid
   // plan can still take that yes back before a move to Free.
-  const sponsoredToggle = sponsored && (sponsored.ads || sponsored.consent === "granted") ? sponsored : null;
+  // Under Pricing v3 the hero's Ads switch is the one switch (`CloudAdsBand`): this row stays away.
+  const view = cloudAdsViewOf(account);
+  const priced = cloudPricingOf(account) != null;
+  const sponsoredToggle = !priced && sponsored && (sponsored.ads || sponsored.consent === "granted") ? sponsored : null;
   // Where cards start on, this row is the notice that they are on (with the switch to turn them off): seen, it is saved.
   const sponsoredStartsOn = sponsoredToggle?.startsOn === true && sponsoredToggle.consent === null;
   const sponsoredOn = sponsoredToggle?.consent === "granted" || sponsoredStartsOn;
@@ -140,7 +144,11 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
     noteSponsoredNoticeShown();
   }, [sponsoredStartsOn, sponsoredRowSeen]);
   // Where the ad switch reaches this account (`sponsored` is sent), Free's Small is unlimited only with sponsored cards on.
-  const freeSmallNeedsCards = sponsored != null;
+  const freeSmallNeedsCards = !priced && sponsored != null;
+  // Pricing v3: Free's Small is free with ads where ads are (its ad rate 0).
+  const freeSmallWithAds = priced && view?.available === true;
+  // Free's Small full rate for every viewer (`freeSmallMilli`, in every v3 catalog); an older server: the Free viewer's own catalog.
+  const freeSmallMilli = catalog.freeSmallMilli ?? (current === "free" ? tiers.find((tier) => tier.id === "small")?.multiplierMilli ?? 0 : 0);
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
   // A paid plan with a move down waiting: its own column undoes the move (uncharged).
   const canStay = paid && !pastDue && !billing.cancelAtPeriodEnd && current !== "free" && nextPlanId != null && nextPlanId !== current;
@@ -156,6 +164,8 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // The ADE Cloud iPhone shows only to an account that has it (`on`); everyone else sees nothing of it.
   // It draws from the credits, so no plan lists minutes of its own.
   const phoneOn = account.phone?.access === "on";
+  // The DAEX Cloud Mac shows only while the catalog offers it.
+  const macOffer = cloudMacOfferOf(account);
   const currentExtraCents = cloudExtraHourCentsOf(current, catalog);
   // An account from before the new plans keeps its old hours until its
   // period ends; the table lists the new ones, so the plan's column says so.
@@ -222,6 +232,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
         priceUsd: target.facts.priceUsd,
         computerLimit: cloudPlanComputerLimitOf(target.facts),
         includedMilli: target.facts.includedMilli,
+        scale: words.scale,
       });
       if (ok) await checkout(target);
       return;
@@ -299,7 +310,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
     notes.push(`If you cancel: ${account.downgradePreviews.free.sentence} ${BRAND.NAME} deletes nothing on its own; once Free starts, new computers wait until you clean up or pick what ${BRAND.NAME} frees here.`);
   }
   if (keepsOldTerms && afterFacts && oldTerms?.hoursMilli != null) {
-    notes.push(`${CLOUD_PLAN_LABELS[current]} keeps your old ${formatCloudHours(oldTerms.hoursMilli)} ${noun} until ${until}. From then ${afterId === current ? "it has" : `you're on ${CLOUD_PLAN_LABELS[afterId]}, with`} ${formatCloudHours(afterFacts.includedMilli)} ${noun}, as on its card.`);
+    notes.push(`${CLOUD_PLAN_LABELS[current]} keeps your old ${words.num(oldTerms.hoursMilli)} ${noun} until ${until}. From then ${afterId === current ? "it has" : `you're on ${CLOUD_PLAN_LABELS[afterId]}, with`} ${words.num(afterFacts.includedMilli)} ${noun}, as on its card.`);
   }
   // The rule, unless the GitHub notice above already says how it applies to you.
   if (!paid && !githubHeld) {
@@ -340,7 +351,11 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
               until,
               moreComputers: isNext ? more : 0,
             });
-            const onSizes = cloudHoursOnSizesLine(column.facts.includedMilli, tiers);
+            // One time line: a Medium both ways, then the Mac short (the full Mac line is the title).
+            const onMedium = cloudHoursOnSizesLine(column.facts.includedMilli, tiers, view);
+            const onMac = macOffer ? cloudMacPlanShort(macOffer, column.facts.includedMilli, view) : null;
+            const onSizes = [onMedium, onMac].filter(Boolean).join(" · ");
+            const onSizesTitle = [onMedium, macOffer ? cloudMacPlanLine(macOffer, column.facts.includedMilli, view) : null].filter(Boolean).join(" · ");
             return (
               <article
                 key={column.id}
@@ -362,16 +377,18 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <ul className="adecd-plancard-facts">
                   <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
-                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open a ${BRAND.CLOUD_NAME} chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
+                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open a ${BRAND.CLOUD_NAME} chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span>{column.id === "free" && freeSmallWithAds ? <><b>Free</b> Small computers with ads</>
+                    : column.id === "free" && priced ? freeSmallMilli > 0 ? <>Small: <b className="kit-num" data-face="ui">{words.count(freeSmallMilli / 1000)}</b> an hour</> : catalog.freeSmallMilli === 0 ? <><b>Unlimited</b> Small computers</> : <>Small computers use credits</>
+                    : <><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</>}</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
-                    <li title={`${formatCloudHours(column.facts.includedMilli)} ${noun} from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> credits until {until}</span></li>
+                    <li title={`${words.num(column.facts.includedMilli)} ${noun} from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{words.num(oldTerms.hoursMilli)}</b> credits until {until}</span></li>
                   ) : (
-                    <li title={onSizes || undefined}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b> credits a month{onSizes ? <small className="adecd-plancard-sizes">{onSizes}</small> : null}</span></li>
+                    <li title={onSizesTitle || undefined}><Clock size={13} /><span><b className="kit-num" data-face="ui">{words.num(column.facts.includedMilli)}</b> credits a month{onSizes ? <small className="adecd-plancard-sizes">{onSizes}</small> : null}</span></li>
                   )}
                   {cents == null ? (
-                    <li data-quiet="true" title="Bigger computers and the iPhone stop until your credits reset; Small computers keep working"><Lightning size={13} /><span>No {words.extra.toLowerCase()}</span></li>
+                    <li data-quiet="true" title={column.id === "free" && priced ? `Bigger computers and the iPhone stop until your credits reset; ${freeSmallWithAds ? "Small computers keep working in chats with ads" : "so do Small computers"}` : "Bigger computers and the iPhone stop until your credits reset; Small computers keep working"}><Lightning size={13} /><span>No {words.extra.toLowerCase()}</span></li>
                   ) : (
-                    <li title={`Only if you turn ${words.extra.toLowerCase()} on`}><Lightning size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra {words.one}</span></li>
+                    <li title={`Only if you turn ${words.extra.toLowerCase()} on`}><Lightning size={13} /><span>{words.scale === 1 ? <><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra {words.one}</> : <>Extra: <b className="kit-num" data-face="ui">{words.extraPrice(cents)}</b></>}</span></li>
                   )}
                   {column.facts.outsideAgents === false ? (
                     <li data-quiet="true" title={`Outside agents (through ${BRAND.NAME} MCP) can't start ${BRAND.CLOUD_NAME} work on this plan`}><Robot size={13} /><span>No outside agents</span></li>
@@ -400,45 +417,17 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           })}
         </div>
 
-        <div className="kit-panel adecd-howto" aria-label="What every plan includes">
-          <div className="adecd-howto-items">
-            <div className="adecd-howto-item">
-              <span className="adecd-howto-icon"><Sparkle size={14} /></span>
-              <p><b>{freeSmallNeedsCards ? `Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a ${BRAND.CLOUD_NAME} chat opened there each week.` : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Each plan has a number of cloud computers, asleep or not: one per lane.</p>
-            </div>
-            <div className="adecd-howto-item adecd-howto-rates">
-              <span className="adecd-howto-icon"><Clock size={14} /></span>
-              <div>
-                <p><b>Credits</b> renew every month and pay for everything past Small.</p>
-                <table className="adecd-rates" aria-label="What uses credits">
-                  <tbody>
-                    {tiers.map((tier) => (
-                      <tr key={tier.id}>
-                        <th scope="row">{tier.label}</th>
-                        <td className="kit-num">{tier.multiplierMilli > 0 ? `${words.count(tier.multiplierMilli / 1000)} an hour` : "Uses no credits"}</td>
-                      </tr>
-                    ))}
-                    {phoneOn ? (
-                      <tr><th scope="row">{BRAND.CLOUD_NAME} iPhone</th><td className="kit-num">{`${words.count(words.phoneMilliPerMinute / 1000)} a minute`}</td></tr>
-                    ) : null}
-                    {extraHours.available && currentExtraCents != null ? (
-                      <tr><th scope="row">Extra credits</th><td className="kit-num">{`${formatCloudCentsPerHour(currentExtraCents)} a credit`}</td></tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div className="adecd-howto-item">
-              <span className="adecd-howto-icon"><MoonStars size={14} /></span>
-              <p><b>Computers sleep on their own</b> a few minutes after work stops, so your {noun} only go to real work.</p>
-            </div>
-          </div>
-          {notes.length ? (
-            <ul className="adecd-howto-notes">
-              {notes.map((note) => <li key={note}><Info size={12} />{note}</li>)}
-            </ul>
-          ) : null}
-          <p className="adecd-howto-fineprint">{CLOUD_SMALL_FAIR_USE_SENTENCE}</p>
+        {/* Every rate lives in "Sizes and prices"; the plans keep what is true of every plan. */}
+        <div className="adecd-plans-fine" aria-label="What every plan includes">
+          <p>
+            <MoonStars size={12} aria-hidden />
+            <span>
+              {freeSmallNeedsCards ? `Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and a ${BRAND.CLOUD_NAME} chat opened there each week. ` : ""}
+              Each plan has a number of cloud computers, asleep or not: one per lane. Credits renew every month and pay for everything past Small. Computers sleep on their own a few minutes after work stops, so your {noun} only go to real work.
+            </span>
+          </p>
+          {notes.map((note) => <p key={note}><Info size={12} aria-hidden /><span>{note}</span></p>)}
+          <p data-quiet=""><span>{CLOUD_SMALL_FAIR_USE_SENTENCE}</span></p>
         </div>
 
         {extraHours.available || sponsoredToggle || providerPick ? (
@@ -492,12 +481,21 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   />
                 </div>
                 <div className="adecd-addon-price">
-                  <b className="kit-num" data-face="ui">{formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)}</b>
-                  <span>{words.perUnit} once your plan's run out, billed after use</span>
+                  {words.scale === 1 ? (
+                    <>
+                      <b className="kit-num" data-face="ui">{formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)}</b>
+                      <span>{words.perUnit} once your plan's run out, billed after use</span>
+                    </>
+                  ) : (
+                    <>
+                      <b className="kit-num" data-face="ui">{words.extraPrice(currentExtraCents ?? catalog.extraHourCents)}</b>
+                      <span>once your plan's run out, billed after use</span>
+                    </>
+                  )}
                 </div>
                 <small className="adecd-addon-state">
                   {extraHours.enabled
-                    ? `On.${extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} extra credits used this month.` : " Bigger computers and the iPhone keep going when your credits run out."}`
+                    ? `On.${extraHours.usedMilli > 0 ? ` ${words.num(extraHours.usedMilli)} extra credits used this month.` : " Bigger computers and the iPhone keep going when your credits run out."}`
                     : "Off. Bigger computers and the iPhone stop when your credits run out; Small computers keep working."}
                 </small>
               </div>

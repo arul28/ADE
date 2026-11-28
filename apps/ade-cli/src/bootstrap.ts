@@ -121,6 +121,7 @@ import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import { createAgentChatService, flushAllQueuedTranscriptWrites, listMachineProviderAccountChatLoad, writeSessionLinearIssueContextFile } from "../../desktop/src/main/services/chat/agentChatService";
 import { createLaneRuntimeEnvResolver, createSessionLinearEnvResolver } from "../../desktop/src/main/services/pty/terminalSessionEnv";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
+import { freeModelsRelayDepsFor, processFreeModelsRelay } from "../../desktop/src/main/services/freeModels/freeModelsRelay";
 import { trackedCliIdentity } from "../../desktop/src/main/services/chat/cliSessionLifecycle";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
@@ -457,14 +458,14 @@ const CLOUD_TURN_SIGN_IN_WAIT_MS = 30_000;
  * `CLOUD_TURN_SIGN_IN_WAIT_MS`. Signed in, or a provider ADE can't tell,
  * costs one local check.
  */
-function ensureCloudTurnSignIn(vault: AccountVaultStore | null): (provider: string) => Promise<void> {
+function ensureCloudTurnSignIn(vault: AccountVaultStore | null): (provider: string, modelId?: string | null) => Promise<void> {
   let providerReady: import("./services/account/cloudLaunchSignInWait").ProviderReady | null = null;
-  return async (provider) => {
+  return async (provider, modelId) => {
     if (!providerReady) {
       const { createProviderReady } = await import("./services/account/cloudLaunchSignInWait");
       providerReady = createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options));
     }
-    if ((await providerReady(provider)) !== "missing") return;
+    if ((await providerReady(provider, { model: modelId ?? null })) !== "missing") return;
     const pull = (async () => {
       await vault?.sync();
       const { providerLoginSync } = await import("../../desktop/src/main/services/providerLogins/providerLoginSync");
@@ -3345,6 +3346,14 @@ export async function createAdeRuntime(args: {
         // message does (`cloudChatMessageQueue.ts`). A wake fired seconds after a start used to fail
         // with "couldn't sign in" while the Claude pass was still on its way.
         ...(isAdeCloudComputer() ? { ensureTurnSignIn: ensureCloudTurnSignIn(accountVaultStore ?? null) } : {}),
+        // ADE Free Models: one relay for every project scope of this brain. On
+        // an ADE Cloud computer the account is `ADE_ACCOUNT_TOKEN`, refreshed as
+        // it nears expiry.
+        freeModelsRelay: processFreeModelsRelay(() => freeModelsRelayDepsFor({
+          account: () => accountAuthService,
+          baseUrl: () => getSharedAccountDirectoryBaseUrl() || null,
+          logger,
+        })),
         // Sleep is a machine fact, so every chat in this brain reads the one
         // monitor. Borrowed: the chat service must not be able to dispose it out
         // from under the account publisher, or vice versa.

@@ -1,6 +1,7 @@
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import { SPONSORED_PICK_CARD_VARIANT } from "../../../../shared/sponsoredPick";
 import { CLOUD_SPONSORED_MESSAGE_MAX_CHARS, type CloudSponsoredDevice, type CloudSponsoredMessage } from "../../../../shared/adeCloud";
+import { adeFreeModelsRefusalOf } from "../adeFreeModelsRefusal";
 
 /** A card is asked for only under a reply this recent: an old chat opened later gets none. */
 export const SPONSORED_TURN_FRESH_MS = 24 * 60 * 60_000;
@@ -21,14 +22,27 @@ const tail = (text: string): string => {
  * The chat's last turn when it finished well and nothing came after it: its
  * id, when it ended, and its request and reply. Null while a turn runs, after
  * a failed or stopped turn, or when the person already wrote again.
+ *
+ * `pausedRecovery` (an ADE Free Models chat): a turn the account server
+ * refused because no card showed for a long time (`free_models_no_cards`)
+ * still gets its card, under the person's request alone. That card request
+ * is what lets the models run again; without it a paused chat could never
+ * show one.
  */
-export function lastFinishedTurn(events: readonly AgentChatEventEnvelope[]): SponsoredTurn | null {
+export function lastFinishedTurn(
+  events: readonly AgentChatEventEnvelope[],
+  options?: { pausedRecovery?: boolean },
+): SponsoredTurn | null {
   let doneIndex = -1;
+  let refusedForCards = false;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!.event;
     if (event.type === "user_message") return null;
     if (event.type === "done") {
-      if (event.status !== "completed") return null;
+      if (event.status !== "completed") {
+        if (!options?.pausedRecovery || !turnRefusedForCards(events, index, event.turnId)) return null;
+        refusedForCards = true;
+      }
       doneIndex = index;
       break;
     }
@@ -51,13 +65,27 @@ export function lastFinishedTurn(events: readonly AgentChatEventEnvelope[]): Spo
   }
   const answer = tail(reply.reverse().join(""));
   const asked = tail(request);
-  if (!answer || !asked) return null;
+  if (!asked || (!answer && !refusedForCards)) return null;
   const finishedAt = Date.parse(done.timestamp);
   return {
     turnId,
     finishedAt: Number.isFinite(finishedAt) ? finishedAt : 0,
-    messages: [{ role: "user", content: asked }, { role: "assistant", content: answer }],
+    messages: answer
+      ? [{ role: "user", content: asked }, { role: "assistant", content: answer }]
+      : [{ role: "user", content: asked }],
   };
+}
+
+/** The turn ending at `doneIndex` failed with the account server's no-cards refusal. */
+function turnRefusedForCards(events: readonly AgentChatEventEnvelope[], doneIndex: number, turnId: string | undefined): boolean {
+  for (let index = doneIndex - 1; index >= 0; index -= 1) {
+    const event = events[index]!.event;
+    if (event.type === "user_message") return false;
+    if (event.type !== "error" || (turnId && event.turnId && event.turnId !== turnId)) continue;
+    const code = typeof event.errorInfo === "object" ? event.errorInfo?.code : undefined;
+    if (adeFreeModelsRefusalOf(code, event.message, event.detail) === "no_cards") return true;
+  }
+  return false;
 }
 
 /** Each OS by its user-agent mark, with where its version sits (`_` turns into `.`). */

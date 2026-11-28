@@ -103,8 +103,8 @@ export async function downloadToolTarball(
   }
 }
 
-function networkError(message: string, cause?: unknown): ToolError {
-  return new ToolError(message, { kind: "network", cause });
+function networkError(message: string, cause?: unknown, httpStatus?: number): ToolError {
+  return new ToolError(message, { kind: "network", cause, ...(httpStatus ? { httpStatus } : {}) });
 }
 
 function hostOf(url: string): string | null {
@@ -168,7 +168,7 @@ async function streamToFile(
   }
   if (status !== 200) {
     response.resume();
-    throw networkError(`Download failed with HTTP ${status}: ${url}`);
+    throw networkError(`Download failed with HTTP ${status}: ${url}`, undefined, status);
   }
 
   const declared = Number.parseInt(String(response.headers["content-length"] ?? ""), 10);

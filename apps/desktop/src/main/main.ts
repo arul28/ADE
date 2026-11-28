@@ -5533,9 +5533,16 @@ app.whenReady().then(async () => {
       }
     };
 
+    // ADE Free Models: one relay for every in-process project runtime.
+    const { freeModelsRelayDepsFor, processFreeModelsRelay } = await import("./services/freeModels/freeModelsRelay");
     const agentChatService = createAgentChatService({
       listActivePrWatches: () => prService.chatWatchStore.activeBySession(),
       museQuota,
+      freeModelsRelay: processFreeModelsRelay(() => freeModelsRelayDepsFor({
+        account: () => accountAuthService,
+        baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
+        logger,
+      })),
       // One value per machine (in-process runtimes in dev share this machine's).
       readContinueAfterRestart: () => resolveContinueAfterRestart(),
       // A lane a batch move imported here gets the same setup a new lane

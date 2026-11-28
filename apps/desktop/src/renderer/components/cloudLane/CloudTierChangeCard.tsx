@@ -5,6 +5,7 @@ import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { cloudTierChangeRateText, cloudTierHoldsDisk, cloudTierHoursOnText, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudAdsViewOf, cloudPricingOf, cloudTierRateNowMilli, type CloudAdsView } from "../../../shared/cloudAdPriceWords";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { CloudSizeCards } from "../settings/cloudDashboard/CloudSizeCards";
@@ -51,8 +52,9 @@ function hoursLeftOf(account: CloudAccountState | null): number | null {
   return account?.hours ? cloudHoursLeftMilli(account) : null;
 }
 
-function hoursText(leftMilli: number | null, tier: CloudTier | null, words: CloudUnitWords): string | null {
-  return leftMilli == null || !tier ? null : cloudTierHoursOnText(tier, leftMilli, words);
+/** How long the credits last on the new size, at its price now (with ads while ads are on, as Settings counts it). */
+function hoursText(leftMilli: number | null, tier: CloudTier | null, words: CloudUnitWords, view: CloudAdsView | null): string | null {
+  return leftMilli == null || !tier ? null : cloudTierHoursOnText({ ...tier, multiplierMilli: cloudTierRateNowMilli(tier, view) }, leftMilli, words);
 }
 
 export function CloudTierChangeCard({
@@ -102,7 +104,7 @@ export function CloudTierChangeCard({
   const changed = to != null && to.id !== facts.fromSizeId;
   const available = cloudLaneChangesAvailable();
   const leftMilli = hoursLeftOf(account);
-  const hours = hoursText(leftMilli, to, words);
+  const hours = hoursText(leftMilli, to, words, cloudPricingOf(account) ? cloudAdsViewOf(account) : null);
   const currentDiskGb = computer?.diskGb ?? null;
   // A disk never shrinks: a size whose cap is below it is refused, so it can't be started.
   const diskFits = !to || cloudTierHoldsDisk(to, currentDiskGb);

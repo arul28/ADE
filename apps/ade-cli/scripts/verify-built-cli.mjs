@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import packagedAdeCliResourcesModule from "../../desktop/scripts/packaged-ade-cli-resources.cjs";
 import { EMBEDDED_EXCLUDED_PACKAGES } from "./build-runtime-npm-packages.mjs";
+import { findUnshippedBundlePackages, unshippedBundlePackagesMessage } from "./bundle-packages-gate.mjs";
 
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -104,7 +105,9 @@ async function assertPackagedResolutionCliHelp() {
     try {
       ({ stdout } = await execFileAsync(process.execPath, [isolatedCliPath, "--help"], {
         cwd: appDir,
-        env: { ...process.env, NODE_PATH: nodeModules },
+        // The copy sits outside the checkout, so the CLI would hand the call to an installed
+        // DAEX on PATH; this checks the built file, so it must run itself.
+        env: { ...process.env, NODE_PATH: nodeModules, ADE_CLI_NO_DELEGATE: "1" },
       }));
     } catch (error) {
       const stderr = error && typeof error === "object" && "stderr" in error ? String(error.stderr) : "";
@@ -189,6 +192,19 @@ for (const entryPath of bundledRuntimeEntryPaths) {
       );
     }
   }
+}
+
+// A package the bundles import that a runtime build (npm ci in this package
+// only) cannot install fails here, on every target's build, instead of at a
+// chat's first turn on the standalone runtime (bundle-packages-gate.mjs).
+{
+  const metafilePath = path.join(distRoot, "metafile-cjs.json");
+  const metafile = JSON.parse(await fs.readFile(metafilePath, "utf8").catch(() => {
+    throw new Error(`[ade-cli:build] ${path.relative(packageRoot, metafilePath)} is missing; tsup writes it (metafile: true in tsup.config.ts).`);
+  }));
+  const lock = JSON.parse(await fs.readFile(path.join(packageRoot, "package-lock.json"), "utf8"));
+  const message = unshippedBundlePackagesMessage(findUnshippedBundlePackages({ metafile, lock }));
+  if (message) throw new Error(message);
 }
 
 const packagedBuildResources = packagedAdeCliBuildResources();

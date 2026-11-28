@@ -152,7 +152,7 @@ export function keepLaneStatement(env: CloudDb, instanceId: string, now: number)
     insert into cloud_lanes_without_computer
       (user_id, lane_id, lane_name, project_origin, branch_ref, reason, type, cpu, memory_gb, former_instance_id, former_machine_key, created_at)
     select c.user_id, c.lane_id, c.lane_name, c.lane_project_origin, c.lane_branch, c.lane_keep_reason,
-      case when c.type = 'vm' then 'vm' else 'default' end, c.cpu, c.memory_gb, c.instance_id, c.machine_key, ?
+      case when c.type in ('vm', 'mac') then c.type else 'default' end, c.cpu, c.memory_gb, c.instance_id, c.machine_key, ?
     from cloud_computers c
     where c.instance_id = ? and c.deleted_at is null and c.lane_keep_reason in ('freed', 'inactive', 'idle_cleanup', 'plan_limit')
       and c.lane_id is not null and c.lane_name is not null
@@ -175,14 +175,18 @@ export function endLaneStatement(env: CloudDb, userId: string, laneId: string | 
   return env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ? and lane_id = ?").bind(userId, laneId);
 }
 
-function toLane(row: LaneRow): CloudLaneWithoutComputer {
+/** What a Mac lane is called while the Mac switch doesn't reach the account: a plain lane at Medium's shape, nothing of the Mac. */
+const HIDDEN_MAC_LANE = { type: "default", cpu: 4, memoryGb: 8 } as const;
+
+function toLane(row: LaneRow, macShown: boolean): CloudLaneWithoutComputer {
+  if (row.type === "mac" && !macShown) return { ...toLane({ ...row, type: "default" }, false), ...HIDDEN_MAC_LANE };
   return {
     laneId: row.lane_id,
     laneName: row.lane_name,
     projectOrigin: row.project_origin,
     branchRef: row.branch_ref,
     reason: row.reason === "inactive" || row.reason === "idle_cleanup" || row.reason === "plan_limit" ? row.reason : "freed",
-    type: row.type === "vm" ? "vm" : "default",
+    type: row.type === "vm" || row.type === "mac" ? row.type : "default",
     cpu: row.cpu,
     memoryGb: row.memory_gb,
     formerInstanceId: row.former_instance_id,
@@ -191,11 +195,11 @@ function toLane(row: LaneRow): CloudLaneWithoutComputer {
   };
 }
 
-export async function listLanesWithoutComputer(env: CloudDb, userId: string): Promise<CloudLaneWithoutComputer[]> {
+export async function listLanesWithoutComputer(env: CloudDb, userId: string, macShown = false): Promise<CloudLaneWithoutComputer[]> {
   const rows = await env.DB.prepare(
     "select * from cloud_lanes_without_computer where user_id = ? order by created_at desc limit 200",
   ).bind(userId).all<LaneRow>();
-  return (rows.results ?? []).map(toLane);
+  return (rows.results ?? []).map((row) => toLane(row, macShown));
 }
 
 /** What a forget deletes with the record: everything, or (a lane moved to the person's machine) all but what moved there. */
@@ -212,10 +216,10 @@ export type KeptLaneDataDelete = (laneId: string, keep?: { machineKey: string; b
  * backups. A new route rather than a flag on the delete, so an older server
  * answers 404 and deletes nothing.
  */
-export async function routeLanesWithoutComputer(request: Request, path: string, env: CloudDb, userId: string, deleteLaneData?: KeptLaneDataDelete): Promise<Response> {
+export async function routeLanesWithoutComputer(request: Request, path: string, env: CloudDb, userId: string, deleteLaneData?: KeptLaneDataDelete, macShown?: () => Promise<boolean>): Promise<Response> {
   const rest = path.slice(CLOUD_PATHS.lanesWithoutComputer.length).split("/").filter(Boolean);
   if (rest.length === 0) {
-    return request.method === "GET" ? json({ lanes: await listLanesWithoutComputer(env, userId) }) : notFound();
+    return request.method === "GET" ? json({ lanes: await listLanesWithoutComputer(env, userId, macShown ? await macShown() : false) }) : notFound();
   }
   let laneId = "";
   try {

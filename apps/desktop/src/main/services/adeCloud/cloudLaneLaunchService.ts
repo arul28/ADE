@@ -622,9 +622,10 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   // The pipeline
   // ---------------------------------------------------------------------------
 
-  const fail = (record: CloudLaneLaunchRecord, stageId: ChatLaunchStageId, error: unknown): void => {
-    const sentence = cloudLaneLaunchFailureSentence(stageId, error);
-    setStage(record, stageId, "failed", { error: sentence });
+  /** `stageId` null: the failure has no row of its own (the sign-in step); the card says why under the rows. */
+  const fail = (record: CloudLaneLaunchRecord, stageId: ChatLaunchStageId | null, error: unknown): void => {
+    const sentence = cloudLaneLaunchFailureSentence(stageId ?? "agent", error);
+    if (stageId) setStage(record, stageId, "failed", { error: sentence });
     record.snapshot.phase = "failed";
     record.snapshot.error = sentence;
     // A refusal the card answers itself (the computer limit card); a retry clears it.
@@ -686,7 +687,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       await handOff(record, brain);
     } catch (error) {
       if (error instanceof LaunchCancelled || error instanceof CloudCreateCancelled || record.snapshot.phase === "cancelled" || disposed) return;
-      fail(record, failingStage(record), error);
+      fail(record, error instanceof LaunchStepError && error.onSignIn ? null : failingStage(record), error);
     }
   };
 
@@ -859,6 +860,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         cloud: {
           sizeId: cloud.sizeId,
           ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
+          ...(cloud.os === "mac" ? { os: "mac" as const } : {}),
           projectOrigin: project.identity,
           instanceId: null,
           machineKey: null,

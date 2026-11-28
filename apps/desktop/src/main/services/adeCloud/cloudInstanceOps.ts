@@ -7,7 +7,7 @@
  * chat or machine through its brain, so they take no pin.
  */
 
-import { CloudProviderError, type CloudProvider } from "./cloudProvider";
+import { CloudProviderError, type CloudProvider, type CloudWakeAdProof } from "./cloudProvider";
 
 /**
  * Writes `patch` into the machine's metadata, keeping every other key (the provider
@@ -36,11 +36,12 @@ export async function wakeThroughTransition(
   client: CloudProvider,
   instanceId: string,
   now: () => number = () => Date.now(),
+  adProof?: CloudWakeAdProof | null,
 ): Promise<void> {
   const deadline = now() + WAKE_RETRY_DEADLINE_MS;
   for (;;) {
     try {
-      await client.startInstance(instanceId);
+      await client.startInstance(instanceId, adProof ? { adProof } : undefined);
       return;
     } catch (error) {
       if (!(error instanceof CloudProviderError) || !WAKE_TRANSIENT_CODES.has(error.code) || now() >= deadline) throw error;

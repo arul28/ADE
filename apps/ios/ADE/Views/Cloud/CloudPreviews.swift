@@ -14,12 +14,19 @@ import SwiftUI
 /// - `duo-cloud-machine`: one computer (what uses its disk);
 /// - `duo-providers-cloud`: Settings › Providers with ADE Cloud as the place;
 /// - `duo-provider-signin`: the sign-in sheet at its approve step;
-/// - `duo-cloud-tier-request`: an agent's size request in its chat, with its buttons.
+/// - `duo-cloud-tier-request`: an agent's size request in its chat, with its buttons;
+/// - `duo-cloud-held-<kind>[-why|-nolane|-machine|-old]`: a computer the idle
+///   cleanup kept (ADE-223), see `idleHeldView`.
+/// - `duo-cloud-mac`: the page with the DAEX Cloud Mac offered and a Mac lane in
+///   each state (on, waiting for a Mac, stopped, couldn't start, drive lost);
+/// - `duo-cloud-mac-machine`: a stopped Mac's own page; `duo-cloud-mac-plans`:
+///   the plans and sizes with the Mac's line and row.
 enum CloudPreviews {
   static let names: Set<String> = [
     "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin", "duo-cloud-tier-request",
     "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-notice", "duo-cloud-sponsored-again", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings", "duo-cloud-sponsored-settings-gpc", "duo-cloud-sponsored-settings-lapsed", "duo-cloud-sponsored-settings-abroad",
     "duo-cloud-sponsored-ad-below", "duo-cloud-sponsored-ad-above-prompt", "duo-cloud-sponsored-ad-inline",
+    "duo-cloud-mac", "duo-cloud-mac-machine", "duo-cloud-mac-plans",
   ]
 
   /// The three sponsored formats, each in the real chat screen (transcript,
@@ -31,6 +38,8 @@ enum CloudPreviews {
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
+    if name.hasPrefix("duo-cloud-v3-") { return pricingV3View(name) }
+    if name.hasPrefix("duo-cloud-held-") { return idleHeldView(name) }
     guard names.contains(name) else { return nil }
     let sync = SyncService.shared ?? SyncService()
     switch name {
@@ -52,7 +61,8 @@ enum CloudPreviews {
     }
     // Settings where Small uses credits (cards off, away, outside the US): the catalog rates Small as the server would.
     let smallCosts = ["duo-cloud-sponsored-settings-gpc", "duo-cloud-sponsored-settings-lapsed", "duo-cloud-sponsored-settings-abroad"].contains(name)
-    let json = smallCosts ? listJSON().replacingOccurrences(of: #""multiplierMilli":0,"tier":"small""#, with: #""multiplierMilli":500,"tier":"small""#) : listJSON()
+    var json = smallCosts ? listJSON().replacingOccurrences(of: #""multiplierMilli":0,"tier":"small""#, with: #""multiplierMilli":500,"tier":"small""#) : listJSON()
+    if name.hasPrefix("duo-cloud-mac") { json = withMacJSON(json) }
     guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)) else { return nil }
     let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
     // `duo-cloud-upgraded`: this phone last saw the account on Free, a period ago, with 79.1 hours left.
@@ -132,6 +142,8 @@ enum CloudPreviews {
       )))
     case "duo-cloud-machine":
       return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: "k2p8a1b2c3") })
+    case "duo-cloud-mac-machine":
+      return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: "mac0stopped") })
     case "duo-cloud-invite":
       return AnyView(NavigationStack {
         ScrollView {
@@ -143,7 +155,7 @@ enum CloudPreviews {
         .navigationTitle(Brand.cloudName)
         .navigationBarTitleDisplayMode(.inline)
       })
-    case "duo-cloud-plans":
+    case "duo-cloud-plans", "duo-cloud-mac-plans":
       return AnyView(NavigationStack {
         ScrollView {
           VStack(spacing: 16) {
@@ -172,6 +184,176 @@ enum CloudPreviews {
     default:
       return AnyView(CloudPaneSheet(store: store))
     }
+  }
+
+  // MARK: Pricing v3 (the ad price)
+
+  /// `-adePreviewScreen duo-cloud-v3-<plan>-<state>[-<surface>]`: the DAEX Cloud
+  /// page, the plans and sizes, one computer, or a chat's ads notice, with an
+  /// account state that has `pricing` (the server's catalog at scale 10).
+  /// - plan: `free`, `plus`, `pro`, `max`
+  /// - state: `on` (US, ads on), `off` (asked region, answered no), `noads`
+  ///   (a country with no ads), `zero` (discount 0), `new` (US, notice not seen),
+  ///   `asked` (asked region, notice not seen), and a reason for the awake
+  ///   Medium while ads are on: `cli`, `automation`, `outside`, `idle`, `unverified`
+  /// - surface: none (the page), `plans`, `sizes`, `machine`, `notice`
+  /// - `-mac` anywhere after the state: the DAEX Cloud Mac offered at both
+  ///   prices, with a Mac lane in each state (the On one priced by the server);
+  ///   `machine` then opens the On Mac.
+  /// `duo-cloud-v3-loading`: the page before anything is known.
+  @MainActor private static func pricingV3View(_ name: String) -> AnyView? {
+    // The page before anything is known (`CloudPageSkeleton`).
+    if name == "duo-cloud-v3-loading" {
+      return AnyView(NavigationStack {
+        ScrollView { CloudPageSkeleton().padding(.horizontal, 16).padding(.top, 8) }
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationTitle(Brand.cloudName)
+          .navigationBarTitleDisplayMode(.inline)
+      })
+    }
+    let named = name.dropFirst("duo-cloud-v3-".count).split(separator: "-").map(String.init)
+    let withMac = named.dropFirst(2).contains("mac")
+    let parts = named.filter { $0 != "mac" }
+    guard parts.count >= 2 else { return nil }
+    let plan = parts[0], state = parts[1], surface = parts.count > 2 ? parts[2] : "page"
+    let free = plan == "free"
+    var json = listJSON()
+      .replacingOccurrences(of: #""phoneMilliPerMinute":1000"#, with: #""phoneMilliPerMinute":500"#)
+      .replacingOccurrences(of: #""max":{"includedMilli":1500000"#, with: #""max":{"includedMilli":2000000"#)
+      .replacingOccurrences(of: #""multiplierMilli":0,"tier":"small""#, with: free ? #""multiplierMilli":500,"adMultiplierMilli":0,"tier":"small""# : #""multiplierMilli":0,"adMultiplierMilli":0,"tier":"small""#)
+      .replacingOccurrences(of: #""multiplierMilli":1000,"tier":"medium""#, with: #""multiplierMilli":1000,"adMultiplierMilli":\#(state == "zero" ? 1000 : 800),"tier":"medium""#)
+      .replacingOccurrences(of: #""multiplierMilli":2500,"tier":"large""#, with: #""multiplierMilli":2500,"adMultiplierMilli":\#(state == "zero" ? 2500 : 2000),"tier":"large""#)
+      .replacingOccurrences(of: #""multiplierMilli":4000,"tier":"xlarge""#, with: #""multiplierMilli":4000,"adMultiplierMilli":\#(state == "zero" ? 4000 : 3200),"tier":"xlarge""#)
+      .replacingOccurrences(of: #""diskStepGb":10,"#, with: #""creditScale":10,"phone":{"milliPerMinute":500,"adMilliPerMinute":\#(state == "zero" ? 500 : 400)},"diskStepGb":10,"#)
+      // The awake computer is a Medium, so its price shows.
+      .replacingOccurrences(of: #""resources":{"cpu":2,"memoryGb":4,"diskGb":6.2},"shapeId":"2x4""#, with: #""resources":{"cpu":4,"memoryGb":8,"diskGb":6.2},"shapeId":"4x8""#)
+    if withMac {
+      json = withMacJSON(json)
+        .replacingOccurrences(of: #""creditMilliPerMinute":500,"#, with: #""creditMilliPerMinute":500,"adCreditMilliPerMinute":\#(state == "zero" ? 500 : 400),"#)
+    }
+    let included = ["free": 50_000, "plus": 100_000, "pro": 600_000, "max": 2_000_000][plan] ?? 600_000
+    json = json
+      .replacingOccurrences(of: #""plan":"paid","planId":"pro","rules":"paid""#, with: free ? #""plan":"free","planId":"free","rules":"free""# : #""plan":"paid","planId":"\#(plan)","rules":"paid""#)
+      .replacingOccurrences(of: #""hours":{"includedMilli":600000,"usedMilli":117500,"leftMilli":482500"#, with: #""hours":{"includedMilli":\#(included),"usedMilli":\#(included / 6),"leftMilli":\#(included - included / 6)"#)
+    json = realAccountJSON(json, free: free, withMac: withMac)
+    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)), var account = list.account else { return nil }
+    let available = state != "noads"
+    let noticeSeen = !(state == "new" || state == "asked")
+    let on = available && noticeSeen && state != "off"
+    let pct = state == "zero" ? 0 : 20
+    let reasons = ["cli": "cli_session", "automation": "automation", "outside": "outside_agent", "idle": "not_in_use", "unverified": "unverified"]
+    let reason: String? = !available ? "no_ads_here" : !on ? "ads_off" : reasons[state]
+    let ad = reason == nil
+    let medium = CloudPricingState.Price(now: ad ? "ad" : "full", reason: reason, rateMilli: ad ? (pct == 0 ? 1000 : 800) : 1000, otherRateMilli: !available ? 1000 : (pct == 0 ? 1000 : (ad ? 1000 : 800)), instanceId: "zodqsue74s")
+    account.pricing = CloudPricingState(
+      creditScale: 10,
+      ads: .init(available: available, on: on, startsOn: state != "asked" && state != "off", noticeSeen: noticeSeen, discountPct: pct, windowMinutes: 60),
+      // The On Mac's row, an hour (its minute rate times 60), as the server sends it.
+      computers: [medium] + (withMac ? [CloudPricingState.Price(now: medium.now, reason: medium.reason, rateMilli: medium.rateMilli * 30, otherRateMilli: medium.otherRateMilli * 30, instanceId: "mac0running")] : []),
+      phone: nil
+    )
+    if !available { account.sponsored = nil }
+    AccountCloudStore.shared.seedPreview(access: nil, account: account)
+    let sync = SyncService.shared ?? SyncService()
+    let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
+    let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
+    switch surface {
+    case "plans":
+      return AnyView(NavigationStack {
+        ScrollView {
+          VStack(spacing: 16) {
+            CloudPlansCard(account: account, tiers: store.tiers)
+            CloudSizesCard(account: account, tiers: store.tiers)
+          }
+          .padding(16)
+        }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .navigationTitle(Brand.cloudName)
+        .navigationBarTitleDisplayMode(.inline)
+      })
+    case "sizes":
+      return AnyView(NavigationStack {
+        ScrollView { CloudSizesCard(account: account, tiers: store.tiers).padding(16) }
+          .background(ADEColor.pageBackground.ignoresSafeArea())
+          .navigationTitle(Brand.cloudName)
+          .navigationBarTitleDisplayMode(.inline)
+      })
+    case "machine":
+      return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: withMac ? "mac0running" : "zodqsue74s") })
+    case "notice":
+      return AnyView(CloudSponsoredChatFixture(kind: "duo-cloud-sponsored-consent"))
+    default:
+      return AnyView(NavigationStack { CloudDashboardScreen(store: store, onClose: nil, pushes: true) })
+    }
+  }
+
+  // MARK: A computer the idle cleanup kept (ADE-223)
+
+  /// `duo-cloud-held-<kind>[-<variant>]`: the DAEX Cloud page's notices with a
+  /// computer the idle cleanup kept, for each server kind (`too_large`,
+  /// `account_full`, `staged_only`, `submodule`, `no_commit`, `fix_named`,
+  /// `stop_agent`, `none`, `open_once`, or `missing`: no `kind`, as an older
+  /// server sends). Variants: `why` ("Why?" open), `nolane` (a computer with
+  /// no lane), `machine` (the computer's page), `old` (a reason stored before
+  /// the rename, ignored files not read yet).
+  @MainActor private static func idleHeldView(_ name: String) -> AnyView? {
+    let rest = String(name.dropFirst("duo-cloud-held-".count))
+    let variants = ["-why", "-nolane", "-machine", "-old"]
+    let variant = variants.first { rest.hasSuffix($0) }.map { String($0.dropFirst()) }
+    let kindName = variant.map { String(rest.dropLast($0.count + 1)) } ?? rest
+    let reasons: [String: String] = [
+      "too_large": "The lane's unpushed work is larger than one saved copy can hold.",
+      "account_full": "Your saved work is full, so this lane's work couldn't be saved.",
+      "staged_only": "This lane has staged changes that aren't committed.",
+      "submodule": "A submodule in this lane has changes that aren't pushed.",
+      "no_commit": "This lane has no commit yet, so there's nothing to save from.",
+      "fix_named": "A file path in this lane can't be stored in git. \(Brand.name) can't save this lane's work until then.",
+      "stop_agent": "\(Brand.name) on the computer couldn't stop its agents and save its chats.",
+      "none": "\(Brand.cloudName) couldn't reach the computer to check its saved work.",
+      "open_once": "The computer slept before \(Brand.name) saved its work.",
+      "missing": "The computer slept before \(Brand.name) saved its work.",
+    ]
+    guard let base = reasons[kindName] else { return nil }
+    let noLane = variant == "nolane"
+    let laneName = "perf-pass-lanes-tab"
+    let notSaved = "\(variant == "old" ? Brand.formerName : Brand.name) couldn't save this lane's work."
+    let reason = "\(notSaved) \(noLane ? "" : "\(laneName): ")\(base)"
+    var held: [String: Any] = ["at": nowMs - 3_600_000, "reason": reason, "retryAt": nowMs + 20 * 3_600_000]
+    if kindName != "missing" { held["kind"] = kindName }
+    var entry: [String: Any] = [
+      "instanceId": noLane ? "q1w2e3r4t5" : "a9x7c6v5b4",
+      "name": noLane ? "supabase-stack" : "\(Brand.cloudName) computer",
+      "deletesAt": nowMs - 3_600_000, "idleDays": 10, "held": held,
+    ]
+    if !noLane {
+      entry["laneName"] = laneName
+      entry["branch"] = "ade/perf-pass-lanes-tab"
+    }
+    if variant != "old" {
+      entry["ignoredFiles"] = ["paths": [".env", "local.db"], "more": 2, "rebuildable": 1, "incomplete": false] as [String: Any]
+    }
+    guard let entryData = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]),
+          let entryJSON = String(data: entryData, encoding: .utf8) else { return nil }
+    let json = listJSON().replacingOccurrences(of: #""dueForDeletion":[]"#, with: #""dueForDeletion":[\#(entryJSON)]"#)
+    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)) else { return nil }
+    let sync = SyncService.shared ?? SyncService()
+    let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
+    let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
+    if variant == "machine" {
+      return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: "a9x7c6v5b4") })
+    }
+    let instanceId = noLane ? "q1w2e3r4t5" : "a9x7c6v5b4"
+    guard let due = list.account?.dueForDeletion.first,
+          let words = CloudIdleHeldWords(due, now: fixtureNow.timeIntervalSince1970 * 1000) else { return nil }
+    return AnyView(NavigationStack {
+      ScrollView {
+        CloudIdleHeldCard(store: store, instanceId: instanceId, words: words, whyOpen: variant == "why")
+          .padding(16)
+      }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationTitle(Brand.cloudName)
+      .navigationBarTitleDisplayMode(.inline)
+    })
   }
 
   /// Nov 11 2026, 15:00 UTC.
@@ -239,6 +421,58 @@ enum CloudPreviews {
           {"type":"vm","cpu":4,"memoryGb":16,"multiplierMilli":4000,"tier":"xlarge","label":"X-Large","diskMaxGb":100}],
         "diskStepGb":10,"paidPriceUsd":5,"extraHourCents":2}}}
     """
+  }
+
+  /// The Pricing v3 fixture as a real account of its plan reads: a pace that
+  /// lasts past the reset (so no date before today), no invite credits, and on
+  /// Free only as many computers as the plan has (2: the awake Medium and the
+  /// asleep Large, or the On Mac in place of the Large).
+  private static func realAccountJSON(_ json: String, free: Bool, withMac: Bool) -> String {
+    guard let data = json.data(using: .utf8), var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          var account = root["account"] as? [String: Any] else { return json }
+    account["recentUse"] = ["days": 7, "usedMilli": 7000]
+    account["earnedHours"] = ["leftMilli": 0, "usedThisPeriodMilli": 0, "grantedMilli": 0]
+    if var referral = account["referral"] as? [String: Any] {
+      referral["rewardsPaid"] = 0
+      referral["hoursEarnedMilli"] = 0
+      account["referral"] = referral
+    }
+    if free {
+      let keep: Set<String> = withMac ? ["zodqsue74s", "mac0running"] : ["zodqsue74s", "k2p8a1b2c3"]
+      let machines = (root["machines"] as? [[String: Any]] ?? []).filter { keep.contains($0["instanceId"] as? String ?? "") }
+      let awake = machines.filter { ($0["state"] as? String) == "running" }.count
+      root["machines"] = machines
+      root["runningCount"] = awake
+      account["computers"] = ["total": machines.count, "awake": awake, "limit": 2]
+    }
+    root["account"] = account
+    guard let out = try? JSONSerialization.data(withJSONObject: root), let text = String(data: out, encoding: .utf8) else { return json }
+    return text
+  }
+
+  /// The fixture with the DAEX Cloud Mac offered (`catalog.mac`, sample words
+  /// as the server sends them) and one Mac lane in each state.
+  private static func withMacJSON(_ json: String) -> String {
+    let minute = 60_000.0
+    let unsupported = #""unsupported":["resize","disk_grow","copy","move","update","backup","public_ports","signed_url","auto_sleep","machine_launch"]"#
+    func mac(_ id: String, lane: String, state: String, phone: String, extra: String) -> String {
+      #"{"instanceId":"\#(id)","name":"\#(lane)","machineKey":"mk-\#(id)","state":"\#(phone)","type":"mac","os":"mac","resources":{"cpu":6,"memoryGb":8,"diskGb":20},"lane":{"laneId":"l-\#(id)","laneName":"\#(lane)","projectOrigin":"github.com/arul/ade"},"lastActiveAtMs":\#(nowMs - 40 * minute),"createdAtMs":\#(nowMs - 2 * 86_400_000),"mac":{"state":"\#(state)","since":\#(nowMs - 2 * minute),\#(extra)},\#(unsupported)}"#
+    }
+    let drive = #""drive":{"sizeGb":20,"usedGb":7.4,"savedAt":\#(nowMs - 40 * minute)}"#
+    let machines = [
+      mac("mac0running", lane: "ios-snapshot-tests", state: "running", phone: "running", extra: #""message":"The Mac is on.",\#(drive)"#),
+      mac("mac0queued", lane: "xcode-build-cache", state: "queued", phone: "starting", extra: #""message":"Waiting for a free Mac. It starts as soon as one is free, and nothing is charged while it waits.",\#(drive)"#),
+      mac("mac0stopped", lane: "swiftui-onboarding", state: "stopped", phone: "stopped", extra: #""message":"The Mac is stopped and its drive is kept. The next message starts it again in under a minute.",\#(drive)"#),
+      mac("mac0failed", lane: "widget-timeline", state: "stopped", phone: "stopped", extra: #""message":"DAEX Cloud can't start a Mac right now. DAEX has been told. Try again later.","startFailed":true,"failure":"unavailable",\#(drive)"#),
+      mac("mac0lost", lane: "watch-complication", state: "stopped", phone: "stopped", extra: #""message":"This Mac's drive is gone, so its lane can't start again. Its saved work is in Lanes without a computer.","startFailed":true,"failure":"drive_lost",\#(drive)"#),
+    ].joined(separator: ",")
+    let offer = #""mac":{"label":"Mac","cpu":6,"memoryGb":8,"driveGb":20,"creditMilliPerMinute":500,"stopAfterIdleMinutes":5,"startSeconds":{"min":20,"max":60},"summary":"A macOS computer for Xcode and the iOS Simulator.","keeps":"A Mac stops 5 minutes after work ends. Only its 20 GB drive is kept; anything outside it is gone."},"#
+    return json
+      .replacingOccurrences(of: #""machines":["#, with: #""machines":[\#(machines),"#)
+      .replacingOccurrences(of: #""diskStepGb":10"#, with: offer + #""diskStepGb":10"#)
+      // A Mac counts as one of the plan's computers, and an On Mac as awake (the server's `computers`).
+      .replacingOccurrences(of: #""computers":{"total":4,"awake":1"#, with: #""computers":{"total":9,"awake":2"#)
+      .replacingOccurrences(of: #""runningCount":1"#, with: #""runningCount":2"#)
   }
 
   static func signInsFixture() -> ProviderLoginsPhoneStatus? {

@@ -16,7 +16,7 @@ import {
  * apps show their one-time "We updated our Privacy Policy" notice again, and add
  * a dated entry to `changelog` below.
  */
-const LAST_UPDATED = "November 25, 2026";
+const LAST_UPDATED = "November 28, 2026";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
@@ -27,14 +27,14 @@ type Section = {
   analyticsControl?: boolean;
 };
 
-/** Sponsored cards (Gravity). The apps link to `/privacy#sponsored` from every card and the consent prompt. */
+/** Ads (Gravity). The apps link to `/privacy#sponsored` from every ad and the consent prompt; keep the id. */
 const sponsoredSection: Section = {
   id: "sponsored",
-  title: "Sponsored cards on the DAEX Cloud Free plan",
+  title: "Ads in DAEX Cloud chats",
   body: [
-    "On the DAEX Cloud Free plan, DAEX works with Gravity (IRIS Inc., trygravity.com), its ad partner, to show sponsored cards in the DAEX apps (desktop, the web app, and iPhone and iPad). A card is labeled “Sponsored” and shows under a finished reply, above the prompt box, or at the end of the reply, at most one per reply. An agent may also suggest a sponsored tool for something you need. Paid plans, chats on your own computer, and this website have no ads.",
-    "In the United States, except California, sponsored cards start on: your first DAEX Cloud chat (or Settings › DAEX Cloud) tells you they are on, with a button to turn them off. In California and everywhere else, DAEX asks first and cards show only after you agree. In the United States, a browser that sends a Global Privacy Control (GPC) signal turns them off (see below).",
-    "While they are on, and only for chats running on DAEX Cloud computers, DAEX's server sends Gravity:",
+    "A chat uses DAEX Cloud when it runs on a DAEX Cloud computer (Linux or Mac), uses a DAEX Cloud iPhone, or uses a DAEX Free Model. For accounts that have ads on, DAEX works with Gravity (IRIS Inc., trygravity.com), its ad partner, to show ads in chats that use DAEX Cloud, in the DAEX apps (desktop, the web app, and iPhone and iPad). An ad is labeled “Sponsored” and shows under a finished reply, above the prompt box, or at the end of the reply, at most one per reply. An agent may also suggest a sponsored tool for something you need. Chats that do not use DAEX Cloud, and this website, have no ads. With ads on, DAEX Cloud costs less (see the notice of financial incentive below). DAEX Free Models have their own rule (see below).",
+    "In the United States, except California, ads start on: your first DAEX Cloud chat (or Settings › DAEX Cloud) tells you they are on, with a button to turn them off. In California and the other countries where DAEX offers ads, DAEX asks first and ads show only after you agree. In the United States, a browser that sends a Global Privacy Control (GPC) signal turns them off (see below).",
+    "While they are on, and only for chats that use DAEX Cloud, DAEX's server sends Gravity:",
     {
       list: [
         "the last messages of that chat (your latest request and the reply),",
@@ -43,15 +43,17 @@ const sponsoredSection: Section = {
         "a SHA-256 hash of your account email (never the email itself).",
       ],
     },
-    "In the DAEX app for iPhone and iPad, DAEX first asks with Apple's App Tracking Transparency prompt. The email hash is sent only if you allow tracking there; if you don't, sponsored cards still show and DAEX sends everything above except the email hash.",
+    "In the DAEX app for iPhone and iPad, DAEX first asks with Apple's App Tracking Transparency prompt. The email hash is sent only if you allow tracking there; if you don't, ads still show and DAEX sends everything above except the email hash.",
     "When an agent asks for a tool recommendation, DAEX sends Gravity the need the agent described, the session ID and email hash above (the hash under the same rule), and the IP address, country and device of your latest visit to that computer's chats. In a CLI session on DAEX Cloud, that request is all that is sent; never the terminal's output.",
-    "When a card shows, your app loads it from Gravity's design and tells Gravity directly that the card was seen and how much of it was on screen; when you open a card, the link goes through Gravity first, so Gravity can count the click. Gravity receives your IP address and your app or browser's details with those requests.",
+    "When an ad shows, your app loads it from Gravity's design and tells Gravity directly that the ad was seen and how much of it was on screen; when you open an ad, the link goes through Gravity first, so Gravity can count the click. Gravity receives your IP address and your app or browser's details with those requests.",
+    "DAEX Free Models are models that Gravity hosts and ads pay for. Where they are available (the United States and Canada), they work on any plan and any computer, only after you turn them on, only for an account that passes DAEX's GitHub account check or has a saved payment card or a paid plan, and only while you have the chat open in DAEX. To run them, DAEX's server sends Gravity each request of that chat: everything the model needs to answer, which includes your messages, the agent's earlier replies and the output of its tools in that chat, with the chat's scrambled session ID, the hash of your account email, and the IP address of the device you have the chat open on (for the first call of a chat started on DAEX Cloud, the device that started it). DAEX's server sets the session ID, email hash and IP address itself, whatever the app sent, removes settings Gravity does not support, limits the length of the reply, and asks for its token counts. In the DAEX app for iPhone and iPad they need tracking allowed in Apple's prompt, because Gravity needs the email hash. Because the ads pay for the model, a chat that used a DAEX Free Model in the last 24 hours shows ads while DAEX Free Models are on for your account, even with ads turned off. Its ad requests send what the list above names, and the model's name and token counts of the chat's last call. In the United States, a browser that sends a Global Privacy Control signal turns DAEX Free Models off too. Turning DAEX Free Models off stops all of it: on desktop and the web app, with the DAEX Free Models switch in Settings › DAEX Cloud; in the app for iPhone and iPad, with the card on the DAEX Cloud page. Choosing a DAEX Free Model in the model picker turns them on again. DAEX keeps where you have these chats open (IP address, user agent, device and country) for up to a day, and deletes it at once when you turn DAEX Free Models off; and, for each chat, when it was used, how many requests it made, and its last model and token counts, for 7 days; and, until your account is deleted, your answer when DAEX asked about DAEX Free Models (with the hash of your account email, your country and region, whether your browser sent a Global Privacy Control signal, and the time) and, for the limits on these models, counts of your calls and tokens since your last ad request. All of it is deleted with your account.",
+    "For the lower price with ads, DAEX keeps, for each DAEX Cloud computer and DAEX Cloud iPhone, when a chat on it was last in use (a message sent, or a finished reply's ad request), which full-price work runs on it (a CLI session, an automation, or an outside agent) and when that was reported, and when this record last changed. It also keeps a short record of each use, so that one message or reply counts once: the chat, the message or reply, its kind, the computer or iPhone, and the time. It keeps the same short record for a finished reply in a DAEX Free Model chat on your own computer, which changes no price. And it keeps when you answered the first notice about ads. None of these holds an IP address, a network number, a country or a state. Each use is deleted after two days, and a computer's or iPhone's record two days after it last changed (later only while that computer stays awake with full-price work on record). With ads off, a computer's price no longer follows them, except for a DAEX Free Model chat (above), and they are deleted within two days. A request that comes from a network DAEX Cloud computers use (your own computers', or one a new DAEX Cloud computer joined from) does not count; DAEX notes it in its abuse records, with that network's number and the time. All of it is deleted with your account.",
     "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what DAEX sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
-    "DAEX never sends anything from chats on your own computer or from paid plans. DAEX sends no file contents beyond what is in those messages.",
-    "You can turn this off at any time in Settings › DAEX Cloud. After that, nothing is sent and no cards show.",
-    "Under California and other US state privacy laws, sending this to Gravity for ads can be a “sale” or “sharing” of personal information. Turning sponsored cards off is how you opt out; if you do that in the United States, DAEX won't ask you to turn them back on for 12 months, and turning them back on yourself takes two steps: you choose it, then confirm it. In the United States, a browser that sends a Global Privacy Control signal opts your whole account out: the first time DAEX sees it, sponsored cards turn off on all your devices (or stay off, if you never turned them on), and Settings › DAEX Cloud says why. If you then turn them on from that browser, again in two steps, DAEX takes that as your choice and keeps them on.",
-    "Notice of financial incentive: on the Free plan, Small DAEX Cloud computers are free while sponsored cards are on and, in the last 7 days, you turned them on or opened a DAEX Cloud chat from the United States. Otherwise, outside the United States included, Small uses credits until you next open one there. With them off, Small computers use credits, half a credit for each hour awake. The cards pay for that computer time, so DAEX's good-faith estimate of the value of the data above is what that time costs: half a credit for each hour a Small computer is awake. In California, DAEX asks you first and enters you only after you agree. You can withdraw at any time by turning the cards off in Settings › DAEX Cloud, and turn them back on there.",
-    "DAEX keeps the IP address, country, state and device of your latest visit to a DAEX Cloud chat (replaced on each visit, and deleted about a day after your last visit, at most 25 hours, or at once when you turn sponsored cards off), the sponsored card shown for a reply for about a day, the time you last turned the cards on, or opened a DAEX Cloud chat, from the United States, with the network it came from (its internet provider's number, not your address; for free Small computers, and to spot visits sent automatically from a DAEX Cloud computer; kept while the cards are on and deleted when you turn them off; when it matches the network DAEX Cloud computers use, DAEX notes that in its abuse records), and daily counts of requests, cards shown and cards hidden for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
+    "DAEX never sends anything from chats that do not use DAEX Cloud. For an ad, DAEX sends no file contents beyond what is in those messages.",
+    "You can turn ads off at any time in Settings › DAEX Cloud, on any plan. After that, nothing is sent and no ads show, except in DAEX Free Model chats while DAEX Free Models are on (above).",
+    "Under California and other US state privacy laws, sending this to Gravity for ads can be a “sale” or “sharing” of personal information. Turning ads off is how you opt out; if you do that in the United States, DAEX won't ask you to turn them back on for 12 months, and turning them back on yourself takes two steps: you choose it, then confirm it. In the United States, a browser that sends a Global Privacy Control signal opts your whole account out: the first time DAEX sees it, ads turn off on all your devices (or stay off, if you never turned them on), and Settings › DAEX Cloud says why. If you then turn them on from that browser, again in two steps, DAEX takes that as your choice and keeps them on.",
+    "Notice of financial incentive: with ads on, DAEX Cloud costs less. On the Free plan, Small DAEX Cloud computers use credits with ads off. Where DAEX Cloud shows an ad price (on the Pricing page and beside a computer's price in the apps), a computer uses that lower price while you use a chat on it with ads on, from a country where DAEX offers ads, and for a while after (the Pricing page says how long), and while no full-price work runs on it: a CLI session, an automation, or work that an outside agent started through DAEX MCP. At its ad price a Small computer on Free is free; at its full price it uses credits. In apps that do not show an ad price, Small computers on Free are free with ads on only while, in the last 7 days, you turned them on or opened a DAEX Cloud chat from the United States; otherwise, outside the United States included, Small uses credits until you next open one there. The ads pay for that difference, so DAEX's good-faith estimate of the value of the data above is the difference between the full price and the price with ads, as the Pricing page and the apps show it. In California, DAEX asks you first and enters you only after you agree. You can withdraw at any time by turning ads off in Settings › DAEX Cloud, and turn them back on there.",
+    "DAEX keeps the IP address, country, state and device of your latest visit to a DAEX Cloud chat (replaced on each visit, and deleted about a day after your last visit, at most 25 hours, or at once when you turn ads off), the ad shown for a reply for about a day, the time you last turned ads on, or opened a DAEX Cloud chat, from the United States, with the network it came from (its internet provider's number, not your address; for free Small computers, and to spot visits sent automatically from a DAEX Cloud computer; kept while ads are on and deleted when you turn them off; when it matches the network DAEX Cloud computers use, DAEX notes that in its abuse records), and daily counts of requests, ads shown and ads hidden for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
   ],
 };
 
@@ -69,7 +71,7 @@ const sections: Section[] = [
           "Smart decisions sends parts of your chats, the prompt you are typing, and the last lines of idle DAEX terminals to a small AI model run by OpenCode or TypeSafe.",
           "Error reports can include the last lines of DAEX's logs, which can hold file paths and parts of chat text.",
           "Your account server keeps the names of your computers, projects, lanes and branches, and the folder paths of your projects, so that every device you sign in on can show them.",
-          "On the DAEX Cloud Free plan, while sponsored cards are on (in the United States, except California, they start on), DAEX sends the last messages of DAEX Cloud chats, your IP address and device, and scrambled IDs to Gravity, its ad partner, to show sponsored cards. See Sponsored cards.",
+          "While ads are on in DAEX Cloud (in the United States, except California, they start on), DAEX sends the last messages of chats that use DAEX Cloud, your IP address and device, and scrambled IDs to Gravity, its ad partner, to show ads. See Ads in DAEX Cloud chats.",
         ],
       },
       "Product analytics never includes prompts, code, file contents or terminal output. The sections below say exactly what goes where, how long it is kept, and what you can turn off.",
@@ -144,7 +146,7 @@ const sections: Section[] = [
     title: "AI providers and DAEX Cloud computers",
     body: [
       "When you chat with an agent, your prompts, the code and files the agent reads, and tool output go to the AI provider of the model you picked (for example Anthropic, OpenAI, Google, xAI, Cursor or OpenCode), under that provider's terms. DAEX does not put this content in product analytics.",
-      "If you use DAEX's free models without your own provider account, your prompts go to OpenCode's Zen service.",
+      "If you use OpenCode Zen's free models without your own provider account, your prompts go to OpenCode's Zen service. DAEX Free Models run on Gravity's service; see Ads in DAEX Cloud chats.",
       "DAEX Cloud computers run on servers from Agent 37. Everything in a cloud lane (its code, chats, terminals and the logins it uses) is on that computer. When a cloud lane rests, DAEX's server keeps its saved chats, terminal copies, git summaries, queued messages and lane backups. These are encrypted with a key for your account that DAEX's server holds. This is encryption at rest, not end-to-end encryption.",
       "DAEX watches each cloud computer's CPU use and activity to find mining and other abuse, and to put idle computers to sleep.",
       "DAEX Cloud iPhones, where available, run on NoMac's service. On a paid plan, when NoMac has no iPhone free, they run on Revyl's service.",
@@ -258,7 +260,7 @@ const sections: Section[] = [
           "Cloudflare — DAEX's servers, databases and storage, the connection relay, the vault and key service, and diagnostic reports.",
           "PostHog — product analytics, session replay, a copy of error reports, and the operational logs of DAEX's servers, in the United States.",
           "Sentry — error and crash reports, in the United States.",
-          "OpenCode — Smart decisions and DAEX's free models.",
+          "OpenCode — Smart decisions and OpenCode Zen's free models.",
           "TypeSafe — Smart decisions, when the free allowance is used up.",
           "Agent 37 — the servers that run DAEX Cloud computers.",
           "NoMac — DAEX Cloud iPhones, where available.",
@@ -269,10 +271,10 @@ const sections: Section[] = [
           "ipinfo.io and Open-Meteo — the weather widget.",
           "Vercel — hosts this website.",
           "Mintlify — serves the documentation at /docs.",
-          "Gravity (IRIS Inc.) — DAEX’s ad partner for sponsored cards on the DAEX Cloud Free plan, only while they are on; see Sponsored cards below.",
+          "Gravity (IRIS Inc.) — DAEX’s ad partner for ads in chats that use DAEX Cloud, and the host of DAEX Free Models; see Ads in DAEX Cloud chats below.",
         ],
       },
-      "DAEX requires PostHog and any other analytics processor to act only for DAEX's analytics and not to use DAEX analytics for advertising or their own profiling. DAEX does not share analytics with advertisers. The only personal data DAEX gives an ad partner is what “Sponsored cards on the DAEX Cloud Free plan” below describes, and only while those cards are on.",
+      "DAEX requires PostHog and any other analytics processor to act only for DAEX's analytics and not to use DAEX analytics for advertising or their own profiling. DAEX does not share analytics with advertisers. The only personal data DAEX gives an ad partner is what “Ads in DAEX Cloud chats” below describes, and only while ads are on.",
     ],
   },
   sponsoredSection,
@@ -291,7 +293,7 @@ const sections: Section[] = [
           "Development builds, tests and CI runs send no analytics and no error reports.",
         ],
       },
-      "Because of the items above in Logins, Smart decisions, Error reports and Sponsored cards, DAEX does not claim that nothing leaves your computer.",
+      "Because of the items above in Logins, Smart decisions, Error reports and Ads in DAEX Cloud chats, DAEX does not claim that nothing leaves your computer.",
     ],
   },
   {
@@ -317,7 +319,7 @@ const sections: Section[] = [
           "Turn off Smart decisions, or single Smart decisions features, in Settings › Chat › Smart decisions.",
           "Stop sharing AI tool logins with DAEX Cloud with “Share my sign-ins with DAEX Cloud” in Settings › DAEX Cloud, and remove saved logins there.",
           "Take your GitHub CLI login off your account in Settings › GitHub.",
-          "Turn off sponsored cards on the DAEX Cloud Free plan in Settings › DAEX Cloud (in the United States, this opts you out of the “sale” or “sharing” of the data they use).",
+          "Turn off ads in DAEX Cloud in Settings › DAEX Cloud (in the United States, this opts you out of the “sale” or “sharing” of the data they use).",
           "Remove the weather widget from the Home page, or pick a place yourself.",
           "Set DO_NOT_TRACK=1 in the environment DAEX runs in to stop product analytics, error reports, automatic diagnostic reports and the daily usage report from the desktop app and its background service. The background service takes DO_NOT_TRACK from the app that installed it, so a service installed before you set it can keep sending until DAEX installs the service again. ADE_SENTRY_DISABLED=1 (error reports only) and ADE_USAGE_RESEARCH=0 (the daily usage report only) work for the app you start with them, and do not reach the background service. The iPhone app and the web app have no equivalent setting today.",
           "Revoke camera, microphone or local network access in iOS Settings › DAEX.",
@@ -343,6 +345,7 @@ const sections: Section[] = [
       "When DAEX makes a material change, it updates this page and the date at the top, adds an entry below, and shows a one-time notice in the desktop app, DAEX on the web and the iPhone app. If you keep using DAEX after a change, you accept the changed policy.",
       {
         list: [
+          `${LAST_UPDATED} — “Sponsored cards on the DAEX Cloud Free plan” is now “Ads in DAEX Cloud chats”: it covers ads on every plan for accounts that have them on, the lower DAEX Cloud price with ads, and DAEX Free Models, which Gravity hosts and ads pay for. In California and the other countries where DAEX offers ads, DAEX asks first. What Gravity receives for an ad is unchanged.`,
           "November 25, 2026 — Deleting your account now also deletes the list of computers you signed in to DAEX on, the DAEX Cloud computers' logs, your lane shares and what DAEX's relays keep for the account, and the deletion runs again during the next day; the computers' usage and cost stay under a one-way hash, without names.",
           "November 25, 2026 — Free Small computers for sponsored cards now need the cards turned on, or a DAEX Cloud chat opened, from the United States in the last 7 days; outside the United States, Small uses credits after that. DAEX keeps the time of the latest one, and the network it came from, while the cards are on.",
           "November 25, 2026 — Sponsored cards on the DAEX Cloud Free plan: in the United States, except California, the cards start on and you can turn them off; in California DAEX asks first. The section also covers Global Privacy Control, turning the cards back on in two steps, and the free Small computers the cards pay for.",

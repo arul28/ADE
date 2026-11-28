@@ -49,8 +49,7 @@ struct WorkSponsoredPickCard: View {
 
   /// The account may see sponsored cards now; one that said no or moved to a paid plan sees old picks folded, with nothing to open.
   private var allowed: Bool {
-    guard let sponsored = accountCloud.account?.sponsored else { return false }
-    return sponsored.ads && sponsored.consent == CloudSponsoredState.granted
+    cloudChatAdsOn()
   }
 
   /// The pick counts as the one sponsored unit on screen while it shows open.

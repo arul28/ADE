@@ -41,6 +41,7 @@ import {
   type HandoverWaitDeps,
   serviceHandoverSleep,
 } from "./serviceHandover";
+import { ENTRYPOINT_SUPERVISOR_ENV, restartEntrypointSupervisedBrain } from "./entrypointSupervisor";
 import {
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
@@ -429,6 +430,22 @@ export async function installLaunchdService(
   const adeHome = command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   const socketPath = path.join(adeHome, "sock", "ade.sock");
   const probeResponsiveness = deps.responsivenessProbe ?? defaultResponsivenessProbe;
+  // A DAEX Cloud Mac's drive loop runs the brain (a NoMac service): a restart goes through it, and launchd's
+  // service is never installed beside it to fight it for the socket.
+  if (env[ENTRYPOINT_SUPERVISOR_ENV]?.trim() === "entrypoint") {
+    const underEntrypoint = await restartEntrypointSupervisedBrain({
+      command,
+      env,
+      homeDir,
+      spawnSync: run,
+      responsivenessProbe: deps.responsivenessProbe,
+      handoverTimeoutMs: deps.handoverTimeoutMs,
+      handoverPollMs: deps.handoverPollMs,
+      sleep: deps.sleep,
+      platform: "darwin",
+    });
+    if (underEntrypoint) return underEntrypoint;
+  }
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   const plist = renderLaunchdPlist(command, homeDir);
   fs.mkdirSync(path.join(adeHome, "runtime"), { recursive: true });

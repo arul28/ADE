@@ -55,12 +55,14 @@ export type CloudPlanMoment = {
   replacedFreeMilli: number | null;
   /** What the balance is called (`cloudUnitWords`): credits. */
   noun: "credits";
+  /** Shown credits in one Medium-hour unit (`CloudUnitWords.scale`). */
+  scale?: number;
 };
 
 /** "Your 79.1 unused free hours were replaced by Plus's 300." when the upgrade replaced free hours; null otherwise. */
 export function cloudPlanReplacedSentence(moment: CloudPlanMoment): string | null {
   return moment.replacedFreeMilli != null
-    ? `Your ${formatCloudHours(moment.replacedFreeMilli)} unused free ${moment.noun} were replaced by ${moment.label}'s ${formatCloudHours(moment.includedMilli)}.`
+    ? `Your ${formatCloudHours(moment.replacedFreeMilli, moment.scale)} unused free ${moment.noun} were replaced by ${moment.label}'s ${formatCloudHours(moment.includedMilli, moment.scale)}.`
     : null;
 }
 
@@ -69,7 +71,7 @@ export function cloudPlanMomentWords(moment: CloudPlanMoment): { title: string; 
   const replaced = cloudPlanReplacedSentence(moment);
   return {
     title: `You're on ${moment.label}`,
-    detail: `${moment.computers} cloud computers, unlimited Small ones and ${formatCloudHours(moment.includedMilli)} ${moment.noun} a month for bigger ones. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
+    detail: `${moment.computers} cloud computers, unlimited Small ones and ${formatCloudHours(moment.includedMilli, moment.scale)} ${moment.noun} a month for bigger ones. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
   };
 }
 
@@ -103,6 +105,7 @@ export function nextCloudPlanSeen(previous: CloudPlanSeen | null, account: Cloud
       renewsAt: account.billing.periodEnd,
       replacedFreeMilli: replaced,
       noun: cloudUnitWords(account).noun,
+      scale: cloudUnitWords(account).scale,
     },
   };
 }

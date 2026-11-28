@@ -205,6 +205,11 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
     return client;
   }
 
+  /** A chat's call reached the phone: that chat holds it now (Pricing v3's ad and proof follow it). */
+  function noteHolder(phone: Held, chatSessionId: string | null): void {
+    if (chatSessionId && liveRun?.phoneId === phone.phoneId && liveRun.account === phone.account) liveRun.holderChatSessionId = chatSessionId;
+  }
+
   /** A call reached the run's phone: the provider's idle clock starts again. */
   function touched(phone: Held): void {
     if (liveRun?.phoneId === phone.phoneId && liveRun.account === phone.account) liveRun.lastActivityAt = Date.now();
@@ -432,6 +437,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
   ): Promise<T> {
     const needs = need ? [need] : [];
     const phone = await ensure({ chatSessionId, needs, ...build });
+    noteHolder(phone, chatSessionId);
     noteChatPhone(chatSessionId, phone.phoneId);
     try {
       return await run(phone, driverOf(phone));
@@ -441,6 +447,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       // Only for the account the command began under: after a switch, never on the new account's phone.
       // The report went with the first start: never twice.
       const fresh = await ensure({ chatSessionId, needs, builds: build.builds ?? [], account: phone.account });
+      noteHolder(fresh, chatSessionId);
       noteChatPhone(chatSessionId, fresh.phoneId);
       return await run(fresh, driverOf(fresh));
     }
@@ -716,7 +723,10 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       }
       // Access is on or off (an older server's `soon` reads as off).
       const reason = state.access === "on" ? null : `The ${BRAND.CLOUD_NAME} iPhone isn't available right now.`;
-      const lastActivityAt = liveRun && state.phone?.id === liveRun.phoneId && state.phone.state !== "ended" ? liveRun.lastActivityAt : null;
+      const ownRun = liveRun && state.phone?.id === liveRun.phoneId && state.phone.state !== "ended" ? liveRun : null;
+      const lastActivityAt = ownRun ? ownRun.lastActivityAt : null;
+      // Pricing v3: the chat of this brain's latest call holds the phone (another brain's read answers null).
+      const chatSessionId = ownRun?.holderChatSessionId ?? null;
       // What the phone can do: the server says, for the live phone or the next one (an
       // older server: the live phone's provider, or with none running, NoMac's).
       const abilities = state.abilities ? cloudPhoneAbilitiesOf(state.abilities) : [...CLOUD_PHONE_PROVIDER_ABILITIES[state.phone?.provider ?? "nomac"]];
@@ -727,7 +737,7 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
         return !needed || abilities.includes(needed);
       });
       const chatUse = chatUseOf(state, cloudPhoneCallerChat(args));
-      return { ...state, phone: withoutProvider(state.phone), abilities, lacks: state.access === "on" ? lacks : [], capabilities, supported: state.access === "on", reason, lastActivityAt, ...(chatUse ? { chatUse } : {}) };
+      return { ...state, phone: withoutProvider(state.phone), abilities, lacks: state.access === "on" ? lacks : [], capabilities, supported: state.access === "on", reason, lastActivityAt, chatSessionId, ...(chatUse ? { chatUse } : {}) };
     },
 
     /** Starts the account's phone (or answers the live one); `needs`: abilities it must have (`CLOUD_PHONE_ABILITIES`). */

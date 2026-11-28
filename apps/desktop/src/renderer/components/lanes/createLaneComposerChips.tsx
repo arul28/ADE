@@ -1,6 +1,6 @@
 import React from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { CaretUpDown, Check, Desktop, DesktopTower, Plus, Scales, Stack } from "@phosphor-icons/react";
+import { AppleLogo, CaretUpDown, Check, Desktop, DesktopTower, Plus, Scales, Stack } from "@phosphor-icons/react";
 import { usePortalContainer } from "../ui/portalContainer";
 import { Z_LAYERS } from "../ui/zLayers";
 import { formatBytes } from "../../lib/format";
@@ -8,6 +8,7 @@ import type { LaneTemplate } from "../../../shared/types";
 import { capitalizeCloudPhrase } from "../../../shared/adeCloud";
 import { cloudTierRateLabel, cloudTierShapeLabel, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudMacRateText, cloudMacShapeText, type CloudComputerOs, type CloudMacOffer } from "../../../shared/cloudMac";
 import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import type { AdeCloudLaneChoice } from "./useAdeCloudLaneTarget";
 import type { CreateLaneMode } from "./CreateLaneDialog";
@@ -385,6 +386,9 @@ export function LaneCloudSizeChip({
   onChoose,
   onSetDefault,
   words,
+  macOffer = null,
+  os = "linux",
+  onChooseOs,
 }: {
   popover: ComposerPopoverState;
   tiers: readonly CloudTier[];
@@ -394,36 +398,60 @@ export function LaneCloudSizeChip({
   onSetDefault: (tier: CloudTierId) => void;
   /** The account's words for each size's rate. */
   words: CloudUnitWords;
+  /** The DAEX Cloud Mac offer: listed under the Linux sizes, and the chip says Linux or Mac. */
+  macOffer?: CloudMacOffer | null;
+  os?: CloudComputerOs;
+  onChooseOs?: (os: CloudComputerOs) => void;
 }) {
   const close = () => popover.onOpenChange(false);
   const current = tiers.find((tier) => tier.id === tierId) ?? null;
+  const macShown = Boolean(macOffer && onChooseOs);
+  const mac = macShown && os === "mac" ? macOffer : null;
+  const macDetail = macOffer ? `${cloudMacShapeText(macOffer)} · ${cloudMacRateText(macOffer, words)}` : "";
+  const linuxLabel = `${macShown ? "Linux · " : ""}${current?.label ?? "Small"}`;
   return (
     <ComposerPopover
       {...popover}
       trigger={(
-        <button type="button" className="cl-field" aria-label={`Computer size, ${current?.label ?? "Small"}`}>
-          <span className="cl-tile" data-tone="cloud"><CloudSizeIcon tier={tierId} size={16} /></span>
-          <span className="cl-field-text">{current?.label ?? "Small"}</span>
-          {current ? <span className="cl-field-meta">{cloudTierDetail(current, words)}</span> : null}
+        <button type="button" className="cl-field" aria-label={mac ? "Computer, Mac" : `Computer, ${linuxLabel}`}>
+          <span className="cl-tile" data-tone="cloud">{mac ? <AppleLogo size={15} weight="fill" /> : <CloudSizeIcon tier={tierId} size={16} />}</span>
+          <span className="cl-field-text">{mac ? "Mac" : linuxLabel}</span>
+          {mac ? <span className="cl-field-meta">{macDetail}</span> : current ? <span className="cl-field-meta">{cloudTierDetail(current, words)}</span> : null}
           <CaretUpDown size={12} className="cl-field-caret" />
         </button>
       )}
     >
-      <div role="group" aria-label="Computer size">
+      <div role="group" aria-label="Computer">
         {tiers.map((tier) => (
           <PopItem
             key={tier.id}
             icon={<span className="cl-tile" data-tone="cloud"><CloudSizeIcon tier={tier.id} size={15} /></span>}
             title={tier.id === defaultTier ? <>{tier.label} <span className="cl-item-default">Default</span></> : tier.label}
             sub={tier.type === "vm" ? `${cloudTierDetail(tier, words)} · Android and Docker` : cloudTierDetail(tier, words)}
-            selected={tier.id === tierId}
+            selected={!mac && tier.id === tierId}
             onSelect={() => {
+              onChooseOs?.("linux");
               onChoose(tier.id);
               close();
             }}
           />
         ))}
-        {current && current.id !== defaultTier ? (
+        {macShown && macOffer ? (
+          <>
+            <div className="cl-pop-rule" />
+            <PopItem
+              icon={<span className="cl-tile" data-tone="cloud"><AppleLogo size={14} weight="fill" /></span>}
+              title={macOffer.label || "Mac"}
+              sub={`${macDetail}. ${macOffer.keeps}`}
+              selected={Boolean(mac)}
+              onSelect={() => {
+                onChooseOs?.("mac");
+                close();
+              }}
+            />
+          </>
+        ) : null}
+        {!mac && current && current.id !== defaultTier ? (
           <>
             <div className="cl-pop-rule" />
             <PopItem

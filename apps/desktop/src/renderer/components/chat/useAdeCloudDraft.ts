@@ -12,6 +12,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudAdsViewOf, cloudPricingOf, cloudTierRateNowMilli } from "../../../shared/cloudAdPriceWords";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
@@ -19,7 +20,8 @@ import { adeCloudDoBlock, useAdeCloudAccess, useAdeCloudEnabled } from "../../st
 import { isWebClientMode } from "../../lib/webClientMode";
 import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
 import { cloudRemoteSignInOf, cloudRemoteSignInRefusal } from "../../../shared/accountCloudLaunches";
-import { useRootAppStore } from "../../state/appStore";
+import { rootAppStoreApi, useRootAppStore } from "../../state/appStore";
+import { cloudMacOfferOf, cloudMacProviderRefusal, cloudMacTimeAt, type CloudComputerOs } from "../../../shared/cloudMac";
 import { pickCloudDefaultTier } from "../../lib/cloudDefaultTier";
 import { useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
@@ -29,6 +31,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, adeCloudSettingsRoute } from "../settings/settingsHash";
 import { isAutoCreateLaneOptionId } from "../terminals/LaneCombobox";
 import { AUTO_CREATE_DRAFT_LANE_OPTION as AUTO_CREATE_LANE_OPTION, type RoutedDraftLane } from "./useDraftMachineRouting";
+import { freePlanGithubHold, type CloudFreeGithubHoldFacts } from "../settings/cloudDashboard/CloudFreeGithubNotice";
 
 const NO_MACHINES: readonly CloudMachine[] = [];
 
@@ -43,7 +46,7 @@ export { ADE_CLOUD_MACHINE_ID };
  * (all the plan's cloud computers in use: free one up, delete a lane, or a
  * bigger plan).
  */
-export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings" | "github" | "computer-limit";
+export type AdeCloudTrayAction = "upgrade" | "free-space" | "settings" | "github" | "computer-limit" | "mac-stop-read";
 
 /**
  * The label above the prompt box while ADE Cloud is picked and Send can't go:
@@ -56,6 +59,12 @@ export type AdeCloudTrayNotice = {
   /** One short line for a narrow prompt box, so the label never wraps there. */
   short: string;
   actions: AdeCloudTrayAction[];
+  /**
+   * The free plan's GitHub rule is why the hours are 0 (not hours spent):
+   * the tray shows the hold, with "Add a card (no charge)" or "Connect
+   * GitHub", instead of an out-of-credits line.
+   */
+  hold?: CloudFreeGithubHoldFacts;
 };
 
 /**
@@ -65,11 +74,14 @@ export type AdeCloudTrayNotice = {
  */
 export function adeCloudAccountBlock(
   account: CloudAccountState | null,
-  options: { newLane: boolean; sizeId?: string | null },
+  options: { newLane: boolean; sizeId?: string | null; personMessage?: boolean; os?: CloudComputerOs | null },
 ): AdeCloudTrayNotice | null {
   // One wording with `cloud.status` and the launch's early refusal.
   const block = cloudLaneStartBlock(account, options);
   if (!account || !block) return null;
+  // Out of hours because the GitHub rule holds the free plan's: the hold, not "out of credits".
+  const hold = block.code === "out_of_hours" ? freePlanGithubHold(account) : null;
+  if (hold) return { tone: "blocked", message: block.message, short: block.short, actions: [], hold };
   const upgrade: AdeCloudTrayAction[] = account.rules === "free" ? ["upgrade"] : [];
   const actions: AdeCloudTrayAction[] = block.code === "computer_limit"
     ? ["computer-limit"]
@@ -97,6 +109,11 @@ export function adeCloudTrayActionRoute(action: AdeCloudTrayAction): string {
  * read gives its facts); every other action opens its Settings route.
  */
 export function runAdeCloudTrayAction(action: AdeCloudTrayAction, navigate: (route: string) => void): void {
+  if (action === "mac-stop-read") {
+    // Account-wide (synced): read on one machine is read everywhere.
+    rootAppStoreApi.getState().setCloudMacStopExplained(true);
+    return;
+  }
   if (action === "computer-limit") {
     openCloudComputerLimitCard();
     return;
@@ -122,11 +139,24 @@ function useStableList<T>(list: T[], signatureOf: (item: T) => string): T[] {
 export function useAdeCloudDraft({
   enabled,
   originUrl,
+  savedOs = true,
+  fullPrice = false,
 }: {
   /** The draft's launch controls show. */
   enabled: boolean;
   /** The tab project's git origin: which lanes on ADE Cloud are this project's. */
   originUrl: string | null;
+  /**
+   * Start from the person's saved Linux or Mac pick. False where lanes start
+   * for work no person looks at one by one (a Linear batch): Linux until the
+   * person picks a Mac there.
+   */
+  savedOs?: boolean;
+  /**
+   * The start pays the full price whatever the ads (a CLI session): the Run on
+   * line counts time at it. A chat's start gets the price with ads while ads are on.
+   */
+  fullPrice?: boolean;
 }) {
   const cloudEnabled = useAdeCloudEnabled();
   const access = useAdeCloudAccess();
@@ -163,18 +193,45 @@ export function useAdeCloudDraft({
     ?? defaultTier;
   const chooseTier = useCallback((next: CloudTierId) => setPickedTier(next), []);
   const resetTier = useCallback(() => setPickedTier(null), []);
+  // Linux or a DAEX Cloud Mac: offered only while the catalog has `mac`.
+  const macOffer = useMemo(() => cloudMacOfferOf(account), [account]);
+  const defaultOs = useRootAppStore((state) => state.cloudDefaultOs);
+  // Batch work keeps its own pick (Linux until the person picks a Mac there).
+  const [pickedOs, setPickedOs] = useState<CloudComputerOs | null>(null);
+  // A batch dialog stays mounted between opens: each open starts on Linux again.
+  useEffect(() => {
+    if (!enabled) setPickedOs(null);
+  }, [enabled]);
+  const os: CloudComputerOs = macOffer ? (savedOs ? defaultOs : pickedOs ?? "linux") : "linux";
+  // Elsewhere the last pick is the saved one (a synced account setting), so
+  // the composer, the new lane dialog and every other window show one answer.
+  const chooseOs = useCallback((next: CloudComputerOs) => {
+    if (savedOs) rootAppStoreApi.getState().setCloudDefaultOs(next);
+    else setPickedOs(next);
+  }, [savedOs]);
   // Hours left now (the plan's and earned ones), and the Run on row's line: the
   // size a new lane gets and how long those hours last at it.
   const hoursLeftMilli = account ? cloudHoursLeftMilli(account) : null;
   const words = useMemo(() => cloudUnitWords(account), [account]);
+  // Pricing v3: the size menu shows each size's two prices (the account's ads decide which leads).
+  const priced = useMemo(() => (cloudPricingOf(account) ? { view: cloudAdsViewOf(account) } : null), [account]);
+  // The ads that price this start: none for a start that pays the full price.
+  const startView = fullPrice ? null : priced?.view ?? null;
   const runOnLine = useMemo(() => {
+    if (os === "mac" && macOffer && account) {
+      if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `Mac · no ${words.noun} left`;
+      return `Mac · ${cloudMacTimeAt(macOffer, hoursLeftMilli ?? 0, startView)} left`;
+    }
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
     // Small never uses hours: it stays unlimited, also at 0 hours left (`cloudTierHoursAt` says so).
     if (!cloudTierUsesHours(tier)) return `${tier.label} · ${cloudTierHoursAt(tier, 0).toLowerCase()}`;
+    // Pricing v3: free with ads on here (Free's Small), whatever credits are left.
+    if (startView?.available && startView.on && tier.adMultiplierMilli === 0) return `${tier.label} · free with ads`;
     if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no ${words.noun} left`;
-    return `${tier.label} · ${cloudTierHoursAt(tier, hoursLeftMilli ?? 0)} left at this size`;
-  }, [account, hoursLeftMilli, tierId, tiers, words]);
+    // Time at the price this start pays now (Settings' "Left at this size" for a chat).
+    return `${tier.label} · ${cloudTierHoursAt({ multiplierMilli: cloudTierRateNowMilli(tier, startView) }, hoursLeftMilli ?? 0)} left at this size`;
+  }, [account, hoursLeftMilli, macOffer, os, startView, tierId, tiers, words]);
 
   return {
     /**
@@ -208,9 +265,16 @@ export function useAdeCloudDraft({
     chooseTier,
     resetTier,
     setDefaultTier,
+    /** The DAEX Cloud Mac offer, or null (nothing about a Mac shows). */
+    macOffer,
+    /** Linux or Mac for this draft: always `linux` while the catalog has no Mac. */
+    os,
+    chooseOs,
     hoursLeftMilli,
     /** The account's words (`cloudUnitWords`). */
     words,
+    /** Pricing v3's ads for the size menu's two prices; null without Pricing v3. */
+    priced,
     runOnLine,
     refresh: machines.refresh,
   };
@@ -223,6 +287,8 @@ export type AdeCloudSend = {
   tierId: string;
   /** `default` while the size follows the default (nobody picked one): a Small may move to Medium when its setup needs more memory. */
   sizeChoice: "default" | "picked";
+  /** `mac` only while the catalog offers a Mac and this draft shows it picked. */
+  os: CloudComputerOs;
   originUrl: string | null;
   tabBinding: OpenProjectBinding | null;
   /** The ADE Cloud lane picked, or null for a new lane. */
@@ -296,6 +362,8 @@ export function useAdeCloudComposer(input: {
   isCliDraft: boolean;
   /** The draft chat's provider: ADE Web can't start one that signs in only from the desktop. */
   provider: AgentChatProvider | null;
+  /** The provider's name, for a Mac's refusal sentence when the server sent none. */
+  providerLabel?: string | null;
   attachments: AgentChatFileRef[];
   newLaneConfig: NewLaneDraftConfig | null;
   /** Stable (module level): the launch's lane config from the "+" lane's draft. */
@@ -417,8 +485,13 @@ export function useAdeCloudComposer(input: {
       return { tone: "blocked", message: draft.doBlock, short: `${BRAND.CLOUD_NAME} can't start work now.`, actions: [] };
     }
     // A new lane's size decides whether hours matter (Small never uses them).
-    const accountBlock = adeCloudAccountBlock(draft.account, { newLane, sizeId: newLane ? draft.tierId : null });
+    // A chat draft's send is the person's first message (Pricing v3: Free's Small starts free with ads); a CLI's is not.
+    const mac = newLane && draft.os === "mac";
+    const accountBlock = adeCloudAccountBlock(draft.account, { newLane, sizeId: newLane ? draft.tierId : null, personMessage: !input.isCliDraft, os: mac ? "mac" : null });
     if (accountBlock) return accountBlock;
+    // A provider the server says can't run on a Mac, before the person starts.
+    const macRefusal = mac ? cloudMacProviderRefusal(draft.macOffer, input.provider, input.isCliDraft ? "cli" : "chat", input.providerLabel) : null;
+    if (macRefusal) return { tone: "notice", message: macRefusal, short: "This one can't run on a Mac.", actions: [] };
     // Antigravity runs on the sign-in the account carries from a computer of
     // the person's own. Known not carried, say how; on the web, also while
     // unknown (it can't carry one itself).
@@ -491,6 +564,8 @@ export function useAdeCloudComposer(input: {
     draft.doBlock,
     gitRefusal,
     draft.tierId,
+    draft.os,
+    draft.macOffer,
     mode,
     newLane,
     originUrl,
@@ -500,12 +575,24 @@ export function useAdeCloudComposer(input: {
     input.isCliDraft,
     input.parallelChatMode,
     input.provider,
+    input.providerLabel,
     input.showControls,
   ]);
+  /**
+   * What a Mac's stop keeps, said once (synced, account-wide) the first time a
+   * person picks a Mac for a new lane. It never holds Send; a send counts as read.
+   */
+  const macStopExplained = useRootAppStore((state) => state.cloudMacStopExplained);
+  const macKeeps = draft.macOffer?.keeps?.trim() || null;
+  const info = useMemo<AdeCloudTrayNotice | null>(() => {
+    if (!mode || !input.showControls || !newLane || draft.os !== "mac" || macStopExplained || !macKeeps) return null;
+    return { tone: "notice", message: macKeeps, short: "A Mac keeps only its drive when it stops.", actions: ["mac-stop-read"] };
+  }, [draft.os, input.showControls, macKeeps, macStopExplained, mode, newLane]);
   input.sendRef.current = mode
     ? {
         tierId: draft.tierId,
         sizeChoice: draft.pickedTier ? "picked" : "default",
+        os: newLane ? draft.os : "linux",
         originUrl,
         tabBinding: input.tabBinding,
         lane: selectedLane,
@@ -520,5 +607,5 @@ export function useAdeCloudComposer(input: {
     if (refusedNow) recheckGitPreflight();
   }, [recheckGitPreflight, refusedNow]);
 
-  return { shelfLanes, selectedLane, newLane, notice, openSettings, recheckSendBlock };
+  return { shelfLanes, selectedLane, newLane, notice, info, openSettings, recheckSendBlock };
 }

@@ -263,3 +263,12 @@ html[data-motion="reduced"] .adec-puff { animation: none; display: none; }
   line-height: 1;
   color: var(--adec-lamp-text);
 }
+
+/* A held free plan above the prompt box (AdeCloudComposerParts AdeCloudGithubHoldTray):
+   the GitHub hold's own notice, inset like the tray so the box keeps its line. */
+.adec-hold-tray {
+  margin: 0 var(--composer-tab-inset, 26px) 2px;
+  min-width: 0;
+  /* The slot above the box centers its text; a notice reads from the left. */
+  text-align: left;
+}
