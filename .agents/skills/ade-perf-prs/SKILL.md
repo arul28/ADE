@@ -1,9 +1,9 @@
 ---
 name: ade-perf-prs
-description: Performance practices for ADE's PRs tab. Read before editing
+description: Performance practices for DAEX's PRs tab. Read before editing
   files under apps/desktop/src/renderer/components/prs/**,
   apps/desktop/src/main/services/prs/**, PR IPC/preload contracts, or
-  PR-facing ADE actions. Preserve these patterns unless a new measured PRs UI
+  PR-facing DAEX actions. Preserve these patterns unless a new measured PRs UI
   audit proves a better one.
 metadata:
   author: ade-autoresearch
