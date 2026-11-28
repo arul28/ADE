@@ -3339,6 +3339,13 @@ describe("ADE Cloud server launcher", () => {
         at(12);
         expect((await stages({ state: "failed", error: "The clone failed." })).status).toBe(200);
       }, null],
+      ["no free window, a finished sign-in, then a failed setup: not an end in the sign-in step, no note", () => opensToday(3), async () => {
+        at(10);
+        expect((await stages({ state: "joined", stages: [{ id: "computer", status: "done" }, { id: "clone", status: "done" }, { id: "sign_in", status: "done" }] })).status).toBe(200);
+      }, async () => {
+        at(12);
+        expect((await stages({ state: "failed", error: "The clone failed." })).status).toBe(200);
+      }, null],
     ])("a wait that ended says what it cost: %s", async (_label, before, during, end, note) => {
       before();
       await startWaiting();
@@ -3346,8 +3353,17 @@ describe("ADE Cloud server launcher", () => {
       await end();
       const record = await read() as Awaited<ReturnType<typeof read>> & { state: string; stages: Array<{ id: string; status: string }> };
       expect([record.state === "failed" || record.state === "cancelled", record.endNote]).toEqual([true, note]);
-      // An ended launch shows no stage running: the sign-in it left reads failed.
+      // An ended launch shows no stage running: the sign-in it left reads failed, or not started after a cancel.
       expect(record.stages.filter((stage) => stage.status === "running")).toEqual([]);
+      if (record.state === "cancelled") expect(record.stages.find((stage) => stage.id === "sign_in")?.status).toBe("pending");
+    });
+
+    it("a cancel's own answer says what the wait cost, as a read does", async () => {
+      opensToday(3);
+      await startWaiting();
+      at(20);
+      const answer = await harness.send(OWNER, "DELETE", `/cloud/launches/${LAUNCH}`);
+      expect(((await answer.json()) as { endNote: string | null }).endNote).toBe("This wait used credits.");
     });
 
     it("the fourth wait of a day says it uses credits before anything is charged", async () => {

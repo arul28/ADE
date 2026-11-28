@@ -578,6 +578,10 @@ export function LaneSetupCard({
         </div>
       ) : null}
 
+      {snapshot.phase === "cancelled" && snapshot.cloud?.endNote ? (
+        <p data-testid="lane-setup-end-note" className={cn("mt-1.5 text-muted-fg", metaSize)}>{snapshot.cloud.endNote}</p>
+      ) : null}
+
       {failed && snapshot.cloud?.refusal?.code === CLOUD_COMPUTER_LIMIT_CODE ? (
         // All the plan's cloud computers in use: the card offers the three ways out, then Retry starts this one.
         <div className={cn("mt-1.5", metaSize)}>

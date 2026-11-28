@@ -55,7 +55,8 @@ type CloudSetupStepStates = {
 function cloudSetupStepStates(record: CloudLaunchRecord | null): CloudSetupStepStates {
   if (!record) return { computer: "running", repo: "todo", signIn: "todo", send: "todo" };
   const stages = record.stages ?? [];
-  const failed = record.state === "failed" || record.state === "cancelled";
+  const failed = record.state === "failed";
+  const cancelled = record.state === "cancelled";
   const agent = stages.find((stage) => stage.id === AGENT_STAGE)?.status ?? null;
   const agentStarted = agent === "running" || agent === "done" || record.state === "running" || record.state === "done";
   const handedOff = agentStarted || stages.some((stage) => HANDED_OFF_STAGES.has(stage.id));
@@ -75,6 +76,13 @@ function cloudSetupStepStates(record: CloudLaunchRecord | null): CloudSetupStepS
     ? "done"
     : agent === "failed" ? "failed" : agentStarted ? "running" : "todo";
   const steps: CloudSetupStepStates = { computer, repo, signIn, send };
+  // The person cancelled it: nothing failed, and nothing runs any more.
+  if (cancelled) {
+    for (const key of Object.keys(steps) as (keyof CloudSetupStepStates)[]) {
+      if (steps[key] === "running" || steps[key] === "waiting") steps[key] = "todo";
+    }
+    return steps;
+  }
   if (!failed) return steps;
   // A failure shows on its own step. One no step claims (a stage none maps,
   // or none at all) shows on the step that was running: the first one not

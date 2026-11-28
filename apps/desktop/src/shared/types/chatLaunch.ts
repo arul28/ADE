@@ -181,6 +181,8 @@ export type ChatLaunchCloudState = {
    * without asking the computer.
    */
   computerGone?: boolean;
+  /** The server's note on a launch cancelled in its sign-in step: what the wait cost (`CloudLaunchRecord.endNote`). */
+  endNote?: string | null;
   /**
    * What the start's GitHub check (contract C4) could not settle, in plain
    * words: GitHub didn't answer whether the repository is public, and the

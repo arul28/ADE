@@ -637,7 +637,9 @@ export function createCloudLaneComputerStages(
    */
   const cancelOnServer = async (record: CloudLaneLaunchRecord): Promise<"cancelled" | "started" | "unreached"> => {
     try {
-      await launcher().cancelLaunch(record.snapshot.launchId);
+      const answer = await launcher().cancelLaunch(record.snapshot.launchId);
+      // A launch cancelled in its sign-in step: the card says what the wait cost.
+      if (answer?.endNote) record.snapshot.cloud.endNote = answer.endNote;
       return "cancelled";
     } catch (error) {
       logger.info("cloud_lane_launch.server_cancel_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });

@@ -474,8 +474,9 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     approval: !neverJoined && row.state === "needs_approval" && row.approval_url && row.join_user_code
       ? { url: row.approval_url, userCode: row.join_user_code }
       : null,
-    // An ended launch runs nothing: a stage it left running (the sign-in a cancel or the server ended) reads failed.
-    stages: ended ? stages.map((stage) => (stage.status === "running" ? { ...stage, status: "failed" as const } : stage)) : stages,
+    // An ended launch runs nothing: a stage it left running reads failed on a failed launch, and not started
+    // (`pending`, drawn as a step not done) on one the person cancelled, which failed nowhere.
+    stages: ended ? stages.map((stage) => (stage.status === "running" ? { ...stage, status: row.state === "cancelled" ? "pending" as const : "failed" as const } : stage)) : stages,
     sessionId: row.session_id,
     error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     signIn: row.state === "waiting_for_sign_in" ? signInOfRow(row) : null,
@@ -569,8 +570,9 @@ async function withSignInFacts<T extends { signIn?: CloudLaunchSignIn | null; st
   // An ended wait that had no free window: its note reads the computer's rate (a deleted computer's row stays).
   for (const { row, answer } of rows) {
     if (answer.endNote || !row.instance_id || row.sign_in_free_at != null || row.sign_in_charged_at != null) continue;
+    // Ended IN its sign-in step: the step was still running (or failed) when the launch ended, not finished.
     const reachedSignIn = parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" })
-      .some((stage) => stage.id === SIGN_IN_STAGE_ID);
+      .some((stage) => stage.id === SIGN_IN_STAGE_ID && (stage.status === "running" || stage.status === "failed"));
     if (!reachedSignIn || (answer.state !== "failed" && answer.state !== "cancelled")) continue;
     const computer = await env.DB.prepare("select multiplier_milli from cloud_computers where instance_id = ? and user_id = ?")
       .bind(row.instance_id, row.user_id).first<Pick<ComputerRow, "multiplier_milli">>().catch(() => null);
@@ -1575,7 +1577,10 @@ async function handleCancel(env: CloudEnv, row: LaunchRow, deps: LaunchRouteDeps
   }
   logCloud("cloud.launch_cancelled", { userId: row.user_id, launchId: row.launch_id, instanceId: closed.instance_id });
   if (row.state === "waiting_for_sign_in" && request) noteSignInStep(env, deps, row, "cancelled", signInClientOf(request), deps.now);
-  return json(recordOf(latest, deps.now));
+  // The answer carries the wait's end note, as a read does (a client shows it from this answer).
+  const record = recordOf(latest, deps.now);
+  await withSignInFacts(env, [{ row: latest, answer: record }], deps);
+  return json(record);
 }
 
 /* ---- A waiting chat moves to DAEX Free Models ---- */
