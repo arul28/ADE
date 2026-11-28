@@ -1523,7 +1523,7 @@ Three logs make a lost pairing diagnosable:
   including every authentication failure — logs `sync_host.peer_closed` at
   info.
 - Desktop: `account.local_machines_removed`, written at **warn** to the
-  machine-scoped `<machine daex dir>/runtime/account-trust.jsonl` (and mirrored
+  machine-scoped `<machine .ade dir>/runtime/account-trust.jsonl` (and mirrored
   at info to the project logger). The machine-scoped sink is the load-bearing
   one: dropping a paired secret is a machine-level credential mutation, and the
   project logger follows the active project, which on a remote-bound project
