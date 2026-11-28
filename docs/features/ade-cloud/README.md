@@ -75,8 +75,8 @@ Server (`apps/account-directory/src/cloud/`): `routes.ts`, `store.ts`,
 `launchFiles.ts`, `moves.ts`, `laneBackups.ts`, `idleCleanup.ts`,
 `planCleanup.ts`, `updates.ts`, `computerStatus.ts`, `automations.ts`,
 `eventWakes.ts`, `limits.ts`, `integrations.ts`, `ctoCopy.ts`, `referrals.ts`,
-`freePlan.ts`, `safety.ts`, `blocks.ts`, `costReport.ts`, `gravity.ts` and the
-`sponsored*.ts` files.
+`freePlan.ts`, `safety.ts`, `blocks.ts`, `costReport.ts`, `gravity.ts`,
+`adPrice.ts`, `adProof.ts`, `gravityAd.ts` and the `sponsored*.ts` files.
 
 Shared: `apps/desktop/src/shared/adeCloud.ts`, `adeCloud/` (binding, chat queue,
 account calls), `cloudApiClient.ts` (typed fetch client), `cloudTiers.ts`,
@@ -259,7 +259,8 @@ Medium-hour; the person sees credits.
 - **Sizes** (`catalog.sizes`): Small (2 vCPU / 4 GB, uses no credits, disk ≤12
   GB), Medium (4/8, 1×, 20 GB), Large (4/8 full, 2.5×, 50 GB), X-Large (4/16
   full, 4×, 100 GB). The DAEX Cloud iPhone draws one credit a minute
-  (`credits.ts`, `phones.ts`).
+  (`credits.ts`, `phones.ts`). Pricing v3 changes the shown scale and these
+  rates: [the ad price](#the-ad-price-pricing-v3-behind-a-switch).
 - **Disk is per computer** up to its size's `diskMaxGb` (`disk_limit`,
   `tier_limit`); no extra disk is sold.
 - **Computer limit** counts every computer, asleep or not; at the limit, 403
@@ -356,11 +357,264 @@ Chats on the person's own machines never get a card.
   subagents, and while nobody has the computer's chat open.
 - Daily limits per account (120 ads, 20 searches); viewer rows pruned after a
   day. iOS asks App Tracking Transparency once before the first card.
-- **Small on Free** needs cards: without a recent US look and a yes, Small costs
+- **Small on Free** (before Pricing v3) needs cards: without a recent US look and a yes, Small costs
   half a credit an hour (`sponsoredSmall.ts`, `SMALL_NO_CARDS_RATE_MILLI`). A
-  tripwire alerts the owner when looks come from DAEX Cloud's own network.
+  look is a reply's first ad request in the account's own DAEX Cloud chat
+  (`noteCardRequest`, any answer, a no-fill too); an open chat or terminal
+  (`/seen`), the US notice and a yes in Settings never count. A tripwire
+  alerts the owner when looks come from DAEX Cloud's own network.
 - Consent rules by law (`sponsoredConsent.ts`) are written once in
   [account-test-tool.md](account-test-tool.md#where-cards-start-on).
+
+### The ad price (Pricing v3, behind a switch)
+
+`adPrice.ts` (the price), `adProof.ts` (a message's proof), migrations
+`0073_ad_price`, `0074_ad_price_outside` and `0075_phone_ad_minutes`. Under Pricing v3 every plan can turn ads on, and
+a computer or the DAEX Cloud iPhone used with ads costs less. All of it is behind
+the setting `pricing_v3` (`off`, `testers`, `all`; held under the deploy var
+`PRICING_V3`, unset is a hard off). At `off` no answer and no number changes.
+`ad_discount_pct` (default 20) and `ad_window_minutes` (default 60) are owner
+settings (`scripts/cloud-owner.mjs set ...`). The shared contract is the
+"Pricing v3" section of `contract.ts`.
+
+- **Rates** (`plans.ts`, `pricingV3Rates`): milli-credits stay as stored; the
+  catalog adds `creditScale` 10 (one shown credit is 100 milli),
+  `sizes[].adMultiplierMilli`, `phone` and `freeSmallMilli` (Free's Small full rate, for the Free plan card on any plan). Each ad rate is the full rate less
+  the discount, rounded down to a whole shown credit (`adRateMilli`); shapes
+  not in the size list round down too (`v3FullRateMilli`). The iPhone is 500
+  milli a minute. Small on Free is 500 milli an hour full and free with ads
+  while `gravity_ads` reaches the account; Small on a paid plan is free. At a
+  discount of 0 both rates are equal and apps show one price.
+- **Where ads are**: on to start in the US outside California; asked first in
+  California, Canada, the UK and Australia; nowhere else. No ad before the
+  account saw the notice (`notice_seen_at`, sent as `noticeSeen` on
+  `PUT /cloud/sponsored/consent`; one answer on every device). Answers have
+  their own rate bucket (`sponsored_consent`, 20 an hour per account), since
+  each one moves the account's prices.
+- **What makes a minute cost the ad price** (`decidePrice`, in this order):
+  ads off (and no live DAEX Free Models proof) is full; full-price work is
+  full; otherwise a proof inside the window is the ad price, and no proof is
+  full (`not_in_use`, or `unverified` after a request that did not count).
+- **Proofs** come from an app a person uses, never from the cloud computer: a
+  finished reply's ad request (`POST /cloud/sponsored/ad`, counted when no ad
+  fills too) and a sent message (`POST /cloud/sponsored/sent`). Each restarts
+  that computer's (or iPhone's, through `phoneId`) window. One (account, chat,
+  turn or message) counts once on any number of devices (`cloud_ad_proofs`), and
+  only for the caller's own computer. Apps send `/sent` only while the account
+  state has `pricing`; a caller Pricing v3 does not reach gets a cheap 404.
+  `/sent` has its own rate bucket (`sponsored_sent`, 60 a minute).
+- **Bounds on a message's proof** (`adProof.ts`; a proof is the app's word,
+  since the server never sees a cloud chat's messages): a `/sent` for a chat
+  with no saved copy on that computer (a first message, or a chat the server
+  has never seen) holds the price with ads for 10 minutes, not the window, and
+  counts at most 6 times a UTC day per computer (12 per iPhone session); a
+  saved chat gets the whole window. Past that cap the answer is
+  `{counted: false, reason: "not_cloud"}` (the contract has no other word):
+  apps send `/sent` and ignore the answer, and a surface that ever shows a
+  reason must not read `not_cloud` as "this chat doesn't use DAEX Cloud". A DAEX Free Models chat's message counts
+  only for the computer that saved it (or the iPhone it holds). `/ad` needs a
+  saved copy on that computer; its turn id is the app's word too, but every
+  `/ad` asks Gravity for an ad (at most 120 a day per account).
+- **A message that wakes a computer at 0 credits**: the computer wakes at the
+  price it has now (`wakeRateMilli`): a paid plan's Small at 0, a Small on Free
+  with a live proof at 0. A person's message that wakes it is that message's
+  proof first, so a Small on Free with ads on (country with ads, notice seen)
+  wakes at 0 credits at the price with ads: through the chat queue
+  (`POST /cloud/chats/.../messages`, a person's send), or
+  `POST /cloud/instances/:id/start` with `adProof: { chatId, messageId }`. A
+  new lane's first message is its new computer's proof the same way, counted
+  at the create, before its hours check and for the price from the first
+  minute, with the whole window: a person's server launch (its first message,
+  under the launch id), a person's message to a resting chat whose computer is
+  gone (the queue's launch, under the chat's id; not a resting CLI's, which is
+  full-price work), or the app's `POST /cloud/instances` with `adProof`.
+  One message id counts once on any chat id, so the app's later `/sent` of it
+  is a repeat. An automation's or agent's launch has no such proof. Known
+  limit: a new lane in a DAEX Free Models chat with ads off gets none (its
+  proof is the first reply's ad request), so at 0 credits such a new lane is
+  refused. A
+  wake for an outside agent stays refused at 0 credits; a CLI session or an
+  automation started later puts it at the full price, and the zero stop
+  stops it. The credits emails (`hoursWarnings.ts`) say so on Free with ads
+  on: "Small computers keep working in chats with ads: send a message to
+  start one." (`freeSmallWayOut`); a paid plan's read that Small doesn't use
+  credits. The `out_of_hours` refusal on Free adds the same sentence with ads
+  on, and "With ads on, Small computers keep working." where ads are offered
+  but off (the country of the account's ads answer); nothing where there are
+  no ads.
+- **Requests that do not count**: a proof from the network of one of the
+  account's own cloud computers (its `net_asn`, or one it joined from in the
+  last 30 days) is not counted, Gravity is not asked, the owner gets an alert
+  and the price reads `unverified`. A proof from DAEX Cloud's network that is
+  none of the account's computers (a VPN or an office proxy there) counts; the
+  owner gets an alert (`ad_cloud_network`). No ban.
+- **Full-price work** (`fullPriceWork` on the brain's activity report, sent on
+  change with no new poll; `noteActivityReport`; only the newest report by
+  `reportedAt` counts, and work is kept only while Pricing v3 reaches the
+  account; a report naming work goes again every 10 minutes with nothing
+  changed, so work already running when Pricing v3 turns on is priced within
+  that time):
+  - `cli_session`: an agent CLI session is alive on the computer: any of the 13
+    providers launched by DAEX, or one started by hand in a shell and found by
+    its process name (`AGENT_CLI_PROCESS_NAMES`: claude, codex, cursor-agent,
+    agent, droid, opencode, muse). Chat CLIs (`*-chat` rows) count as their chat.
+  - `automation`: an automation's chat has work in hand.
+  - `outside_agent`: an outside agent (DAEX MCP) sent a message through the
+    account queue, or made the computer (a create or copy with outside-agent
+    metadata). It holds until the brain's idle report after the first busy
+    report that follows the message (the turn it began), whatever the order of
+    other reports; with no busy report at all, 30 minutes. The computer's
+    sleep clears it.
+  - Not detected (a decision: that process list also decides what keeps a
+    computer awake): Pi, Qwen, Kimi, Grok, Copilot, Devin and Antigravity
+    started by hand in a plain shell, and a hand-started CLI that runs under
+    Node (its foreground process reads `node`, not its name). They send no
+    proof, so the computer goes to the full price when its window ends, unless
+    a chat's proofs keep it open.
+  - Not detected: an outside agent on a live link straight to the brain. It
+    sends no proof, so the computer goes to the full price when its window
+    ends.
+  - **Not full-price work (the rule):** a normal chat's scheduled wake-up
+    (`schedule_wakeup`, `cron` on a work chat). With no app open it sends no
+    proof and falls to the full price when the window ends; with an app open a
+    person can see the ad. "Scheduled run" in the plan means an automation's
+    schedule, which is `automation`.
+- **Billing**: the price lives on `cloud_computers.multiplier_milli`; a change
+  ends the stretch at its edge and starts a new one (`rateMoveStatements`).
+  A move off the ad price goes back to the end of the window when the window
+  ended (no use, ads off after a free-model chat's window, the switch turned
+  off, a tick missed); work and ads turned off move at once. A tick's move is
+  void when a newer proof landed since it read (`rateMoveStatements`). The minute tick
+  (`syncAdPricesInTick`) and every write that can move a price (consent, a
+  proof, a report) run the same decision. `ad_full_milli` holds the full rate
+  while a computer is at the ad price, so the settle records the discount
+  (`cloud_computer_days.ad_discount_milli`, `ad_ms`). The iPhone keeps its rate
+  per row (`cloud_phones.rate_milli`; one started before Pricing v3 keeps 1,000
+  a minute with no ad price until it ends, and its stop time follows its own
+  rate) and subtracts `ad_saved_milli`: every minute begun at the ad price,
+  settled before the phone's final charge, stopped at `off`. A minute is
+  taken off once however often the price moves inside it (`ad_paid_until`,
+  which only grows), and a phone's charge is never below its minutes at the
+  lowest ad rate any was taken off at (`ad_rate_milli`). Under
+  Pricing v3 this replaces the 7-day Small rule.
+- **What apps read**: `CloudAccountState.pricing` (only with the request header
+  `X-ADE-Pricing: 3`): the ads state for this request's country, and each
+  computer's and the iPhone's price now, with the reason and `adUntil`. A
+  request without the header is an older build: on Free it keeps today's
+  `sponsored` answer and 7-day look, on a paid plan it gets neither. That path
+  goes away once the client minimum passes the first build that sends the
+  header.
+- **Owner**: `scripts/cloud-owner.mjs ad-price [--days N]` (ad income against
+  the discount, by product), also in the daily sponsored report.
+- **Website**: `GET /public/pricing` (no auth, CORS `*`, no-store) says whether
+  Pricing v3 is on, the visitor's ad terms, and what a Small costs on Free for
+  that visitor (`freeSmallMilli`, by the bill's own rule: 0 while the ad switch
+  doesn't reach everyone).
+
+### DAEX Free Models (any plan, behind a switch)
+
+Gravity's hosted models (`apps/account-directory/src/cloud/freeModels.ts`;
+consent and country rules in `freeModelsConsent.ts`; migration `0071`), paid
+for by the ads in the chats that use them. Any plan, any machine
+(the person's own computer, their other machines, DAEX Cloud), chat only,
+through OpenCode's provider `ade-free` (`opencode/ade-free/<alias>`,
+`apps/desktop/src/shared/adeFreeModels.ts`). The account server holds
+Gravity's inference key (`GRAVITY_INFERENCE_KEY`, a Worker secret) and is
+the only caller of `inference.trygravity.ai`.
+
+- **Switch:** the instant `gravity_inference` setting (`off` | `testers` |
+  `all`, starts `off`), held under the deploy variable `GRAVITY_INFERENCE`
+  (unset or `off`: a hard off), and off without both `GRAVITY_INFERENCE_KEY`
+  and `GRAVITY_API_KEY`. `all` reaches non-testers only while real ads are on
+  (`gravity_live` under `GRAVITY_LIVE=1`): no free inference behind test ads.
+  Off, the account state leaves `freeModels` out and every route answers
+  `free_models_off`.
+- **Routes** (`CLOUD_PATHS.freeModels*`, the account's own sign-in):
+  `PUT /cloud/free-models/consent` (`granted` | `declined`, per account, with
+  the hashed email and `CLOUD_FREE_MODELS_TERMS_VERSION`; an older version
+  reads as no answer; a no clears the viewer rows; Global Privacy Control
+  from the US turns a yes not given from such a browser into a no);
+  `POST /cloud/free-models/seen` (`chatId`, `device`: someone has that chat
+  open, kept with Cloudflare's `cf-connecting-ip`, user agent, device and
+  country, only while the yes holds); OpenAI-compatible
+  `GET /cloud/free-models/v1/models` and `POST /cloud/free-models/v1/chat/completions`
+  with the chat in `X-ADE-Chat-Id`.
+- **Each call** is checked in order: the switch, the GitHub lock, the yes, the chat id, a
+  viewer record no older than 10 minutes (or a call in the last 5 minutes
+  with a record no older than an hour: a turn that runs on; a person's DAEX
+  Cloud launch on one of these models leaves a stand-in record,
+  `launch:<launchId>`, that the first unreported chat of the account takes
+  over once within 10 minutes; an automation's or agent's launch leaves
+  none), the viewer's
+  country (`GRAVITY_INFERENCE_COUNTRIES`, default `US,CA`), the hashed email
+  (an iPhone viewer without tracking allowed has none), then 50 a minute per
+  account, 550 a minute for every account together and 2,900 a UTC day per
+  account (`fm_request`), the no-ads meter (below), and Gravity's 8 MiB. The alias becomes Gravity's
+  model id, `n` and audio go, the output limit is held to 1-65,536, and the
+  server adds `session_id` (the chat's ad session, the same hash the ads
+  send), `email_hash`, `user_ip` (the viewer's address, never the chat
+  machine's) and `stream_options.include_usage`. The stream passes through;
+  its usage chunk is added to `cloud_free_model_chats`.
+- **Locked by the GitHub rule** (`freePlanGithub.ts` `freeModelsHoldOf`, the
+  same rule as the Free plan's credits): a Free account (a `past_due` paid one
+  too) with no card on file (`free_card_unlocked_at`, or a subscription
+  before) is locked while its `free_github_hold` is set: `no_github`,
+  `too_new`, `used` (the GitHub account gave its free plan to another DAEX
+  account) or `checking` (GitHub's age read pending; it clears on its own,
+  with the settle's backoff). A paid plan is never locked. A card saved with
+  no charge (`POST /cloud/billing/free-unlock`, now also for `no_github` and
+  `used`; never for `checking`) unlocks them at once; for `no_github` and
+  `used` it leaves the free credits held (a card unlocks those only for a
+  too-new GitHub account), and the card's fingerprint still unlocks one
+  account. The proxy reads the stored hold (no GitHub call per model call)
+  and refuses `free_models_locked` (403); the hold is settled at the account
+  read, at each `/cloud/free-models/seen` and at the consent, so an account
+  that never reads its state is held before its first call. The account
+  state's `freeModels.locked` (`CloudFreeModelsLock`: `reason`,
+  `oldEnoughAt`, `githubLogin`, `canUnlockWithCard`, `sentence`) says so;
+  `modelIds` stay listed and clients show them locked. The yes can be given
+  while locked: the order is the client's (card first, then the sheet).
+- **No ads, no free tokens** (`freeModelsMeter.ts`, migration `0072`
+  `cloud_free_model_meters`, one row per account, never per chat): model
+  calls and input tokens since the account's last ad request in a chat
+  these models served (any answer, once per reply, as for Small's look). At
+  200 calls or 16M input tokens the account is `slowed`: 2 calls a minute
+  across every one of these chats (`free_models_slowed` bucket), the rest
+  answered 429 `free_models_no_cards` with `retry-after` (the next minute),
+  which OpenCode waits out, so the turn goes on slowly. At 400 calls or 32M it
+  is `paused`: 403 `free_models_no_cards` until the next ad request, or a
+  day with no call going through (`METER_QUIET_RESET_MS`: a paused chat can
+  age out of the day its ads count in, so a pause never holds for good).
+  The lines allow two of the longest replies (100-200 OpenCode steps each,
+  50-100K input tokens a step) with no ad between them; a person in the app
+  asks for an ad after every reply. The account state's `freeModels.throttle`
+  says `slowed` or `paused`. The daily report counts accounts slowed and
+  paused (`fm_slowed`, `fm_paused`, once a stretch).
+- **Errors** are OpenAI-shaped (`{error: {message, type, code}}`,
+  `CloudFreeModelsErrorCode`). Only Gravity's retry-safe
+  `provider_rate_limited` and a slowed account's 429 are 429s; every other
+  refusal is a 4xx OpenCode doesn't retry (Gravity failing is 424). A context too long is OpenAI's
+  `context_length_exceeded`, which OpenCode compacts on. A refused key or a
+  suspended account reaches Sentry (`cloud.free_models.gravity_refused`)
+  and reads as unavailable; Gravity's words pass only for a request it found
+  wrong.
+- **Ads:** a chat the proxy served in the last day gets ads on any plan
+  and machine (`POST /cloud/sponsored/ad` with `instanceId: null`), under the
+  DAEX Free Models yes and countries instead of the Free plan's, with their
+  own day (`fm_ad`, 400 per account). The last call's usage rides on the
+  ad request (Gravity's `usage`). Inference doesn't stop when the ads'
+  day is used.
+- **Not for unattended work:** a DAEX Cloud automation can't be saved with
+  one of these models, and a run of an older rule fails with the reason.
+- **Clean-up and report:** viewer rows go after a day, served chats after a
+  week (minutes 23 and 53). The daily report has a line: requests, accounts,
+  tokens, ads asked and filled in these chats, accounts slowed and paused
+  for no ads, and refusals by reason.
+- **Catalog:** `GET /cloud/models` lists them in OpenCode's group with
+  `free: {source: "ade-free", badge: "ad-supported"}`, beside OpenCode Zen's
+  free tier (`source: "opencode-zen"`) from the newest models.dev snapshot.
+  The list is the same for every account; clients show DAEX Free Models only
+  with `freeModels` in the account state.
 
 ## Referrals and the free plan
 
@@ -374,7 +628,11 @@ All server-enforced (`referrals.ts`, `freePlan.ts`, `freePlanGithub.ts`).
   claimed computer gets 0 free credits (`free_refused_at`).
 - **One free plan per GitHub account**: free credits need a connected GitHub
   account at least 30 days old (`free_github_hold` otherwise); a too-new account
-  can unlock with a saved card (`POST /cloud/billing/free-unlock`).
+  can unlock with a saved card (`POST /cloud/billing/free-unlock`). A held
+  account's `out_of_hours` refusal carries the hold (`freeGithub`,
+  `CloudOutOfHoursDetail`), so clients show it, not "out of credits". The same
+  rule locks DAEX Free Models; for them a saved card also unlocks `no_github`
+  and `used` (`freeModelsLockOf`).
 - **Referrals**: one code per account (`https://ade-app.dev/invite/<CODE>`,
   `daex://invite/<CODE>`); 20 credits to both when the friend's first chat runs
   on DAEX Cloud; cap 10; refused when the two shared a computer. Redeeming is

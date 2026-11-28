@@ -2,7 +2,7 @@ import { memo, useCallback } from "react";
 import { FREE_MODEL_BADGE_LABELS, type FreeModelBadge as FreeModelBadgeKind } from "../../../../shared/freeModels";
 import { FreeModelBadge } from "./FreeModelBadge";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { Brain, Check, ImageSquare, Lightning, SignIn, Star } from "@phosphor-icons/react";
+import { Brain, Check, ImageSquare, Lightning, LockSimple, SignIn, Star } from "@phosphor-icons/react";
 import {
   modelSupportsFastMode,
   modelSupportsServiceTier,
@@ -106,6 +106,13 @@ export type ModelListRowProps = {
   omitProviderInDetail?: boolean;
   /** A free model's tag (`shared/freeModels.ts`); absent for every other model. */
   freeBadge?: FreeModelBadgeKind | null;
+  /**
+   * The account must unlock this model first (ADE Free Models under the
+   * GitHub rule): the row still looks available and still selects (the
+   * picker opens the unlock sheet), with a lock by the name and this line in
+   * place of the details.
+   */
+  lockedLine?: string | null;
 };
 
 export const ModelListRow = memo(function ModelListRow({
@@ -135,6 +142,7 @@ export const ModelListRow = memo(function ModelListRow({
   onCopilotContextTierChange,
   omitProviderInDetail = false,
   freeBadge = null,
+  lockedLine = null,
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
   const showCopilotContextChip = Boolean(onCopilotContextTierChange)
@@ -325,7 +333,7 @@ export const ModelListRow = memo(function ModelListRow({
           aria-disabled={!isAvailable || undefined}
           aria-selected={isActive}
           aria-current={isFocused ? "true" : undefined}
-          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${freeBadge ? `, ${FREE_MODEL_BADGE_LABELS[freeBadge].toLowerCase()}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${
+          aria-label={`${model.displayName}${sub ? `, ${sub}` : ""}${freeBadge ? `, ${FREE_MODEL_BADGE_LABELS[freeBadge].toLowerCase()}` : ""}${maxModeBadge ? ", max mode only" : ""}${isActive ? ", selected" : ""}${!isAvailable ? ", unavailable" : needsSignIn ? ", not signed in" : ""}${lockedLine ? `, locked. ${lockedLine}` : ""}${
             // This label replaces the descendants' accessible names, so the
             // badge beside the chip is otherwise invisible to a screen reader —
             // and "the server gave you a different tier" is exactly the kind of
@@ -400,6 +408,9 @@ export const ModelListRow = memo(function ModelListRow({
                 </span>
               ) : null}
               {freeBadge ? <FreeModelBadge badge={freeBadge} /> : null}
+              {lockedLine ? (
+                <LockSimple size={11} weight="bold" className="shrink-0 text-muted-fg/70" aria-hidden data-model-picker-locked="true" />
+              ) : null}
               {maxModeBadge ? (
                 <span
                   className="inline-flex shrink-0 items-center rounded-full bg-amber-500/[0.12] px-1.5 py-px text-[9.5px] font-medium leading-none text-amber-300/85"
@@ -409,7 +420,11 @@ export const ModelListRow = memo(function ModelListRow({
                 </span>
               ) : null}
             </span>
-            {details ? (
+            {lockedLine ? (
+              <span className="block truncate text-[11px] font-normal leading-snug text-fg/65" title={lockedLine}>
+                {lockedLine}
+              </span>
+            ) : details ? (
               <span
                 className="block truncate text-[11px] font-normal leading-snug text-muted-fg/60"
                 title={details}

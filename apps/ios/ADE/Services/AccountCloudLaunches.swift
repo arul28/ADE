@@ -175,8 +175,10 @@ struct CloudCatalogModel: Decodable, Equatable, Hashable {
   let defaultReasoningEffort: String?
   /// The model has a fast mode (`chat.fast`).
   let fast: Bool
+  /// A free model's Free page group and tag (`CloudCatalogModel.free`); nil when the model is not free.
+  let free: CloudCatalogFree?
 
-  private enum CodingKeys: String, CodingKey { case id, displayName, reasoningTiers, defaultReasoningEffort, fast }
+  private enum CodingKeys: String, CodingKey { case id, displayName, reasoningTiers, defaultReasoningEffort, fast, free }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -185,6 +187,18 @@ struct CloudCatalogModel: Decodable, Equatable, Hashable {
     reasoningTiers = c.lenient([String].self, forKey: .reasoningTiers) ?? []
     defaultReasoningEffort = c.lenient(String.self, forKey: .defaultReasoningEffort)
     fast = c.lenient(Bool.self, forKey: .fast) ?? false
+    free = c.lenient(CloudCatalogFree.self, forKey: .free)
+  }
+}
+
+/// `free` on a `/cloud/models` model: `{ source, badge }`, badge `free` or `ad-supported`.
+struct CloudCatalogFree: Decodable, Equatable, Hashable {
+  let source: String
+  let badge: String
+
+  /// The Free page row; nil for a badge this app doesn't know.
+  var entry: WorkFreeModelEntry? {
+    WorkFreeModelBadge(rawValue: badge).map { WorkFreeModelEntry(source: source, badge: $0) }
   }
 }
 
@@ -353,7 +367,7 @@ func cloudServerFailureMessage(_ error: Error) -> String {
   switch error as? CloudServerClient.Failure {
   case .noAccess: return "\(Brand.cloudName) isn't open for this account."
   case .unauthorized: return "Sign in to \(Brand.name) again, then try again."
-  case .refused(_, let message): return message
+  case .refused(let code, let message): return cloudFreeGithubHoldRefusal(code: code) ?? message
   case .computerLimit(let limit): return limit.headline
   case .server(_, let message?): return message
   case .server(let status, nil): return "\(Brand.cloudName) answered with an error (\(status)). Try again soon."

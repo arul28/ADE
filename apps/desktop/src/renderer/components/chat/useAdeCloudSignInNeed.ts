@@ -17,11 +17,15 @@
  * answer it feeds. The sign-in backend is being reworked in parallel; when its
  * read API changes, change that one function.
  *
+ * A free model (`shared/freeModels.ts`: OpenCode Zen's, or an ADE Free
+ * Model) needs no sign-in or key, so it never holds Send here.
+ *
  * Cost: reads only while a draft is bound for ADE Cloud with a provider
  * picked, on open and on the two change events. No timer, no poll.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { isProviderLoginProvider, type ProviderLoginProvider } from "../../../shared/types/providerLogins";
+import { isFreeModelId } from "../../../shared/freeModels";
 import { adeCloudSettingsSearch } from "../settings/SettingsMachineScope";
 import {
   adeCloudProviderSignIn,
@@ -52,12 +56,15 @@ function onAdeCloudSignInChanged(listener: () => void): () => void {
 export function useAdeCloudSignInNeed({
   enabled,
   provider,
+  modelId = null,
   navigate,
 }: {
   /** A draft bound for ADE Cloud, with nothing else holding its send. */
   enabled: boolean;
   /** The provider whose sign-in the picked model needs (null: its route brings its own). */
   provider: string | null;
+  /** The picked model: a free one needs no sign-in on ADE Cloud. */
+  modelId?: string | null;
   navigate: (to: string) => void;
 }): {
   need: AdeCloudSignInNeed | null;
@@ -67,7 +74,7 @@ export function useAdeCloudSignInNeed({
   /** Opens Settings › Providers › ADE Cloud on the provider's page (Claude's has the pass sheet). */
   openSignIn: () => void;
 } {
-  const active = enabled && Boolean(provider);
+  const active = enabled && Boolean(provider) && !isFreeModelId(modelId);
   const [state, setState] = useState<AdeCloudSignInParts | null>(null);
   const [tick, setTick] = useState(0);
 

@@ -813,7 +813,7 @@ function errorText(error: unknown): string {
   return text.slice(0, 200);
 }
 
-async function readNewestSnapshot(db: D1Database): Promise<ModelRegistrySnapshot | null> {
+export async function readNewestSnapshot(db: D1Database): Promise<ModelRegistrySnapshot | null> {
   const row = await db
     .prepare("select body from model_registry_snapshots order by id desc limit 1")
     .first<{ body: string }>();

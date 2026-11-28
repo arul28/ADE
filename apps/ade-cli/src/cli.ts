@@ -33339,6 +33339,10 @@ async function runServe(
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
         return (await chat?.getSessionSummary(sessionId).catch(() => null))?.provider ?? null;
       },
+      chatModelId: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        return (await chat?.getSessionSummary(sessionId).catch(() => null))?.modelId ?? null;
+      },
       waitForChatIdle: waitCloudChatIdle,
       sendChatMessage: sendCloudChatMessage,
       applyChatSettings: applyCloudChatSettings,

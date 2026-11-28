@@ -4,19 +4,23 @@
  * phone check for accounts with a running iPhone (`phones.ts`).
  */
 
+import { freeSmallWayOut } from "./adPrice";
 import type { CloudHoursState } from "./contract";
+import type { GravityEnv } from "./gravity";
 import { sendCloudEmail } from "./email";
 import { smallUsesNoHours } from "./sponsoredSmall";
 import { phoneAccess } from "./phones";
 import { allowancePercentUsed, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
-type WarningText = { all: string; small: string };
+type WarningText = { all: string; small: string; ads: string };
 
 /**
  * The emails. Small computers don't use credits, so the text says the
  * bigger sizes stop and Small keeps going (`small`); an account with no free
  * plan, which runs nothing once it is out, or whose Small uses credits (Free
  * without sponsored cards, `smallUsesNoHours`), reads the plain text (`all`).
+ * Free under Pricing v3 with ads on reads `ads`: its Small still starts when
+ * the person sends a message (`freeSmallWayOut`).
  * An account that can use the ADE Cloud iPhone reads `phone`: the iPhone
  * draws from the same credits and stops with them.
  */
@@ -32,10 +36,12 @@ const WARNINGS: Record<Exclude<CloudHoursState, "none">, {
     text: {
       all: "Your DAEX Cloud computers have stopped. You can add credits, or wait for your credits to reset.",
       small: "Your computers bigger than Small have stopped. Small computers don't use credits, so they keep working. You can add credits, or wait for your credits to reset.",
+      ads: "Your computers bigger than Small have stopped. Small computers keep working in chats with ads: send a message to start one. You can add credits, or wait for your credits to reset.",
     },
     phone: {
       all: "Your DAEX Cloud computers and iPhone have stopped. You can add credits, or wait for your credits to reset.",
       small: "Your DAEX Cloud iPhone and computers bigger than Small have stopped. Small computers don't use credits, so they keep working. You can add credits, or wait for your credits to reset.",
+      ads: "Your DAEX Cloud iPhone and computers bigger than Small have stopped. Small computers keep working in chats with ads: send a message to start one. You can add credits, or wait for your credits to reset.",
     },
   },
   warn95: {
@@ -44,10 +50,12 @@ const WARNINGS: Record<Exclude<CloudHoursState, "none">, {
     text: {
       all: "You're almost out. When your credits run out, your computers stop until you add credits or they reset.",
       small: "You're almost out. When your credits run out, your computers bigger than Small stop until you add credits or they reset. Small computers keep working.",
+      ads: "You're almost out. When your credits run out, your computers bigger than Small stop until you add credits or they reset. Small computers keep working in chats with ads: send a message to start one.",
     },
     phone: {
       all: "You're almost out. When your credits run out, your computers and iPhone stop until you add credits or they reset.",
       small: "You're almost out. When your credits run out, your iPhone and computers bigger than Small stop until you add credits or they reset. Small computers keep working.",
+      ads: "You're almost out. When your credits run out, your iPhone and computers bigger than Small stop until you add credits or they reset. Small computers keep working in chats with ads: send a message to start one.",
     },
   },
   warn80: {
@@ -56,10 +64,12 @@ const WARNINGS: Record<Exclude<CloudHoursState, "none">, {
     text: {
       all: "Your computers keep working for now. When your credits run out, they stop until you add credits or they reset.",
       small: "Your computers keep working for now. When your credits run out, the ones bigger than Small stop until you add credits or they reset. Small computers keep working.",
+      ads: "Your computers keep working for now. When your credits run out, the ones bigger than Small stop until you add credits or they reset. Small computers keep working in chats with ads: send a message to start one.",
     },
     phone: {
       all: "Everything keeps working for now. When your credits run out, your computers and iPhone stop until you add credits or they reset.",
       small: "Everything keeps working for now. When your credits run out, your iPhone and computers bigger than Small stop until you add credits or they reset. Small computers keep working.",
+      ads: "Everything keeps working for now. When your credits run out, your iPhone and computers bigger than Small stop until you add credits or they reset. Small computers keep working in chats with ads: send a message to start one.",
     },
   },
 };
@@ -72,7 +82,8 @@ export async function warnHours(env: CloudEnv, account: AccountRow, state: Cloud
   if (state === "none") return;
   const warning = WARNINGS[state];
   if (account[warning.column] != null) return;
-  const stopsAll = allStop || !(await smallUsesNoHours(env, account));
+  const smallFree = !allStop && (await smallUsesNoHours(env, account));
+  const smallWithAds = !allStop && !smallFree && (await freeSmallWayOut(env as GravityEnv, account)) === "ads_on";
   // Claimed in the write: the minute tick and the phone check may both reach it, and only one sends.
   const claimed = await env.DB.prepare(`update cloud_accounts set ${warning.column} = ?, updated_at = ? where user_id = ? and ${warning.column} is null`).bind(now, now, account.user_id).run();
   if ((claimed.meta?.changes ?? 0) !== 1) return;
@@ -84,6 +95,6 @@ export async function warnHours(env: CloudEnv, account: AccountRow, state: Cloud
     return false;
   });
   const text = phoneOn ? warning.phone : warning.text;
-  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: stopsAll ? text.all : text.small, percentUsed: percent });
+  await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: smallFree ? text.small : smallWithAds ? text.ads : text.all, percentUsed: percent });
 }
 

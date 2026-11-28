@@ -3,6 +3,8 @@ import { expectCloudComputerSignIn } from "../newDeviceEmail";
 import { unsettledPhoneMilli } from "./credits";
 import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
 import { sha256Hex } from "../sinkUtils";
+import { isAdeFreeModelId } from "../../../desktop/src/shared/adeFreeModels";
+import { noteFreeModelLaunch } from "./freeModels";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
   CLOUD_AUTO_SIZE,
@@ -676,13 +678,19 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   }
   const parsed = parseLaunchRequest(body);
   if (typeof parsed === "string") return badRequest(parsed);
+  // A person's chat on an ADE Free Model: the launch says they watch it until the chat reports itself (`freeModels.ts`).
+  if (parsed.chat && isAdeFreeModelId(parsed.chat.modelId) && (!parsed.madeBy || parsed.madeBy.kind === "person")) {
+    await noteFreeModelLaunch(env, userId, request, parsed.launchId, deps.now).catch((error: unknown) => {
+      reportCloudFailure("cloud.free_models.launch_note_failed", { message: error instanceof Error ? error.message : "unknown" });
+    });
+  }
   let restarted = false;
   if (body.retry === true) {
     const answer = await restartFailedLaunch(env, userId, parsed.launchId, deps);
     if (answer instanceof Response) return answer;
     restarted = answer === "restarted";
   }
-  return await startServerLaunch(env, userId, parsed, deps, { restarted });
+  return await startServerLaunch(env, userId, parsed, deps, { restarted, request });
 }
 
 /** Whether the computer reported its agent's stage: from then on the lane is the person's, never deleted for them. */
@@ -769,8 +777,11 @@ export async function startServerLaunch(
   userId: string,
   parsed: ParsedLaunchRequest,
   deps: LaunchRouteDeps,
-  /** `restarted`: this start follows a Retry that deleted the launch's failed computer (`restartFailedLaunch`). */
-  options: { restarted?: boolean } = {},
+  /**
+   * `restarted`: this start follows a Retry that deleted the launch's failed computer (`restartFailedLaunch`).
+   * `request`: a person's own start (the route), whose first message is its new computer's ad-price proof.
+   */
+  options: { restarted?: boolean; request?: Request } = {},
 ): Promise<Response> {
   const { now } = deps;
   const launchId = parsed.launchId;
@@ -912,7 +923,15 @@ export async function startServerLaunch(
   };
   const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS;
   const joinHash = await sha256Hex(joinCode);
+  // Pricing v3: a person's first message (never an automation's or an agent's) is the new computer's proof
+  // (`adProof.ts`), under the launch id, or the chat's own for a resting chat the queue continues; never a
+  // resting CLI's (full-price work). The app's later `/sent` of the same message is a repeat.
+  const person = (!parsed.madeBy || parsed.madeBy.kind === "person") && parsed.continueChat?.kind !== "cli";
+  const adProof = parsed.chat && person && options.request
+    ? { request: options.request, chatId: parsed.continueChat?.chatId ?? launchId, messageId: parsed.chat.messageId }
+    : undefined;
   const outcome = await deps.createComputer(userId, deps.provider, {
+    ...(adProof ? { adProof } : {}),
     // The disk this repository's setup needed before: no fill, restart and setup again.
     setupDiskGb: await rememberedSetupDiskGb(env, userId, parsed, now),
     body: {

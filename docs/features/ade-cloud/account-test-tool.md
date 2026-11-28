@@ -35,6 +35,7 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 | `phone <account> on\|off` | On the DAEX Cloud iPhone's beta list, or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access). A tester picks their own phones' provider (`auto`, NoMac or Revyl) in a DAEX beta build or with `daex cloud phone-provider` |
 | `tester <account> on\|off` | On or off the sponsored testers list |
 | `ad-format <account> below_reply\|above_prompt\|inline\|switch` | Where this account's sponsored cards show: under the reply, docked above the prompt box, or one linked sentence at the end of the reply (`switch`: whatever `gravity_format` says). Not a test: it stays until changed |
+| `free-models-meter <account> slowed\|paused\|reset` | Puts the account's DAEX Free Models no-ads meter at that line (`freeModelsMeter.ts`), to see the slowed and paused notices and refusals. Not a test: the account's next ad request in one of those chats resets it. `show` prints the meter, the throttle and whether the GitHub rule locks them |
 | `ab [--days N]` | The format A/B scoreboard (default 14 days): per format its weight, accounts held to it, how many said yes or no, cards asked and filled, hides per card, and Gravity's views, clicks, CTR and revenue for that format's placements |
 | `reset <account>` | Back to the real plan |
 
@@ -93,6 +94,7 @@ real one, so:
 |---|---|---|---|
 | `gravity_ads` | `off`, `testers`, `all` | `GRAVITY_ADS` | Sponsored cards, the Index and the Free rule: nobody, the testers list, or every Free account |
 | `gravity_live` | `off`, `on` | `GRAVITY_LIVE=1` | Real ads instead of Gravity's free test ads |
+| `gravity_inference` | `off`, `testers`, `all` | `GRAVITY_INFERENCE` (and both `GRAVITY_INFERENCE_KEY` and `GRAVITY_API_KEY` set) | DAEX Free Models on any plan: nobody, the testers list, or everyone; `all` reaches non-testers only while `gravity_live` is in force |
 | `gravity_format` | `below_reply`, `above_prompt`, `inline`, `split` | none | Where cards show for every account; `split` holds each account to one of the three by its id (the same on every machine). An account set with `ad-format` keeps its own |
 | `gravity_format_split` | `70-20-10`, `80-15-5`, `60-25-15`, `50-30-20`, `34-33-33` | none | Under `split`, the share of new accounts for under the reply, inline and above the prompt box, in that order. An account keeps the format it was first given (`cloud_sponsored_formats`), so a change moves only accounts ads reach for the first time |
 
@@ -106,11 +108,22 @@ may go: `GRAVITY_ADS=off` in `wrangler.jsonc` is a hard off whatever the switch
 says. Turning ads on (which also turns on the Free rule) or real ads for real
 users is the owner's call, asked for each time.
 
+`gravity_inference` (DAEX Free Models, `freeModels.ts`) is off whatever it
+says until `GRAVITY_INFERENCE_KEY` is a Worker secret and `GRAVITY_INFERENCE`
+is set in the deploy's vars; `settings` shows `off (no key)` as its ceiling
+then. To try them on your own account first: add yourself with `tester <you>
+on`, then `set gravity_inference testers`. Testers get them under test ads;
+everyone else needs `all` with `gravity_live` on.
+
 ### The Free rule
 
 The Free rule is part of the ad switch. A Free account that the ad switch
 reaches runs Small computers without hours only while it said yes to
-sponsored cards. A paid account acting as Free sees the rule's question and
+ads and, in the last 7 days, an ad was asked for from the US
+under a finished reply in one of its DAEX Cloud chats (any answer, a test ad
+or none to show included). The yes itself (the US notice's or one in
+Settings), an open chat with no reply and a terminal don't count: after a new
+yes, Small uses credits until the first finished reply's ad. A paid account acting as Free sees the rule's question and
 notices, but is never charged by it. A no, or no answer yet (outside the card
 countries, or never asked), has Small use half a Medium-hour an hour. Accounts
 the ad switch doesn't reach are untouched, so with `gravity_ads=testers` only
@@ -174,7 +187,11 @@ Small keeps working to an account whose Small uses hours.
 3. Open a chat on one of your DAEX Cloud computers, finish a reply, answer the
    one-time question (from the US: read the notice that cards are on).
    Gravity's test ads say "Sponsored · test".
-4. Optional: answer no to see the Free rule's notices. On a paid account
+4. Optional: answer no to see the Free rule's notices.
+   DAEX Free Models: to see the GitHub lock, use a Free account whose GitHub
+   account is younger than 30 days (or has none); to see the no-ads
+   notices, `free-models-meter <you> slowed` or `paused`, then let an ad
+   show in one of those chats to reset it. On a paid account
    acting as Free, Small still uses no credits; to see it use credits, test
    on a real Free account.
 5. When done: `reset <you>`, `tester <you> off`, and `set gravity_ads off`

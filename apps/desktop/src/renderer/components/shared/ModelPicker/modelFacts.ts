@@ -5,6 +5,8 @@ import {
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
 import { openCodeHouseProviderName } from "../../../../shared/opencodeProviders";
+import { ADE_FREE_MODELS_SOURCE_ID, ADE_FREE_OPENCODE_PROVIDER_ID } from "../../../../shared/adeFreeModels";
+import { freeModelSourceLabel } from "../../../../shared/freeModels";
 
 /**
  * What a model IS, in the words a person would use.
@@ -72,7 +74,8 @@ export function subProviderLabel(model: ModelDescriptor): string | null {
   if (model.providerRoute === "opencode" && model.openCodeProviderId) {
     // Rows shown inside the OpenCode rail; "via OpenCode" was redundant.
     const id = model.openCodeProviderId;
-    // OpenCode's own services read as Settings names them.
+    // OpenCode's own services read as Settings names them; ADE Free Models by their Free page name.
+    if (id === ADE_FREE_OPENCODE_PROVIDER_ID) return freeModelSourceLabel(ADE_FREE_MODELS_SOURCE_ID);
     return openCodeHouseProviderName(id) ?? id.charAt(0).toUpperCase() + id.slice(1);
   }
   return null;

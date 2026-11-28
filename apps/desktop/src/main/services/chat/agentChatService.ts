@@ -544,6 +544,13 @@ import {
   type HarnessPresetLaunchPlan,
 } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
+import { ADE_FREE_OPENCODE_PROVIDER_ID, isAdeFreeModelId } from "../../../shared/adeFreeModels";
+import type { FreeModelsRelay, FreeModelsRelayRegistration } from "../freeModels/freeModelsRelay";
+import {
+  ADE_FREE_MODELS_SIGN_IN_MESSAGE,
+  ADE_FREE_MODELS_UNWATCHED_MESSAGE,
+  adeFreeOpenCodeProviderBlock,
+} from "../freeModels/adeFreeModelsLaunch";
 import { crossMachineRouteFor, crossMachineRouteNotice, launchRouteTransition, readCrossMachineRoute, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
 import { assembleAdeChatContextParts, type AdeChatContextPart, type AdeChatContextPreview, type AdeChatMainText } from "./adeChatContextPreview";
@@ -4033,6 +4040,8 @@ type OpenCodeRuntime = {
   pendingForms: Map<string, PendingOpenCodeForm>;
   /** Forms answered in ADE whose reply to OpenCode has not finished yet. */
   answeringForms: Set<string>;
+  /** An ADE Free Models chat's path on the relay (`freeModelsRelay.ts`), released with the runtime. */
+  freeModelsRegistration: FreeModelsRelayRegistration | null;
   /**
    * Messages admitted to OpenCode's inbox during a turn, in admission order.
    * OpenCode owns the queue; these rows mirror it so the transcript, cancel,
@@ -12619,7 +12628,13 @@ export function createAgentChatService(args: {
    * (`bootstrap.ts`). Never throws for a missing sign-in: the turn then
    * refuses visibly, as before. Absent: nothing to wait for.
    */
-  ensureTurnSignIn?: ((provider: AgentChatProvider) => Promise<void>) | null;
+  ensureTurnSignIn?: ((provider: AgentChatProvider, modelId?: string | null) => Promise<void>) | null;
+  /**
+   * This process's ADE Free Models relay (`freeModelsRelay.ts`). Absent
+   * (tests, embedders): a chat on an ADE Free Model is refused with the
+   * sign-in message.
+   */
+  freeModelsRelay?: FreeModelsRelay | null;
   /**
    * This host's sleep state, so a turn interrupted by a suspending machine can
    * say so instead of reporting a provider retry with cause `unknown`.
@@ -13004,6 +13019,7 @@ export function createAgentChatService(args: {
     diskPressureMonitor,
     turnStartRefusal,
     ensureTurnSignIn,
+    freeModelsRelay,
     getTestService,
     getTerminalWatchService,
     ptyService,
@@ -13862,13 +13878,42 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Why a chat on an ADE Free Model can't run a turn here, or null. They run
+   * through this process's relay on the person's ADE sign-in, and only while
+   * someone has the chat open: an automation's chat or a scheduled wake is
+   * refused before OpenCode starts (the account server refuses them anyway).
+   */
+  const adeFreeModelBlockReason = (
+    managed: ManagedChatSession,
+    metadata?: AgentChatSendArgs["metadata"],
+  ): string | null => {
+    if (!isAdeFreeModelId(managed.session.modelId)) return null;
+    if (!freeModelsRelay?.available()) return ADE_FREE_MODELS_SIGN_IN_MESSAGE;
+    if (
+      managed.session.surface === "automation"
+      || managed.session.automationRunId
+      || metadata?.automationRun
+      || metadata?.scheduledWake
+    ) {
+      return ADE_FREE_MODELS_UNWATCHED_MESSAGE;
+    }
+    return null;
+  };
+
+  /**
    * Why this chat's turn must not run, or null when it may.
    *
    * A chat that names a custom provider (or a stored key) runs on it or not at
    * all. Running it on the harness's own sign-in instead spends the wrong
-   * account on the wrong model, and the user only finds out afterwards.
+   * account on the wrong model, and the user only finds out afterwards. A chat
+   * on an ADE Free Model runs only where `adeFreeModelBlockReason` allows.
    */
-  const launchRouteBlockReason = (managed: ManagedChatSession): string | null => {
+  const launchRouteBlockReason = (
+    managed: ManagedChatSession,
+    metadata?: AgentChatSendArgs["metadata"],
+  ): string | null => {
+    const freeModelBlock = adeFreeModelBlockReason(managed, metadata);
+    if (freeModelBlock) return freeModelBlock;
     const presetId = managed.session.presetId?.trim() ?? "";
     const credentialId = managed.session.credentialId?.trim() ?? "";
     if (!presetId && !credentialId) return null;
@@ -20798,6 +20843,16 @@ export function createAgentChatService(args: {
     // when aiIntegrationService has already probed recently.
     const discoveredLocalModels = await discoverOpenCodeLocalModels(auth);
     const openCodePresetPlan = resolveSessionLaunchPlan(managed);
+    // An ADE Free Model runs on a provider that points at this process's
+    // relay, on a path and key of this chat's own (`freeModelsRelay.ts`).
+    // The path is taken just before OpenCode starts, so nothing above leaks it.
+    const runsAdeFreeModel = descriptor.openCodeProviderId === ADE_FREE_OPENCODE_PROVIDER_ID
+      || isAdeFreeModelId(descriptor.id);
+    if (runsAdeFreeModel) {
+      const blocked = adeFreeModelBlockReason(managed)
+        ?? (freeModelsRelay?.available() ? null : ADE_FREE_MODELS_SIGN_IN_MESSAGE);
+      if (blocked) throw new Error(blocked);
+    }
     const openCodePresetProviders = openCodePresetPlan?.openCodeProvider
       ? { [openCodePresetPlan.openCodeProvider.id]: openCodePresetPlan.openCodeProvider.block }
       : null;
@@ -20860,16 +20915,29 @@ export function createAgentChatService(args: {
     const model = openCodeModelRefFor(managed, descriptor);
     const instructions = buildOpenCodeSessionInstructions(managed, runtimeShell.permissionMode);
     let handle: OpenCodeSessionHandle;
+    let freeModelsRegistration: FreeModelsRelayRegistration | null = null;
     try {
+      freeModelsRegistration = runsAdeFreeModel && freeModelsRelay
+        ? await freeModelsRelay.register(managed.session.id)
+        : null;
+      const sessionProviders = openCodePresetProviders || freeModelsRegistration
+        ? {
+          ...openCodePresetProviders,
+          ...(freeModelsRegistration
+            ? { [ADE_FREE_OPENCODE_PROVIDER_ID]: adeFreeOpenCodeProviderBlock(freeModelsRegistration) }
+            : {}),
+        }
+        : null;
       handle = await startOpenCodeChatSession({
         config: {
           projectConfig: configSnapshot.effective,
           discoveredLocalModels,
           isolated: openCodeIsolatedConfig,
           personal: isPersonalSession(managed.session),
-          // A preset's provider block is resolved per chat and merged last, so
-          // it changes this session only (and gives it a server of its own).
-          ...(openCodePresetProviders ? { presetProviders: openCodePresetProviders } : {}),
+          // A preset's provider block, and an ADE Free Model's, is resolved
+          // per chat and merged last, so it changes this session only (and
+          // gives it a server of its own).
+          ...(sessionProviders ? { presetProviders: sessionProviders } : {}),
           ...(openCodeAgentSkillRoots.length ? { agentSkillRoots: openCodeAgentSkillRoots } : {}),
           ...(opencodeMcpConfig ? { mcpServers: opencodeMcpConfig } : {}),
         },
@@ -20888,6 +20956,7 @@ export function createAgentChatService(args: {
         logger,
       });
     } catch (error) {
+      freeModelsRegistration?.release();
       closeHttpMcpServers(managed);
       throw error;
     }
@@ -20927,6 +20996,7 @@ export function createAgentChatService(args: {
       pendingApprovals: new Map(),
       pendingForms: new Map(),
       answeringForms: new Set(),
+      freeModelsRegistration,
       pendingSteers: [],
       inboxOutcomes: new Map(),
       interrupted: false,
@@ -31592,6 +31662,9 @@ export function createAgentChatService(args: {
       // hold.
       if (preserveProviderResumeState) persistChatState(managed);
       try { runtime.handle.close(); } catch { /* ignore */ }
+      // Its relay path ends with it, and any request still in flight there.
+      runtime.freeModelsRegistration?.release();
+      runtime.freeModelsRegistration = null;
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "cursor") {
@@ -68750,7 +68823,7 @@ export function createAgentChatService(args: {
         return;
       }
       if (options?.routeActiveToSteer && canRouteActiveSendToSteer(managed)) {
-        const blocked = launchRouteBlockReason(managed);
+        const blocked = launchRouteBlockReason(managed, args.metadata);
         if (blocked) {
           emitLaunchRouteSteerFailure(managed, args, blocked);
           throwForScheduledWakeRefusal(blocked);
@@ -68758,7 +68831,7 @@ export function createAgentChatService(args: {
         }
       }
       if (!runtimeMidTurn(managed) && managed.session.status !== "active") {
-        const blocked = launchRouteBlockReason(managed);
+        const blocked = launchRouteBlockReason(managed, args.metadata);
         // Whatever was built while the route could not be resolved carries the
         // harness's own sign-in; it never serves a turn.
         if (managed.launchRouteFellBack && managed.runtime) {
@@ -76462,8 +76535,8 @@ export function createAgentChatService(args: {
    * Every chat with work in hand, for the cloud busy list (`decideCloudBusy`):
    * whether it is stopped waiting on a person, and when it last moved.
    */
-  const listBusyFacts = (): Array<{ waitingOnPerson: boolean; lastActivityAt: number }> => {
-    const facts: Array<{ waitingOnPerson: boolean; lastActivityAt: number }> = [];
+  const listBusyFacts = (): Array<{ waitingOnPerson: boolean; lastActivityAt: number; automation: boolean }> => {
+    const facts: Array<{ waitingOnPerson: boolean; lastActivityAt: number; automation: boolean }> = [];
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;
       const waitingOnPerson = hasLivePendingInput(managed);
@@ -76473,7 +76546,9 @@ export function createAgentChatService(args: {
         && !hasRuntimeActiveWorkload(managed.runtime)
         && !turnDiffSummariesInFlight.has(managed.session.id)
       ) continue;
-      facts.push({ waitingOnPerson, lastActivityAt: managed.lastActivityTimestamp });
+      // An automation's run: the cloud computer reports it as full-price work (Pricing v3).
+      const automation = managed.session.surface === "automation" || Boolean(managed.session.automationRunId);
+      facts.push({ waitingOnPerson, lastActivityAt: managed.lastActivityTimestamp, automation });
     }
     return facts;
   };
@@ -85504,10 +85579,14 @@ export function createAgentChatService(args: {
       // A computer that just started may not have the account's sign-in yet:
       // get it first, as a queued message does, so the wake doesn't fail on it.
       if (ensureTurnSignIn) {
-        const provider = managedSessions.get(schedule.sessionId)?.session.provider
-          ?? readPersistedState(schedule.sessionId)?.provider
+        const liveSession = managedSessions.get(schedule.sessionId)?.session;
+        const persistedState = liveSession ? null : readPersistedState(schedule.sessionId);
+        const provider = liveSession?.provider
+          ?? persistedState?.provider
           ?? providerFromToolType(row?.toolType);
-        await ensureTurnSignIn(provider).catch((error: unknown) => {
+        // A free model needs no sign-in of its own (Zen); the model says so.
+        const modelId = liveSession?.modelId ?? persistedState?.modelId ?? null;
+        await ensureTurnSignIn(provider, modelId).catch((error: unknown) => {
           logger.warn("agent_chat.scheduled_work_sign_in_check_failed", {
             sessionId: schedule.sessionId,
             scheduleId: schedule.id,

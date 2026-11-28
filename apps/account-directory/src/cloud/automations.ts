@@ -1,3 +1,4 @@
+import { isAdeFreeModelId } from "../../../desktop/src/shared/adeFreeModels";
 import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { connectGitHubSentence, DEFAULT_AGENT_LIMITS, githubRepoVisibility, notifyAccount, readVaultFacts, type CloudAgentLimits, type RelayEnv, type VaultFacts } from "./accountVault";
 import { isTimeZone, nextFireAt, parseCron } from "./automationSchedule";
@@ -249,6 +250,13 @@ export function parseRegistration(body: Record<string, unknown>): CloudAutomatio
     },
   };
 }
+
+/**
+ * ADE Free Models run only while a person has the chat open (`freeModels.ts`),
+ * so an unattended run can't use one: refused when the rule is saved, and a
+ * run of a rule saved before is failed before anything is made.
+ */
+const FREE_MODEL_AUTOMATION_REFUSAL = "DAEX Free Models run only while you have the chat open, so a DAEX Cloud automation can't use one. Pick another model for this rule.";
 
 /** The stored spec, put through the registration's own checks; null (logged) when it isn't one. */
 function specOf(row: RuleRow): CloudAutomationSpec | null {
@@ -503,6 +511,7 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const registration = parseRegistration(body);
   if (typeof registration === "string") return badRequest(registration);
+  if (isAdeFreeModelId(registration.spec.chat.modelId)) return badRequest(FREE_MODEL_AUTOMATION_REFUSAL);
   const origin = new URL(request.url).origin;
   const existing = await readRule(env, userId, ruleId);
   // A brain that hasn't synced the newest rule must not put back an older one.
@@ -702,6 +711,7 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
   const { now } = deps;
   const spec = specOf(rule);
   if (!spec) return failRun(env, { rule }, run.run_id, "DAEX Cloud can't read this rule. Change it and save it on one of your computers.", now);
+  if (isAdeFreeModelId(spec.chat.modelId)) return failRun(env, { rule }, run.run_id, FREE_MODEL_AUTOMATION_REFUSAL, now, { email: true });
   const limits = limitsOf(rule);
   if (!limits) {
     return failRun(env, { rule }, run.run_id, "DAEX Cloud couldn't read your agent limits, so it didn't start an unattended run. It reads them again the next time DAEX opens this project on one of your computers.", now, { email: true });

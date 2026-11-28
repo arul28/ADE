@@ -10,11 +10,13 @@
  *   GET    /cloud/account                      CloudAccountState
  *   GET    /cloud/templates/:name              { exists }
  *   GET    /cloud/instances                    { data: CloudInstance[] }
- *   POST   /cloud/instances                    CloudInstance (create)
+ *   POST   /cloud/instances                    CloudInstance (create; Pricing v3: { adProof: { chatId, messageId } }: a new lane's computer made for a
+ *                                                            person's first message, counted as its proof, so it starts at the price with ads and a Small on Free with ads is made at 0 credits)
  *   GET    /cloud/instances/:id                CloudInstance
  *   DELETE /cloud/instances/:id                { deleted: true }
  *   POST   /cloud/instances/:id/sleep          { status }
- *   POST   /cloud/instances/:id/start          { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan)
+ *   POST   /cloud/instances/:id/start          { status }   ({ origin: "mcp" }: an outside agent asked; 403 `outside_agent_free_plan` on the free plan.
+ *                                                            Pricing v3: { adProof: { chatId, messageId } }: a person's message wakes it, counted as its proof first, so a Small on Free with ads wakes at 0 credits)
  *   POST   /cloud/instances/:id/stop           { status }
  *   POST   /cloud/instances/:id/idle           { status }   the computer asks to be slept ({ backupReportId }: it rests with that backup report)
  *   POST   /cloud/instances/:id/update         { status, templateVersion }   409 `update_in_progress`
@@ -263,10 +265,10 @@ export const CLOUD_PATHS = {
   agent37Webhook: "/cloud/agent37/webhook",
   /**
    * Sponsored cards and the Index on the Free plan's ADE Cloud chats
-   * (`gravity.ts`). `PUT /consent` `{ consent: CloudSponsoredChoice }` records
+   * (`gravity.ts`). `PUT /consent` `CloudSponsoredConsentRequest` records
    * the account's answer, or the notice that cards are on, and answers
    * `CloudSponsoredState` (409 for a notice where cards don't start on); `POST /seen` `CloudSponsoredSeenRequest` says a
-   * person has one of the account's cloud chats open; `POST /ad`
+   * person has one of the account's cloud chats or terminals open (for the Index only); `POST /ad`
    * `CloudSponsoredAdRequest` answers `CloudSponsoredAdAnswer`; `POST /index`
    * `CloudSponsoredIndexRequest` answers `CloudSponsoredIndexAnswer`.
    */
@@ -275,7 +277,30 @@ export const CLOUD_PATHS = {
   sponsoredAd: "/cloud/sponsored/ad",
   sponsoredIndex: "/cloud/sponsored/index",
   sponsoredHide: "/cloud/sponsored/hide",
+  /**
+   * Pricing v3 (`adPrice.ts`): `POST` `CloudAdSentRequest`, a person sent a
+   * message in a chat that uses DAEX Cloud. Answers `CloudAdProofAnswer`. Not
+   * sent for CLI sessions, automations or outside agents. Answers 404 while
+   * Pricing v3 doesn't reach the account.
+   */
+  sponsoredSent: "/cloud/sponsored/sent",
+  /**
+   * ADE Free Models (`freeModels.ts`): Gravity's hosted models, paid for by
+   * the sponsored cards in the chats that use them, on any plan and machine.
+   * `PUT /consent` `CloudFreeModelsConsentRequest` answers `CloudFreeModelsState`;
+   * `POST /seen` `CloudFreeModelsSeenRequest` says a person has that chat open
+   * (inference runs only while someone does); `/v1/models` and
+   * `/v1/chat/completions` are OpenAI-compatible, for the OpenCode provider
+   * `ade-free`, with the chat in the `X-ADE-Chat-Id` header.
+   */
+  freeModelsConsent: "/cloud/free-models/consent",
+  freeModelsSeen: "/cloud/free-models/seen",
+  freeModelsModels: "/cloud/free-models/v1/models",
+  freeModelsChat: "/cloud/free-models/v1/chat/completions",
 } as const;
+
+/** The header an ADE Free Models request names its chat in. */
+export const CLOUD_FREE_MODELS_CHAT_HEADER = "X-ADE-Chat-Id";
 
 /** `/cloud/chats/:machine/:chat/messages[/:msg]`: the person's queue for an existing cloud chat. */
 export const cloudChatMessagesPath = (machineKey: string, chatId: string, messageId?: string): string =>
@@ -496,6 +521,13 @@ export type CloudComputerActivityReport = {
   sleepsAt: number | null;
   runningAgents: number;
   reportedAt: number;
+  /**
+   * Pricing v3: the kinds of full-price work running on the computer now
+   * (`CloudFullPriceWork`), each listed once; empty when none. While any
+   * runs, the whole computer has the full price. Sent again whenever the
+   * list changes. An older brain leaves it out: read as none.
+   */
+  fullPriceWork?: CloudFullPriceWork[];
 };
 
 /** How hard a computer pushes one of its limits, as the provider reads it. */
@@ -681,6 +713,12 @@ export type CloudCatalog = {
     label?: string;
     /** How far the disk may grow at this size. */
     diskMaxGb?: number;
+    /**
+     * Pricing v3: the ad price of this size, in the same unit as
+     * `multiplierMilli` (the full price). Sent only when Pricing v3 reaches
+     * the account; Small reads 0 (free with ads).
+     */
+    adMultiplierMilli?: number;
   }>;
   /**
    * `paid` is Plus, kept for builds that know only two plans. Servers before
@@ -701,6 +739,21 @@ export type CloudCatalog = {
   hourUnit?: "medium";
   /** Older servers only: what 10 GB of extra disk cost for a month. Pricing v2 servers leave it out (no extra disk). */
   extraDiskCentsPer10GbMonth?: number;
+  /*
+   * Pricing v3 (`adPrice.ts`): sent only when Pricing v3 reaches the account.
+   * An app that doesn't know these fields shows `multiplierMilli` (the full
+   * price) in the old unit: the same hours and money.
+   */
+  /** Shown credits = milli / 1000 x `creditScale` (10): a Medium hour shows as 10 credits. */
+  creditScale?: number;
+  /** The DAEX Cloud iPhone's full and ad rate, in thousandths a minute (500 and 400 at a 20% discount). */
+  phone?: { milliPerMinute: number; adMilliPerMinute: number };
+  /**
+   * Free's Small full rate an hour for this account (500 while the ad switch
+   * reaches it, else 0; free with ads either way), whatever the viewer's own
+   * plan: the Free plan card's Small line. Missing from older servers.
+   */
+  freeSmallMilli?: number;
 };
 
 /**
@@ -729,11 +782,23 @@ export type CloudDiskRefusalReason = "plan_disk" | "needs_approval" | "extra_off
 
 export type CloudAccountState = {
   /**
+   * Pricing v3: the ad price, what each computer and the iPhone cost now, and
+   * the ads switch (`adPrice.ts`). Sent only when the server's `pricing_v3`
+   * setting reaches this account; absent, a client shows today's prices.
+   */
+  pricing?: CloudPricingState;
+  /**
    * Sponsored cards and the Index in this account's ADE Cloud chats
    * (`gravity.ts`). Sent only when the server's switch reaches this account;
    * absent, a client shows nothing of them, not even the question.
    */
   sponsored?: CloudSponsoredState;
+  /**
+   * ADE Free Models (`freeModels.ts`), for any plan. Sent only when the
+   * server's switch reaches this account and its keys are set; absent, a
+   * client shows none of them.
+   */
+  freeModels?: CloudFreeModelsState;
   /**
    * Credits: `hours` is one balance of credits (the same numbers: a Medium
    * computer uses one an hour), and the ADE Cloud iPhone draws from it at
@@ -1206,6 +1271,18 @@ export function overPlanLimitsMoveSentence(cleanup: Pick<CloudPlanCleanup, "plan
 
 /** "1 cloud computer", "3 cloud computers". */
 export const cloudComputersPhrase = (count: number): string => `${count} cloud ${count === 1 ? "computer" : "computers"}`;
+
+/**
+ * What an `out_of_hours` refusal (a create, copy, wake, start or launch)
+ * carries next to `code` and `message` when a GitHub rule holds the Free
+ * plan's credits (`CloudFreePlanGithub`, `freePlanGithub.ts`): the hold is
+ * the reason, not credits spent. `message` is then `freeGithub.sentence`. A
+ * client shows the hold (with "Add a card (no charge)" when
+ * `canUnlockWithCard`, "Connect GitHub" for `no_github`) instead of an
+ * out-of-credits notice. Absent otherwise. The account state's
+ * `freePlan.github` says the same before any refusal.
+ */
+export type CloudOutOfHoursDetail = { freeGithub?: CloudFreePlanGithub };
 
 /* ---- The computer limit (Pricing v2) ---- */
 
@@ -2953,6 +3030,8 @@ export type CloudCatalogModel = {
   defaultReasoningEffort: string | null;
   /** The model has a fast mode (`chat.fast`). */
   fast: boolean;
+  /** A free model: the Free page's group and tag (`shared/freeModels.ts`). Absent: not free. */
+  free?: { source: string; badge: "free" | "ad-supported" };
 };
 export type CloudCatalogProvider = {
   /** The launch's `chat.provider`. */
@@ -3561,11 +3640,12 @@ export type CloudSponsoredState = {
    */
   smallNeedsCards?: boolean;
   /**
-   * The account said yes, but neither that yes nor a look at one of its ADE
-   * Cloud chats (or terminals) came from the US in the last 7 days (plus
-   * the hour a look's save may lag; away, or a yes given from
-   * elsewhere): Small uses credits until the next such chat. Read in the US
-   * only. Settings says so. Absent otherwise.
+   * The account said yes, but no card was asked for under a finished reply
+   * in one of its ADE Cloud chats from the US in the last 7 days (plus the
+   * hour a look's save may lag; a new yes, away, or only terminals and
+   * empty chats open): Small uses credits until the next such card. The yes
+   * itself, an open chat or a terminal is no look. Read in the US only.
+   * Settings says so. Absent otherwise.
    */
   smallNeedsLook?: boolean;
   /**
@@ -3620,16 +3700,122 @@ export const CLOUD_SPONSORED_OSES = ["macos", "windows", "linux", "ios", "androi
 
 /** `POST /cloud/sponsored/seen`: a person has a chat or terminal of this ADE Cloud computer open now. */
 export type CloudSponsoredSeenRequest = { instanceId: string; device: CloudSponsoredDevice };
+/**
+ * `PUT /cloud/sponsored/consent`. `confirmed`: the second confirm of a yes
+ * (`CloudSponsoredState.confirmYes`). `noticeSeen` (Pricing v3): the app
+ * showed the ads notice or question with this answer, or showed the notice
+ * over an answer already saved (send that answer again). The account's
+ * `CloudAdsState.noticeSeen` then reads true on every device. An older app
+ * leaves it out.
+ */
+export type CloudSponsoredConsentRequest = { consent: CloudSponsoredChoice; confirmed?: boolean; noticeSeen?: boolean };
+
+/* ---- ADE Free Models (`freeModels.ts`) ---- */
+
+/** Bumped when what a person agrees to for ADE Free Models changes: an older yes is asked again. */
+export const CLOUD_FREE_MODELS_TERMS_VERSION = 1;
+
+/**
+ * ADE Free Models for this account, as `CloudAccountState.freeModels`.
+ * - `modelIds`: the ADE model ids it may pick (`opencode/ade-free/<alias>`).
+ * - `available`: they run for this person from where they are now; false
+ *   with `reason` (`country`: outside the countries Gravity serves).
+ * - `consent`: the person's answer to the one-time sheet (cards in these
+ *   chats, and what Gravity receives). Null: never asked, or asked for an
+ *   older `CLOUD_FREE_MODELS_TERMS_VERSION`.
+ * - `format`: where cards show in these chats.
+ * - `test`: Gravity's test ads (nothing paid). True until go-live.
+ */
+export type CloudFreeModelsState = {
+  modelIds: string[];
+  available: boolean;
+  reason?: "country" | "unavailable";
+  consent: CloudSponsoredConsent | null;
+  format: CloudSponsoredFormat;
+  test: boolean;
+  /** Absent: unlocked. */
+  locked?: CloudFreeModelsLock;
+  /** Absent: running normally. */
+  throttle?: CloudFreeModelsThrottle;
+};
+/**
+ * Why ADE Free Models are locked for this account, as `CloudFreeModelsState.locked`:
+ * the Free plan's GitHub rule (`freePlanGithub.ts`). A card saved with no
+ * charge (or a paid plan) unlocks them. The rows stay listed, shown locked.
+ */
+export type CloudFreeModelsLock = {
+  reason: "no_github" | "too_new" | "used" | "checking";
+  /** `too_new`: when the GitHub account turns old enough (ms), unlocking them with no card. */
+  oldEnoughAt?: number | null;
+  githubLogin?: string | null;
+  /** A card saved with no charge unlocks them now (false only while `checking`). */
+  canUnlockWithCard: boolean;
+  /** What to tell the person, one sentence. */
+  sentence: string;
+};
+/**
+ * ADE Free Models are paid for by the cards in their chats. An account that
+ * keeps using them with no card asked for in those chats (a finished reply
+ * on screen asks for one) is `slowed` (2 requests a minute across them,
+ * answered 429 with `retry-after`), then `paused` (refused
+ * `free_models_no_cards`) until the next card request, whatever Gravity
+ * answers.
+ */
+export type CloudFreeModelsThrottle = "slowed" | "paused";
+/** `PUT /cloud/free-models/consent`. */
+export type CloudFreeModelsConsentRequest = { consent: CloudSponsoredConsent };
+/** `POST /cloud/free-models/seen`: a person has this ADE Free Models chat open now, on this device. */
+export type CloudFreeModelsSeenRequest = { chatId: string; device: CloudSponsoredDevice };
+/**
+ * Why the server refused an ADE Free Models request (the `error.code` of
+ * its OpenAI-shaped error, and the `code` of the others):
+ * - `free_models_off`: the switch doesn't reach this account, or a key is missing.
+ * - `free_models_consent`: the person hasn't agreed to the sheet.
+ * - `free_models_country`: outside the countries Gravity serves.
+ * - `free_models_not_watched`: nobody has the chat open in ADE (automations, a chat left running).
+ * - `free_models_limit`: the person's or ADE's share of Gravity's limits is used up for now.
+ * - `free_models_unknown_model`: not an ADE Free Model.
+ * - `free_models_too_large`: past Gravity's request size.
+ * - `free_models_unavailable`: Gravity refused or failed.
+ * - `free_models_locked`: the GitHub rule holds them (`CloudFreeModelsLock`); a card unlocks them.
+ * - `free_models_no_cards`: used too long with no card on screen (`CloudFreeModelsThrottle` `paused`).
+ */
+export type CloudFreeModelsErrorCode =
+  | "free_models_off"
+  | "free_models_consent"
+  | "free_models_country"
+  | "free_models_not_watched"
+  | "free_models_limit"
+  | "free_models_unknown_model"
+  | "free_models_too_large"
+  | "free_models_unavailable"
+  | "free_models_locked"
+  | "free_models_no_cards";
 
 /** One message of the chat as an ad request sends it: the latest request and reply only. */
 export type CloudSponsoredMessage = { role: "user" | "assistant"; content: string };
 /** Gravity reads at most this much of each message. */
 export const CLOUD_SPONSORED_MESSAGE_MAX_CHARS = 4_000;
 
-/** `POST /cloud/sponsored/ad`: one card under a finished reply of a chat on an ADE Cloud computer. */
+/**
+ * `POST /cloud/sponsored/ad`: one card under a finished reply of a chat on an
+ * ADE Cloud computer, or of an ADE Free Models chat on any machine.
+ */
 export type CloudSponsoredAdRequest = {
-  /** The ADE Cloud computer the chat runs on: the server checks it is the account's own. */
-  instanceId: string;
+  /**
+   * The ADE Cloud computer the chat runs on: the server checks it is the
+   * account's own. Null for an ADE Free Models chat on another machine: the
+   * server checks it served that chat instead.
+   */
+  instanceId: string | null;
+  /**
+   * Pricing v3: the DAEX Cloud iPhone this chat holds now (its
+   * `CloudPhoneSummary.id`), from a chat on any machine. The server checks it
+   * is the account's live phone; the request then counts as the phone's
+   * proof, and a chat on the person's own computer may show an ad while it
+   * holds it. Absent: none.
+   */
+  phoneId?: string | null;
   chatId: string;
   /** The finished reply the card goes under. Asking again for it answers the same card, with no new request to Gravity. */
   turnId: string;
@@ -3714,8 +3900,13 @@ export type CloudSponsoredGravityAd = {
 };
 /** `POST /cloud/sponsored/hide`: the person hid this reply's card (counted once per reply, per format, for the A/B test). */
 export type CloudSponsoredHideRequest = { chatId: string; turnId: string };
-/** Why no card: the answer is still a 200, and a client shows nothing either way. */
-export type CloudSponsoredNoAdReason = "off" | "plan" | "country" | "consent" | "not_cloud" | "limit" | "no_fill" | "unavailable";
+/**
+ * Why no card: the answer is still a 200, and a client shows nothing either
+ * way. Pricing v3 adds `notice` (the account hasn't seen the ads notice yet:
+ * no ad before it) and `unverified` (the request came from the network of the
+ * account's own cloud computers: it doesn't count, `CloudFullPriceReason`).
+ */
+export type CloudSponsoredNoAdReason = "off" | "plan" | "country" | "consent" | "not_cloud" | "limit" | "no_fill" | "unavailable" | "notice" | "unverified";
 export type CloudSponsoredAdAnswer = { ad: CloudSponsoredAd | null; reason?: CloudSponsoredNoAdReason };
 
 /** `POST /cloud/sponsored/index`: an agent on an ADE Cloud computer asks for a service the person needs. */
@@ -3767,3 +3958,138 @@ export function readCloudSponsoredPick(value: unknown): CloudSponsoredPick | nul
     installSteps: Array.isArray(raw.installSteps) ? raw.installSteps.filter((step): step is string => typeof step === "string") : [],
   };
 }
+
+/* ---- Pricing v3: the ad price (`adPrice.ts`, README "Plans, credits and sizes") ---- */
+
+/**
+ * The credit scale apps show under Pricing v3: shown credits = milli / 1000
+ * x 10. Storage stays in milli (1,000 milli = one Medium-hour); only the
+ * shown number changes. Also in `CloudCatalog.creditScale` and
+ * `CloudPricingState.creditScale`, which apps read instead of this.
+ */
+export const CLOUD_CREDIT_SCALE_V3 = 10;
+
+/**
+ * The header an app sends on `GET /cloud/account` to say it knows Pricing v3
+ * (value `CLOUD_PRICING_VERSION`). Without it, while Pricing v3 reaches the
+ * account, the answer leaves out `pricing` and `sponsored` (an older app would
+ * show its Free-plan ad question on any plan, and its answers can't count),
+ * so an older app shows today's product with no ads. The catalog's numbers
+ * and `credits.phoneMilliPerMinute` are the real ones for every app.
+ */
+export const CLOUD_PRICING_HEADER = "X-ADE-Pricing";
+export const CLOUD_PRICING_VERSION = "3";
+
+/** What a minute of a computer or the iPhone costs now: the full price, or the ad price. */
+export type CloudPriceNow = "ad" | "full";
+
+/**
+ * Work on a cloud computer where DAEX can't show an ad: an agent CLI session in
+ * a terminal, an automation (a scheduled or webhook run included), or a chat
+ * or lane an outside agent started through DAEX MCP. While one runs, the whole
+ * computer has the full price.
+ */
+export const CLOUD_FULL_PRICE_WORK = ["cli_session", "automation", "outside_agent"] as const;
+export type CloudFullPriceWork = (typeof CLOUD_FULL_PRICE_WORK)[number];
+
+/**
+ * Why a computer or the iPhone has the full price now, one line in the price
+ * row ("Full price: a CLI session runs here"):
+ * - `ads_off`: ads are off for the account (or it hasn't seen the notice).
+ * - `no_ads_here`: the person's country (this request's) has no ads.
+ * - `not_in_use`: no message sent and no finished reply in its chats within
+ *   the window (`CloudAdsState.windowMinutes`).
+ * - `cli_session`, `automation`, `outside_agent`: full-price work runs on it
+ *   (`CloudFullPriceWork`).
+ * - `unverified`: its latest request came from the network of the account's
+ *   own cloud computers, which doesn't count.
+ * A client that doesn't know a reason shows only "Full price".
+ */
+export type CloudFullPriceReason = "ads_off" | "no_ads_here" | "not_in_use" | CloudFullPriceWork | "unverified";
+
+/** What one computer or the iPhone costs now. */
+export type CloudPrice = {
+  now: CloudPriceNow;
+  /** Why it has the full price; null with the ad price. */
+  reason: CloudFullPriceReason | null;
+  /** When the ad price ends unless a new message or finished reply comes first (ms); null with the full price. */
+  adUntil: number | null;
+  /** What it uses now, in thousandths: a Medium-hour unit an hour for a computer, a minute for the iPhone. */
+  rateMilli: number;
+  /** The other price, in the same unit, for "8 with ads" beside "10". Equal to `rateMilli` when there is only one price. */
+  otherRateMilli: number;
+};
+
+/** `CloudPricingState.computers[]`: one of the account's computers. */
+export type CloudComputerPrice = CloudPrice & { instanceId: string };
+
+/**
+ * The account's ads, as the server decides them. The switch is one for the
+ * account (Linux, Mac and iPhone); `PUT /cloud/sponsored/consent` changes it
+ * (`CloudSponsoredConsentRequest`), and off takes effect at the next minute.
+ */
+export type CloudAdsState = {
+  /** This request's country has ads (US, Canada, the UK, Australia). False: show no second price and nothing about ads. */
+  available: boolean;
+  /** Ads are on for the account now: a yes that holds here and the notice seen. */
+  on: boolean;
+  /** This region starts with ads on (the US outside California): the notice tells, instead of asking. */
+  startsOn: boolean;
+  /** The account saw the ads notice (one answer on every device). No ad shows before it. */
+  noticeSeen: boolean;
+  /** The ad price's discount, in percent (`ad_discount_pct`). */
+  discountPct: number;
+  /** How long a message or a finished reply keeps the ad price (`ad_window_minutes`). */
+  windowMinutes: number;
+};
+
+/** `CloudAccountState.pricing`. */
+export type CloudPricingState = {
+  creditScale: number;
+  ads: CloudAdsState;
+  /** Every computer of the account, asleep ones included. */
+  computers: CloudComputerPrice[];
+  /** The live DAEX Cloud iPhone, or null when none runs. */
+  phone: (CloudPrice & { phoneId: string }) | null;
+};
+
+/**
+ * `POST /cloud/sponsored/sent`: a person sent a message in a chat that uses
+ * DAEX Cloud. `instanceId`: the cloud computer the chat runs on (null for a
+ * chat on the person's own computer). `phoneId`: the cloud iPhone the chat
+ * holds now. `messageId`: the message's own id; one (account, chat, message)
+ * counts once on any number of devices.
+ */
+export type CloudAdSentRequest = {
+  instanceId: string | null;
+  phoneId?: string | null;
+  chatId: string;
+  messageId: string;
+};
+
+/**
+ * Why a proof (a message sent, a finished reply's ad request) didn't count:
+ * `off` (Pricing v3 doesn't reach the account), `ads_off`, `no_ads_here`,
+ * `not_cloud` (not the account's own computer or live iPhone, or not a
+ * person's chat there; also the day's proofs for chats no computer saved yet
+ * used up, so never shown as "doesn't use DAEX Cloud"), `repeat` (that message or reply already counted),
+ * `unverified` (from the network of the account's own cloud computers).
+ */
+export type CloudAdProofRefusal = "off" | "ads_off" | "no_ads_here" | "not_cloud" | "repeat" | "unverified";
+export type CloudAdProofAnswer = { counted: boolean; reason?: CloudAdProofRefusal };
+
+/** `GET /public/pricing`: no auth, CORS `*`, never cached. For the website. */
+export const CLOUD_PUBLIC_PRICING_PATH = "/public/pricing";
+
+/**
+ * `GET /public/pricing`. `pricingV3` is true only while the `pricing_v3`
+ * setting is `all`; `mac` only while `mac_computers` is `all`.
+ * `freeSmallMilli`: a Small's full rate an hour on Free for this visitor, as
+ * the bill decides it (500 while the ad switch reaches everyone, 0 while it
+ * doesn't: Small on Free is free then); missing means it charges. `ads` is
+ * set only when the request's country has ads and the ad switch reaches
+ * everyone; `startsOn` is the app's own rule for that region.
+ */
+export type CloudPublicPricing =
+  | { pricingV3: false }
+  | { pricingV3: true; mac: boolean; freeSmallMilli?: number; ads: { startsOn: boolean; discountPct: number; adWindowMinutes: number } | null };

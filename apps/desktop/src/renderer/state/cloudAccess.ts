@@ -186,9 +186,12 @@ export function useCloudSignInEnd(): CloudSignInEnd | null {
  * out. A surface that DOES something (wake, start, send) also reads
  * `useAdeCloudAccess` and stays off with its `reason` while blocked.
  */
-export function useAdeCloudEnabled(): boolean {
-  return useSyncExternalStore(subscribe, snapshot, snapshot);
+/** `active` false reads the last answer without watching for changes (a component that may not need it). */
+export function useAdeCloudEnabled(active = true): boolean {
+  return useSyncExternalStore(active ? subscribe : idle, snapshot, snapshot);
 }
+
+const idle = () => () => undefined;
 
 /** ADE Cloud's state and, while it can't do things, the sentence why. One object per change. */
 export function useAdeCloudAccess(): AdeCloudAccess {

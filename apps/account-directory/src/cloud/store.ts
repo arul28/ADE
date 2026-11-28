@@ -168,6 +168,8 @@ export type ComputerRow = {
   net_asn?: number | null;
   /** The network it joined from (its launch join, the computer's own; `sponsoredSmall.ts`). */
   join_asn?: number | null;
+  /** Pricing v3 (`adPrice.ts`, migration 0073): its full rate while it runs at the ad price; null (or absent) at the full price. */
+  ad_full_milli?: number | null;
   /** While a move runs: the computer it moves (see `MOVE_GRACE_MS`). */
   moving_from: string | null;
   /** When an owner's block cut it off the internet (migration 0037, `safety.ts`); null again on unblock. */
@@ -362,17 +364,46 @@ const REQUESTS_PER_MINUTE = {
   settings: 120,
   /** Sponsored cards and the Index (`gravity.ts`): a few per finished reply and open chat; this stops a loop. */
   sponsored: 30,
+  /** Pricing v3's message proofs (`/cloud/sponsored/sent`, `adProof.ts`): one per message a person sends, on every device. */
+  sponsored_sent: 60,
+  /**
+   * ADE Free Models' model calls (`freeModels.ts`), per account: under
+   * Gravity's 60 a minute for one person, with room for a tool loop.
+   */
+  free_models: 50,
+  /** Every account's ADE Free Models calls together (counted under `*`): under Gravity's 600 a minute for ADE. */
+  free_models_all: 550,
+  /** A slowed account's ADE Free Models calls (`freeModelsMeter.ts`): no cards asked for in too long. */
+  free_models_slowed: 2,
+  /** ADE Free Models' answer and "this chat is open" notes: a few per open chat and minute. */
+  free_models_seen: 60,
 } as const;
 
-export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE;
+/** Requests one account may make in an hour, per bucket (`takeRequest`). */
+const REQUESTS_PER_HOUR = {
+  /**
+   * Answers about sponsored cards (`PUT /cloud/sponsored/consent`): a person
+   * answers a few times at most. Each answer moves the account's prices
+   * (Pricing v3), restarting each running computer's stretch.
+   */
+  sponsored_consent: 20,
+} as const;
+
+export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE | keyof typeof REQUESTS_PER_HOUR;
+
+const requestLimitOf = (bucket: CloudRequestBucket): { limit: number; windowMs: number } =>
+  bucket in REQUESTS_PER_HOUR
+    ? { limit: REQUESTS_PER_HOUR[bucket as keyof typeof REQUESTS_PER_HOUR], windowMs: 60 * 60_000 }
+    : { limit: REQUESTS_PER_MINUTE[bucket as keyof typeof REQUESTS_PER_MINUTE], windowMs: 60_000 };
 
 /**
- * Counts one request against the account's minute for `bucket`. True when it
- * is within the bucket's limit. One row per account and bucket
- * (`cloud_request_windows`); a new minute resets it.
+ * Counts one request against the account's minute (or hour) for `bucket`.
+ * True when it is within the bucket's limit. One row per account and bucket
+ * (`cloud_request_windows`); a new window resets it.
  */
 export async function takeRequest(env: CloudDb, userId: string, bucket: CloudRequestBucket, now: number): Promise<boolean> {
-  const windowStart = Math.floor(now / 60_000) * 60_000;
+  const { limit, windowMs } = requestLimitOf(bucket);
+  const windowStart = Math.floor(now / windowMs) * windowMs;
   const row = await env.DB.prepare(`
     insert into cloud_request_windows (user_id, bucket, window_start, count) values (?, ?, ?, 1)
     on conflict (user_id, bucket) do update set
@@ -380,9 +411,9 @@ export async function takeRequest(env: CloudDb, userId: string, bucket: CloudReq
       window_start = excluded.window_start
     returning count
   `).bind(userId, bucket, windowStart).first<{ count: number }>();
-  if ((row?.count ?? 1) <= REQUESTS_PER_MINUTE[bucket]) return true;
-  // Once a minute per bucket, at the first refused request.
-  if (row?.count === REQUESTS_PER_MINUTE[bucket] + 1) logCloud("cloud.rate_limited", { bucket });
+  if ((row?.count ?? 1) <= limit) return true;
+  // Once a window per bucket, at the first refused request.
+  if (row?.count === limit + 1) logCloud("cloud.rate_limited", { bucket });
   return false;
 }
 
@@ -632,18 +663,23 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
     chargedMilli += milli;
     // What the provider charges for this stretch, for the owner's daily report.
     const costMicros = computeCostMicrosFor(ms, shape);
+    // At the ad price (Pricing v3, `adPrice.ts`): what the discount took off, for the owner's report.
+    const adMs = computer.ad_full_milli != null ? ms : 0;
+    const adDiscount = computer.ad_full_milli != null ? Math.max(0, hoursMilliFor(ms, computer.ad_full_milli) - milli) : 0;
     // The stretch is stamped with the account's plan as it is now: run on free-plan rules, its cost also counts as free use (the owner's cap).
     statements.push(env.DB.prepare(`
-      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros, free_cost_micros)
-      select ?, ?, ?, ?, ?, ?, ?, ${freeShareSql("?", "?")}
+      insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros, ad_ms, ad_discount_milli, free_cost_micros)
+      select ?, ?, ?, ?, ?, ?, ?, ?, ?, ${freeShareSql("?", "?")}
       where ${guard ? guard.sql : "1"}
       on conflict (instance_id, day) do update set
         metered_ms = metered_ms + excluded.metered_ms,
         metered_milli = metered_milli + excluded.metered_milli,
         multiplier_milli = excluded.multiplier_milli,
         cost_micros = cost_micros + excluded.cost_micros,
+        ad_ms = ad_ms + excluded.ad_ms,
+        ad_discount_milli = ad_discount_milli + excluded.ad_discount_milli,
         free_cost_micros = free_cost_micros + excluded.free_cost_micros
-    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, computer.user_id, costMicros, ...(guard?.binds ?? [])));
+    `).bind(computer.instance_id, day, computer.user_id, ms, milli, computer.multiplier_milli, costMicros, adMs, adDiscount, computer.user_id, costMicros, ...(guard?.binds ?? [])));
   }
   if (chargedMilli > 0) {
     statements.push(env.DB.prepare(`update cloud_accounts set used_milli = used_milli + ?, updated_at = ? where user_id = ?${guard ? ` and ${guard.sql}` : ""}`)
@@ -654,12 +690,22 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
 
 /** Charges the open stretch up to `now` and starts a new one there, guarded against a status change since this row was read. */
 export function restartStretchStatements(env: CloudEnv, computer: ComputerRow, now: number): D1PreparedStatement[] {
+  return restartStretchAtStatements(env, computer, now);
+}
+
+/**
+ * `restartStretchStatements` at `at` (from the stretch's start up to the
+ * caller's now): the time before `at` is charged at the rate the row reads,
+ * the new stretch starts at `at`. Pricing v3 restarts at the exact end of a
+ * computer's ad window (`adPrice.ts`), so no minute is charged twice or lost.
+ */
+export function restartStretchAtStatements(env: CloudEnv, computer: ComputerRow, at: number): D1PreparedStatement[] {
   const guard = statusGuard(computer);
   const statements = [
-    ...settleStatements(env, computer, now, guard),
-    env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`).bind(now, computer.instance_id, ...guard.binds),
+    ...settleStatements(env, computer, at, guard),
+    env.DB.prepare(`update cloud_computers set awake_since = ? where instance_id = ? and ${guard.sql}`).bind(at, computer.instance_id, ...guard.binds),
   ];
-  computer.awake_since = now;
+  computer.awake_since = at;
   return statements;
 }
 
@@ -748,6 +794,10 @@ export function statusChangeStatements(env: CloudEnv, computer: ComputerRow, sta
   const nextMetered = isMeteredStatus(status);
   if (wasMetered && !nextMetered) {
     statements.push(...settleStatements(env, computer, now, guard), ...freeWakeStatements(env, computer, now, guard));
+    // Pricing v3 (`adPrice.ts`): the full-price work its brain reported, and an outside agent's
+    // message, end with the stretch awake.
+    statements.push(env.DB.prepare("update cloud_ad_targets set full_work = '[]', full_work_at = ?, outside_at = null, outside_busy_at = null, updated_at = ? where target = ? and (coalesce(full_work, '[]') <> '[]' or outside_at is not null)")
+      .bind(now, now, computer.instance_id));
     // A free wake that didn't count as use (an automatic update's window) leaves
     // `last_awake_at` before its start; closing it keeps the 30-day delete clock where it was.
     const freeWakeNotUse = computer.free_wake_started_at != null
@@ -1517,12 +1567,12 @@ async function startFreshPeriod(
       where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
     ), 0)
     where user_id = ? and period_start = ?
-  `).bind(now, ...phonePeriod, ...phonePeriod));
+  `).bind(now, now, ...phonePeriod, ...phonePeriod));
   statements.push(env.DB.prepare(`
     update cloud_phones set credited_milli = max(credited_milli, ${PHONE_CREDIT_MILLI_AT_SQL})
     where user_id = ? and state = 'live' and credits = 1 and created_at >= ?
       and exists (select 1 from cloud_accounts where user_id = ? and period_start = ?)
-  `).bind(now, ...phonePeriod, ...phonePeriod));
+  `).bind(now, now, ...phonePeriod, ...phonePeriod));
   // After the settles above, before `used_milli` resets below; both columns read the row as it was.
   statements.push(env.DB.prepare(`
     update cloud_accounts set earned_used_milli = earned_used_milli + ${EARNED_DRAW_SQL}

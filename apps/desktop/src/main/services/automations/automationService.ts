@@ -90,6 +90,8 @@ import { buildClaudeReadOnlyWorkerAllowedTools } from "../ai/tools/workerSandbox
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { isAdeFreeModelId } from "../../../shared/adeFreeModels";
+import { ADE_FREE_MODELS_UNWATCHED_MESSAGE } from "../freeModels/adeFreeModelsLaunch";
 import { cursorPermissionFromMisfiledOpenCode } from "../../../shared/cursorModes";
 import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
 import {
@@ -4406,6 +4408,8 @@ export function createAutomationService({
       throw new Error(`Unknown model '${requestedModelId}'. ${unknownModelHint()}`);
     }
     const modelId = requestedModelId ?? defaultAutomationChatModelId();
+    // Nobody watches an automation's chat, and an ADE Free Model runs only in one someone has open.
+    if (isAdeFreeModelId(modelId)) throw new Error(ADE_FREE_MODELS_UNWATCHED_MESSAGE);
     const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("opencode");
     if (!modelDescriptor) {
       throw new Error(`Unknown model '${modelId}'. ${unknownModelHint()}`);

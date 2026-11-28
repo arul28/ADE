@@ -61,3 +61,73 @@ export function useSponsoredViewer(instanceId: string | null, enabled: boolean):
     return () => window.clearInterval(timer);
   }, [instanceId, enabled, visible, consent, needsLook]);
 }
+
+/**
+ * ADE Free Models run only while someone has the chat open in ADE: the
+ * account server serves a chat's requests while its viewer record (this
+ * report, `/cloud/free-models/seen`) is at most 10 minutes old. Sent at once
+ * when the chat opens, then every 4 minutes, only while the window and the
+ * pane are visible and the account said yes to the sheet. Account level, by
+ * chat id: no pin, so it is the same for a chat on any machine.
+ */
+const FREE_MODEL_SEEN_EVERY_MS = 4 * 60_000;
+/** A send first reports a look this old, so its first request is not refused as unwatched. */
+const FREE_MODEL_SEEN_BEFORE_SEND_MS = 8 * 60_000;
+/** How long a send waits for that report before it goes anyway (the server then decides). */
+const FREE_MODEL_SEEN_SEND_WAIT_MS = 3_000;
+const FREE_MODEL_SEEN_LIMIT = 200;
+/** When the server last took a look at each chat, as the time the report left. */
+const freeModelSeenAt = new Map<string, number>();
+const freeModelSeenSending = new Map<string, Promise<boolean>>();
+
+function reportFreeModelChatSeen(chatId: string): Promise<boolean> {
+  const sending = freeModelSeenSending.get(chatId);
+  if (sending) return sending;
+  const send = window.ade?.cloud?.freeModelsSeen;
+  if (!send) return Promise.resolve(false);
+  const sentAt = Date.now();
+  const report = send({ chatId, device: sponsoredDevice() })
+    .then((delivered) => {
+      if (delivered !== true) return false;
+      freeModelSeenAt.delete(chatId);
+      freeModelSeenAt.set(chatId, sentAt);
+      if (freeModelSeenAt.size > FREE_MODEL_SEEN_LIMIT) freeModelSeenAt.delete(freeModelSeenAt.keys().next().value as string);
+      return true;
+    }, () => false)
+    .finally(() => freeModelSeenSending.delete(chatId));
+  freeModelSeenSending.set(chatId, report);
+  return report;
+}
+
+/** Reports that this ADE Free Models chat is on screen, while `enabled` (the pane is visible). */
+export function useFreeModelViewer(chatId: string | null, enabled: boolean): void {
+  const visible = useDocumentVisible();
+  const consent = useCloudAccount(Boolean(chatId) && enabled)?.freeModels?.consent ?? null;
+  useEffect(() => {
+    if (!chatId || !enabled || !visible || consent !== "granted") return;
+    const tell = () => {
+      if (Date.now() - (freeModelSeenAt.get(chatId) ?? 0) < FREE_MODEL_SEEN_EVERY_MS) return;
+      void reportFreeModelChatSeen(chatId);
+    };
+    tell();
+    const timer = window.setInterval(tell, FREE_MODEL_SEEN_EVERY_MS);
+    return () => window.clearInterval(timer);
+  }, [chatId, enabled, visible, consent]);
+}
+
+/**
+ * Right before a send in an ADE Free Models chat (a new chat's first message
+ * too, under the id it is created with): reports the look first when the last
+ * one is old or missing, waiting at most a few seconds. Never throws.
+ */
+export async function noteFreeModelChatSend(chatId: string): Promise<void> {
+  if (Date.now() - (freeModelSeenAt.get(chatId) ?? 0) < FREE_MODEL_SEEN_BEFORE_SEND_MS) return;
+  let timer: number | null = null;
+  await Promise.race([
+    reportFreeModelChatSeen(chatId),
+    new Promise<void>((resolve) => {
+      timer = window.setTimeout(resolve, FREE_MODEL_SEEN_SEND_WAIT_MS);
+    }),
+  ]).catch(() => undefined);
+  if (timer != null) window.clearTimeout(timer);
+}

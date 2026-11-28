@@ -1,4 +1,5 @@
 import Foundation
+import os
 import OSLog
 import UIKit
 
@@ -59,7 +60,9 @@ final class AccountCloudStore: ObservableObject {
   }
 
   @Published private(set) var access: Access?
-  @Published private(set) var account: CloudPhoneAccount?
+  @Published private(set) var account: CloudPhoneAccount? {
+    didSet { CloudFreeGithubHoldSnapshot.remember(account) }
+  }
   @Published private(set) var lanesWithoutComputer: [CloudLaneWithoutComputer] = []
   /// The last read of `lanesWithoutComputer` failed: an empty list then
   /// means "unknown", never "none".
@@ -307,6 +310,8 @@ final class AccountCloudStore: ObservableObject {
       return access.reason ?? "\(Brand.cloudName) is read-only for this account. Your lanes and chats stay readable."
     }
     if let account, account.outOfHours {
+      // Free credits held by the GitHub rule: say that, never "out of credits".
+      if let hold = cloudFreeGithubHoldLine(account) { return "\(hold) Your lanes and chats stay readable." }
       return "This account has no \(CloudBalanceWords(account).cloudUnit) left this period. Your lanes and chats stay readable."
     }
     return nil
@@ -391,7 +396,7 @@ final class AccountCloudStore: ObservableObject {
     } catch CloudServerClient.Failure.refused(let code, let message) {
       // An older computer the server can't update on wake: today's path.
       if code == "update_needed" { return .routeMissing }
-      return .refused(message)
+      return .refused(cloudFreeGithubHoldRefusal(code: code) ?? message)
     } catch CloudServerClient.Failure.computerLimit(let limit) {
       // The lane needs a new computer and the plan's are all taken.
       CloudLaneActions.shared.showComputerLimit(limit)
@@ -789,6 +794,16 @@ final class AccountCloudStore: ObservableObject {
     account = next
   }
 
+  /// The account's ADE Free Models answer as the server just returned it
+  /// (`PUT /cloud/free-models/consent`): every chat and the picker read it at
+  /// once. Nil (the switch no longer reaches the account) hides them.
+  func noteFreeModels(_ state: CloudFreeModelsState?, generation: Int) {
+    guard generation == accountGeneration else { return }
+    guard var next = account, next.freeModels != state else { return }
+    next.freeModels = state
+    account = next
+  }
+
   /// A tester's pick of who runs their ADE Cloud iPhones (`auto`, `nomac`,
   /// `revyl`), saved on the account, then the account read again so every
   /// screen shows the server's answer. Nil when it worked, else the server's
@@ -959,4 +974,26 @@ struct CloudChatFilesNeedLiveLink: LocalizedError {
   var errorDescription: String? {
     "This chat's computer didn't wake in time to take the files. Try again in a moment."
   }
+}
+
+/// The GitHub hold's sentence of the account as last read, for the refusals
+/// built off the main actor (`cloudServerFailureMessage`): a held Free account
+/// refused for credits hears why. Nil when nothing is held.
+enum CloudFreeGithubHoldSnapshot {
+  private static let line = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+  static func remember(_ account: CloudPhoneAccount?) {
+    let next = account.flatMap(cloudFreeGithubHoldLine)
+    line.withLock { $0 = next }
+  }
+
+  static var current: String? { line.withLock { $0 } }
+}
+
+/// A refusal for credits (`out_of_hours`, or a hold code a newer server
+/// sends) of an account the GitHub rule holds: the hold in the phone's words,
+/// instead of the server's "out of credits". Nil for every other refusal.
+func cloudFreeGithubHoldRefusal(code: String) -> String? {
+  guard code == "out_of_hours" || code == "free_github_hold" else { return nil }
+  return CloudFreeGithubHoldSnapshot.current
 }

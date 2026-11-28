@@ -1,7 +1,10 @@
 import { isSponsoredFormat, type GravityEnv } from "./gravity";
 import { sponsoredAbReport } from "./sponsoredReport";
+import { adPriceReport } from "./adPrice";
 import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsoredSmall";
-import { gravitySwitches } from "./sponsoredSwitch";
+import { pricingV3Mode, gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
+import { freeModelsHoldOf } from "./freePlanGithub";
+import { PAUSE_AFTER_CALLS, SLOW_AFTER_CALLS, readFreeModelMeter, throttleOf } from "./freeModelsMeter";
 import { fail, json } from "./http";
 import { CLOUD_SPONSORED_FORMATS, type CloudSponsoredFormat } from "./contract";
 import { accountWithUnsettledPhones } from "./credits";
@@ -65,6 +68,9 @@ import {
  *   `adFormat` (`below_reply`, `above_prompt`, `inline`, or null for the
  *   `gravity_format` switch's) is where the account's sponsored cards show:
  *   not a test either, it stays until changed.
+ *   `freeModelsMeter` (`slowed`, `paused` or `reset`) puts the account's
+ *   ADE Free Models no-cards meter (`freeModelsMeter.ts`) at that line, to
+ *   see the notices; the account's next card request in those chats resets it.
  * - `POST /cloud/owner/ab` `{ days? }`: the sponsored formats' A/B scoreboard.
  * - `POST /cloud/owner/settings` `{ key?, value?, note? }`: sets one switch,
  *   or with no key lists them all with their deploy ceilings.
@@ -73,6 +79,14 @@ import {
 export const OWNER_ACCOUNT_PATH = "/cloud/owner/account";
 export const OWNER_SETTINGS_PATH = "/cloud/owner/settings";
 export const OWNER_AB_PATH = "/cloud/owner/ab";
+export const OWNER_AD_PRICE_PATH = "/cloud/owner/ad-price";
+
+/** `POST /cloud/owner/ad-price` `{ days? }`: ad income against what the ad price took off, by product (`adPriceReport`). */
+export async function handleOwnerAdPrice(env: GravityEnv, body: Record<string, unknown>, now: number): Promise<Response> {
+  const days = body.days === undefined ? 30 : body.days;
+  if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 365) return fail("bad_request", "days is a whole number from 1 to 365.", 400);
+  return json({ ok: true, ...(await adPriceReport(env, now, days)) });
+}
 
 /** `POST /cloud/owner/ab` `{ days? }`: the sponsored formats' A/B scoreboard (`sponsoredAbReport`). */
 export async function handleOwnerAb(env: GravityEnv, body: Record<string, unknown>, now: number): Promise<Response> {
@@ -143,7 +157,7 @@ const hoursOf = (milli: number): number => Math.round(milli / 100) / 10;
 
 /** What the owner reads about an account: the real plan, the test, and what is in force. */
 async function describeAccount(env: CloudEnv, account: AccountRow, email: string | null, now: number) {
-  const [tester, consent, log, phoneRow, phoneUse, phone, adFormat] = await Promise.all([
+  const [tester, consent, log, phoneRow, phoneUse, phone, adFormat, meter] = await Promise.all([
     env.DB.prepare("select 1 as listed from cloud_sponsored_testers where user_id = ?").bind(account.user_id).first<{ listed: number }>(),
     env.DB.prepare("select consent, decided_at from cloud_sponsored_consent where user_id = ?").bind(account.user_id).first<{ consent: string; decided_at: number }>(),
     env.DB.prepare("select at, action, detail from cloud_owner_log where user_id = ? order by at desc, id desc limit ?")
@@ -152,6 +166,7 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
     periodPhones(env, account.user_id, account.period_start),
     phoneAccess(env, account.user_id),
     env.DB.prepare("select format, source from cloud_sponsored_formats where user_id = ?").bind(account.user_id).first<{ format: string; source: string }>(),
+    readFreeModelMeter(env, account.user_id),
   ]);
   const phoneUsage = phoneUsageOf(account, phoneUse, now, await phoneCreditsFor(env, account, now));
   const testing = hasAccountTest(account);
@@ -199,9 +214,20 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
       // Its arm of the A/B test, once ads reached it under `split`.
       abArm: adFormat?.source === "split" ? adFormat.format : null,
     },
+    // ADE Free Models (`freeModels.ts`): the GitHub hold that locks them (null: unlocked), and the no-cards meter.
+    freeModels: {
+      mode: (await inferenceSwitch(env)).mode,
+      locked: freeModelsHoldOf(account),
+      throttle: throttleOf(meter, now),
+      callsSinceCard: meter?.calls ?? 0,
+      inputTokensSinceCard: meter?.input_tokens ?? 0,
+    },
     log: (log.results ?? []).map((row) => ({ at: row.at, action: row.action, detail: safeJson(row.detail) })),
   };
 }
+
+/** `freeModelsMeter`: where the owner puts the account's no-cards meter. */
+const METER_CHOICES = ["slowed", "paused", "reset"] as const;
 
 const safeJson = (text: string): unknown => {
   try {
@@ -269,6 +295,10 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
     return fail("bad_request", `adFormat is one of ${CLOUD_SPONSORED_FORMATS.join(", ")}, or null.`, 400);
   }
   const adFormat = body.adFormat as CloudSponsoredFormat | null | undefined;
+  if (body.freeModelsMeter !== undefined && !(METER_CHOICES as readonly unknown[]).includes(body.freeModelsMeter)) {
+    return fail("bad_request", `freeModelsMeter is one of ${METER_CHOICES.join(", ")}.`, 400);
+  }
+  const meterChoice = body.freeModelsMeter as (typeof METER_CHOICES)[number] | undefined;
   const reset = body.reset === true;
 
   // A userId must name an account ADE Cloud knows (a typo makes no row); an
@@ -308,12 +338,19 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
       on conflict (user_id) do update set format = excluded.format, source = excluded.source, set_at = excluded.set_at`).bind(who.userId, adFormat, now));
   }
   if (adFormat === null) statements.push(env.DB.prepare("delete from cloud_sponsored_formats where user_id = ? and source = 'owner'").bind(who.userId));
+  if (meterChoice) {
+    const calls = meterChoice === "paused" ? PAUSE_AFTER_CALLS : meterChoice === "slowed" ? SLOW_AFTER_CALLS : 0;
+    statements.push(env.DB.prepare(`insert into cloud_free_model_meters (user_id, calls, input_tokens, since_at, updated_at) values (?, ?, 0, ?, ?)
+      on conflict (user_id) do update set calls = excluded.calls, input_tokens = 0, since_at = excluded.since_at, slowed_at = null, paused_at = null, updated_at = excluded.updated_at`)
+      .bind(who.userId, calls, now, now));
+  }
   const testChanged = statements.length > 0;
   if (testChanged) {
     const detail = {
       ...(reset ? {} : { ...change, ...(Object.keys(change).length ? { days } : {}) }),
       ...(tester === undefined ? {} : { tester }),
       ...(adFormat === undefined ? {} : { adFormat }),
+      ...(meterChoice === undefined ? {} : { freeModelsMeter: meterChoice }),
       ...(note ? { note } : {}),
     };
     statements.push(env.DB.prepare("insert into cloud_owner_log (at, action, user_id, detail) values (?, ?, ?, ?)")
@@ -356,11 +393,18 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
   }
   const settings = await readCloudSettings(env);
   const switches = await gravitySwitches(env, settings);
+  const inference = await inferenceSwitch(env, settings);
   return json({
     ok: true,
     settings,
-    ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off" },
-    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off" },
+    ceilings: {
+      gravity_ads: env.GRAVITY_ADS?.trim() || "off",
+      gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off",
+      // Off whatever the variable says while a key is missing (`GRAVITY_INFERENCE_KEY`, `GRAVITY_API_KEY`).
+      gravity_inference: env.GRAVITY_INFERENCE_KEY?.trim() && env.GRAVITY_API_KEY?.trim() ? env.GRAVITY_INFERENCE?.trim() || "off" : "off (no key)",
+      pricing_v3: env.PRICING_V3?.trim() || "off",
+    },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", gravity_inference: inference.mode, pricing_v3: await pricingV3Mode(env, settings) },
   });
 }
 

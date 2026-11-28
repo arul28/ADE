@@ -139,7 +139,8 @@ final class WorkSponsoredSlotModel: ObservableObject {
 /// last day), and the card's place is on screen; once per turn per app run.
 /// At most one card in the whole app (`CloudSponsoredStore.holder`).
 struct WorkSponsoredReplySlot: View {
-  let instanceId: String
+  /// The chat's ADE Cloud lane computer (Free-plan cards); nil in an ADE Free Models chat.
+  let instanceId: String?
   let sessionId: String
   let turn: CloudSponsoredTurn
   @ObservedObject var slot: WorkSponsoredSlotModel
@@ -147,6 +148,10 @@ struct WorkSponsoredReplySlot: View {
   var dockAvailable = false
   /// The transcript row whose reply ends this turn, so an inline line has its place.
   var inlineHostRowId: String? = nil
+  /// Set in an ADE Free Models chat, on any machine, once the person agreed:
+  /// the cards follow that state (its format and test flag), the Free plan's
+  /// question and notice never show, and the ask names no computer.
+  var freeModels: CloudFreeModelsState? = nil
   @ObservedObject private var store = CloudSponsoredStore.shared
   @ObservedObject private var accountStore = AccountCloudStore.shared
 
@@ -158,13 +163,15 @@ struct WorkSponsoredReplySlot: View {
 
   private var turnKey: String { CloudSponsoredStore.turnKey(chatId: sessionId, turnId: turn.turnId) }
   private var sponsored: CloudSponsoredState? { accountStore.account?.sponsored }
+  /// The person said yes to the cards of this chat's kind.
+  private var cardsGranted: Bool { freeModels != nil ? freeModels?.granted == true : sponsored?.granted == true }
 
   /// The format the card is drawn (and asked) in: the account's, or under
   /// the reply when the chat has no place for it.
   private var shownFormat: CloudSponsoredFormat {
     // A turn already asked for stays in the format it was asked in.
     if let asked = store.askedFormats[turnKey] { return asked }
-    switch sponsored?.format ?? .belowReply {
+    switch freeModels?.format ?? sponsored?.format ?? .belowReply {
     case .belowReply: return .belowReply
     case .abovePrompt: return dockAvailable ? .abovePrompt : .belowReply
     case .inline: return inlineHostRowId != nil ? .inline : .belowReply
@@ -181,7 +188,11 @@ struct WorkSponsoredReplySlot: View {
   }
 
   private var wanted: Bool {
-    guard let sponsored, sponsored.ads, sponsored.consent != CloudSponsoredState.declined else { return false }
+    if let freeModels {
+      guard freeModels.granted else { return false }
+    } else {
+      guard let sponsored, sponsored.ads, sponsored.consent != CloudSponsoredState.declined else { return false }
+    }
     return turn.isFresh() && !store.hiddenTurns.contains(turnKey) && store.appActive && slot.chatVisible
   }
 
@@ -189,6 +200,11 @@ struct WorkSponsoredReplySlot: View {
   private var placeTaken: Bool { !store.placeFree(forChat: sessionId) }
 
   private var showing: Showing? {
+    if freeModels != nil {
+      // The sheet before the model's first use was the question: only cards show here.
+      guard wanted, cardsGranted, shownFormat == .belowReply, slot.onScreen, let ad = store.ads[turnKey] else { return nil }
+      return .ad(ad)
+    }
     guard wanted, let sponsored else { return nil }
     // Where cards start on, the person is told instead of asked; the notice
     // stays on its reply (after saving it made the answer a yes) until
@@ -219,7 +235,7 @@ struct WorkSponsoredReplySlot: View {
               store.hide(chatId: sessionId, turnId: turn.turnId)
             }
           } else {
-            WorkSponsoredAdCard(ad: ad, test: sponsored?.test == true, slot: slot) {
+            WorkSponsoredAdCard(ad: ad, test: workSponsoredTest(freeModels: freeModels, account: accountStore), slot: slot) {
               store.hide(chatId: sessionId, turnId: turn.turnId)
             }
           }
@@ -230,7 +246,7 @@ struct WorkSponsoredReplySlot: View {
     }
     .frame(maxWidth: .infinity, minHeight: 1, alignment: .leading)
     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { slot.height = $0 }
-    .task(id: "\(turnKey)|\(sponsored?.granted == true)|\(wanted)|\(seen)|\(placeTaken)|\(format.rawValue)") { await askIfWanted() }
+    .task(id: "\(turnKey)|\(cardsGranted)|\(wanted)|\(seen)|\(placeTaken)|\(format.rawValue)") { await askIfWanted() }
     .task(id: "\(showing != nil)|\(store.holder ?? "")") {
       if showing != nil { store.hold(sessionId) } else { store.release(sessionId) }
     }
@@ -264,7 +280,7 @@ struct WorkSponsoredReplySlot: View {
   private func askIfWanted() async {
     // No ask while another sponsored unit holds the one place; the dock asks for its own.
     // The reply that showed the notice asks for no card.
-    guard sponsored?.granted == true, wanted, seen, !placeTaken, shownFormat != .abovePrompt, store.ads[turnKey] == nil,
+    guard cardsGranted, wanted, seen, !placeTaken, shownFormat != .abovePrompt, store.ads[turnKey] == nil,
           store.noticeTurns[turnKey] == nil else { return }
     await workSponsoredAsk(instanceId: instanceId, sessionId: sessionId, turn: turn, format: shownFormat, store: store)
   }
@@ -274,7 +290,7 @@ struct WorkSponsoredReplySlot: View {
 /// computer hadn't saved the chat's copy yet) is asked once more ~12 s later,
 /// never more.
 @MainActor
-private func workSponsoredAsk(instanceId: String, sessionId: String, turn: CloudSponsoredTurn, format: CloudSponsoredFormat, store: CloudSponsoredStore) async {
+private func workSponsoredAsk(instanceId: String?, sessionId: String, turn: CloudSponsoredTurn, format: CloudSponsoredFormat, store: CloudSponsoredStore) async {
   let key = CloudSponsoredStore.turnKey(chatId: sessionId, turnId: turn.turnId)
   store.noteAsked(turnKey: key, format: format)
   // A turn asked before keeps that format: the card is drawn only in the format it was asked in.
@@ -292,6 +308,13 @@ private func workSponsoredAsk(instanceId: String, sessionId: String, turn: Cloud
   }
   while !Task.isCancelled {
     let answer = await store.askAd(turnKey: key, ask: ask)
+    // In a throttled ADE Free Models chat this ask is the card event that
+    // lifts the throttle on the server: read the account again (once per
+    // turn, only while throttled) so the chat's notice goes.
+    if instanceId == nil, AccountCloudStore.shared.account?.freeModels?.throttle != nil,
+       workSponsoredThrottleReads.insert(key).inserted {
+      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+    }
     guard answer.shownAd == nil, answer.reason == "not_cloud" else { return }
     try? await Task.sleep(for: workSponsoredNotCloudRetry)
     guard !Task.isCancelled, store.takeNotCloudRetry(turnKey: key) else { return }
@@ -301,17 +324,33 @@ private func workSponsoredAsk(instanceId: String, sessionId: String, turn: Cloud
 
 private let workSponsoredNotCloudRetry: Duration = .seconds(12)
 
+/// Turns whose ask already read the account again for a throttle: an answer
+/// asked again (scrolled back, no card) doesn't read it again.
+@MainActor private var workSponsoredThrottleReads: Set<String> = []
+
 /// Whether a card drawn away from the slot may show now: the store still
 /// holds it (an account change clears the store, so another account's card
 /// never draws), the account still shows cards in that format and said yes,
 /// the app is in front, the chat is on screen, and the person didn't hide
 /// that turn's card.
+/// In an ADE Free Models chat (`freeModels`) the same rules read that state.
 @MainActor
-private func workSponsoredPlacedAllowed(_ placed: WorkSponsoredPlacedAd, slot: WorkSponsoredSlotModel, store: CloudSponsoredStore, account: AccountCloudStore) -> Bool {
-  guard let sponsored = account.account?.sponsored, sponsored.ads, sponsored.granted,
-        (sponsored.format ?? .belowReply) == placed.format,
-        store.ads[placed.turnKey]?.id == placed.ad.id else { return false }
+private func workSponsoredPlacedAllowed(_ placed: WorkSponsoredPlacedAd, slot: WorkSponsoredSlotModel, store: CloudSponsoredStore, account: AccountCloudStore, freeModels: CloudFreeModelsState? = nil) -> Bool {
+  if let freeModels {
+    guard freeModels.granted, freeModels.format == placed.format,
+          store.ads[placed.turnKey]?.id == placed.ad.id else { return false }
+  } else {
+    guard let sponsored = account.account?.sponsored, sponsored.ads, sponsored.granted,
+          sponsored.format == placed.format,
+          store.ads[placed.turnKey]?.id == placed.ad.id else { return false }
+  }
   return store.appActive && slot.chatVisible && !store.hiddenTurns.contains(placed.turnKey)
+}
+
+/// Gravity's test ads: the ADE Free Models state's flag in their chats, else the Free plan's.
+@MainActor
+private func workSponsoredTest(freeModels: CloudFreeModelsState?, account: AccountCloudStore) -> Bool {
+  freeModels?.test ?? (account.account?.sponsored?.test == true)
 }
 
 // MARK: - The dock above the prompt box
@@ -331,6 +370,9 @@ struct WorkSponsoredDockSlot: View {
   /// The latest finished turn (fresh), or nil while one runs.
   let turn: CloudSponsoredTurn?
   @ObservedObject var slot: WorkSponsoredSlotModel
+  /// Set in an ADE Free Models chat that may show cards, on any machine
+  /// (`WorkSponsoredReplySlot.freeModels`); `instanceId` is then nil.
+  var freeModels: CloudFreeModelsState? = nil
   @ObservedObject private var store = CloudSponsoredStore.shared
   @ObservedObject private var accountStore = AccountCloudStore.shared
   /// The latest finished reply's card, kept while the next turn runs.
@@ -340,15 +382,21 @@ struct WorkSponsoredDockSlot: View {
   private var turnKey: String? { turn.map { CloudSponsoredStore.turnKey(chatId: sessionId, turnId: $0.turnId) } }
   private var sponsored: CloudSponsoredState? { accountStore.account?.sponsored }
 
+  /// The account shows docked cards here: its yes, in the docked format.
+  private var docked: Bool {
+    if let freeModels { return freeModels.granted && freeModels.format == .abovePrompt }
+    guard instanceId != nil, let sponsored else { return false }
+    return sponsored.ads && sponsored.granted && sponsored.format == .abovePrompt
+  }
+
   private var wanted: Bool {
-    guard instanceId != nil, let sponsored, sponsored.ads, sponsored.granted, sponsored.format == .abovePrompt,
-          let turn, let turnKey, store.noticeTurns[turnKey] == nil else { return false }
+    guard docked, let turn, let turnKey, store.noticeTurns[turnKey] == nil else { return false }
     return turn.isFresh() && !store.hiddenTurns.contains(turnKey) && store.appActive && slot.chatVisible
   }
 
   private var shown: WorkSponsoredPlacedAd? {
-    guard instanceId != nil, let kept, kept.turnId == turn?.turnId || turnActive,
-          workSponsoredPlacedAllowed(kept, slot: slot, store: store, account: accountStore) else { return nil }
+    guard instanceId != nil || freeModels != nil, let kept, kept.turnId == turn?.turnId || turnActive,
+          workSponsoredPlacedAllowed(kept, slot: slot, store: store, account: accountStore, freeModels: freeModels) else { return nil }
     return kept
   }
 
@@ -364,7 +412,7 @@ struct WorkSponsoredDockSlot: View {
               store.hide(chatId: sessionId, turnId: shown.turnId)
             }
           } else {
-            WorkSponsoredDockCard(ad: shown.ad, test: accountStore.account?.sponsored?.test == true) {
+            WorkSponsoredDockCard(ad: shown.ad, test: workSponsoredTest(freeModels: freeModels, account: accountStore)) {
               store.hide(chatId: sessionId, turnId: shown.turnId)
             }
           }
@@ -388,7 +436,7 @@ struct WorkSponsoredDockSlot: View {
       }
     }
     .task(id: "\(turnKey ?? "")|\(wanted)|\(store.placeFree(forChat: sessionId))") {
-      guard wanted, let instanceId, let turn, let turnKey, store.placeFree(forChat: sessionId), store.ads[turnKey] == nil else { return }
+      guard wanted, let turn, let turnKey, store.placeFree(forChat: sessionId), store.ads[turnKey] == nil else { return }
       await workSponsoredAsk(instanceId: instanceId, sessionId: sessionId, turn: turn, format: .abovePrompt, store: store)
     }
     .onDisappear { store.release(placeId) }
@@ -407,6 +455,8 @@ struct WorkSponsoredInlineOutlet: View {
   let sessionId: String
   let turnId: String
   @ObservedObject var slot: WorkSponsoredSlotModel
+  /// Set in an ADE Free Models chat (`WorkSponsoredReplySlot.freeModels`).
+  var freeModels: CloudFreeModelsState? = nil
   @ObservedObject private var store = CloudSponsoredStore.shared
   @ObservedObject private var accountStore = AccountCloudStore.shared
 
@@ -415,7 +465,7 @@ struct WorkSponsoredInlineOutlet: View {
   private var shown: WorkSponsoredPlacedAd? {
     guard let placed = slot.placed, placed.format == .inline, placed.turnId == turnId,
           placed.turnKey == CloudSponsoredStore.turnKey(chatId: sessionId, turnId: turnId),
-          workSponsoredPlacedAllowed(placed, slot: slot, store: store, account: accountStore) else { return nil }
+          workSponsoredPlacedAllowed(placed, slot: slot, store: store, account: accountStore, freeModels: freeModels) else { return nil }
     return placed
   }
 
@@ -426,7 +476,7 @@ struct WorkSponsoredInlineOutlet: View {
       // Drawn at once, so the row measures with it (the hold below follows).
       if let shown, draws {
         // ADE's own linked sentence, never a card (Gravity's design is a card).
-        WorkSponsoredInlineLine(ad: shown.ad, test: accountStore.account?.sponsored?.test == true, slot: slot) {
+        WorkSponsoredInlineLine(ad: shown.ad, test: workSponsoredTest(freeModels: freeModels, account: accountStore), slot: slot) {
           store.hide(chatId: sessionId, turnId: shown.turnId)
         }
         .padding(.top, 8)
@@ -1064,6 +1114,10 @@ struct WorkSponsoredViewerBeacon: View {
   let instanceId: String?
   /// The chat's slot, told whether the chat screen is on screen; nil for a terminal.
   var slot: WorkSponsoredSlotModel? = nil
+  /// The chat on screen when it runs an ADE Free Models model, on any machine
+  /// (`WorkSponsoredReplySlot.freeModels`): the account server is told it is
+  /// watched (`POST /cloud/free-models/seen`), since the model runs only then.
+  var freeModelsChatId: String? = nil
   @ObservedObject private var store = CloudSponsoredStore.shared
   @ObservedObject private var accountStore = AccountCloudStore.shared
   /// The screen that carries this is on screen (appeared and not covered).
@@ -1072,6 +1126,12 @@ struct WorkSponsoredViewerBeacon: View {
   private var enabled: Bool {
     guard let sponsored = accountStore.account?.sponsored else { return false }
     return sponsored.ads && sponsored.consent != CloudSponsoredState.declined
+  }
+
+  /// The person agreed to ADE Free Models' cards, and they run here.
+  private var freeEnabled: Bool {
+    guard let state = accountStore.account?.freeModels else { return false }
+    return state.available && state.granted
   }
 
   var body: some View {
@@ -1092,6 +1152,15 @@ struct WorkSponsoredViewerBeacon: View {
         guard let instanceId, enabled, store.appActive, visible else { return }
         while !Task.isCancelled {
           await store.noteSeen(instanceId: instanceId)
+          try? await Task.sleep(for: .seconds(CloudSponsoredStore.seenInterval))
+        }
+      }
+      // An ADE Free Models chat on screen: said at once, then every few minutes, only while the app is in front.
+      .onChange(of: accountStore.account?.freeModels?.consent) { store.forgetSeen() }
+      .task(id: "\(freeModelsChatId ?? "")|\(freeEnabled)|\(store.appActive)|\(visible)") {
+        guard let chatId = freeModelsChatId, freeEnabled, store.appActive, visible else { return }
+        while !Task.isCancelled {
+          await store.noteFreeModelsSeen(chatId: chatId)
           try? await Task.sleep(for: .seconds(CloudSponsoredStore.seenInterval))
         }
       }

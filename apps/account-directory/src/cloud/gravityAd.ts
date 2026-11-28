@@ -1,8 +1,10 @@
-import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredGravityAd, type CloudSponsoredRenderer } from "./contract";
+import type { ModelUsage } from "@gravity-ai/api";
+import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredGravityAd, type CloudSponsoredPick, type CloudSponsoredRenderer } from "./contract";
 
-// Gravity's ad response as a card (`gravity.ts` asks, this module reads the
-// answer): the checked links and copy, the design for Gravity's own
-// renderer, and the advertiser's icon inlined for the desktop app.
+// Gravity's answers in DAEX's shapes (`gravity.ts` asks, this module reads):
+// an ad as a card (the checked links and copy, the design for Gravity's own
+// renderer, the advertiser's icon inlined for the desktop app), an Index
+// answer as a pick, and a free-model chat's usage in Gravity's shape.
 
 export const httpsUrl = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
@@ -194,6 +196,73 @@ export async function inlineFavicon(url: string): Promise<string | null> {
     let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
     return `data:${type};base64,${btoa(binary)}`;
+  } catch {
+    return null;
+  }
+}
+
+/** One of Gravity's Index answers as a pick, or null. */
+export function pickOfIndex(raw: unknown): CloudSponsoredPick | null {
+  if (!raw || typeof raw !== "object") return null;
+  const answer = raw as Record<string, unknown>;
+  const rec = answer.recommendation && typeof answer.recommendation === "object" ? answer.recommendation as Record<string, unknown> : null;
+  if (!rec) return null;
+  const url = gravityLink(rec.click_url) ?? gravityLink(answer.click_url);
+  const name = plainText(rec.name, 80);
+  if (!url || !name) return null;
+  const objectOf = (value: unknown) => (value && typeof value === "object" ? value as Record<string, unknown> : null);
+  const install = objectOf(rec.install) ?? objectOf(answer.install);
+  // Every documented step form, in order: plain text, a command, a file to write, or something the person does.
+  const stepText = (step: unknown): unknown => {
+    if (typeof step === "string") return step;
+    const entry = objectOf(step);
+    if (!entry) return null;
+    const file = typeof entry.file === "string" ? entry.file : null;
+    const action = typeof entry.action === "string" ? entry.action : null;
+    return entry.text ?? entry.command ?? entry.user_action ?? entry.description ?? (action && file ? `${action}: ${file}` : action ?? file);
+  };
+  // A command keeps its exact spacing, without control, zero-width or
+  // direction marks; one too long to show whole is never cut.
+  const stepOf = (step: unknown): string => {
+    const value = stepText(step);
+    if (typeof value !== "string") return "";
+    const clean = value.replace(/[\u0000-\u0008\u000b-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, "").trim();
+    return clean.length <= 500 ? clean : "";
+  };
+  // The steps in order up to the first that can't be shown whole: "Use it"
+  // never puts a sequence with a hole in it in the prompt box.
+  const steps: string[] = [];
+  for (const step of Array.isArray(install?.steps) ? install.steps.slice(0, 8) : []) {
+    const text = stepOf(step);
+    if (!text) break;
+    steps.push(text);
+  }
+  return {
+    id: plainText(answer.search_id, 80) || crypto.randomUUID(),
+    name,
+    description: plainText(rec.description, 400),
+    category: plainText(rec.category, 60) || null,
+    url,
+    websiteUrl: httpsUrl(rec.website_url),
+    docsUrl: httpsUrl(rec.docs_url),
+    sponsored: rec.sponsored === true,
+    installSteps: steps,
+  };
+}
+
+/** The usage the proxy saved (`freeModels.ts`), in Gravity's `usage` shape, or null. */
+export function modelUsageOf(text: string | null): ModelUsage | null {
+  if (!text) return null;
+  try {
+    const raw = JSON.parse(text) as Record<string, unknown>;
+    const count = (value: unknown) => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined);
+    const usage: ModelUsage = {
+      ...(typeof raw.model === "string" ? { model: raw.model.slice(0, 120) } : {}),
+      ...(count(raw.inputTokens) !== undefined ? { inputTokens: count(raw.inputTokens) } : {}),
+      ...(count(raw.cachedInputTokens) !== undefined ? { cachedInputTokens: count(raw.cachedInputTokens) } : {}),
+      ...(count(raw.outputTokens) !== undefined ? { outputTokens: count(raw.outputTokens) } : {}),
+    };
+    return Object.keys(usage).length ? usage : null;
   } catch {
     return null;
   }

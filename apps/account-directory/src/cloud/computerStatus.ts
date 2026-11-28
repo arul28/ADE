@@ -1,3 +1,4 @@
+import { readFullPriceWork } from "./adPrice";
 import { CLOUD_INSTANCE_ID, CLOUD_PATHS, type CloudComputerActivityReport, type CloudComputerStatus, type CloudResourcePressure } from "./contract";
 import { fail, json } from "./http";
 import type { CloudProvider, CloudInstanceHealth, CloudInstanceMetrics } from "./provider";
@@ -165,21 +166,24 @@ export function parseActivityReport(body: Record<string, unknown> | null, now: n
   const sleepsAt = body.sleepsAt == null ? null
     : typeof body.sleepsAt === "number" && Number.isFinite(body.sleepsAt) && Math.abs(body.sleepsAt - now) < 24 * 60 * 60_000 ? Math.round(body.sleepsAt) : undefined;
   if (idleSince === undefined || reportedAt == null || sleepsAt === undefined) return null;
+  // Pricing v3: the full-price work running now; an older brain sends none (left out, not empty).
+  const work = Array.isArray(body.fullPriceWork) ? { fullPriceWork: readFullPriceWork(body.fullPriceWork) } : {};
   // Busy has no idle stretch; an idle one has no sleep while busy.
   return body.busy
-    ? { busy: true, idleSince: null, sleepsAt: null, runningAgents, reportedAt }
-    : { busy: false, idleSince, sleepsAt, runningAgents, reportedAt };
+    ? { busy: true, idleSince: null, sleepsAt: null, runningAgents, reportedAt, ...work }
+    : { busy: false, idleSince, sleepsAt, runningAgents, reportedAt, ...work };
 }
 
-/** Keeps the report; an older one (sent late) never replaces a newer one. */
-export async function recordActivity(env: Pick<CloudEnv, "DB">, instanceId: string, report: CloudComputerActivityReport, waitUntil?: CloudWaitUntil): Promise<void> {
-  await env.DB.prepare(`
+/** Keeps the report; an older one (sent late) never replaces a newer one. True when this one was kept. */
+export async function recordActivity(env: Pick<CloudEnv, "DB">, instanceId: string, report: CloudComputerActivityReport, waitUntil?: CloudWaitUntil): Promise<boolean> {
+  const saved = await env.DB.prepare(`
     insert into cloud_computer_activity (instance_id, busy, idle_since, sleeps_at, running_agents, reported_at) values (?, ?, ?, ?, ?, ?)
     on conflict(instance_id) do update set busy = excluded.busy, idle_since = excluded.idle_since, sleeps_at = excluded.sleeps_at,
       running_agents = excluded.running_agents, reported_at = excluded.reported_at
     where excluded.reported_at >= cloud_computer_activity.reported_at
   `).bind(instanceId, report.busy ? 1 : 0, report.idleSince, report.sleepsAt, report.runningAgents, report.reportedAt).run();
   forgetStatus(instanceId, waitUntil);
+  return (saved.meta?.changes ?? 0) > 0;
 }
 
 /* ---- The status read ---- */

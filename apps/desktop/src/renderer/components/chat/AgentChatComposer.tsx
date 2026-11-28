@@ -2501,6 +2501,8 @@ function AgentChatComposerImpl({
   providerAuthStatus,
   providerRuntimeMissing,
   allowCliOnlyModels = false,
+  offersAdeFreeModels = false,
+  openCodeAssumed = false,
   listsHarnessPresets = true,
   onOpenHarnessSettings,
   reasoningEffort,
@@ -2738,6 +2740,10 @@ function AgentChatComposerImpl({
   /** Passed to the model pickers with `providerAuthStatus` (see ModelPicker). */
   providerRuntimeMissing?: Partial<Record<ProviderFamily, true>>;
   allowCliOnlyModels?: boolean;
+  /** The model picker may offer ADE Free Models (a chat a person watches; see ModelPicker). */
+  offersAdeFreeModels?: boolean;
+  /** The chat runs where OpenCode is always there (a new chat on ADE Cloud; see ModelPicker). */
+  openCodeAssumed?: boolean;
   /** False on a tracked-CLI launch, where a preset would be dropped anyway. */
   listsHarnessPresets?: boolean;
   /** Opens Settings › Providers › Custom from the Custom empty state. */
@@ -8902,6 +8908,8 @@ function AgentChatComposerImpl({
             runtimePin={modelRuntimePin}
             catalogScopeKey={modelCatalogScopeKey}
             allowCliOnlyModels={allowCliOnlyModels}
+            offersAdeFreeModels={offersAdeFreeModels}
+            openCodeAssumed={openCodeAssumed}
             listsHarnessPresets={listsHarnessPresets}
             {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
             disabled={modelSelectionLocked}
@@ -8964,7 +8972,7 @@ function AgentChatComposerImpl({
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, laneMove, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, laneMove, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, offersAdeFreeModels, openCodeAssumed, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
