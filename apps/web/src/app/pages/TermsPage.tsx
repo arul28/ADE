@@ -5,7 +5,7 @@ import { LINKS } from "../../lib/links";
 import { ANALYTICS_FEATURE_ATTRIBUTE, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
-const UPDATED_DATE = "November 25, 2026";
+const UPDATED_DATE = "November 28, 2026";
 
 /** The plain sections of the page, in order. The ads and project-docs cards follow them. */
 const sections: Array<{ title: string; body: string[] }> = [
@@ -19,7 +19,7 @@ const sections: Array<{ title: string; body: string[] }> = [
     title: "Your account and your data",
     body: [
       "DAEX needs an account. You are responsible for what happens under your account and for keeping your sign-in methods safe.",
-      "You let DAEX handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your DAEX account so your other computers and DAEX Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and DAEX Cloud data the policy lists; sending product analytics, error reports and diagnostic reports; and, on the DAEX Cloud Free plan while sponsored cards are on, sending parts of DAEX Cloud chats to Gravity for those cards.",
+      "You let DAEX handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your DAEX account so your other computers and DAEX Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and DAEX Cloud data the policy lists; sending product analytics, error reports and diagnostic reports; and, while ads are on in DAEX Cloud, sending parts of DAEX Cloud chats to Gravity for those ads.",
       "You can turn off the features that have a switch, as the Privacy Policy's “Your choices” section says, and you can delete your account at any time.",
     ],
   },
@@ -89,13 +89,16 @@ export function TermsPage() {
                 <div className="text-sm font-semibold text-fg">DAEX Cloud: ads, age and fair use</div>
                 <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
                   <p>
-                    The DAEX Cloud Free plan is ad-supported. Chats on DAEX Cloud computers may show a sponsored card from
-                    Gravity (IRIS Inc.), DAEX’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored
-                    tool. In the United States, except California, the cards start on and DAEX tells you so; in
-                    California and elsewhere they show only after you agree. You can turn them off at any time in Settings › DAEX Cloud; Small computers on Free then
-                    use credits. Sponsored cards keep Small computers free only while, in the last 7 days, you turned them on or
-                    opened a DAEX Cloud chat from the United States; otherwise, outside the United States included, they use
-                    credits until you next open one there. Chats on your own computer and paid plans have no ads.{" "}
+                    DAEX Cloud chats show ads for accounts that have ads on: an ad from Gravity (IRIS Inc.), DAEX’s ad
+                    partner, labeled “Sponsored”, and an agent may suggest a sponsored tool. In the United States, except
+                    California, ads start on and DAEX tells you so; in California and the other countries where DAEX offers
+                    ads, they show only after you agree. You can turn them off at any time in Settings › DAEX Cloud. With ads
+                    on, DAEX Cloud costs less: Small computers on Free are free, and where DAEX Cloud shows an ad price, a
+                    computer uses it while you use a DAEX Cloud chat on it. With ads off, Small computers on Free use
+                    credits. In apps that do not show an ad price, ads keep Small computers free only while, in the last 7
+                    days, you turned them on or opened a DAEX Cloud chat from the United States; otherwise, outside the
+                    United States included, they use credits until you next open one there. Chats on your own computer have
+                    no ads.{" "}
                     <a className="focus-ring rounded-md text-fg underline underline-offset-2" href="/privacy#sponsored">
                       The Privacy page
                     </a>{" "}
