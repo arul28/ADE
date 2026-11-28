@@ -2,1203 +2,454 @@
 
 DAEX runs its own pinned, checksum-verified copy of every agent CLI and runtime.
 It never runs a CLI the user installed: no PATH lookup, no common install
-directories, no path found by sign-in detection. The copies are downloaded on
-demand into a machine-level, version-addressed cache that the desktop app, the
-brain, and every release channel share. Nothing is vendored into the app or
-the brain tarball.
+directories. Copies download on demand into a machine-level, version-addressed
+cache shared by the desktop app, the brain and every release channel. Nothing
+is vendored into the app or the brain tarball. Internet at first use is a
+requirement, not a degraded mode.
 
-Three rules hold for every copy DAEX runs (chat runtimes, auth probes, model
-discovery, one-shot tasks, terminals):
+Three rules hold for every copy DAEX runs (chats, auth probes, model discovery,
+one-shots, terminals):
 
-- **DAEX's copy only.** A miss is reported as a download state, never filled
-  from the PATH. A host with no vendor build reads "not available on this
-  machine". There is no "use my own CLI" setting; a user who wants their own
-  version opens a plain shell.
-- **Vendor self-update is off**, so the bytes on disk keep matching the pin
-  (see [Self-update switches](#self-update-switches)).
+- **DAEX's copy only.** A miss is a download state, never filled from the PATH.
+  A host with no vendor build reads "not available on this machine". A user who
+  wants their own version opens a plain shell.
+- **Vendor self-update is off**, so the bytes on disk match the pin (see
+  [Self-update switches](#self-update-switches)).
 - **Logins stay in the default config homes** (`~/.claude`, `~/.codex`,
-  `~/.copilot`, `~/.factory`, `~/.grok`, `~/.qwen`, `~/.kimi-code`, Devin's XDG
-  dirs, `~/.gemini`, `~/.pi/agent`, `~/.config/muse`). DAEX's copy reads the
-  same login as the user's own CLI and never writes the user's config files.
-  Per-account `CLAUDE_CONFIG_DIR` / `CODEX_HOME` provider homes work as before.
+  `~/.copilot`, `~/.factory`, `~/.grok`, `~/.qwen`, `~/.kimi-code`, `~/.gemini`,
+  `~/.pi/agent`, `~/.config/muse`, Devin's XDG dirs). DAEX's copy reads the same
+  login as the user's own CLI and never writes the user's config files.
 
-The cache is implemented in `apps/ade-cli/src/services/tools/`. Resolvers reach
-it through `cacheLookup.ts` and `pinnedTool.ts`; downloads go through
-`onDemand.ts`.
+## Source file map
 
-## What is fetched and what stays bundled
+- `apps/ade-cli/src/services/tools/`: the cache.
+  - `toolsManifest.generated.json`: every pin (the source of truth for versions,
+    URLs, integrity and entry paths). `manifest.ts` validates it at load time as
+    untrusted input and holds `allowedDownloadHosts`.
+  - `install.ts` (`ensureTools`, staging, sentinel), `download.ts`,
+    `extract.ts`, `diskSpace.ts`, `lock.ts`, `errors.ts` (`ToolError`).
+  - `paths.ts` (root and layout), `toolRoots.ts`, `systemCache.ts`, `usage.ts`
+    (use record), `inUse.ts` (hold installs a process runs from).
+  - `cacheLookup.ts`, `pinnedTool.ts`: resolver cache steps and
+    `getPinnedToolStatus`. They never throw.
+  - `onDemand.ts`: on-demand downloads; `backgroundFetch.ts`: the brain's
+    startup pass.
+  - `gc.ts`, `ledger.ts`, `overrides.ts`: collection, the package ledger,
+    fall-forward records.
+  - `muse.ts`: the Muse resolver (desktop re-exports it from
+    `museExecutable.ts`).
+- `apps/ade-cli/scripts/generate-tools-manifest.mjs`, `pin-tool.mjs`,
+  `pin-muse-release.mjs`, `scripts/pins/<tool>.json`, `muse-release.json`:
+  pin inputs and generators.
+- `apps/ade-cli/src/commands/tools.ts`: `daex tools`.
+- `apps/desktop/src/main/services/tools/agentToolDemand.ts`: which tools a
+  machine fetches at startup. `agentToolsCacheService.ts`: the desktop launch
+  pass.
+- `apps/desktop/src/main/services/ai/pinnedProviderTools.ts`: provider → tool
+  map, the blocker sentence, `requirePinnedProviderExecutable`.
+- `apps/desktop/src/main/services/ai/claudeFallForward.ts`,
+  `codexFallForward.ts`, `museFallForward.ts`, `providerVersionRejection.ts`:
+  fall-forward.
+- `apps/desktop/src/shared/pinnedToolSpawnEnv.ts`: self-update switches.
+- `apps/desktop/src/renderer/hooks/usePinnedToolStatus.ts`,
+  `settings/providers/bodies/PinnedToolStatusRow.tsx`: the status row.
+- `apps/ade-cli/scripts/native-deps-entry-filter.mjs`
+  (`RUNTIME_FETCHED_TOOL_PACKAGES`): packaging exclusions.
 
-| Tool | Manifest name | Fetched as | Used for |
-|---|---|---|---|
-| Codex | `codex` | Native platform package (npm) | Codex chats, one-shots, terminals. ~297 MB unpacked per target. |
-| Claude Code | `claude-code` | Native platform package (npm) | The binary half of the Claude Agent SDK; chats, one-shots, terminals. |
-| OpenCode | `opencode` | Native platform package (npm) | OpenCode server, API-key and local models, terminals. |
-| GitHub Copilot runtime | `copilot` | Native platform package (`@github/copilot-sdk-<platform>`) | The `copilot-runtime` the Copilot SDK worker spawns. Version-paired with `@github/copilot-sdk`. |
-| GitHub Copilot CLI | `copilot-cli` | Native platform package (`@github/copilot-<platform>`) | Copilot terminals and sign-in. The SDK runtime above is not an interactive CLI. |
-| Cursor CLI | `cursor-cli` | Archive from `downloads.cursor.com` | Cursor terminals, sign-in, the CLI status check and model discovery. Cursor chats still use the bundled `@cursor/sdk`. |
-| Factory Droid | `droid` | Native platform package (`@factory/cli-<platform>`; x64 targets use the `-baseline` builds) | The `droid` CLI the bundled `@factory/droid-sdk` spawns, and Droid terminals. |
-| Grok | `grok` | Native platform package (`@xai-official/grok-<platform>`), brotli-inflated after extract | Grok ACP chats and terminals. |
-| Qwen Code | `qwen` | Vendor standalone bundle from GitHub releases, with its own Node | Qwen ACP chats and terminals. |
-| Kimi Code | `kimi` | Archive from GitHub releases | Kimi ACP chats and terminals. |
-| Devin | `devin` | Archive from `static.devin.ai` | Devin ACP chats and terminals. |
-| Antigravity | `antigravity` | Archive of the `agy` CLI from GitHub releases | Antigravity ACP chats (`agy acp`) and terminals. See the Antigravity provider doc. |
-| Pi | `pi` | npm dependency tree of `@earendil-works/pi-coding-agent` | The Pi SDK worker imports it; terminals run its `dist/cli.js`. |
-| Node | `node` | Archive from `nodejs.org` | Runtime for Pi's terminal CLI only. |
-| Muse Code | `muse` | One bare executable from Meta's release manifest | Not on npm at all; 330-470 MB per target. See [Muse: a direct-file pin](#muse-a-direct-file-pin). |
-| Cursor SDK | — | No, still bundled | `@cursor/sdk` is reached through a bare `import()` (`services/ai/cursorSdkLoader.ts`), and its platform half is only ~7.6 MB. |
-| Droid SDK | — | No, still bundled | `@factory/droid-sdk` is pure JS (~15 MB) and force-inlined into the ade-cli bundle. |
+## What is fetched
 
-The JS launcher and SDK packages of the npm tools — `@anthropic-ai/claude-agent-sdk`
-(DAEX calls `query()` on it in-process), `@openai/codex`, `@opencode/client`,
-`@github/copilot-sdk` — keep shipping. Only their **native platform siblings**
-move to the cache.
+Fetched: Codex, Claude Code (the binary half of the Agent SDK), OpenCode, the
+Copilot SDK runtime (`copilot`) and Copilot CLI (`copilot-cli`), Cursor CLI,
+Droid, Grok, Qwen Code, Kimi Code, Devin, Antigravity (`agy`), Pi (an npm tree),
+Node (Pi's terminal runtime only) and Muse. Versions are in the manifest.
 
-There is no offline or full-install variant. Internet at first use is an
-accepted requirement, not a degraded mode.
+Still bundled: `@cursor/sdk` (Cursor chats; small, reached by bare `import()`),
+`@factory/droid-sdk` (pure JS), and the JS launcher/SDK halves of the npm tools
+(`@anthropic-ai/claude-agent-sdk`, `@openai/codex`, `@opencode/client`,
+`@github/copilot-sdk`). Only their native platform siblings move to the cache.
 
 ## The manifest
 
-`apps/ade-cli/src/services/tools/toolsManifest.generated.json` is the single
-source of truth for what gets fetched. It is generated by
-`apps/ade-cli/scripts/generate-tools-manifest.mjs`, carries `schemaVersion: 1`,
-and pins every tool across five targets. The generator reads three kinds of
-input, all checked in:
+`generate-tools-manifest.mjs` builds it offline from checked-in inputs:
 
 | Input | Tools |
 |---|---|
 | `apps/ade-cli/package-lock.json` | `codex`, `claude-code`, `opencode` |
-| `apps/desktop/package-lock.json` | `copilot`. `@github/copilot-sdk` is a desktop dependency (the Copilot worker is bundled from desktop source), so its runtime is pinned from the lockfile that installs the SDK. A bump of the SDK alone fails `tools:manifest:check` until the runtime pin moves with it, so the worker and the runtime it spawns cannot drift apart. |
-| `apps/ade-cli/scripts/muse-release.json` | `muse` |
-| `apps/ade-cli/scripts/pins/<tool>.json` | `droid`, `grok`, `qwen`, `kimi`, `devin`, `antigravity`, `pi`, `copilot-cli`, `cursor-cli`, `node`. These are in no DAEX lockfile; `npm run tools:pin` writes them (see [Bumping a pinned version](#bumping-a-pinned-version)). |
+| `apps/desktop/package-lock.json` | `copilot` (paired with `@github/copilot-sdk`, a desktop dependency; an SDK bump alone fails `tools:manifest:check`) |
+| `apps/ade-cli/scripts/muse-release.json` | `muse` (generation fails when its `sdkVersion` is not the locked `@muse-code/sdk`) |
+| `apps/ade-cli/scripts/pins/<tool>.json` | `droid`, `grok`, `qwen`, `kimi`, `devin`, `antigravity`, `pi`, `copilot-cli`, `cursor-cli`, `node` |
 
-The lockfile-derived pins carry `checkoutCopy: true`: a source checkout already
-has them in `node_modules`, so it never downloads them.
+Lockfile pins carry `checkoutCopy: true`: a source checkout resolves them from
+`node_modules` and never downloads them.
 
-### Current pins
+Pin formats: `npm-tarball` (SRI-checked, optional brotli `decompress` step for
+Grok), `file` (the download is the binary: Muse), `archive` (sha256 and size
+checked **before** unpacking), `npm-tree` (every package at its lockfile path,
+no install scripts). An entry may name extra required `files` (Qwen's and
+Cursor's `script`, Pi's `module` and `cli`); an install that lacks one is not
+usable. A `*` in an entry path matches one directory level (Codex nests its
+binary under a Rust target triple).
 
-| Tool | Version | Format | Integrity | Download host |
-|---|---|---|---|---|
-| `claude-code` | 0.3.321 (Claude Code 2.1.321) | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `codex` | 0.169.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `opencode` | 2.0.29 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `copilot` | 1.0.28 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `copilot-cli` | 1.0.105 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `droid` | 0.244.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `grok` | 1.0.46 | `npm-tarball` + brotli step | npm sha512 SRI | `registry.npmjs.org` |
-| `pi` | 1.4.0 | `npm-tree` (about 119 packages per target, hoisted flat since Pi stopped shipping `npm-shrinkwrap.json` in 1.0.2) | npm sha512 SRI per package | `registry.npmjs.org` |
-| `qwen` | 0.25.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHA256SUMS`, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
-| `kimi` | 2.3.1 | `archive` (tar.gz, win zip) | vendor `.sha256` sidecars, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
-| `devin` | 3000.11.3 | `archive` (tar.gz, win zip) | vendor `manifest.json` sha256 | `static.devin.ai` |
-| `antigravity` | 1.5.6 | `archive` (tar.gz, win zip) | GitHub asset digests, checked against the download | `github.com` + release-asset hosts |
-| `cursor-cli` | 2026.10.16-e3cb207 | `archive` (tar.gz, win zip, strip 1) | sha256 computed by `tools:pin` (Cursor publishes none) | `downloads.cursor.com` |
-| `node` | 24.22.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHASUMS256.txt` | `nodejs.org` |
-| `muse` | 1.4.7-R6101.1 | `file` | Meta manifest sha256 + size | `lookaside.facebook.com` |
+Node-run tools spawn as `<entry> <script> …`, never through a `.cmd` shim or
+Electron-as-Node; the ACP spawn context carries the leading args as
+`binaryArgs`.
 
-For the computed hash (Cursor), the first download is trusted; re-pinning the same
-version must reproduce the hash or `tools:pin` fails.
+**Gotchas**
 
-### Pin formats
-
-| `format` | Shape | Install |
-|---|---|---|
-| `npm-tarball` (default) | `package`, `version`, `tarball`, `integrity`; optional `decompress` steps | Download, check SRI, `tar` with `--strip-components 1` (npm's `package/` root). |
-| `file` | `url`, `sha256`, `size` | The download is the binary (Muse). |
-| `archive` | `url`, `archive: "tar.gz" \| "zip"`, `stripComponents` 0-3, `sha256`, `size`; optional `decompress` | Check sha256 and size **before** unpacking, then extract. |
-| `npm-tree` | `packages: [{ path, tarball, integrity, size }]`, `unpackedSize` | Install every package tarball at its lockfile `node_modules` path, recreating the exact tree. No install scripts run. The pin script filters packages by `os`/`cpu`/`libc` (glibc) per target, so install has no filtering logic. |
-
-A `decompress` step (`{ algorithm: "brotli", from, to }`) runs after extraction
-with Node's zlib; Grok ships `bin/grok.br` and runs `bin/grok`.
-
-An entry may name extra required `files` (`{ path, windowsPath?, executable? }`).
-Every resolution returns them as absolute paths, and an install that lacks one
-is not usable. Qwen's `script`, Cursor's `script`, and Pi's `module` and `cli` are
-files.
-
-### Download hosts
-
-Each pin may download only from its own host list (`allowedDownloadHosts` in
-`manifest.ts`). The first URL and every redirect are checked before any request,
-and HTTPS is required.
-
-| Pins | Allowed hosts |
-|---|---|
-| `npm-tarball`, `npm-tree` | `registry.npmjs.org` |
-| `muse` | `lookaside.facebook.com` |
-| `devin` | `static.devin.ai` |
-| `qwen`, `kimi`, `antigravity` | `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` |
-| `cursor-cli` | `downloads.cursor.com` |
-| `node` | `nodejs.org` |
-
-A pinned URL must be on the first host of its list, or the manifest fails to
-load. A tool with no row cannot have a vendor pin. `scripts/file-pin-host.mjs`
-holds the same table for the scripts.
-
-| Target | Pinned |
-|---|---|
-| `darwin-arm64` | yes |
-| `darwin-x64` | yes |
-| `linux-arm64` | yes |
-| `linux-x64` | yes |
-| `win32-x64` | yes |
-
-A lockfile-derived target pin carries exact npm version, registry tarball URL,
-and the `sha512-…` subresource-integrity string — all three lifted verbatim from
-the lockfile. The generator invents nothing and never touches the network; the
-pin files and `muse-release.json` are its only other inputs. A tool with a
-missing lockfile entry, a non-HTTPS `resolved`, or a non-sha512 `integrity`
-fails the generator rather than being silently dropped from the manifest.
-
-`manifest.ts` re-validates all of it at load time: package names and versions are
-checked against traversal-safe patterns before they are ever joined into a path,
-entry paths must be relative POSIX paths with no `.`/`..` segments, URLs must be
-`https://` on the pin's allowed host, integrity must match
-`/^sha512-[A-Za-z0-9+/]+={0,2}$/`, and a sha256 must be lowercase hex. The
-manifest is a data file, so it is treated as untrusted input.
-
-### Two naming quirks worth knowing
-
-**The codex install-dir name is not the published package name.**
-`@openai/codex-darwin-arm64` is an npm alias: the tarball is published under
-`@openai/codex` at version `0.167.0-darwin-arm64`. So the pin reads
-
-```
-package:   @openai/codex-darwin-arm64      <- the node_modules directory name
-version:   0.167.0-darwin-arm64
-tarball:   .../@openai/codex/-/codex-0.167.0-darwin-arm64.tgz
-```
-
-`ToolTargetPin.package` is deliberately documented as the *install directory*
-name, because that is what consumers expect to find in a `node_modules` tree.
-
-**Windows x64 OpenCode maps to `@opencode/cli-windows-x64-baseline`, never
-`@opencode/cli-windows-x64`.** The non-baseline build requires AVX2 and dies with an
-illegal instruction on pre-Haswell CPUs and older VMs. The baseline build targets
-the lower instruction set, is the same size, and shows no measurable throughput
-cost for how DAEX drives OpenCode (a local HTTP server), so baseline *replaces*
-the AVX2 build rather than adding to the installer.
-
-That substitution is mirrored in about six places and they must move together:
-
-| File | Form |
-|---|---|
-| `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | `OPENCODE_PLATFORM_PACKAGES.win32.x64` — the only name the resolver looks for |
-| `apps/desktop/package.json` | `"!node_modules/@opencode/cli-windows-x64-baseline/**"` in `build.files` — the packaged app ships neither build now, so both names are excluded |
-| `apps/desktop/scripts/after-pack-runtime-fixes.cjs` | the prune list, derived from `RUNTIME_FETCHED_TOOL_PACKAGES` |
-| `apps/ade-cli/scripts/generate-tools-manifest.mjs` | `TOOLS[opencode].packages["win32-x64"]` |
-| `apps/ade-cli/scripts/native-deps-entry-filter.mjs` | `RUNTIME_FETCHED_TOOL_PACKAGES` |
-| `apps/ade-cli/src/services/tools/toolsManifest.generated.json` | generated from the above |
-
-### Entry paths
-
-`ToolEntry.path` is where the thing consumers actually want lives inside the
-unpacked package. A `*` segment matches exactly one directory level and is
-expanded at resolve time, because Codex nests its binary under a Rust target
-triple (`vendor/aarch64-apple-darwin/bin/codex`) that the generator cannot know
-without unpacking the tarball.
-
-| Tool | Entry | Windows entry |
-|---|---|---|
-| `codex` | `vendor/*/bin/codex` | `vendor/*/bin/codex.exe` |
-| `claude-code` | `claude` | `claude.exe` |
-| `opencode` | `bin/opencode` | `bin/opencode.exe` |
-| `copilot` | `prebuilds/*/copilot-runtime` | `prebuilds/*/copilot-runtime.exe` |
-| `copilot-cli` | `copilot` | `copilot.exe` |
-| `muse` | `muse` | `muse.exe` |
-| `droid` | `bin/droid` | `bin/droid.exe` |
-| `grok` | `bin/grok` (inflated from `bin/grok.br`) | `bin/grok.exe` |
-| `qwen` | `node/bin/node` + file `script` = `lib/cli-entry.js` | `node/node.exe` |
-| `kimi` | `kimi` | `kimi.exe` |
-| `devin` | `bin/devin` | `bin/devin.exe` |
-| `antigravity` | `antigravity` | `antigravity.exe` |
-| `pi` | directory `node_modules/@earendil-works/pi-coding-agent` + files `module` = `dist/index.js`, `cli` = `dist/bundle/cli.js` | same |
-| `cursor-cli` | `node` (Cursor's bundled Node) + file `script` = `index.js` | `node.exe` |
-| `node` | `bin/node` | `node.exe` |
-
-Node-run tools are spawned as `<entry> <script> …`, never through a `.cmd` shim
-or Electron-as-Node: Qwen `<node> <cli-entry.js> --acp`; Cursor
-`<node> [--use-system-ca] <index.js> --disable-auto-update …` with
-`CURSOR_INVOKED_AS=cursor-agent` (`--use-system-ca` is POSIX only, like Cursor's
-own launcher); the Pi terminal `<pinned node> <pi dist/bundle/cli.js>`. The ACP spawn
-context carries these leading args as `binaryArgs`. `dist/bundle/cli.js` is the
-package's `bin.pi` since 1.x (the bundled runtime; `dist/cli.js` still exists
-but loads the slower modular runtime); a Pi bump must re-check it.
+- The Codex pin's `package` is the install directory name
+  (`@openai/codex-darwin-arm64`), an npm alias; the tarball is published under
+  `@openai/codex` with a target-suffixed version.
+- Windows x64 OpenCode is always `@opencode/cli-windows-x64-baseline` (the AVX2
+  build dies on older CPUs). The name is mirrored in
+  `openCodeBinaryManager.ts` (`OPENCODE_PLATFORM_PACKAGES`), the generator,
+  `native-deps-entry-filter.mjs` and `apps/desktop/package.json`; move them
+  together.
+- Each pin downloads only from its own hosts (`allowedDownloadHosts`); every
+  redirect is checked and HTTPS is required.
 
 ## Muse: a direct-file pin
 
-Meta publishes `muse` as one bare executable per platform, not as an npm
-package, so its pins have `"format": "file"` instead of the default
-`npm-tarball`:
+Meta publishes `muse` as one bare executable per platform, so its pins are
+`format: file` with `url`, `sha256` and `size`. `install.ts` writes it straight
+to the entry path, checks sha256 and size, marks it executable and publishes it
+with the same atomic rename. The disk preflight uses the pinned size plus
+256 MiB.
 
-```
-format:   file
-package:  muse-code-darwin-arm64     <- the cache directory name, not an npm package
-version:  1.4.7-R6101.1
-url:      https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-macos
-sha256:   87ff5a31…                  <- lowercase hex, from Meta's manifest
-size:     358892272                  <- exact bytes, for the disk preflight and a truncation check
-```
-
-The download **is** the binary. `install.ts` writes it straight to the entry
-path inside the staging payload, checks its sha256 and byte size, `chmod 755`s
-it off Windows, writes the sentinel (with `sha256` instead of `integrity`), and
-publishes it with the same atomic rename. Nothing is extracted. The disk
-preflight uses the pinned size plus 256 MiB headroom, not the ×4 unpack
-estimate. A file pin's entry must be a `binary` with a literal path (no `*`),
-which `manifest.ts` enforces.
-
-Where the pins come from, and why the generator stays offline:
-
-| Step | What |
-|---|---|
-| `npm run tools:muse-pin` (`scripts/pin-muse-release.mjs`) | The only network step. Reads the locked `@muse-code/sdk` version, picks the paired binary build (`--version X.Y.Z-R…`, else Meta's `muse-stable` channel, else the existing pin), refuses anything that does not start with `<sdk version>-R`, fetches `…/download/?channel=muse&version=<v>&file=manifest.json`, and writes `scripts/muse-release.json` (per target: Meta artifact key, url, sha256, size; plus the MSP schema fingerprint). It warns when that fingerprint differs from the SDK's. Then it runs the generator. |
-| `scripts/muse-release.json` | Checked in. |
-| `npm run tools:manifest` | Offline. Reads `muse-release.json` and **fails when its `sdkVersion` is not the locked `@muse-code/sdk`**, so an SDK bump without a re-pin fails `tools:manifest:check` (the `pretest` gate) instead of shipping a mismatched binary. |
-
-Target mapping: `darwin-arm64` → `aarch64_macos`, `darwin-x64` → `x86_macos`,
-`linux-arm64` → `aarch64_linux`, `linux-x64` → `x86_linux`, `win32-x64` →
-`x86_windows`. Meta also publishes `aarch64_windows` and a `universal_macos_pkg`;
-DAEX does not pin either.
-
-The macOS builds carry a Developer ID signature with hardened runtime, and the
-same no-quarantine property as the npm tools holds: the fetched `muse` runs
-`--version` straight from the cache.
-
-The desktop app prefetches `muse` on packaged launch when the machine shows
-signs of using it (see [Which tools a machine fetches](#which-tools-a-machine-fetches)),
-and `daex serve` does in the brain. Settings > Providers > Muse Code can
-also start the download on the machine the page is showing
-(`ai.ensureMuseBinary`, which returns at once) and poll it
-(`ai.museBinaryStatus`), because 350+ MB must not hold a remote action open.
+`npm run tools:muse-pin` is the only network step: it reads the locked
+`@muse-code/sdk`, picks the paired binary build (`<sdk version>-R…`), and writes
+`muse-release.json` from Meta's manifest. Settings › Providers › Muse Code can
+start the download on the page's machine (`ai.ensureMuseBinary`, returns at
+once) and poll it (`ai.museBinaryStatus`), because 350+ MB must not hold a
+remote action open.
 
 ## Cache layout on disk
 
-The root is resolved by `resolveMachineToolsRoot` in `paths.ts`:
+`resolveMachineToolsRoot` / `resolveToolsRootLayout` (`paths.ts`):
 
 | Condition | Root |
 |---|---|
-| `ADE_TOOLS_ROOT` set | that path, resolved absolute |
-| `ADE_SYSTEM_CACHE_ROOT` set (absolute, writable) | `<that>/tools`, with the per-user root below as the fallback |
-| `win32` | `%LOCALAPPDATA%\ADE\tools` |
+| `ADE_TOOLS_ROOT` set | that path |
+| `ADE_SYSTEM_CACHE_ROOT` set | `<that>/tools`, with the per-user root as fallback |
+| `win32` | `%LOCALAPPDATA%\ADE\tools` (never roaming) |
 | otherwise | `~/.ade/tools` |
 
-`resolveToolsRootLayout` (`paths.ts`) gives the whole layout, all of it from
-the machine's environment, so a machine image decides where rebuildable caches
-go and DAEX has no code path per provider or OS:
-
-- **Baked roots** (`ADE_TOOLS_BAKED_ROOTS`, separated like PATH): read-only
-  caches in the same layout that an image ships (DAEX Cloud's `/opt/ade-tools`).
-  The current pin is taken from a baked root first, so it is used only while
-  its version is the pin; a newer pin downloads. Never collected.
+- **Not derived from `ADE_HOME`**, which is channel-scoped. Stable, Alpha and
+  the brain share one copy; contents are addressed by exact package and
+  version, so channels never mix builds.
+- **Baked roots** (`ADE_TOOLS_BAKED_ROOTS`): read-only caches an image ships
+  (DAEX Cloud's `/opt/ade-tools`), used only while their version is the pin.
+  Never collected.
 - **System cache** (`ADE_SYSTEM_CACHE_ROOT`, budget
-  `ADE_SYSTEM_CACHE_BUDGET_BYTES`, default 7 GB): a folder that is not the
-  person's disk (DAEX Cloud's system layer, `/var/cache/ade`). Installs go to
-  `<root>/tools` when the whole folder (package caches included) fits the new
-  tool within the budget and the folder's filesystem has the room; before
-  that, entries are removed (`systemCache.ts`): tool versions first, by their
-  last use, then the package caches, by the newest time among what they hold.
-  A tool that ran in the last 24 hours keeps its current copy, and an install
-  a process of this DAEX runs from (`holdToolInstallsWhileRunning`) is never
-  removed, here or by collection. What still does not fit, or a full disk
-  under the budget, installs into the per-user root instead. This runs only
-  right before an install, one at a time (`toolRoots.ts`); nothing checks the
-  folder between installs. Collection removes a per-user copy of a version a
-  baked root or the system cache also holds.
+  `ADE_SYSTEM_CACHE_BUDGET_BYTES`, default 7 GB): installs go there when they
+  fit; before an install, old entries are evicted by last use. A tool used in
+  the last 24 hours and any install a running process holds
+  (`holdToolInstallsWhileRunning`) are never evicted.
 - **Use record** (`.last-used.json`, `usage.ts`): when each tool last ran,
-  written only by `pinnedToolDownload` (every spawn site calls it right before
-  it runs a tool), at most once per tool per 10 minutes per process. It lives
-  in the per-user root, which survives what a system cache does not (an image
-  update resets it).
-
-The root is **deliberately not derived from `ADE_HOME`**. `ADE_HOME` is
-channel-scoped (`~/.ade`, `~/.ade-alpha`), and the entire point of
-this cache is that stable, alpha, and the brain runtime share one copy of a
-~300 MB binary. Contents are addressed by exact package name plus exact version,
-so cross-channel sharing can never mix builds: two channels either pin the same
-version and reuse the directory, or pin different versions and get different
-directories. On Windows it lands under `%LOCALAPPDATA%` rather than the roaming
-profile — 650 MB must never roam.
+  written right before a spawn, in the per-user root.
 
 ```
 <tools root>/
-  @openai/codex-darwin-arm64/0.167.0-darwin-arm64/
-    vendor/aarch64-apple-darwin/bin/codex
-    .install-complete
-  @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.300/
-  @opencode/cli-darwin-arm64/2.0.29/
-  devin-darwin-arm64/3000.11.3/
-  pi-coding-agent-darwin-arm64/1.4.0/node_modules/…
-  .staging/
-  .locks/
-  .installed-packages.json
-  .version-overrides.json      <- only after a fall-forward (Claude, Codex, Muse)
+  <package>/<version>/…           one directory per exact version
+    .install-complete             sentinel (TOOL_INSTALL_SENTINEL)
+  .staging/  .locks/
+  .installed-packages.json        GC ledger
+  .version-overrides.json         fall-forward records (Claude, Codex, Muse)
 ```
 
-Vendor pins use a cache directory name of their own (`devin-<target>`,
-`qwen-code-<target>`, `antigravity-cli-<target>`, …), not an npm package name.
+Vendor pins use their own directory names (`devin-<target>`,
+`qwen-code-<target>`, …).
 
-`.install-complete` (`TOOL_INSTALL_SENTINEL`) is written as the last step of an
-install and contains the tool name, package, version, target, integrity (or
-sha256), and an install timestamp.
-
-`.installed-packages.json` is the GC ledger (`ledger.ts`): every package name
-DAEX ever installed under this root, with the last time any DAEX run pinned it.
-See [Garbage collection](#garbage-collection). `.version-overrides.json` holds
-fall-forward records (`overrides.ts`); see
-[Claude fall-forward](#claude-fall-forward),
-[Codex fall-forward](#codex-fall-forward) and
-[Muse vendor floor](#muse-vendor-floor).
-
-### Publish is atomic, and "usable" is a two-part test
-
-An install runs entirely inside `.staging/<slug>-XXXXXX/`: download to
-`package.tgz`, verify, extract to `payload/`, drop the sentinel, then
-`fs.rename(payload, <version dir>)`. Staging lives under the tools root, so the
-rename is same-volume by construction and a reader sees either no directory or a
-complete one.
-
-An install counts as usable only when **the sentinel exists and the declared
-entry path still resolves** (`readInstalledEntry` in `install.ts`). Checking both
-means a truncated extraction that somehow kept its sentinel is refetched rather
-than handed to a caller that will fail to spawn it. A directory that exists
-without a usable entry is treated as a crashed install: it is removed and
-refetched.
-
-### Cross-process locking
-
-`lock.ts` provides single-flight around one `package@version` install, so a
-desktop app and a brain racing on the same machine is safe. The primitive is an
-`O_EXCL` create under `.locks/`; the file descriptor is closed immediately after
-the holder record (`pid`, `host`, `startedAt`) is written, so a stale-lock
-takeover never has to delete a file another process holds open — the failure mode
-that would make this unusable on Windows.
-
-| Constant | Value | Meaning |
-|---|---|---|
-| `STALE_LOCK_MS` | 60s | The holder refreshes the lock's mtime every `STALE_LOCK_MS / 4`, so only a crash trips this — long downloads never do. |
-| `LOCK_POLL_INTERVAL_MS` | 250ms | Waiter poll cadence. |
-| `LOCK_TIMEOUT_MS` | 15min | Generous by design: the waiter is blocked on someone else downloading up to ~300 MB. |
-
-A dead PID only proves the holder is gone when `host` matches
-`os.hostname()` — a shared network home could carry another machine's live PID
-number. A waiter whose `isSatisfied` predicate goes true mid-wait gets
-`{ kind: "satisfied" }` and does no work.
-
-Both halves of the heartbeat are ownership-checked against the record this
-process wrote. A holder that stalled long enough to be declared stale has
-already had its lock rm'd and recreated by someone else under the same path, so
-an unconditional refresh would keep *their* lock looking fresh for as long as
-this process lives, and an unconditional unlink on `release()` would hand two
-installs the same cache directory. Both compare `pid` + `host` first and no-op
-when the record is foreign. They differ on an *unreadable* record: the heartbeat
-keeps beating (a half-written record is transient and stopping would abandon a
-lock we still hold) while release leaves the file alone (a leftover lock costs
-one stale-takeover cycle; deleting the wrong one costs correctness).
-
-Windows contention does not always surface as `EEXIST`. Deleting a file there
-only unlinks the name once the last handle closes, so a concurrent `O_EXCL`
-create against a delete-pending name fails with `EPERM`/`EACCES`/`EBUSY`.
-`isToolLockContention` treats all three as contention on win32 — a wide window
-here, because a legitimate holder keeps this lock for *minutes* while it
-downloads — and a genuine ACL denial still terminates on its own, as a
-`lock-timeout` naming the holder rather than an unbounded hang. The takeover
-path only retries immediately when the stale lock was actually removed;
-otherwise it falls through to the normal poll so an unremovable lock cannot spin
-a core for the whole 15-minute deadline.
-
-`ensureTools` installs serially on purpose. Running 100-300 MB downloads
-concurrently only trades install latency for a much worse disk-full profile.
+- **Publish is atomic.** An install runs in `.staging/<slug>-XXXXXX/` under the
+  same root, then renames the finished payload into place.
+- **Usable = sentinel + entry.** `readInstalledEntry` (`install.ts`) requires
+  both; a directory without a usable entry is a crashed install, removed and
+  refetched.
+- **Cross-process lock** (`lock.ts`): `O_EXCL` create under `.locks/` per
+  `package@version`. The holder refreshes its mtime; `STALE_LOCK_MS` (60 s)
+  trips only on a crash; `LOCK_TIMEOUT_MS` is 15 min. A dead PID proves a stale
+  holder only on the same `host`. Heartbeat and release check that the record
+  is still this process's. On Windows, `EPERM`/`EACCES`/`EBUSY` count as
+  contention (`isToolLockContention`).
+- `ensureTools` installs serially on purpose (disk-full profile).
 
 ## Resolution order
 
 Every provider resolver uses the same order:
 
-1. **Env override** — a developer/test hook only; no UI sets it.
-2. **Fall-forward override** — Claude Code, Codex and Muse only, see
-   [Claude fall-forward](#claude-fall-forward),
-   [Codex fall-forward](#codex-fall-forward) and
-   [Muse vendor floor](#muse-vendor-floor).
+1. **Env override**: a developer/test hook only; no UI sets it.
+2. **Fall-forward override**: Claude Code, Codex and Muse only.
 3. **Current pin** in the tools cache.
-4. **`node_modules` copy** — source checkouts only, and only for the
-   lockfile-pinned tools (`codex`, `claude-code`, `opencode`, `copilot`). The
-   lockfile is the pin there. Muse has no checkout copy: its order is env (dev
-   runs only), fall-forward override, current pin, previous pin.
-5. **Previous pin** in the tools cache, which GC keeps so a machine still
-   downloading a new pin has the old one to run.
-6. **Missing.** The resolver returns `source: "fallback-command"` with an
-   **empty** `path` (OpenCode: `missing`). The caller starts or joins the
-   download and reports its state. Nothing spawns a bare command name, so a
-   forgotten call site fails instead of running a PATH CLI.
+4. **`node_modules` copy**: source checkouts only, lockfile tools only
+   (`codex`, `claude-code`, `opencode`, `copilot`). Muse has no checkout copy.
+5. **Previous pin**, which GC keeps so a machine downloading a new pin can
+   still run.
+6. **Missing**: `source: "fallback-command"` with an **empty** `path` (OpenCode:
+   `missing`). Nothing spawns a bare command name, so a forgotten call site
+   fails instead of running a PATH CLI.
 
-`cachedToolEntryPath` / `previousCachedToolEntryPath` (`cacheLookup.ts`) and
-`resolveCurrentPinnedTool` / `resolvePreviousPinnedTool` / `resolvePinnedTool`
-(`pinnedTool.ts`) are the cache steps. They never throw. Neither package keeps a
-second copy of a resolver: `apps/ade-cli` imports the desktop main-process
-resolvers (`import … from "../../desktop/src/main/services/…"`), and Muse runs
-the other way (`apps/ade-cli/src/services/tools/muse.ts`, re-exported by
-desktop's `museExecutable.ts`). Desktop main and the brain share one resolution
-path by construction.
-
-| Tool | Resolver | Env override (dev/test) |
-|---|---|---|
-| `claude-code` | `ai/claudeCodeExecutable.ts` | `CLAUDE_CODE_EXECUTABLE_PATH` |
-| `codex` | `ai/codexExecutable.ts` | `CODEX_EXECUTABLE` / `CODEX_EXECUTABLE_PATH`; `ADE_CODEX_BUNDLE_ROOT` points a test at a `node_modules` root |
-| `opencode` | `opencode/openCodeBinaryManager.ts` | `ADE_OPENCODE_BUNDLE_ROOT` (hermetic: skips the cache and the previous pin) |
-| `copilot` (SDK runtime) | `resolveCopilotSdkRuntime` in `ai/acpExecutables.ts` | `COPILOT_EXECUTABLE` / `GITHUB_COPILOT_EXECUTABLE`. A candidate counts only with its `runtime.node` beside it. |
-| `copilot-cli`, `qwen`, `kimi`, `grok`, `devin` | `ai/acpExecutables.ts` | `COPILOT_EXECUTABLE`, `QWEN_EXECUTABLE`, `KIMI_EXECUTABLE`, `GROK_EXECUTABLE`, `DEVIN_EXECUTABLE` (and their aliases in `ACP_EXECUTABLE_ENV_KEYS`) |
-| `droid` | `ai/droidExecutable.ts` | `DROID_EXECUTABLE` / `FACTORY_DROID_EXECUTABLE` |
-| `pi` | `ai/piInstallation.ts` | `ADE_PI_PACKAGE_ROOT` / `PI_CODING_AGENT_PACKAGE_ROOT` |
-| `cursor-cli` | `resolvePinnedCursorAgentCli` in `ai/pinnedProviderTools.ts` | — |
-| `muse` | `apps/ade-cli/src/services/tools/muse.ts` | `ADE_MUSE_EXECUTABLE` (dev runs only) |
-
-All resolvers in the table live under `apps/desktop/src/main/services/` unless
-the path says otherwise. There is no opt-out env var, PATH lookup or
-known-dir lookup for a pinned agent.
-
-Codex is the special case among the npm tools. It is the one tool that cannot be
-reached by seeding a module search path: its binary lives at
-`vendor/<triple>/bin/codex` and is found by a directory probe, never by
-`NODE_PATH`. The cache therefore has to hand it the resolved `entryPath`
-explicitly.
+Neither package keeps a second resolver: `apps/ade-cli` imports the desktop
+main-process resolvers (`ai/claudeCodeExecutable.ts`, `ai/codexExecutable.ts`,
+`opencode/openCodeBinaryManager.ts`, `ai/acpExecutables.ts`,
+`ai/droidExecutable.ts`, `ai/piInstallation.ts`, `ai/pinnedProviderTools.ts`),
+and Muse runs the other way. Each resolver's env override is named at the top
+of its file. Every resolver reports its source; `tools-cache` is distinct from
+`bundled`.
 
 ### Status and the Download/Retry action
 
-`getPinnedToolStatus(name)` (`pinnedTool.ts`) never throws and reports one of:
+`getPinnedToolStatus(name)` (`pinnedTool.ts`) reports `ready` (current or
+previous pin; `runningVersion` says which), `downloading` (in this process,
+with bytes), `failed` (with `errorKind`), `missing` (with `fetchAllowed`) or
+`unavailable` (no pin for this host). Status is per process: a download in
+another process reads `missing` until it lands.
 
-| `state` | Meaning | Copy |
-|---|---|---|
-| `ready` | Current or previous pin on disk. `runningVersion` says which; `downloading` is true while a newer pin downloads behind it. | "Ready (pinned vX)" |
-| `downloading` | A download of the current pin is running **in this process**, with `receivedBytes` / `totalBytes`. | "Downloading <Tool> for this machine…" |
-| `failed` | The last tracked download in this process failed; `errorKind` is the `ToolError` kind. | "Couldn't download <Tool>: <reason>." + Retry |
-| `missing` | Pinned and supported, not on disk, nothing running. `fetchAllowed` says whether a download could start here. | "DAEX downloads <Tool> for this machine the first time it is used." + Download |
-| `unavailable` | No pin for this host (`win32-arm64`, musl Linux, …) or an unknown tool. | "<Tool> is not available on this machine (<target>)." |
+Two runtime actions in the `ai` domain, reachable remotely:
+`ai.pinnedToolStatus {provider}` (no entry path) and `ai.pinnedToolDownload
+{provider}` (calls `retryPinnedToolDownload`, ignores the failure backoff,
+returns at once). The preload methods take a `pin` and route through
+`callPinnedOrBoundRuntimeActionOr`, so Settings and the chat card act on the
+machine that owns the row or chat. `usePinnedToolStatus` reads once per
+provider and `pin?.key`, polling 1 s only while downloading.
 
-Status is per process: a download running in another process on the same
-machine (desktop vs brain) reads `missing` until it lands.
-
-`ai/pinnedProviderTools.ts` maps a provider to its tool (`pinnedToolForProvider`;
-ACP providers derive from `ACP_PROVIDER_IDS`, Cursor maps to `cursor-cli`) and
-builds the one blocker sentence every surface shows (`pinnedToolBlocker`).
-Runtime starts, one-shots, usage reads and automations call
+Runtime starts, one-shots and automations call
 `requirePinnedProviderExecutable`, which awaits the download and throws
-`PinnedToolNotReadyError` (`tool`, `state`, `errorKind`) on a miss.
-
-Two runtime actions expose it to clients, both in the `ai` domain and reachable
-remotely (`actionPolicy` remote list, `adeActionAccess` read/write tiers):
-
-| Action | Does |
-|---|---|
-| `ai.pinnedToolStatus {provider}` | Returns `PinnedProviderToolStatus` (a renderer-safe projection: no entry path). |
-| `ai.pinnedToolDownload {provider}` | Calls `retryPinnedToolDownload` (ignores the 2-minute failure backoff) and returns at once; poll the status. Muse delegates to its own `ensureMuseBinary` tracker. |
-
-The preload methods `window.ade.ai.pinnedToolStatus(args, pin)` and
-`pinnedToolDownload(args, pin)` route through `callPinnedOrBoundRuntimeActionOr`,
-so Settings (`useSettingsMachineScope().pin`) and the chat card
-(`useChatRuntimeScope().pin`) act on the machine that owns the row or chat.
-The renderer reads them with `hooks/usePinnedToolStatus.ts` (one read per
-provider and `pin?.key`, a 1 s poll only while downloading) and shows them in
-`settings/providers/bodies/PinnedToolStatusRow.tsx` and `AgentCliAuthCard.tsx`.
+`PinnedToolNotReadyError` on a miss.
 
 ### Self-update switches
 
-Every place that starts a pinned copy applies `shared/pinnedToolSpawnEnv.ts`:
-
-| Tool | Switch |
-|---|---|
-| `claude-code` | `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST=1` |
-| `codex` | `-c check_for_update_on_startup=false` (a config flag; there is no env var) |
-| `copilot`, `copilot-cli` | `COPILOT_AUTO_UPDATE=false` (the SDK also passes `--no-auto-update` to its runtime) |
-| `opencode` | `OPENCODE_DISABLE_AUTOUPDATE=1` |
-| `droid` | `FACTORY_DROID_AUTO_UPDATE_ENABLED=false` |
-| `grok` | `GROK_DISABLE_AUTOUPDATER=1` and `--no-auto-update` |
-| `kimi` | `KIMI_CODE_NO_AUTO_UPDATE=1` |
-| `qwen` | `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true`, plus `general.enableAutoUpdate: false` in DAEX's own system-defaults file (`QWEN_CODE_SYSTEM_DEFAULTS_PATH`, `qwenSkillDefaults.ts`); the user's `~/.qwen/settings.json` is never written |
-| `pi` | `PI_SKIP_VERSION_CHECK=1` |
-| `cursor-cli` | `--disable-auto-update` (no env var; its updater would relink the user's `~/.local/bin/cursor-agent`) |
-| `antigravity` | `AGY_CLI_DISABLE_AUTO_UPDATE=1` |
-| `devin`, `muse` | none found; their updaters do not touch DAEX's layout |
+Every spawn of a pinned copy applies `shared/pinnedToolSpawnEnv.ts` (env vars,
+or a flag where the tool has no env switch: Codex
+`-c check_for_update_on_startup=false`, Cursor `--disable-auto-update`). Qwen's
+switch lives in DAEX's own system-defaults file; the user's
+`~/.qwen/settings.json` is never written. Devin and Muse have none. A pin bump
+must re-check that the switch still exists.
 
 ### Claude fall-forward
 
-Claude Code, Codex and Muse are the tools that can move past their pin on their
-own. Claude moves only when Anthropic provably refuses the pinned build as too old
-(`ai/providerVersionRejection.ts` detects the exact typed signals:
-`startup_failure_reason: "cli_version_too_old"`, the exit-1 "needs an update"
-text, API `claude_code_version_too_old` on a 400 that is not the org-policy
-variant, and the client-data "requires Claude Code X or newer" document).
-Network, auth, rate-limit, crash, timeout and local DB errors never match.
+Claude moves past its pin only when Anthropic provably refuses the pinned build
+as too old (`providerVersionRejection.ts` matches exact typed signals such as
+`cli_version_too_old`; network, auth, rate-limit and crash errors never match).
+`claudeFallForward.ts` installs npm's `latest` platform package through the
+normal npm path, probes it (`--version`, `auth status --json`) and only then
+writes a record to `.version-overrides.json`. A build that fails the probe is
+deleted at once.
 
-On a match `ai/claudeFallForward.ts` reads npm's `latest` for the platform
-package, which must be newer than the refused build, installs it as its own
-version dir through the normal npm-tarball path (registry host, sha512 SRI),
-and probes it (`--version`, `auth status --json`, no model request). A build
-that fails the probe, or carries a Claude Code below the required or refused
-version, is deleted at once, so it can never run as the previous pin. Only if
-the probe passes does it write a record to `.version-overrides.json`:
-`{tool, target, packageName, format, pinnedVersion, overrideVersion, tarball,
-integrity, reason, requiredVersion, rejectedToolVersion, overrideToolVersion,
-at, lastUsedAt}`. Codex and Muse write the same record, with two extra fields:
+Shared rules for every override (Claude, Codex, Muse):
 
-- `format`: `npm-tarball` (Claude, Codex) or `file` (Muse). A file record
-  carries `url`, `sha256` and `size` instead of `tarball` / `integrity`, and
-  only the lookaside host is allowed. A record without `format` is an older
-  npm record and still reads.
-- `scope`: what the refusal was limited to. Codex stores the model; Claude and
-  Muse store none.
-
-- The override is active only while its `pinnedVersion` and package equal the
-  manifest's current pin for this target and its install is complete. A new
-  pin ends it with no extra code.
-- It never counts as "the previous pin".
-- GC keeps every recorded override dir and drops records no DAEX used for 14 days.
+- Active only while its `pinnedVersion` equals the current pin and its install
+  is complete. A new pin ends it with no extra code.
+- Never counts as the previous pin. GC keeps recorded override dirs and drops
+  records unused for 14 days.
 - One attempt per pinned version per process; a refusal of the override itself
-  stops (`newest-refused`). It never loops.
-- Gated by `pinnedToolFetchAllowed("claude-code")`: tests,
-  `ADE_DISABLE_TOOLS_FETCH=1` and source checkouts never fall forward, and a
-  `CLAUDE_CODE_EXECUTABLE_PATH` override is left alone.
-- A startup refusal restarts that turn once on the new build; a mid-turn API
-  refusal shows a notice and resends nothing. The status row reads "Running
-  untested Claude Code X: Anthropic stopped supporting Y."
-  (`PinnedProviderToolStatus.notice`). Each attempt logs `ai.claude_fall_forward`.
+  stops (`newest-refused`).
+- Gated by `pinnedToolFetchAllowed`: tests, `ADE_DISABLE_TOOLS_FETCH=1` and
+  source checkouts never fall forward; an env override is left alone.
+- The status row reads "Running untested <Tool> X: <vendor> stopped supporting
+  Y" (`PinnedProviderToolStatus.notice`).
+
+For Claude, a startup refusal restarts that turn once on the new build; a
+mid-turn refusal shows a notice and resends nothing. Logs `ai.claude_fall_forward`.
 
 ### Codex fall-forward
 
-Codex moves only when OpenAI refuses the pinned build for a model:
-`The '<model>' model requires a newer version of Codex. Please upgrade to the
-latest app or CLI and try again.` The text is server-side only (it is not in
-the binary). It matches only from an app-server `error` notification (not
-`willRetry`) or a failed `turn/completed`, with `codexErrorInfo` absent or
-`badRequest` / `other`, and only when the model it names is the chat's model.
-A one-shot `codex exec` matches on a non-zero exit with the same sentence and
-the model DAEX passed. Usage-limit, auth, network, context-window and sqlx
-`VersionTooOld` / `VersionMismatch` errors never match, and neither does
-assistant text.
-
-`ai/codexFallForward.ts` then:
-
-1. Checks the refusal again on the refused build with one short request. If
-   the build is accepted, or the check fails for another reason, nothing
-   changes.
-2. Reads npm's `@openai/codex` `latest` (must be a plain `X.Y.Z` newer than the
-   refused build) and its platform build's version document (tarball, sha512
-   SRI), and installs it through the normal npm-tarball path.
-3. Runs `--version` (must be `codex-cli <latest>`), then the same one-request
-   probe for that model:
-   `codex exec -c check_for_update_on_startup=false -c log_dir=<tmp> --json
-   --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
-   --sandbox read-only --color never --model <m> --cd <empty tmp> "Reply with
-   OK"`, 90 s. It passes on exit 0 with `turn.completed` and no refusal. If the
-   new build is refused too (`newest-refused`) or fails another way
-   (`probe-failed`), its directory is deleted.
-4. Writes the record with `scope` = the model and checks that
-   `resolveCodexExecutable` now returns it.
-
-The probes run with the chat's own `CODEX_HOME` account, so each costs one
-short request of the user's Codex quota; the notice says so. They set
-`CODEX_SQLITE_HOME` and `log_dir` to a temp dir, so a newer build never
-migrates the databases in the user's `CODEX_HOME` past what the pin knows.
-
-- One attempt per pin and model per process; two refusals at once share it. A
-  refusal of the override itself stops (`newest-refused`).
-- Gated by `pinnedToolFetchAllowed("codex")`; a `CODEX_EXECUTABLE` override is
-  left alone.
-- The override switches every Codex on that machine, for all models.
-- A chat never resends. After a switch, an idle app-server the chat still owns
-  is torn down, so the next message starts the new build. A one-shot task runs
-  once more on the new build.
-- The status row reads "Running untested Codex X: OpenAI stopped supporting Y
-  for <model>." Each attempt logs `ai.codex_fall_forward`.
+Codex moves only when OpenAI refuses the pinned build for the chat's model
+("The '<model>' model requires a newer version of Codex…", from an app-server
+error or a failed turn, or a one-shot's non-zero exit). `codexFallForward.ts`
+re-checks the refusal with one short request, installs npm's `latest`, probes it
+for that model with an isolated `codex exec` (temp `CODEX_SQLITE_HOME` and
+`log_dir`, so a newer build never migrates the user's databases), and writes the
+record with `scope` = the model. Each probe costs one short request of the
+user's Codex quota; the notice says so. The override switches every Codex on
+the machine. A chat never resends; an idle app-server is torn down so the next
+message starts the new build. Logs `ai.codex_fall_forward`.
 
 ### Muse vendor floor
 
-Muse has no refusal to detect. Instead, every Muse host start calls
-`checkMuseVendorFloor` (`ai/museFallForward.ts`), at most once per 4 hours per
-process, only where downloads are allowed and only once the pin is on disk. It
-reads Meta's channel document (`GET
-https://api.meta.ai/muse-code/channels/muse-stable`) and compares its
-`min_version` with the running build (`X.Y.Z[-R<n>…]`; a floor without a build
-is met by every build of that release):
+Muse has no refusal to detect. Every Muse host start calls
+`checkMuseVendorFloor` (`museFallForward.ts`, at most every 4 hours) against
+Meta's channel document. Below the floor, with a channel build of the same
+release, DAEX falls forward (a `file` pin, `reason: "vendor_min_version"`);
+otherwise the status line asks the user to update DAEX.
 
-| Channel document | Action |
-|---|---|
-| fetch fails, not JSON, another channel, `min_version` null or unparseable | nothing |
-| floor met by the running build | nothing |
-| below the floor, channel build of the same release (pairs with the pinned SDK) and at least the floor | fall forward |
-| below the floor, channel build of another release or below the floor | status line "Meta requires Muse Code ≥ X; this DAEX has Y. Update DAEX." |
-
-An `urgency` of `high`, `critical`, `urgent` or `required` adds "Meta marks
-this update as urgent." To fall forward, DAEX downloads the channel build as a
-`file` pin from the lookaside host (sha256 and size checked) and runs
-`--version`; a build that reports another version is deleted. The record has
-`reason: "vendor_min_version"`. The status row then reads "Running untested
-Muse Code X: Meta stopped supporting Y." The check logs `ai.muse_fall_forward`
-for each attempt and `ai.muse_vendor_floor` when DAEX must be updated.
-
-### Copilot
-
-Copilot has no fall-forward: its runtime is version-paired with
-`@github/copilot-sdk`. On the organisation-policy refusal
-(`managed_client_update_required`, or "your organization's managed settings
-require version X or newer") it shows a precise message naming the required and
-pinned versions and logs `agent_chat.copilot_client_update_required`.
-
-### The cold-start wording
-
-`cacheLookup.ts` also exports `pinnedToolFetchPending(name)`, true only when this
-build pins the tool for the current host *and* it is not on disk yet.
-`claudeRuntimeProbe.ts` uses it with the download state: while the download
-runs it reports `CLAUDE_RUNTIME_FETCH_PENDING_ERROR` ("DAEX is still downloading
-the Claude Code runtime"), spawns nothing, and does not cache or publish the
-result, so health does not stick once the download lands. It is expressed
-through `resolveTool` rather than re-deriving `detectToolTarget` + `findToolPin`
-+ the sentinel, so the predicate cannot drift from the resolver, and it never
-throws — `unsupported-target` and a malformed manifest both answer false.
-
-### Reported sources
-
-Every resolver reports where it found the binary, and `tools-cache` is a distinct
-value from `bundled`. OpenCode's `OpenCodeBinarySource` is mirrored across the
-IPC boundary and must stay in lockstep in four files:
-
-- `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` (canonical)
-- `apps/desktop/src/shared/types/config.ts` (`opencodeBinarySource`)
-- `apps/desktop/src/main/services/ipc/registerIpc.ts` (`aiIsOpenCodeInstalled`)
-- `apps/desktop/src/preload/preload.ts` and `global.d.ts`
+Copilot has no fall-forward: its runtime is paired with the SDK. The org-policy
+refusal shows the required and pinned versions.
 
 ## Dev checkouts
 
-A source checkout still has the lockfile-pinned platform packages in
-`node_modules` — they remain `dependencies`, and only the *packaged* app
-excludes them — so `codex`, `claude-code`, `opencode` and `copilot` resolve from
-there (step 4 above) and are never downloaded in a checkout.
-
-Every other pin exists only as a download. A dev desktop (`!app.isPackaged`) and
-a source-checkout `daex serve` therefore turn on-demand fetch on in
-**download-only** mode (`enablePinnedToolFetch(logger, { downloadOnly: true })`):
-`droid`, `grok`, `qwen`, `kimi`, `devin`, `antigravity`, `pi`, `copilot-cli`,
-`cursor-cli`, `node` and `muse` download the first time something needs them.
-The startup pass stays packaged-only.
+A checkout resolves the lockfile tools from `node_modules`. Every other pin
+exists only as a download, so a dev desktop and a checkout `daex serve` turn on
+fetch in **download-only** mode (`enablePinnedToolFetch(logger, {
+downloadOnly: true })`). The startup pass stays packaged-only. Claude never
+falls through to the developer's own `claude`.
 
 | Variable | Effect |
 |---|---|
-| `ADE_TOOLS_ROOT` | Use this tools root instead of `~/.ade/tools`. Point validation runs at a temp dir; never download into the real root by hand. |
-| `ADE_DISABLE_TOOLS_FETCH=1` | No download of any kind, startup or on demand. Wins over everything. |
-| `ADE_FORCE_TOOLS_FETCH=1` | `daex serve` from a checkout behaves like a packaged install: it runs the startup pass for the demanded tools, and on-demand fetch covers the lockfile tools too. |
+| `ADE_TOOLS_ROOT` | Use this root. Point validation runs at a temp dir. |
+| `ADE_DISABLE_TOOLS_FETCH=1` | No download of any kind. Wins over everything. |
+| `ADE_FORCE_TOOLS_FETCH=1` | A checkout `daex serve` behaves like a packaged install. |
 
-Desktop never enables fetching under `NODE_ENV=test`.
-
-Claude never falls through to the developer's own `claude` here (it would run
-whatever version the machine has, without DAEX's plugins, which DAEX delivers
-only to its own copies). It runs the checkout's copy, or the previous pin, or
-reports the download.
+Desktop never fetches under `NODE_ENV=test`.
 
 ## When the cache gets populated
 
-Downloads happen only on demand. Neither the brain nor the desktop app
-downloads every pinned tool at launch: every pin together is well over a
-gigabyte.
+Downloads happen only on demand or for tools the machine shows signs of using;
+all pins together are well over a gigabyte.
 
 ### Which tools a machine fetches
 
-`selectDemandedAgentTools` (`apps/desktop/src/main/services/tools/agentToolDemand.ts`)
-picks the tools this machine shows signs of using, and only those are fetched at
-startup. A CLI on the PATH counts only as a sign of use (so a machine that ran
-the user's own CLI before migrates to DAEX's copy); DAEX never runs it.
-
-Being in the cache is not a sign of use, or one wrong download would keep
-itself current forever. `ADE_TOOLS_PREFETCH` (from the machine's environment)
-narrows the rule: `signals` (default) is the table below; `used` counts only a
-recent use, for a machine whose sign-ins were copied onto it for every
-provider at once (a DAEX Cloud computer), where a login file says nothing
-about which agent runs; `off` fetches nothing at startup.
-
-| Tool | Fetched at startup when |
-|---|---|
-| any | it ran on this machine in the last 30 days (the use record), so a DAEX update keeps it current |
-| `claude-code` | `claude` on the PATH or a known install dir, `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`, `~/.claude/.credentials.json`, or `~/.claude.json` |
-| `codex` | `codex` on the PATH, or `~/.codex/auth.json` (`CODEX_HOME`) |
-| `copilot`, `copilot-cli` | `copilot` on the PATH, `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, `~/.copilot/config.json`, or gh's `hosts.yml` (`gh auth login`) |
-| `opencode` | `opencode`, `ollama` or `lms` on the PATH, an API-key env var DAEX reads (`ENV_KEY_MAP`, `OPENROUTER_API_KEY`), an OpenCode `auth.json`, or `~/.ollama` / `~/.lmstudio`. OpenCode runs DAEX's API-key, OpenRouter and local models too. Under `signals` it is also fetched when no agent is set up (`node`, `ffmpeg` and a GitHub CLI sign-in alone do not count): its free models need no account or key, so they are the only chat a person with no agent can start. |
-| `muse` | `muse` on the PATH, or Muse's `auth.json` |
-| `droid` | `droid` on the PATH, `FACTORY_API_KEY`, or a Factory home (`~/.factory`, `FACTORY_HOME_OVERRIDE`) |
-| `grok` | `grok` on the PATH, `XAI_API_KEY`, or `$GROK_HOME/auth.json` |
-| `qwen` | `qwen` on the PATH, `QWEN_API_KEY` / `DASHSCOPE_API_KEY`, or `oauth_creds.json` / `.env` / `settings.json` in the Qwen home |
-| `kimi` | `kimi` on the PATH, or `config.toml` / `credentials/` in the Kimi Code home |
-| `devin` | `devin` on the PATH, `WINDSURF_API_KEY`, or Devin's `credentials.toml` |
-| `antigravity` | `agy` on the PATH, or `antigravity-acp` / `antigravity-cli` under `GEMINI_HOME` (default `~/.gemini`). A bare `GEMINI_API_KEY` is not a sign. |
-| `cursor-cli` | `cursor-agent` on the PATH, `CURSOR_API_KEY`, `$CURSOR_CONFIG_DIR/cli-config.json`, or Cursor's per-platform `auth.json` |
-| `pi`, `node` | `pi` on the PATH, or `$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent`). `node` is only Pi's terminal runtime, so it follows Pi. |
-| a tool with no rule | never at startup; it downloads when first needed |
-
-The checks are file, env and PATH lookups only, never a spawn, so they run at
-startup. Every other tool downloads when something needs it.
+`selectDemandedAgentTools` (`agentToolDemand.ts`) picks tools at startup from
+file, env and PATH checks only (never a spawn): a tool that ran here in the last
+30 days, or a provider's login file, API-key variable or CLI on the PATH (a PATH
+CLI is only a sign of use; DAEX never runs it). Being in the cache is not a
+sign. OpenCode is also fetched when no agent is set up, since its free models
+are the only chat such a person can start. `ADE_TOOLS_PREFETCH` narrows it:
+`signals` (default), `used` (recent use only, for a DAEX Cloud computer whose
+sign-ins were all copied in) or `off`.
 
 ### Downloading on demand
 
-`apps/ade-cli/src/services/tools/onDemand.ts` downloads a pinned tool the moment
-it is needed. It is off until a process turns it on (`enablePinnedToolFetch`,
-called by `main.ts` and by `daex serve`): packaged builds fetch every pin, source
-checkouts fetch only the download-only pins (see [Dev checkouts](#dev-checkouts)),
-and tests never fetch. `ADE_DISABLE_TOOLS_FETCH=1` still wins.
+`onDemand.ts` is off until a process calls `enablePinnedToolFetch` (desktop
+`main.ts`, `daex serve`).
 
-`pinnedToolDownload(name)` is synchronous: it returns the running or newly
-started download, or `null` when there is nothing to do (on disk, not allowed
-here, no pin, or failed less than two minutes ago), so a ready runtime starts
-with no extra await. `retryPinnedToolDownload(name)` is the explicit user
-Download/Retry and ignores the backoff. One download per tool per process;
-other processes are serialized by the cache lock. Both promises resolve to the
-`ToolError` or `null` and never reject: a failed download leaves resolution
-where it was (DAEX's previous copy, or missing), never a PATH CLI.
-
-| Who waits for it | Tool |
-|---|---|
-| Chat runtime start: Claude (`startClaudeQuery`, the warm start, `runClaudeBackgroundCliCommand`), Codex, Copilot, Droid, Pi and every ACP provider. The chat shows "Getting <Agent> ready" while it waits (nothing is spawned until the install is complete), then throws `PinnedToolNotReadyError` if the download fails. | every provider's tool |
-| One-shot tasks (`providerTaskRunner.ts`), automation planning, sign-out, the orchestrated worker PTY | the provider's tool |
-| `startOpenCodeChatSession`, `runOpenCodeTextPrompt`, and `acquireOpenCodeServer` (terminals, sign-in) | `opencode` |
-| Provider terminals and login terminals (`pty/pinnedProviderCli.ts`): the terminal prints "DAEX is downloading <Tool> for this machine. It starts here when the download finishes." and types the launch once it lands | the CLI tool (`copilot-cli`, `cursor-cli`, `pi` + `node`, …) |
-| `daex harness env` | the harness's tool |
-| Muse keeps its own `ensureMuseBinary` | `muse` |
-
-**A launch that knows its agent early.** A DAEX Cloud computer's server launch
-(`cloudBootLaunch.ts`; a launch the desktop hands to DAEX Cloud goes the same
-way) reads its facts before it clones. `launchAgentOf` names the agent: the
-chat's provider, a continued CLI copy as that provider's CLI, a CLI launch's
-profile from the app's args, or nothing (a lane alone from `daex create
---machine cloud`, a shell). `startPinnedToolsForLaunch` (`pinnedProviderTools.ts`)
-then starts or joins only that agent's tools and returns at once:
-`pinnedToolsForLaunch` gives a chat's runtime tool (`copilot` for Copilot) or a
-CLI's terminal tools (`copilot-cli`, `cursor-cli`, `pi` + `node`); a Cursor chat
-needs none (it runs the bundled SDK); Muse goes through `startMuseBinaryFetch`.
-Downloads off, already on disk or a recent failure start nothing, as for any
-`pinnedToolDownload`, which also records the use. The chat's start joins the
-running download. A move's new computer runs `daex tools ensure` after it
-registers its projects instead (`registerProjectsCommand`).
-
-**A status read never downloads.** Not the AI status refresh, not a model
-list, not a sign-in check (`acpAuthProbe.ts`, `claudeRuntimeProbe.ts`), not a
-usage or limits read (`requireInstalledPinnedProviderExecutable`). Those
-report the state instead ("DAEX has not downloaded <Tool> for this machine
-yet. It downloads the first time this machine uses it."). So that a chat can
-still start, a provider whose copy is missing but downloadable
-(`CliAuthStatus.pinnedDownloadPending`) and whose sign-in is on disk keeps its
-models (`detectAllAuth`; Claude and Codex read their saved login with
-`savedSignInPresent`), its connection carries `runtimeDownloadPending`, the AI
-status lists it as available with its models (`runtimeAvailable` stays false,
-so health and banners still read "not here yet"), and its first turn
-downloads it. The ACP model-list warm (`warmAcpModelCatalog`) skips a provider
-whose copy is not here yet, without counting a failure.
-Saving an API key in DAEX (other than Cursor's) starts OpenCode's download,
-since that key's models run on OpenCode. The status refresh never starts
-downloads: on a DAEX Cloud computer, where every sign-in is copied over, it
-would fetch every agent (about 2 GB) on every wake. The launch and `daex serve` passes run their own fetches
-through the same tracker (`trackPinnedToolFetch`), so an on-demand caller joins
-a download already running in that process instead of queueing a second
-install, and the blocker reads "downloading" during the launch fetch too.
-On-demand outcomes log as `tools.on_demand_fetch_started` / `_complete` /
-`_failed`. A tool whose on-demand download failed is not retried automatically
-for two minutes, so an offline machine does not retry on every status refresh.
-A download that lands bumps `pinnedToolInstallGeneration()`, which voids the
-cached status (including `authDetector`'s), so the next refresh sees the tool.
-
-Model-list requests never start a download: the picker can ask every provider
-at once. Neither do Codex's `model/list` (DAEX's own list until Codex is here),
-Droid/Copilot model reads, ACP warm-up (only from a copy already on disk) or
-Devin cloud reads. A chat whose copy is still on its way shows no runtime
-banner (`runtimeDownloadPending`): the turn's "Getting <Agent> ready" line is
-the one place that wait shows. The notice carries `status: "agent_download"`
-(`AGENT_DOWNLOAD_NOTICE_STATUS`), so while it is the newest event the working
-line reads "Getting <Agent> ready…" instead of "Thinking".
-
-Remote machines: every download runs in the process that owns the chat, lane or
-status (the brain on that machine), against that machine's tools root. A remote
-chat downloads on its own machine.
+- `pinnedToolDownload(name)` is synchronous: it returns the running or new
+  download, or `null` (on disk, not allowed, no pin, or failed less than two
+  minutes ago). `retryPinnedToolDownload` is the user's Retry and ignores the
+  backoff. One download per tool per process; the lock serializes processes.
+  Both resolve and never reject.
+- Who waits: chat runtime starts (the chat shows "Getting <Agent> ready"), one-
+  shots, automation planning, OpenCode sessions and terminals, provider
+  terminals (`pty/pinnedProviderCli.ts` prints that it is downloading and types
+  the launch when it lands), `daex harness env`.
+- A DAEX Cloud launch that knows its agent starts only that agent's tools
+  early (`startPinnedToolsForLaunch`).
+- **A status read never downloads**: not the AI status refresh, model lists,
+  sign-in checks or usage reads. A provider whose copy is missing but
+  downloadable and whose sign-in is on disk keeps its models and carries
+  `runtimeDownloadPending`, so a chat can still start and its first turn
+  downloads. Otherwise a DAEX Cloud computer with every sign-in copied would
+  fetch every agent on every wake.
+- Saving an API key (other than Cursor's) starts OpenCode's download.
+- A landed download bumps `pinnedToolInstallGeneration()`, voiding cached
+  status.
+- Every download runs in the process that owns the chat, lane or status, on
+  that machine's root.
 
 ### Brain startup
 
-`daex serve` turns on-demand downloads on and calls `startBackgroundAgentToolsFetch`
-(`apps/ade-cli/src/services/tools/backgroundFetch.ts`, reached from `cli.ts`
-through a dynamic import, so a source-checkout serve never loads the
-install stack at all) right after it starts listening, for the demanded tools. The call is deliberately
-fire-and-forget: these
-are 100-300 MB downloads, and a machine with a cold cache would otherwise look
-wedged for minutes on first run while RPC went unanswered.
+`daex serve` enables on-demand fetch and calls `startBackgroundAgentToolsFetch`
+fire-and-forget after it listens (a cold cache must not leave RPC unanswered).
+Each tool gets its own `ensureTools` call, so one failure does not abandon the
+rest. GC runs only after a fully clean pass. Log lines: `tools.fetch_skipped`,
+`tools.fetch_deferred`, `tools.fetch_progress`, `tools.fetch_complete`,
+`tools.fetch_failed`, `tools.gc_complete`, `tools.gc_failed`.
 
-Not awaiting it is safe because every consequence is handled elsewhere. An agent
-spawn that needs a still-missing tool awaits its download or reports it;
-resolvers read the cache per call, and `resolveOpenCodeBinary` explicitly never
-caches a miss — so a fetch that lands mid-session is picked up with no restart of
-anything. `ensureTools` is itself cross-process locked, so racing the desktop app
-or a second brain is safe.
-
-Each pinned tool is fetched by its own `ensureTools` call with its own error
-handling, so one tool failing does not abandon the ones behind it — nothing kicks
-this again for the life of the brain, so a single shared `try` would have left a
-machine with no Claude and no opencode after one network blip on the first
-download.
-
-| Signal | Meaning |
-|---|---|
-| `tools.fetch_skipped` | The startup pass did not run. Either `ADE_DISABLE_TOOLS_FETCH=1`, or `daex serve` is running from a source checkout — where the lockfile-pinned tools resolve from the repo's own `node_modules` and the download-only tools still download on demand. `ADE_FORCE_TOOLS_FETCH=1` runs the pass anyway; `ADE_DISABLE_TOOLS_FETCH=1` still wins over it. |
-| `tools.fetch_deferred` | The pinned tools this pass skipped because the machine shows no sign of using them; they download on demand. |
-| `tools.fetch_progress` | One line per phase change — never per download chunk, because this goes to the brain's long-lived service log |
-| `tools.fetch_complete` | The tools that succeeded, their count, and a `failed` count |
-| `tools.fetch_failed` | The typed `kind`, the tool, and the message. One line per failing tool. |
-| `tools.gc_complete` | Superseded versions collected after a *fully* successful pass, as removed/kept counts. A partial pass never collects: the superseded copy of a tool whose new version just failed to download is the only working one left on the machine. |
-| `tools.gc_failed` | The collection swept and failed; the fetch itself still succeeded. |
-
-### Desktop app launch
-
-`apps/desktop/src/main/services/tools/agentToolsCacheService.ts` kicks a
-coalesced ensure of the demanded tools on packaged launch and keeps a per-tool
-snapshot over IPC (`ai.getToolsCache`); no renderer surface reads it today
-(Settings reads `ai.pinnedToolStatus`).
-Same shape as the brain's pass — one `ensureTools` call per tool, GC only after a
-fully clean one — plus one rule of its own: **resolution failures are per tool,
-never per pass.** `tryResolveTool` swallows only `not-installed`, so a host with
-no pinned build (`unsupported-target`, i.e. `win32-arm64`) or a malformed
-manifest throws out of the resolver. That runs at the top of every
-`getSnapshot()` and every run, so an escaping throw would take down the whole
-pass including the tools that are fine; instead the tool gets a `failed` state
-carrying its `kind`, logged once per transition as `agentTools.resolve_failed`.
+The desktop's `agentToolsCacheService.ts` does the same on packaged launch and
+keeps a per-tool snapshot (`ai.getToolsCache`). Resolution failures are per
+tool, never per pass (`agentTools.resolve_failed`).
 
 ### `daex tools`
 
-`apps/ade-cli/src/commands/tools.ts`. The brain already fetches in the
-background, so this command exists for the cases where waiting for that is wrong:
-an installer that wants the download finished before it hands the machine over,
-CI that wants a warm cache, and a user debugging a failed fetch who wants the
-error rather than a silent retry. It acts on the local machine's tools root.
-
 | Command | Behavior |
 |---|---|
-| `daex tools status` | Per-tool `installed` / `packageName` / `version` / `entryPath`, plus a `missing` list and the resolved `toolsRoot`. Never touches the network. |
-| `daex tools ensure` | Fetch the tools this machine shows signs of using (the brain's own `selectDemandedAgentTools` rule). The result lists the rest under `skipped`; each downloads when first needed. |
-| `daex tools ensure <names…>` | Fetch exactly those. An unknown name is a usage error listing the pinned set. |
-| `daex tools ensure --all` | Fetch every tool this build pins (well over a gigabyte). |
-| `daex tools gc [--dry-run] [--no-keep-previous]` | Collect what this build no longer needs (see [Garbage collection](#garbage-collection)), plus abandoned staging dirs and orphaned locks older than 24h. |
+| `daex tools status` | Per-tool install state and the tools root. No network. |
+| `daex tools ensure` | Fetch the demanded tools (same rule as the brain). |
+| `daex tools ensure <names…>` / `--all` | Fetch exactly those, or every pin. |
+| `daex tools gc [--dry-run] [--no-keep-previous]` | Collect, plus stale staging and locks. |
 
-`daex setup` ensures the same demanded set as `daex tools ensure` with no names.
-
-JSON is the default output mode. The global `--text` flag streams per-phase
-progress lines to **stderr** (`<tool> (<pkg>@<version>) downloading 42% (…)`), so
-that under the default JSON mode stdout stays a single clean machine-readable
-document.
-
-`ensure` does not throw on a typed failure — it returns
-`{ ok: false, errorKind, tool, packageName, version, message }` and exits 1. The
-typed `kind` is the whole point of the module: callers and support threads branch
-on it rather than parsing prose.
+JSON by default; `--text` streams progress to stderr. A typed failure returns
+`{ ok: false, errorKind, … }` and exits 1. `daex setup` ensures the demanded
+set. The install scripts do not prefetch.
 
 ### Garbage collection
 
-`gcTools` (`install.ts`) runs after a fully clean startup pass and on
-`daex tools gc`, over every root DAEX writes (a system cache and the per-user
-fallback, each with its own previous version and ledger), never a baked root.
+`gcTools` (`gc.ts`) runs after a clean startup pass and on `daex tools gc`,
+over every root DAEX writes, never a baked root.
 
-- **Versions of a pinned package:** it keeps the current pin and the newest
-  superseded version (`keepPrevious`), preferring a finished install over a
-  newer half-written one, so rolling back to the previous DAEX build does not
-  re-download hundreds of megabytes, and a machine still downloading a new pin
-  has the old one to run (`tryResolvePreviousTool` reads the same order,
-  `supersededVersionDirs`). Fall-forward override dirs are kept outside that
-  ranking, so the true previous pin is kept too.
-- **Packages this manifest no longer pins:** removed only when the package name
-  is in the ledger (`.installed-packages.json`), no DAEX run on this machine has
-  pinned it for 14 days (`RETIRED_PACKAGE_GRACE_MS`, so another channel still
-  using it keeps it), the name passes the package-name pattern, and the
-  directory resolves under the tools root. Empty `@scope/` dirs go with it. A
-  failed removal keeps the ledger entry.
-- **Anything not in the ledger is left alone.** On a machine running two DAEX
-  channels, an unknown directory is far more likely to belong to the other
-  channel than to be garbage.
-
-Every install records its package in the ledger before the rename, and every GC
-run refreshes the entries its manifest pins. A new ledger is seeded with the
-five pre-#1361 `opencode-<target>` names, so the old ~276 MB
-`opencode-darwin-arm64/1.18.x` orphan is collected on the first clean GC.
-
-### Install scripts
-
-`apps/ade-cli/scripts/install-runtime.sh` and `install-runtime.ps1` do not
-prefetch tools. The brain fetches the demanded ones on first `daex serve` and the
-rest on demand; `daex tools ensure --all` fetches everything pinned when run by
-hand.
+- Keeps the current pin and the newest superseded version (preferring a
+  finished install), plus fall-forward dirs.
+- A package the manifest no longer pins is removed only when it is in the
+  ledger and unpinned by every DAEX run here for 14 days
+  (`RETIRED_PACKAGE_GRACE_MS`), so another channel still using it keeps it.
+- **Anything not in the ledger is left alone**: it probably belongs to another
+  channel.
 
 ## Failure modes
 
-`ToolError` (`errors.ts`) carries a typed `kind` plus optional `tool`,
-`packageName`, `version`, `target`, and — for disk-space — `requiredBytes` /
-`availableBytes`. **Consumers must branch on `kind` and never on message text.**
-A later UX layer maps these onto retry buttons, "free up disk" banners, and
-"another DAEX is already installing" spinners.
+`ToolError` (`errors.ts`) carries a typed `kind`. **Branch on `kind`, never on
+message text.** `asToolError` keeps an existing kind.
 
-| `kind` | Cause | What it means to a user |
-|---|---|---|
-| `manifest` | Malformed bundled manifest, or a tool name that does not exist | A broken build or a typo; not a transient condition. |
-| `unsupported-target` | No pinned build for this platform/arch | e.g. `win32-arm64` or musl Linux. The provider reads "not available on this machine"; DAEX never falls back to a PATH CLI. |
-| `network` | DNS, TLS, HTTP status, redirect limit, truncation, an idle socket, or a URL or redirect outside the pin's allowed hosts | Retry. |
-| `integrity` | Download completed but its sha512 (npm tools, every package of an `npm-tree`) or sha256 and byte size (`file` and `archive` pins) did not match the pin. Checked before anything is unpacked. | Do not retry blindly — either the source or the transport is wrong. |
-| `disk-space` | Preflight failed, or `ENOSPC` mid-write | Free space and retry; the message names required vs available. |
-| `extract` | `tar` or the zip reader failed, the archive was hostile (see below), a decompress step failed, or the entry or a named file is missing after install | Corrupt archive or a wrong entry path in the manifest. No sentinel is written. |
-| `lock-timeout` | Another process held the install lock past 15 minutes | Names the holding pid and host when the lock record is readable. |
-| `filesystem` | mkdir/rename/unlink failed for any other reason | Permissions or a hostile FS. |
-| `not-installed` | Pinned and supported, but not fetched on this machine | The normal pre-fetch state; callers start the download (`pinnedToolDownload`). |
+| `kind` | Cause |
+|---|---|
+| `manifest` | Malformed manifest or unknown tool. |
+| `unsupported-target` | No pinned build for this host (`win32-arm64`, musl Linux). |
+| `network` | DNS, TLS, HTTP, redirect limit, truncation, idle socket, disallowed host. |
+| `integrity` | Hash or size mismatch, checked before unpacking. Do not retry blindly. |
+| `disk-space` | Preflight or `ENOSPC`; names required vs available bytes. |
+| `extract` | tar/zip failure, hostile archive, missing entry or file. |
+| `lock-timeout` | Another process held the lock past 15 minutes. |
+| `filesystem` | Other mkdir/rename/unlink failures. |
+| `not-installed` | Pinned but not fetched; callers start the download. |
 
-`asToolError` wraps unknown throws as `filesystem` **unless they already carry a
-kind**, so a `catch` block cannot flatten a real integrity or disk-space
-diagnosis into a generic message.
-
-### Disk preflight
-
-`file` and `archive` pins carry their exact size, so their preflight uses it
-(`file`: size + 256 MiB; `archive`: size × 4 + 256 MiB; a zip also checks its
-declared unpacked total). An `npm-tree` pin checks the sum of its tarballs plus
-its `unpackedSize` plus 256 MiB. The npm lockfile carries no byte size, so for
-`npm-tarball` pins the preflight runs on the
-`Content-Length` header the moment response headers arrive, before any body byte
-is written (`ToolDownloadOptions.onSize`). `estimateToolRequiredBytes` in
-`diskSpace.ts` computes `archiveBytes × 4 + 256 MiB`: the unpacked tree runs
-roughly 2.5-3× the tarball and both copies coexist until the archive is deleted.
-A headerless response falls back to a 384 MiB assumption, sized above the largest
-pinned tool so it cannot slip past.
-
-`readFreeBytes` walks up to the nearest existing ancestor — the tools root is
-usually created by the very install that needs the preflight. When the platform
-cannot answer it returns `null` and callers proceed, because refusing to install
-on an unmeasurable volume is worse than trying and hitting a real `ENOSPC`.
-
-### A failed install never leaves a partial tree
-
-Three independent guards:
-
-- The downloader writes to a sibling `<dest>.<pid>.part` and renames only after
-  the body completes, and removes the part file on every failure path.
-- The staging directory is removed in a `finally`, so partial downloads and
-  half-extracted trees never survive a failure.
-- Publish is the rename of a fully-populated directory, and a directory without a
-  usable entry is treated as a crashed install and refetched.
-
-`extract.ts` shells out to the system `tar` for npm tarballs (with
-`--strip-components 1`, dropping npm's `package/` root) and `tar.gz` archives
-(with the pin's `stripComponents`), for the same reason `commands/brainUpdate.ts` does: DAEX
-ships no tar library and adding one to unpack a 300 MB binary would cost more than
-it saves. It is async on purpose — this runs inside the long-lived brain, where a
-synchronous multi-hundred-megabyte extraction would stall every other session. On
-Windows the `tar` is resolved to System32's bsdtar by absolute path
-(`resolveTrustedWindowsTool`), so a PATH-planted `tar.exe` does not get to unpack
-a 300 MB archive with DAEX's privileges. After `tar`, `auditExtractedTree`
-refuses symlinks that are absolute or resolve outside the payload, and any
-fifo, socket or device.
-
-Zips are read by DAEX's own streaming reader on Node's zlib (`createInflateRaw`,
-`zlib.crc32`) on every OS, because Linux GNU tar cannot unzip and a library's
-local-header streaming mis-handles data-descriptor members (Kimi's Windows zip).
-It reads the authoritative central directory and refuses symlink members,
-encryption, multi-disk archives, methods other than stored/deflate, absolute,
-drive-letter, backslash, NUL, `.`, `..` or empty path segments, case-folded
-duplicate paths, files above the strip depth, and members that inflate past
-their declared size or fail CRC-32. Zip64 is supported. Files are written with
-`wx`, never through an existing path. POSIX entries and `executable` files are
-`chmod 755`'d after extraction (a zip's stored mode is not trusted).
-
-Downloads are HTTPS-only, stay on the pin's allowed hosts, cap at 5 redirects, and
-enforce a 30-second idle-socket timeout on the **body** as well as the handshake
-— a stalled CDN that holds the connection open must not hang an install forever.
-
-## macOS Gatekeeper: verified finding
-
-Fetched binaries execute without a Gatekeeper prompt or kill. This was verified
-empirically on an Apple Silicon machine as part of this work, and the mechanism
-is worth stating precisely because it is not what most people assume.
-
-Files written by DAEX's own Node process receive `com.apple.provenance` but
-**never** `com.apple.quarantine`. Quarantine is applied by the downloading
-*application* — a browser, a mail client — not by a plain HTTPS read from a
-process that is not registered as a quarantine-applying agent. A binary that was
-never quarantined is never evaluated by Gatekeeper on first execution.
-
-Verified spawns from the cache:
-
-| Binary | `--version` | `spctl` assessment |
-|---|---|---|
-| `codex` | `codex-cli 0.144.5` | accepted — Notarized Developer ID, OpenAI OpCo LLC |
-| `claude` | `2.1.220 (Claude Code)` | accepted — Notarized Developer ID, Anthropic PBC |
-| `opencode` | `2.0.29` | Developer ID, Anomaly Innovations, Inc., hardened runtime (`spctl` rejects only the exec assessment of a bare CLI, which is not an app) |
-
-OpenCode 1.x was ad-hoc signed and depended on the no-quarantine property above.
-2.0 carries a Developer ID signature. `probeOpenCodeBinaryQuarantine` in
-`openCodeBinaryManager.ts` still tells a quarantined binary (fixable with
-`xattr -d`) apart from a bad signature.
-
-`tar` preserves mode 755; `finalizePayload` still `chmod 755`s every binary entry
-and `executable` file on POSIX, because zips do not carry a trustworthy mode.
-The table above predates the vendor pins; their macOS builds have not each been
-put through `spctl`, only run (`--version`) from the cache.
+- **Disk preflight** (`diskSpace.ts`): `file` size + 256 MiB; `archive`
+  size × 4 + 256 MiB; npm tarballs use `Content-Length` before any body byte
+  (384 MiB assumed without it). An unmeasurable volume proceeds.
+- **No partial trees**: `.part` files renamed on completion, staging removed in
+  a `finally`, publish by rename.
+- **Hostile archives**: `extract.ts` uses the system `tar` (System32 bsdtar by
+  absolute path on Windows), then `auditExtractedTree` refuses escaping
+  symlinks and special files. Zips use DAEX's own streaming reader on every OS,
+  which refuses symlinks, encryption, unsafe paths, duplicates and members that
+  overrun their size or CRC.
+- Downloads: HTTPS only, at most 5 redirects, a 30-second idle timeout on the
+  body too.
+- **macOS Gatekeeper**: files written by DAEX's Node process get
+  `com.apple.provenance` but never `com.apple.quarantine`, so fetched binaries
+  run without a Gatekeeper prompt. `probeOpenCodeBinaryQuarantine` still tells
+  a quarantined binary apart from a bad signature.
 
 ## Packaging exclusions
 
-The runtime native-dependency archive excludes the fetched packages through an
-**exact-name** `Set` in `apps/ade-cli/scripts/native-deps-entry-filter.mjs`
-(`RUNTIME_FETCHED_TOOL_PACKAGES`, 34 entries covering every variant including the
-`-musl`, `linuxmusl-` and `-baseline` builds and the `win32-arm64` siblings the
-manifest does not pin). The vendor-only npm packages (`@factory/cli-*`,
-`@xai-official/grok-*`, `@github/copilot-*`) are in no lockfile, so nothing
-ships them. The check runs before the per-entry root guard so `fs.cp` skips the
-whole tree, and it is independent of `target` — no target ships any of them.
+The runtime native archive and the packaged desktop app both exclude the
+fetched packages through one exact-name set, `RUNTIME_FETCHED_TOOL_PACKAGES`
+(`native-deps-entry-filter.mjs`, re-exported by
+`apps/desktop/scripts/runtime-fetched-tool-packages.mjs`). Exact names, not
+prefixes: a prefix on `@anthropic-ai/claude-agent-sdk` would drop the SDK DAEX
+calls in-process.
 
-The set is exact-name rather than a prefix match on purpose: a prefix test on
-`@anthropic-ai/claude-agent-sdk` would swallow the SDK itself, which DAEX calls
-`query()` on in-process and must keep shipping. The same holds for `@openai/codex`
-and `@opencode/client`.
-
-The packaged desktop app drops the same platform siblings, and imports the same
-`Set` to do it — `apps/desktop/scripts/runtime-fetched-tool-packages.mjs` re-exports
-it rather than restating the names, so the brain archive and the desktop bundle
-cannot drift apart. The JS launcher and SDK packages stay in both.
-
-Three things enforce it on the desktop side:
-
-| Where | What |
-|---|---|
-| `apps/desktop/package.json` | a `"!node_modules/<name>/**"` entry in `build.files` for each of the 34, and no `asarUnpack` entry. Both are required: dropping a package from `asarUnpack` alone moves it *into* `app.asar` instead of out of the package, because electron-builder copies every production dependency and only negated `build.files` patterns are applied to the `node_modules` walk. |
-| `apps/desktop/scripts/after-pack-runtime-fixes.cjs` | prunes all 34 from the unpacked payload, then **throws** if any of them still exists in `app.asar.unpacked` or inside `app.asar`. This is a hard build gate, not a warning. |
-| `apps/desktop/scripts/runtime-fetched-tool-packages.test.mjs` | fails fast, without a packaged build, if `package.json` drifts from the shared `Set`. |
-
-Because nothing is bundled, `validate-mac-artifacts.mjs` and
-`validate-win-artifacts.mjs` **fail** on `source === "bundled"`: a bundled
-resolution can only mean the exclusions regressed. What they still assert is that
-the resolver runs inside the packaged app, reports a source, and — when that
-source names a real file — that the file exists and runs. On a CI package host
-with an empty cache the expected answers are `fallback-command` (Claude, Codex)
-and `missing` (OpenCode).
+- `apps/desktop/package.json` needs a `"!node_modules/<name>/**"` entry in
+  `build.files` for each, and no `asarUnpack` entry (dropping it from
+  `asarUnpack` alone moves it into `app.asar`).
+- `apps/desktop/scripts/after-pack-runtime-fixes.cjs` prunes them and throws if
+  any remains.
+- `validate-mac-artifacts.mjs` / `validate-win-artifacts.mjs` fail on
+  `source === "bundled"`.
 
 ## Bumping a pinned version
 
-The pin is what every DAEX user runs, so a bump is a product change: run the new
-version in DAEX before it merges.
+A bump is a product change: run the new version in DAEX before it merges.
 
-### Lockfile tools (provider SDKs)
+- **Lockfile tools**: edit the version in `apps/ade-cli/package.json`,
+  reinstall, run `npm run tools:manifest` in `apps/ade-cli`, commit manifest and
+  lockfile together. `@github/copilot-sdk` is bumped in `apps/desktop` first;
+  `@muse-code/sdk` in both apps, then `npm run tools:muse-pin`.
+- **Vendor pins**: `npm run tools:pin -- <tool> [version]` (newest stable by
+  default; `--latest-version` prints it). Set `GITHUB_TOKEN` for `qwen` and
+  `kimi`. A Pi bump also re-checks its CLI path and the SDK surface
+  `piSdkWorker.ts` uses.
+- **Daily workflow** `.github/workflows/agent-tool-pins.yml` opens one
+  `pins/<item>` PR per tool or SDK with the bump and regenerated manifest, and
+  dispatches `ci.yml` on it. It closes the PR when main catches up.
+- **Before merging**: `npm run tools:manifest:check` passes (the CI drift gate
+  and `pretest`); a chat or terminal, sign-in status, model list and resume work
+  on a real machine with a temp `ADE_TOOLS_ROOT`; the self-update switch and
+  entry paths still hold.
 
-The provider SDKs DAEX installs from npm are `@anthropic-ai/claude-agent-sdk`,
-`@openai/codex`, `@opencode/cli`, `@opencode/client`, `@cursor/sdk`,
-`@factory/droid-sdk`, `@github/copilot-sdk` and `@muse-code/sdk`. The same
-daily workflow as the vendor pins watches them (see below); there is no
-Dependabot config. Its PR already holds the bump and the regenerated manifest;
-by hand, the steps are:
-
-For `@github/copilot-sdk`, bump it in `apps/desktop`, reinstall there, then run
-`npm run tools:manifest` in `apps/ade-cli`. The SDK and the `copilot` runtime
-pin move together.
-
-For `@muse-code/sdk`, bump the SDK in both `apps/desktop` and `apps/ade-cli`,
-then run `npm run tools:muse-pin` in `apps/ade-cli` (it regenerates the
-manifest too).
-
-For the other npm-published tools:
-
-1. Edit the version in `apps/ade-cli/package.json`.
-2. Reinstall so `apps/ade-cli/package-lock.json` picks up the new version,
-   tarball URL, and integrity for every platform sibling.
-3. Run `npm run tools:manifest` in `apps/ade-cli` to regenerate
-   `toolsManifest.generated.json`.
-4. Commit the regenerated manifest alongside the lockfile.
-
-### Vendor pins (`npm run tools:pin`)
-
-`droid`, `grok`, `qwen`, `kimi`, `devin`, `antigravity`, `pi`, `copilot-cli`,
-`cursor-cli` and `node` are in no lockfile. `apps/ade-cli/scripts/pin-tool.mjs`
-pins them:
-
-```
-npm run tools:pin -- <tool> [version] [--no-manifest]   # write scripts/pins/<tool>.json, regenerate the manifest
-npm run tools:pin -- <tool> --latest-version            # print the vendor's newest stable version; writes nothing
-```
-
-With no version it pins the vendor's newest stable release (the same one
-`--latest-version` prints). It is the only step that talks to the network, and
-needs only Node built-ins (plus the `npm` CLI for Pi's tree); no `npm ci`.
-
-| Tool | Version source | Integrity source |
-|---|---|---|
-| `droid` | npm `droid` latest | npm version manifest (x64 targets use `-baseline`) |
-| `grok` | npm `@xai-official/grok` latest | npm version manifest |
-| `qwen` | newest non-prerelease `v<x.y.z>` GitHub release (GitHub's "latest" points at an SDK tag) | `SHA256SUMS`, cross-checked with GitHub asset digests |
-| `kimi` | newest `@moonshot-ai/kimi-code@<x.y.z>` GitHub release | `.sha256` sidecars, cross-checked with GitHub asset digests |
-| `devin` | `static.devin.ai/cli/current/manifest.json` | `static.devin.ai/cli/<v>/manifest.json` + HEAD size |
-| `antigravity` | GitHub releases of `google-antigravity/antigravity-cli` | GitHub asset digests, each checked against a full download |
-| `pi` | npm latest | `npm install --package-lock-only --ignore-scripts` in a scratch dir, every tarball downloaded once to measure and verify its sha512 |
-| `copilot-cli` | npm `@github/copilot` latest | npm version manifest |
-| `cursor-cli` | the build named in `https://cursor.com/install` | downloads every target and hashes it (~0.8 GB) |
-| `node` | newest Node 24 LTS in `nodejs.org/dist/index.json` (`NODE_MAJOR` in the script) | `SHASUMS256.txt` |
-
-`qwen` and `kimi` use the GitHub API (60 unauthenticated requests an hour per
-IP); set `GITHUB_TOKEN`. A Pi bump needs more than a re-pin: re-check its CLI
-path (see [Entry paths](#entry-paths)) and the SDK surface the worker uses
-(`piSdkWorker.ts`). DAEX is built against Pi 1.4.
-
-The scheduled workflow `.github/workflows/agent-tool-pins.yml` is the one
-upgrade flow for both the vendor pins and the provider SDKs. It runs daily at
-01:37 UTC and on `workflow_dispatch` (optional `tool` input: a tool name, or an
-SDK item such as `claude-agent-sdk`). For each item it compares main with the
-newest stable version (`tools:pin --latest-version` for a tool, `npm view` for
-an SDK):
-
-- **Newer:** unless the open PR already proposes that version, it writes the
-  bump (`tools:pin`; or the SDK's exact version in each app's `package.json`,
-  `npm install --package-lock-only`, then `tools:manifest`, or `tools:muse-pin`
-  for Muse), force-pushes `pins/<item>`, opens or updates that item's one PR
-  (label `dependencies`), and starts `ci.yml` on the branch with
-  `workflow_dispatch` (pushes made with `GITHUB_TOKEN` do not start CI), at
-  most two such runs at a time. `ci.yml` gates a dispatch on a `pins/*` branch
-  like a pull request: the runtime targets, the Linux desktop driver and the
-  iOS suite follow its diff from main, so a tool bump builds only linux-x64 and
-  skips iOS. A bump of an SDK the CLI also depends on changes
-  `apps/ade-cli/package.json`, so it still builds all five. The Copilot SDK is
-  a desktop dependency only: the runtime build installs only `apps/ade-cli`, so
-  the binary does not contain it, and its bump builds linux-x64 only. The run
-  ends in the `ci-pass` check the PR needs to merge. A newer release updates
-  the same PR.
-- **Main has the newest:** it closes the item's open PR and deletes
-  `pins/<item>`, or deletes a leftover branch with no PR.
-
-A second job closes stale Dependabot version PRs for these SDKs that predate
-the current config; a workflow cannot tell a security update from a version
-update, so any later Dependabot PR (a security update) stays open. Two items run at a time.
-Opening a PR needs the repository setting "Allow GitHub Actions to create and
-approve pull requests".
-
-### Bumping safely
-
-1. Re-pin (the `pins/<item>` PR, or by hand: `tools:manifest`, `tools:muse-pin`, or `tools:pin`).
-   `npm run tools:manifest:check` must pass.
-2. Run the new version in DAEX on a real machine: a chat (or a terminal for a
-   CLI-only tool), sign-in status, model list, resume, and anything the
-   provider's dialect depends on. Validate into a temp `ADE_TOOLS_ROOT`, never
-   the real `~/.ade/tools`.
-3. Check that the self-update switch still exists in the new build (see
-   [Self-update switches](#self-update-switches)) and that entry paths and
-   named files did not move.
-4. Update the dialect and the provider docs if anything changed, then merge.
-
-`npm run tools:manifest:check` is the CI drift gate (and the `pretest` step). It
-rebuilds the manifest in memory and byte-compares it against the committed file,
-failing with `… is out of date with package-lock.json or muse-release.json. Run:
-npm run tools:manifest` on any difference (a stale pin file reads the same way)
-and with `… is missing` if the file is absent. Output is byte-stable across runs
-and machines because key order is fixed by construction in the generator and
-`TARGETS` is a literal array — the check has no false positives from key
-ordering.
-
-Bumping a pin does not strand the old copy: the cache is version-addressed, the
-new version installs into a new directory, and GC keeps the newest superseded
-version, so machines still downloading the new pin run the old one. A new pin
-also ends any fall-forward override.
+The old copy is not stranded: GC keeps the newest superseded version, and a new
+pin ends any fall-forward override.
 
 ## Cross-links
 
-- Configuration schema: [configuration-schema.md](./configuration-schema.md)
-- Desktop auto-update and artifact size budgets:
-  [desktop-auto-update.md](./desktop-auto-update.md)
-- ACP providers (spawn plans, `binaryArgs`, self-update in the dialects):
+- ACP providers (spawn plans, `binaryArgs`):
   [../chat/acp-providers-spec.md](../chat/acp-providers-spec.md)
 - Copilot SDK runtime and terminal CLI:
   [../chat/copilot-sdk-provider.md](../chat/copilot-sdk-provider.md)
