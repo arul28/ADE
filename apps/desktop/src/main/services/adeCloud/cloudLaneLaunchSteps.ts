@@ -147,7 +147,12 @@ export class LaunchCancelled extends Error {
  * computer limit card).
  */
 export class LaunchStepError extends Error {
-  constructor(message: string, readonly refusal: ChatLaunchCloudRefusal | null = null) {
+  /**
+   * `onSignIn`: the launch ended in its provider sign-in step, which has no
+   * row of its own on the card, so no row is marked failed (the first row not
+   * done would be the brain's "Fetch base branch", which never ran).
+   */
+  constructor(message: string, readonly refusal: ChatLaunchCloudRefusal | null = null, readonly onSignIn = false) {
     super(message);
   }
 }
