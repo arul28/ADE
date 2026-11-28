@@ -1,2526 +1,1765 @@
 # Chat
 
 Agent Chat is DAEX's interactive AI coding surface. Each chat binds a lane (git
-worktree + branch), a provider runtime (one of 13: Claude, Codex, Cursor, Droid,
-OpenCode, Pi, Muse, Qwen, Kimi, Grok, GitHub Copilot, Devin, Antigravity;
-see `AgentChatProvider` in `shared/types/chat.ts`) and a transcript into a
-persistent `AgentChatSession`, with DAEX's lane and session tracking, tool
-approvals, identity continuity and handoff on top.
+worktree + branch), a provider runtime and a transcript into a persistent
+`AgentChatSession`, with lane and session tracking, tool approvals, identity
+continuity and handoff on top. DAEX runs 13 providers (Claude, Codex, Cursor,
+Droid, OpenCode, Pi, Muse, Qwen, Kimi, Grok, GitHub Copilot, Devin,
+Antigravity; `AgentChatProvider` in `apps/desktop/src/shared/types/chat.ts`),
+each as a **chat** (DAEX drives an SDK or protocol) and as a **CLI** in a DAEX
+terminal. The CLI is `daex` (`ade` still works).
+
+Detail docs: [agent routing](agent-routing.md) (providers, models, permissions),
+[composer and UI](composer-and-ui.md), [transcript and turns](transcript-and-turns.md),
+[tool system](tool-system.md), [drafts and scheduled send](drafts-and-scheduled-send.md),
+[quick slots](quick-slots.md), and per-provider docs for
+[OpenCode](opencode-integration.md), [Copilot](copilot-sdk-provider.md),
+[ACP providers](acp-providers-spec.md) and [Antigravity](antigravity-provider.md).
 
 ## Source file map
 
+Paths are under `apps/desktop/src/` unless they start with `apps/`. Per-provider
+files are listed in the provider docs; renderer chat files in
+[composer and UI](composer-and-ui.md#source-file-map).
+
 | Path | Role |
 |---|---|
-| `apps/desktop/src/shared/providerAccountRefusal.ts` | The refusal verdict above; read by provider health, the chat and CLI cards and agent-turn analytics. |
-| `apps/desktop/src/renderer/components/chat/chatEventSubscription.ts` | `subscribeWhenChatApiReady` attaches the event feed once the chat API has `onEvent`; DAEX Web retries on a bounded schedule (about 30 s) and stops on unsubscribe. |
-| `apps/desktop/src/shared/codePointText.ts` | Code-point-safe cuts for provider limits and titles. |
-| `apps/desktop/src/main/services/runtime/brainUnplannedRestart.ts` | The brain's run record: whether this start follows an unplanned restart, and the chats and CLIs it continued (for the banner). |
-| `apps/desktop/src/main/services/runtime/liveTurnProjects.ts` | Projects with a running turn, on disk, so the next brain opens exactly those after a crash (claim by rename, pending file, the project being opened when skipped). |
-| `apps/desktop/src/renderer/components/app/BrainRestartNotice.tsx` | One dismissible banner per unplanned local brain restart. |
-| `apps/desktop/src/renderer/components/chat/ChipText.tsx`, `ChipHoverCard.tsx`, `chipMenu.ts`, `chipActions.ts`, `chipCardBodies.tsx`, `MachineChipCard.tsx`, `McpMentionCardBody.tsx`, `useMachineFacts.ts` | Chip display, held-hover and right-click actions, per-kind cards, machine-pinned navigation, focused Connections/MCP routes, the model chip's new-chat draft. See [Chips](composer-and-ui.md#chips). |
-| `apps/desktop/src/shared/chips.ts`, `apps/desktop/src/shared/types/chatMentions.ts` | Chip and mention contracts; `@mcp:<server>` uses the same parser and formatter on desktop, web and iOS's Swift mirror. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserHitTest.ts` | Shared hit-testing for the element picker, drag-to-capture and `daex browser select`: viewport → CDP document coordinates, `elementFromPoint` fallback, same-renderer and cross-site iframes. |
-| `apps/desktop/src/main/services/shared/cdpFrameTransform.ts` | Maps iframe points and rects between frame and tab viewports from the iframe's CDP content quad (scale, rotation, skew). |
-| `apps/ios/ADE/Views/Work/WorkCommandRedaction.swift` | Display-only command masking for native Work cards and previews. |
-| `apps/desktop/src/renderer/components/chat/useAdeCloudDraft.ts`, `AdeCloudComposerParts.tsx`, `apps/desktop/src/renderer/state/cloudAccess.ts` | **Run on DAEX Cloud**: DAEX Cloud as an always-listed machine, lane list and size, the Run on line, and the label that turns Send off while Cloud cannot take the message. See [Run on DAEX Cloud in the composer](#run-on-ade-cloud-in-the-composer). |
-| `apps/desktop/src/renderer/state/adeCloudChatQueue.ts`, `apps/desktop/src/renderer/state/cloudSavedChats.ts`, `apps/desktop/src/renderer/components/chat/CloudQueuedMessages.tsx`, `useCloudQueuedBubbles.ts`, `CloudQueueSendCard.tsx` | **The account's message queue** for an asleep or deleted Cloud chat: send, queued messages as sent bubbles with Cancel, the working line, the failed-message banner with Put back, the new computer's setup card. See [Messages to an asleep or deleted DAEX Cloud chat](#messages-to-an-asleep-or-deleted-ade-cloud-chat). |
-| `apps/desktop/src/renderer/components/chat/accountLaunchDefaults.ts`, `apps/desktop/src/main/services/chat/chatLaunchDefaults.ts` | **Launch defaults** on the machine and in the account (`chat.launchDefaults.v1`); the newer seeds a draft. See [Launch defaults follow the account](#launch-defaults-follow-the-account). |
-| `apps/desktop/src/main/services/chat/chatLaunchService.ts`, `apps/desktop/src/shared/types/chatLaunch.ts`, `apps/desktop/src/shared/chatLaunch.ts`, `apps/desktop/src/main/services/lanes/laneEnvironmentSetup.ts` | **New-lane launches** (brain-owned): reserved session and lane ids, fetch → checkout → environment → start-agent, `chat_launch_event` snapshots, Cancel / Retry / Start now / queued messages, the `lane_setup` card. Built in `apps/ade-cli/src/bootstrap.ts` only when a chat service exists, exposed as `AdeRuntime.chatLaunchService` to the `chat` domain and the sync host. `shared/chatLaunch.ts` holds the pure helpers every surface uses (stage labels, status, progress, durations, `buildLaneSetupCard`, snapshot merge). See [New-lane launches](#new-lane-launches). |
-| `apps/desktop/src/main/services/chat/chatLaunchArgs.ts`, `chatLaunchRecords.ts`, `chatLaunchDelivery.ts`, `chatLaunchTranscriptCard.ts`, `chatCreateModelResolution.ts`, `apps/desktop/src/shared/uuid.ts` | `chatLaunchArgs`: the one parser of untrusted launch input (`parseChatLaunchArgs`, `parseChatLaunchIdArgs`, `parseChatLaunchQueueMessageArgs`, `parseChatLaunchCompleteClientArgs`) and the `chat.create` / `chat.send` field parsers, for the domain and sync host. `chatLaunchRecords`: records under `.ade/cache/chat-launches/`; a reload turns a mid-flight launch into "interrupted" and jumps its `sequence`. `chatLaunchDelivery`: sends setup-time messages in order; a failure keeps `deliveryError` and retries at 2 s / 10 s / 30 s; a deleted chat clears the queue with an error. `chatLaunchTranscriptCard`: the `lane_setup` `ade_card` (first emit waits for the opening `user_message`, 4 s fallback). `resolveChatCreateModel`: fills an empty `model` with the host's first available (activating OpenCode, Pi and ACP runtimes first). `shared/uuid.ts`: `requireNormalizedUuid`. |
-| `apps/desktop/src/renderer/components/chat/CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | **Continue on another computer** (session card **Hand off… → Another machine**). The modal collects choices and shows what the source brain reports: `getCrossMachineHandoffOptions` (machines, blockers with fixes beside a `BlockedActionButton`), `previewCrossMachineHandoff` (read-only destination preflight, with **Fetch & fast-forward there**), then `startCrossMachineHandoff`. Destination model, effort, Fast and permission use the composer's pills. **Move targets** (`crossMachineMoveTargets.ts`, shared with `terminals/CrossMachineMoveSubmenu.tsx` and `CrossMachineHandoffChooseStage.tsx`): the brain lists every account computer, and the pickers drop the account's DAEX Cloud computers (`ownMoveMachines`, on the subscribed cloud index; no fetch) and end with one disabled **DAEX Cloud** row, "DAEX Cloud can't take a moved lane yet. Pick one of your computers." (menu tooltip and aria label, a muted line in the dialog), as the iOS `LaneMoveSheet` does. "No other machines on this account." counts own computers only. The chat's brain runs prepare, preflight, validate, accept and mark (`crossMachineHandoffOrchestrator.ts`); progress, retry, dismissing an `unknown` move and approval read the durable record on the chat summary. Every call (options, preview, start, and `git.push` / `git.pull` behind **Publish branch** / **Update branch**) is pinned to the source chat's machine (`runtimePin`, frozen per operation). Acceptance never binds to a route kind. Fork moves provider-native history for Claude, Codex and OpenCode; Cursor and Droid move as a brief; a failed fork offers **send as brief**. See [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md). |
-| `apps/desktop/src/shared/crossMachineHandoff.ts` and `apps/desktop/src/shared/types/chat.ts` | Git-origin normalization, remote sanitization, untrusted response decoders, and the versioned capsule / preflight / accept DTOs. `chat.ts` also owns: **(1) Fork handoff.** `HANDOFF_FORK_PROVIDERS` (`claude`, `codex`, `opencode`, `droid`, `copilot`, `cursor`, `muse`, `pi`, `kimi`) + `providerSupportsHandoffFork()`; `providerForkReplaysTranscript()` (only Cursor: a DAEX-side transcript replay onto a new agent, so copy promises the conversation within the target's context, not a copied thread); `AgentChatHandoffArgs.targetLaneId` (brief may retarget a lane; fork stays in the source lane); the capsule's `mode: "brief" \| "fork"` with `forkTransport` and `transcriptEnvelopes`; the preflight's `forkHandoffSupport` (absent = fork unsupported, never a silent brief). `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS` + `providerSupportsCrossMachineHandoffFork()` derive from it minus Droid (machine-local index) and replay providers (Cursor). The optional `laneFastForward` (`laneId`, `laneName`, `behindBy`) is the destination's claim that its lane is clean and a strict ancestor; the decoder rejects a non-positive `behindBy`. **(2) Active-turn delivery.** `ACTIVE_TURN_DISPATCH_MODES`, the per-provider matrix (menu order, first = default; see the table in [composer and UI](composer-and-ui.md)), read through `activeTurnDispatchModes()`, `defaultActiveTurnDispatchMode()`, `supportsActiveTurnDispatchMode()`; `activeTurnInterruptContinues()` (Cursor, Muse, Kimi: interrupt cancels and resends on the same thread, so the control says "continue"; Kimi's is DAEX's own `session/cancel` then the next turn); `unsupportedActiveTurnDispatchModeMessage()`; `cursorSessionRunsInCloud(session)` withholds inline (`Run.steer()`) for a Cursor Cloud run (checks `cursorRuntime` and `cursorCloudAgentId`). The composer, the pane and `agentChatService`'s guards read these; iOS mirrors them in `WorkActiveSendCapability`. `CTO_LIVE_REDIRECT_PROVIDERS` (`claude`, `codex`, `cursor`) + `providerSupportsLiveRedirect()` is the CTO's own list, deliberately not derived from the matrix. **(3) Work board.** `WorkBoardMoveTarget` (`needs_you` \| `working` \| `done`), `WorkBoardColumn` (plus derived `waiting`), `WORK_BOARD_MOVE_TARGETS`, `isWorkBoardMoveTarget()`, `WORK_BOARD_COLUMN_LABEL` (the only column labels), `AgentChatBoardMoveMetadata` (`from`, `to`, `at`, `moveId`) on `AgentChatEventMetadata.boardMove` for the drag's nudge; snake_case everywhere, including bucket keys and `data-testid`s. **(4) Also**: context-usage metadata, Claude result provenance and errors, queue-aware interrupt results, bounded `queue_recovery`, the draft DTOs (`DraftEntry`, `DraftCreateArgs`, `DraftScheduleInput`, `DraftUpdateArgs`) and `MAX_DRAFTS`, `MAX_SCHEDULED_DRAFTS`, `MAX_DRAFT_ATTACHMENTS`, `MAX_DRAFT_SCHEDULE_LEAD_MS`, `MAX_DRAFT_GRACE_SECONDS`. |
-| `apps/desktop/src/shared/sideChat.ts`, `apps/desktop/src/main/services/chat/sideChatService.ts`, `sideChatClaudeCut.ts`, `piForkCut.ts`, `sessionEntryChain.ts`, `apps/desktop/src/renderer/components/chat/SideChatToolPanel.tsx`, `sideChatState.ts`, `SideChatBadge.tsx`, `apps/ios/ADE/Views/Work/WorkSideChat.swift` | Side chats (`/side`). Shared: providers (`HANDOFF_FORK_PROVIDERS` minus Cursor), `sideChatUnavailableReason`, the command parser, the first-message role, the `<send_to_main>` parser (trailing blocks outside code) and rendering. Main: `createSideChatService` (start, end, forwarding, read-only settings); where a busy Claude or Pi chat is cut, on the chain `sessionEntryChain` walks. Renderer: the Work tools Side chat tool, per-window state, close confirmation, header and card mark. iOS mirror. See [Side chats](#side-chats-side). |
-| `apps/desktop/src/main/services/chat/crossMachineForkTransport.ts` | Fork transport plumbing. Uncompressed limits: 18 MiB main session file, 4 MiB Claude sidecars, 3 MiB transcript envelopes; base64 bounds reject before decode; `CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES` 20 MiB (under the 25 MiB envelope cap). `gzipToBase64` / `gunzipFromBase64` (max output); `enforceCrossMachineForkEncodedBudget` drops sidecars first and throws "too large, send a brief" only when main + transcript exceed it (`crossMachineForkOversizeError` → `CROSS_MACHINE_FORK_OVERSIZE`); `runCliCapture` for `opencode export` / `import` with a timeout; `validateForkTransport` re-checks a received transport (cross-machine fork support, provider match, kind allowlist, base64, traversal-safe side paths, size caps) before decode. |
-
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service (large): session lifecycle, external import (`importExternalChatSession` for every provider in `EXTERNAL_SESSION_PROVIDERS`: Claude/Codex native continue or fork, Droid/OpenCode/Pi/Copilot native continue by pointer seeding, replay copy for the rest), dispatch, events, adapters, steer queue, handoff, auto-title, lane-name suggestions, history snapshots, transcript replay and compaction, slash-command discovery (per-provider modules, `slashCommandPromptExpansion`; Cursor uses `cursorSlashCommandDiscovery`), and active-workload detection for close guards. **Naming**: lane naming and auto-title run on the one model `sessionNaming.ts` picks; an empty candidate list still gives a deterministic title/slug; branch uniqueness comes from the lane id suffix. **Codex**: non-retrying app-server failures dedupe by turn + error identity across `error` and `turn/completed` (`willRetry: true` stays a health notice); Fast is the `codexFastMode` session field for every provider advertising `serviceTiers: ["fast"]`, sent as `serviceTier: "fast" \| null` on every `thread/start` and `turn/start` (Cursor resolves it from model parameters; see [Agent Routing](agent-routing.md#provider-service-tiers-fast-mode)); goals use `thread/goal/get` / `set` / `clear`, persist in summaries, cap at 4,000 characters, send `tokenBudget: null`, and on 0.162+ carry `origin` (`"user"` for `/goal`, the controls and `daex chat goal`; `"automatic"` for thread seeding, the budget clear and fork/handoff cleanup; omitted on older servers); `applyCodexEffectiveThreadState` keeps a `requestedCodexPolicy` authoritative over an echoed older policy (`shouldPreserveRequestedCodexPolicy`) and then runs `syncLegacyPermissionMode`. **OpenCode**: renders only parts whose message id `message.updated` announced as `assistant` (unknown ids stay hidden), skips synthetic/ignored parts, and splits image `file` parts: assistant-owned → `codex_image_generation`, tool attachment → `codex_image_view` (a known image-generation tool keeps the generation card). **Mode sync**: any `updateSession` touching permission/interaction/mode fields emits a transient `session_meta_updated` (`permissionMode`, `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy` / `codexSandbox` / `codexConfigSource`, `opencodePermissionMode`, `droidPermissionMode`, `cursorModeId`, `cursorModeSnapshot`) after the Cursor policy sync, off the session-list refresh path, so other clients update composer controls live. **Environment**: guidance is built from the lane worktree (lane-scoped skill roots) and names `--session <id>` for status commands; `buildAgentRuntimeEnv(managed)` sets `ADE_CHAT_SESSION_ID`, `ADE_DEFAULT_ROLE=agent` (`orchestrator` for a lead), `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT` (Codex gets chat identity per thread through `shell_environment_policy.set`; see `codexAppServerPool.ts`); spawned agents also get `ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and a self-report line. With `session_linear_issues`, it writes `<contextDir>/<sessionId>/linear-issues.json` atomically (`writeSessionLinearIssueContextFile`; cleared when empty) and sets `ADE_LINEAR_ISSUE_IDS` + `ADE_LINEAR_CONTEXT_FILE`; attaching a `linear_issue` calls `laneService.attachLinearIssueToSession({ chatSessionId, issues, role: "worked", source: "chat_attach", includeInPr: true })` (plus `linkLinearIssues` when there is a lane; see [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection)). **Settling pending input**: `dismissPendingInputForSettlement` (**Dismiss & settle**) interrupts live Claude/Codex/OpenCode/Cursor/Droid turns, cancels waiters, removes Codex plan follow-ups, emits resolutions and persists idle before settle; single-flight per session and never a second receipt per card. `settleCodexPendingInputs` is the one Codex settle (answers open approvals, clears `runtime.approvals`, drains `pendingPlanFollowups`, cancels local `codex` and `ade` cards, one `pending_input_resolved` per card), called by every path that ends a Codex turn (`interrupt`, local interrupt finish, `turn/aborted`, teardown, `thread/deleted`, app-server `error` / `exit`, settlement). `settleClaudePendingApprovals` does the same for `canUseTool` waiters (answerable only on their query). `settleUnclaimedPendingInput` handles an answer whose asker is gone: every "waiter not found" branch of `respondToInput` emits `pending_input_resolved` and "That request is no longer active." **Claude**: always DAEX's pinned executable via `claudeCodeExecutable.ts` / `pathToClaudeCodeExecutable` (never a PATH `claude`; awaits download); query start is single-flight (`queryStartPromise`, `queryGeneration` reaps superseded starts) and reset/interrupt reap the child through `claudeSubprocessReaper`; resume runs `claudeThinkingTranscriptRepair` and the runtime self-heals the thinking-block 400; plan-mode changes go through `claudePlanMode.ts` with a notice carrying the access mode; an interrupt stops subagents first, and a `subagent_result` needs an earlier `subagent_started` (`emittedSubagentStartIds`; terminal events clear taskId and agentId aliases); a plain task run (`task_type` `other`, no agent metadata) is tracked but shows no subagent row; `run_in_background` tasks (`local_bash` / `background`) outlive turns and settle as stopped on interrupt, reset, subagent exit or host rebind (one `system_notice` for orphans; titles stay the first description); a durable per-(message id, content index) emitted-text record stops re-delivered snapshots doubling text, and thinking adds an accumulated-text match because stripped blocks shift indexes; `TaskCreate` / `TaskUpdate` keys by tool-use id and maps the ordinal id to the Nth task, ignoring unresolvable updates; an active `interrupt-replace` uses SDK priority `now` without tearing down the query. **Cursor**: interrupts during worker acquisition are recorded, a lost-race generation is released, and user setup interrupts never count as health failures; 90 s silence raises the quiet card; a transport error before any event gets at most one recycle-and-resend ([Cursor thread recycling](#cursor-thread-recycling-and-the-first-event-watchdog)); an expired token recycles the worker on the same agent id. **Steers**: `steer()` returns `AgentChatSteerResult` (`{ steerId, queued, reason?: "queue_full" }`), applies effort at delivery, and `settledSteerIds` (a per-session `WeakMap`, re-opened when a steer is requeued) gives one notice per steer. **Children**: `reportChildSpawnEnded` reports by `spawnKind` (Claude parent `priority: "next"`, Codex `turn/steer`, idle or fallback the normal path, scheduled work at the boundary; see [Spawn types](#spawn-types-and-completion-reporting)). **Fork/import seeding** (`appendImportedChatEvents`) chunks with yields, flushes at chunk ends and never live-publishes seeded envelopes. `chat.handoffSession` / `chat.prepareCrossMachineHandoff` time out at 120 s (action) / 150 s (IPC), because a brief spans brief generation and first dispatch. |
-| `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/shared/types/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx`, `useDeletedChatTranscript.ts`, `recentlyDeleted.css`, `apps/desktop/src/main/services/chat/deletedChatLocator.ts` | Settings › Deleted & Archived › Recently deleted, read from every online machine: `deleted_chats` rows from a chat or lane delete, listed only while the chat row is gone and the agent still holds the conversation; read back for the dialog; reopened through external import. Machine-local (not CRR) and never deleted, so a chat cannot return through the Claude backfill. `chat.removeDeletedChats` is user-only. See [Recently deleted chats](#recently-deleted-chats). |
-| `apps/desktop/src/main/services/chat/cliSessionLifecycle.ts` | Delete, archive, Recently deleted reopen and handoff context for tracked agent CLIs; `agentCliDisplayName` / `agentCliRowTitle` name them. See [Agent CLI sessions](#agent-cli-sessions). |
-| `apps/desktop/src/main/services/chat/cliCrossMachineMove.ts` | Moving a tracked agent CLI to another machine: which agents carry their conversation (Claude Code, Codex), packing, placing it under the lane's path (`placeCliConversation`, `rewriteCodexRolloutCwd`), the settings that travel, why a CLI starts fresh. See [Agent CLI sessions](#agent-cli-sessions). |
-| `apps/desktop/src/main/services/chat/chatRuntimeBudget.ts` | The process-wide warm-runtime budget: `MAX_CONCURRENT_ACTIVE_RUNTIMES` (5), `createChatRuntimeBudget()` with `RuntimeBudgetParticipant`s (`countActiveRuntimes`, `listEvictableRuntimes`). `enforce(excludeSessionId)` releases at most the one globally least-recently-used releasable runtime and yields when none is releasable. One per host (`main.ts`, `bootstrap.ts`), passed to every `createAgentChatService`; without one a service gets a private budget. Free of runtime types. See [Session lifecycle](#session-lifecycle). |
-| `apps/desktop/src/main/services/chat/acpHost/` (`acpConnection.ts`, `acpSession.ts`, `acpSessionPool.ts`, `acpRuntimeCoordinator.ts`, `acpEventTranslator.ts`, `acpProtocolTypes.ts`, `acpMcpServers.ts`, `acpDialects/*`, `fixtures/*`), `apps/desktop/src/shared/acpProviderMetadata.ts` | The ACP host for Qwen, Kimi, Grok, Devin and Antigravity (`agy_acp_server`; [antigravity-provider.md](antigravity-provider.md)); Copilot has its own SDK worker ([copilot-sdk-provider.md](copilot-sdk-provider.md)). ACP v1 over stdio to DAEX's pinned copy of each CLI (the [tools cache](../onboarding-and-settings/agent-tools-cache.md), never the user's install); dialects declare quirks and the handshake picks methods. `acpProtocolTypes.ts` mirrors the schema (no SDK dependency) and tolerates unknown kinds and statuses; `fixtures/` holds captured `initialize` handshakes; `acpProviderMetadata.ts` owns labels, login commands and config-home names. Spec: [acp-providers-spec.md](acp-providers-spec.md). |
-| `apps/desktop/src/main/services/chat/museSdkHost.ts`, `museSdkEventMapper.ts`, `museSessionSupport.ts`, `apps/desktop/src/main/services/ai/museAuth.ts`, `museExecutable.ts`, `museSettingsService.ts`, `apps/desktop/src/main/services/usage/museLiveQuota.ts`, `apps/desktop/src/shared/museSettings.ts` | Muse Code over the Muse Session Protocol: one pinned `muse serve` per chat driven through the SDK `Connection` on DAEX's `DuplexTransport` (DAEX spawns it so it can end the whole tree), notifications routed by `sessionId`; the event mapper (items, per-turn tokens); the pure half (turn input, MCP servers, cards, effort, subagent controls); `museAuth.ts` reads Muse's credential file; `museExecutable.ts` resolves or installs the pin (`apps/ade-cli/src/services/tools/muse.ts`); a per-visit Settings host; `museLiveQuota.ts` holds the header meter's reading. See [agent tools cache](../onboarding-and-settings/agent-tools-cache.md#muse-a-direct-file-pin). |
-| `apps/desktop/src/main/services/chat/sessionNaming.ts` | The one home for naming (lane identity, auto-title, metadata regeneration, lane-name suggestion): the three prompts, the lane-identity schema, `MAX_NAMING_WORDS` (six, a guideline: long answers are clamped, never rejected), `isProviderLevelNamingFailure` (missing CLI, auth, quota, usage limit or 429, an account that cannot run the model including "not supported when using X with a Y account"; not "not supported for/on/by", which still tries a sibling), `buildNamingModelCandidates` / `buildSessionIntelligenceModelCandidates` (exactly one model: the cheap helper for Claude, Codex or Cursor, the chat's own model otherwise, so content never goes to another vendor), and `runNamingAcrossProviders` (up to three attempts; a provider failure skips that provider's models; a null `run` lets the next try; `shouldStop` aborts on a user rename). Metadata parsing ignores extra keys and extracts fenced objects. |
-| `apps/desktop/src/main/services/chat/sessionMetadataService.ts` | Explicit title / lane-name / status-line regeneration in one JSON call, sending only what each field needs (status: identity + last assistant paragraphs; title: this transcript; lane name: sibling threads + git vs base), on the chat's own account. When no model answers it applies nothing: fields go to `skipped` and `generationError` names the cause (for example `Claude failed: … (HTTP 429)`, `The AI returned no usable names.`, `No AI model is available to generate names.`), shown as `Generate name failed: <reason>`. It never guesses a name from the transcript (the excerpt starts with `…(earlier omitted)` and mid-sentence words). On Codex 0.164+ with no names it asks the chat's own thread (`thread/sample`, `codexThreadSample.ts`) with sibling threads and git as context; a sample the chat moved past changes nothing. |
-| `apps/desktop/src/main/services/chat/spawnMissionOwnership.ts` | Who a spawned child works for, in one place. Wake vs quiet is the child's `spawnKind` (`subagent` always wakes, `peer` never). `isHumanChildMessage` / `countHumanChildMessagesForTurn` / `formatHumanChildMessageAnnotation` add `The user also sent N message(s) to this chat.` (parent dispatches, scheduled wakes, relays, host continuations and orchestration origins are not human). `HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS` / `stripHostAuthoredMessageProvenance` strip provenance at every untrusted entry (RPC edge, automation bridge). |
-
-| `apps/desktop/src/main/services/chat/chatMentionService.ts` | The composer `@` service (chats, lanes, terminals, PRs, account machines, MCP servers), built inside `agentChatService` with injected deps. **Suggestions** (`chat.listMentionSuggestions`, daemon-routed, read-only; a viewer-allowed sync command for iOS): one 1.5 s roster cache with one in-flight promise per typing burst; kinds read in parallel and fail alone. PR rows are local `prs.listAll` open/draft rows (`#<n> <title>`, `{ number, state, checks }`; no GitHub call). Machine rows come from the directory and account Activity read inside the brain (`accountMachineMentions`, wired in `main.ts` / `bootstrap.ts`), never the CTO-only `account.listMachines` / `attention.getSnapshot`; that read has a 30 s cache and a 4 s timeout, a menu waits at most 800 ms for it, online machines sort first, and this computer says "this machine" (one row builder, `accountMachineMentionSuggestion`, shared with the window). **In the window** (`renderer/components/chat/chatMentionClientRows.ts`): the pane also lists the account's machines from the window's shared list (`fetchAccountMachines`: 15 s, dropped on an account change; an 800 ms wait, started with the machine's read; a failed read pauses 5 s) when the machine's answer has none; a chat whose DAEX Cloud computer rests or is gone asks it nothing and lists its saved chats, lanes and open PRs from the Work slice; `chatMentionMenu` fills only kinds the machine left empty and ranks with `rankChatMentionMenu`, as the brain does; lane, PR and chat rows come from the same builders in `shared/chatMentions.ts` (`laneMentionSuggestion`, `prMentionSuggestion`, `chatMentionTitle`). MCP rows come from the brain's cached registry (on/off or expired sign-in, transport); tool names and the last error sit in a bounded cache, errors redacted against caller MCP secrets; no secrets are returned. A leading kind word (`pr`, `mac`/`machine`, `mcp`/`server`, `chat`, `lane`, `term`) narrows to one kind; an empty query returns recent rows per kind; anything else is one mixed list (caps in `shared/chatMentions.ts`). **Send-time expansion**: `applyChatMentionExpansion` gives the provider `<ade-mention>` blocks (identity, a ≤1 KB CRLF-normalized neutralized preview, double-quoted `daex chat read` / `daex lanes show` / `daex terminal read` / `daex search` commands that paste into sh, PowerShell and cmd) while `displayText` keeps the chips. Idempotence is a module-private Symbol (structured clone strips it); `steerWithOptions` is the one steer-side owner; slash rewrites re-attach blocks (`carryChatMentionBlocks`). Lane details never read git state from `lane.status` (unprobed equals clean). `@pr:` is status only from the local row (number, repo, state, review, checks + reason, ± lines, conflicts, behind-base, head/base, lane, URL, last sync) and names `daex prs show\|checks\|comments <id> --text`. `@mcp:` points at a registry server on the chat's machine (state, transport, up to 32 tool names, redacted last error); it grants no tools; its chip opens this computer's MCP Settings for that server. `@mac:` is read fresh at send (`shared/accountMachineSnapshot.ts`: name, platform, presence, sleep, projects, lanes, up to five recent chats from Activity; `inventory` holds only provider/preset counts), says the agent may only read from it unless asked, and names `daex machines show <key> --text`; an unavailable directory gives the unresolved block with the reason. `onMentionsExpanded` fires once per send that gained blocks. |
-| `apps/desktop/src/shared/chatMentions.ts` | Pure mention grammar for desktop, the web mock and iOS (`WorkChatMentionDetector`): `@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` / `@mcp:` from one prefix table. Ids fit `[A-Za-z0-9._-]+` (PR: the row UUID; machine: the 32-hex directory key, else device id, else `x.`+hex via `machineMentionId`). `parseChatMentionKindFilter` (order: `CHAT_MENTION_KINDS`; word-boundary, so emails never match); `renderChatMentionBlock` escapes attributes, cuts previews on lines and neutralizes forged `<ade-mention>` tags and headers; `rankChatMentionSuggestions` (exact > prefix > substring > subsequence, then recency, then id; kind never sorts); `rankChatMentionMenu` (the one menu rule from per-kind rows: kind filter, per-kind caps on an empty query, else one ranked list); caps 16 menu rows, 12 expansions, 1024-char previews. Types in `shared/types/chatMentions.ts`. |
-| `apps/desktop/src/renderer/components/chat/composerModelChip.ts`, `ModelChipSegmentMenu.tsx` | The composer model chip: maker logo (`ModelRowLogo`), thinking level as text in the effort control's colour, permission as the picker's icon and colour (route marks live in `@` rows). Its option list reuses the footer pickers' shapes (effort's segmented track, permission's vertical list) with one sliding highlight, an `EffortMeter`/glyph header and short labels on long ladders. |
-| `apps/desktop/src/shared/composerAtMenuRanking.ts`, `apps/desktop/src/shared/slashCommandSections.ts` | `@` / `/` rankers for `ChatCommandMenu`. `@` scores files, chats, lanes and terminals together (file title = full path, subtitle = basename). `/` uses exact > prefix > word-prefix > substring, scattered letters only as a last resort, and groups rows as command, skill (`plugin:x`) or MCP prompt (`server:name`). |
-| `apps/desktop/src/shared/modelPermissions.ts` | The per-provider permission vocabulary for the chip and footer: modes and labels (Claude `default`→"Manual" … `bypassPermissions`→"Bypass", Codex presets, OpenCode, Cursor modes, Droid tiers), the fresh-chip default, and the map from a stored value (native or generic) to the CLI's `--permissions` word. |
-| `apps/desktop/src/main/services/chat/claudePlanMode.ts` | Claude plan-mode transitions. Entering sets `claudePermissionMode = "plan"` and stashes the access mode in `claudePrePlanAccessMode` (persisted); leaving restores it. `isSessionInPlanMode` is the one predicate for the `ExitPlanMode` gate. Moving the access mode is what makes plan mode real: a bypass session otherwise reads as bypass and auto-approves the plan. See [Agent Routing](agent-routing.md#interaction-mode). |
-| `apps/desktop/src/main/services/chat/turnEndQuestionCheck.ts`, `turnEndAsk.ts` | The turn-end question check, for a chat that reads as running because it owns live background work. `createTurnEndQuestionCheck` keeps the last assistant message verbatim (raw deltas) and `classifyTurnEndAsk` returns ask / not_ask / unsure. A clear blocking ask raises the hand (`turn_end_question`). An unsure ending goes to Jev (`ai.jevDecide`, feature `turn_end`, background, any provider): `asksUser` ≥ 0.8 raises, ≤ 0.2 does not, else (or `null`) the provider's cheap model decides (`{asksUser}` JSON, 8 s, fresh temp dir, quiet failure; Claude, Codex, Cursor only). The same Jev call asks `waitingOnOwnWork`; at ≥ 0.8 with live background work or a live launched chat and no hand, the summary gets `awaitingOwnWorkAt` (brain memory only, cleared by the next turn or user message, refetched via `session_meta_updated`), read as Waiting. Turns with only live child chats get Jev but never the cheap model. A turn without live background work raises only for a clear rules ask that Jev confirms (≥ 0.8). Only a present blocked state or a stated prerequisite is a blocking cue; conditional opt-in offers are not. A timestamped next-turn start clears only an older `turn_end_question` marker. A user message or turn start cancels a pending tiebreak; repeated starts are idempotent. Subagents, open approvals and a raised hand are skipped. |
-| `apps/desktop/src/main/services/jev/jevService.ts`, `jevTally.ts`, `jevZenCredential.ts`; `shared/jevSettings.ts` | Jev ([Jev decisions](#jev-decisions)): the route chain (free, Zen credit, DAEX bonus) with a breaker per route, the daily tally, the OpenCode Zen sign-in reader, and which Smart decisions switch gates each feature. |
-| `apps/desktop/src/main/services/chat/awaitingOwnWorkTracker.ts`, `statusLineStaleCheck.ts`, `settleNudgeSweep.ts` | Jev chat checks: the awaiting-own-work marker, the stale status-line regen, and the settle-nudge sweep (every 30 minutes, at most 10 calls, skipped while `status().answerable` is false; a switched-off setting hides this machine's verdicts within a minute). |
-| `apps/desktop/src/main/services/pty/cliStatusInspector.ts` | The idle-terminal check: request (last 40 lines, 200 characters each, 4 KB total, `redactSecrets`) and verdict; `ptyService.ts` decides when and raises `cli_prompt`. |
-| `apps/desktop/src/main/services/chat/nextPromptSuggestion.ts` | Next-prompt suggestion for providers without a native one (`ai.chat.promptSuggestionsEnabled`): after a completed turn with no open card, no subagent parent and no background work, one helper call (fresh temp dir, 15 s, quiet failure) returns `{suggestion}`, cut to one line of 120 characters, emitted as live-only `prompt_suggestion` unless a user message or turn start came first. `sanitizePromptSuggestion` also flattens native Claude suggestions. Codex uses `ai.chat.codexPromptSuggestionsEnabled` and falls back to `sampleThread` only when the helper throws or has no model. See [Next prompt suggestions](#next-prompt-suggestions). |
-| `apps/desktop/src/main/services/chat/codexThreadSample.ts` | Codex `thread/sample` (0.164+, experimental): one answer on a hidden ephemeral fork of an idle chat's thread. The prompt fits Codex's 4,000-byte cap (never half a surrogate pair); one sample per chat at a time; a 429 pauses that account's sampling for Retry-After (default 60 s, max 10 min). Outcomes `answered` / `stale` (dropped) / `unsupported` / `failed`, each logged as `agent_chat.codex_thread_sample`. Only a fallback after the cheap helper fails. |
-| `apps/desktop/src/main/services/chat/codexPlanHandoff.ts` | The plan-approval state machine behind **Implement in a new chat**, shared by the desktop card, the phone, the web client and `daex chat respond --new-chat`. Owns the per-chat decision claim (`beginAnswer` / `handoff`) that makes one plan card take one answer even when two clients press at once, and the `CodexPlanHandoffRecord` ledger (`itemId` → reserved implementation chat id) persisted on the source chat. The record is written before the destination exists, so a timeout, an `ENOSPC` or a brain restart reopens the same chat instead of creating a second one; a destination that never received the plan is dropped again, and one that was deleted puts the card back. `complete` refuses to settle the card until the destination's `user_message` carries the plan marker. |
-| `apps/desktop/src/main/services/chat/codexErrorPresentation.ts` | Actionable Codex refusal cards, read from structure, not wording: `ModelProviderError` in a JSON-RPC error's `data` (from 0.166 a thread stays tied to its model provider, so `thread/resume` and input RPCs refuse it under another), and `modelNotFound`. A refusal fall-forward can answer keeps its own notice. |
-| `apps/desktop/src/shared/codexDaybreak.ts`, `apps/desktop/src/shared/codexImageGeneration.ts` | Codex 0.164 shapes. `codexDaybreak.ts` reads `availableAccessPrograms.cyber` from `model/list` to decide whether Daybreak is offered (`codexDaybreakProgram`, `readCodexCyberAccessPrograms`); the switch is in the effort picker and travels as `AgentChatSession.codexDaybreak`. `codexImageGeneration.ts` recognizes results without inline bytes (`fileId`, edit `inputImagePaths`) so the card never claims an image it cannot show. |
-| `apps/desktop/src/main/services/chat/parentWakeBatcher.ts` | `createParentWakeBatcher`: an idle parent's wake waits while a sibling subagent runs (up to `PARENT_WAKE_BATCH_HOLD_MS`, 15 s), so children finishing together wake it once; a busy parent takes each result inline. Each child's promise settles with its batch, and completion rows are written after the wake lands. See [Spawn types](#spawn-types-and-completion-reporting). |
-| `apps/desktop/src/main/services/chat/childReportText.ts` | What a parent reads for one child turn: `boundChildReport` (the child's final message, lines kept, its last `CHILD_REPORT_MAX_CHARS` behind a cut marker, an open fence reopened) and `composeChildWakeText` (headline, optional relink line, report). |
-| `apps/desktop/src/main/services/chat/childAncestry.ts` | Where a subagent reports when its parent is deleted: the machine-local deleted-parent link file, `nearestLiveAncestor` (walk up, skip put-away chats, else the project's CTO unless it sits below the child) and `relinkedReportNote`. |
-| `apps/desktop/src/main/services/chat/chatLaunchDefaults.ts` | Machine launch defaults (last model and permission/effort) at `<ADE home>/chat-launch-defaults.json`, served by `chat.getLaunchDefaults`. Only a person's top-level Work chat writes it. See [Agent Routing](agent-routing.md#machine-launch-defaults). |
-| `apps/desktop/src/shared/steerOrder.ts`, `apps/desktop/src/renderer/components/chat/usePendingSteerReorder.ts` | Queue reordering: `moveSteerId` / `applySteerOrder` for the service (`moveSteer`, `queue_reordered`) and renderer; `usePendingSteerReorder` is drag and keyboard (↑/↓/Home/End) reorder with an optimistic order until the host confirms. `queuedSteersCanReorder` is false for Codex, OpenCode and Muse. See [Composer and UI](composer-and-ui.md). |
-| `apps/desktop/src/main/services/chat/draftService.ts`, `draftDelivery.ts`, `draftScheduler.ts` | **Drafts and scheduled sends** ([Drafts and scheduled send](drafts-and-scheduled-send.md)). `draftService`: the store over the PK-only CRR table `prompt_stashes` (a CRR cannot be renamed). A row is `draft` or `scheduled`; reads carry `attachmentCount` and `attachmentsAvailable` (a runtime without the image bytes sees no paths). Validation: text ≤200,000 chars, ≤10 image attachments, a schedule ≤1 year out with an explicit existing- or new-chat target and a captured provider/model/permission/thinking config. `claimDraft` is read-then-delete (the delete is the claim); `claimScheduledDraft` flips `scheduled`→`sending`. Retention: 20 drafts and 50 finished sends, never pruning `scheduled` / `sending` / `blocked`; `listDraftAttachmentPaths` protects draft images from the temp sweep. `draftDelivery`: holds while an image has not arrived (`retry`), applies lateness (`wait` late, `strict` missed, `grace` missed after its window), creates a new-chat target or blocks on a gone chat, treats a thrown send as `retry`. `draftScheduler`: the table is the only state; every tick re-reads due rows and claims each before delivery, so restarts, syncs and edits apply on the next arm. |
-| `apps/desktop/src/main/services/chat/providerResumeClassifier.ts` | Classifies Codex resume failures (missing thread vs MCP/environment vs transient transport); rollout-file evidence keeps a known thread from being called missing. |
-
-| `apps/desktop/src/main/services/chat/providerThreadMove.ts` | Copies one Claude or Codex thread between account config homes so a chat can change account and keep its conversation. `providerThreadIsInHome` (Claude: `findClaudeThreadFile` / `claudeThreadCandidates` over `<home>/projects/*/<id>.jsonl`; Codex: `findCodexThreadRolloutPath` for a v7 id, else the full `findCodexRolloutPathBySessionId` walk); `findInstanceHoldingThread` returns the holder, default first, which `agentChatService.resolveSessionInstance` uses to pin an account-less chat. See [Provider accounts](#provider-accounts). |
-| `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | A continuity `system_notice`: quiet "Reconnecting…" / "Reconnected" while DAEX rebuilds a lost thread, and a `Banner` with "Try again" and "Start a new chat" only when that failed. See [Storage and recovery](../storage-and-recovery/README.md#durable-metadata-and-chat-continuity). |
-| `apps/desktop/src/main/services/chat/continuityConversation.ts` | `formatContinuityConversation`: what a rebuilt thread receives, the conversation verbatim (messages and replies first, tool steps condensed into the rest, newest first). |
-| `apps/desktop/src/main/services/chat/chatScheduledWorkScheduler.ts` | The durable mirror and wake coordinator for DAEX action schedules, Claude `ScheduleWakeup`, successful `CronCreate` and `/loop`. DAEX's mirror is the source of truth; Claude's native scheduler is an advisory fast path with 90 s to claim a due record before DAEX's timer fires. A schedule due during an active Claude, Codex, Cursor, Droid or OpenCode turn, or while an accepted send's turn is still starting (`turnAcceptedAt`), stays armed and retries every 20 s (never the turn's input queue). A chat takes one scheduled delivery at a time, Run now included: a second wake due on the same tick waits until the first send returns (then `turnAcceptedAt` defers it), or 60 s if it never returns (logged `agent_chat.scheduled_work_delivery_hung`); CLI rows wait for `ptyService` to confirm a composer boundary; expiry still applies. Native no-id cron claims touch only due CronCreate rows. Versioned records, provider ids, expiry/terminal times and per-chat pause live in the project `kv` store; they re-arm on start, overdue work fires once late, and transitions go back to `agentChatService`. Startup drops pre-1.2.27 `cron-tool:` placeholders, quarantines older active provider rows as paused, and keeps terminal history to 200 rows or seven days. Time, timer and persistence are injected. |
-| `apps/desktop/src/main/services/chat/claudeCliScheduledWork.ts` | The same mirror for a tracked Claude Code **CLI** (`createClaudeCliScheduleMirror`). At each turn end and at exit, `mirrorClaudeCliScheduledWork` reads the session JSONL (`<config home>/projects/<cwd>/<session>.jsonl`, the DAEX account's home or `~/.claude`) from the last byte offset (first read: the last 512 KiB) and takes every successful `ScheduleWakeup` (`toolUseResult.scheduledFor`), `ScheduleWakeup {stop}`, `CronCreate` (`toolUseResult.id`, `recurring`) and `CronDelete` newer than `claude-cli-schedule-mark:<session>`; a wakeup older than the log's newest record already fired and is skipped. Rows are `cli-claude:<ptyId>:wakeup:<toolUseId>` / `cli-claude:<ptyId>:cron:<id>`. While that pty is alive, Claude's scheduler runs the wake and DAEX's row only settles ("Run by the Claude CLI's own scheduler"); once it is gone, DAEX delivers through `ptyService.sendToSession`, reopening the CLI if needed. Claude Code only; other CLIs have no wake tool. |
-| `apps/desktop/src/main/services/chat/externalChatHistoryImport.ts` | Converts external Claude JSONL and Codex thread turns into `AgentChatEventEnvelope` rows and exports the builders `externalSessions/events/` reuses. Reads at most the last 32 MB, keeps the newest 2,000 content events, notes provenance and truncation, drops metadata-only wrapper rows without stripping user JSX/XML, keeps failed Claude tool-result status, maps text, tools, file changes, commands, search and images, and derives a fallback title. |
-| `apps/desktop/src/main/services/chat/runtimeEvents.ts` | The canonical runtime event vocabulary (`turn.*`, `content.delta`, `tool.*`, `subagent.*`, teammate/task events, compaction boundaries) and shims to `AgentChatEvent` rows. Claude emits canonical `subagent.started` / `subagent.progress` beside the older rows. A subagent ends once: `agentChatEventToRuntimeEvent` does not translate `subagent_result`, so no paired `subagent.completed` is minted (clients would count it twice); `subagent.completed` exists only as an inbound shape and a stored transcript type. |
-| `apps/desktop/src/main/services/chat/contextCompactionEmitter.ts` | Normalizes Claude, Codex, OpenCode, Cursor and Droid compaction events into provider-tagged `context_compact` rows: paired boundaries, reported token counts and duration, the per-session count. |
-| `apps/desktop/src/main/services/chat/hostSleepChipTracker.ts` | The **Paused — computer asleep** chip. Subscribes to `MachinePowerSource` (`hostPowerSource`; `getPowerStateService()` on desktop, `borrowSharedMachinePowerSource()` in the brain) and on suspend emits one `system_notice` per session with a turn in flight, keyed by a per-suspend `sleepId` and the turn id, so the wake resolves the same row. Owns `holdRetry`, which decides whether a provider retry belongs to the suspend. |
-| `apps/desktop/src/shared/hostSleepNotice.ts` | The pure half: `host_asleep` / `host_awake`, the strings, `shouldAttributeRetryToHostSuspend`, `hostSleepNoticeMergeKey`. |
-| `apps/ade-cli/src/adeRpcServer.ts` | The action-policy boundary and the mixed-version kickoff shim: launchers send a first prompt through `chat.messageSession`; a DAEX ≤1.2.41 `chat.sendMessage` is normalized only when the target is the caller's still-blank direct child. Every other cross-session send is denied. |
-| `apps/desktop/src/shared/modelRegistry.ts`, `apps/desktop/src/renderer/components/shared/ModelPicker/modelCatalog.ts` | Static model descriptors and the renderer merge of host catalogs. Codex follows its catalog (GPT-6.1 Sol first and default); runtime reasoning ladders keep provider order (the Lunas end at Max; Max precedes Ultra for Astra, the Sols and Terra). |
-| `apps/desktop/src/main/services/builtInBrowser/` | The in-app browser broker and security boundary. **Calls**: `navigate` / `createTab` wait at most 20 s for load, then answer with the tab as it is; an aborted load is not an error; a network failure is recorded on the tab, not thrown; a guard-stopped navigation reports stopped; Windows drive or UNC paths are refused, never read as hosts. **Profiles**: `builtInBrowserService.ts` uses one `persist:ade-browser` profile for remote content, with tab collections per window and project/personal collection. An isolated tab (`daex browser open --isolated` / `--profile <name>`) gets an in-memory partition (`builtInBrowserIsolation.ts`) keyed by window service, chat or lane, and profile, with the same permission, network, WebAuthn and download setup; popups inherit it; it is never restored; the last tab's close wipes it and the next tab waits for the wipe and reuses the partition. A tab's sign-in is fixed at open, `open` reuses only a tab in the asked sign-in, and an isolated open never forwards to another desktop. `builtInBrowserProfileMigration.ts` merges unexpired persistent cookies from this channel's project partitions once (global wins, session cookies skipped; the old directories stay because storage, IndexedDB, workers and WebAuthn cannot merge). **Restore** (`builtInBrowserStateStore.ts`): bounded HTTP(S)/blank URLs, ids, openers, lane group and active tab; never agent ownership, light sessions or synthesized cookies; an agent's tab returns only when a person kept it; one-time OAuth pages are never saved. **Service**: caps each collection (tab limit 1–50, 20 by default, saved only once chosen), routes network events by webContents id, keeps OAuth openers, sanitizes download names, captures observations/traces/selections, tracks per-tab owner and lease. **Modules**: `builtInBrowserAuthentication.ts` (unsaved HTTP/proxy prompts, explicit client certificates), `builtInBrowserPermissions.ts` (deny-by-default per requesting/embedding origin), `builtInBrowserAgentAccess.ts` (machine-wide master switch, on by default, plus all/lanes/chats grants; outside AI apps are stamped `agentCaller`; a navigation or popup needing access waits for the person), `builtInBrowserSettings.ts` (tab limit, download folder, standing camera/mic/location grants, all off; a per-site Block wins), `builtInBrowserClipboard.ts` (text, HTML, image), `builtInBrowserDownloads.ts` (receipts a wait resolves on), `desktopBridgeServer.ts` (the owner-only bridge socket, no secret or per-chat token, trusting the runtime's chat/lane/collection tags; dispatches through `builtInBrowserAgentDispatch.ts`, also used by `builtInBrowserRemoteCalls.ts`), `builtInBrowserRecordingViewport.ts` (1280×800 while recording), `builtInBrowserPanelRectSettler.ts` (a parked tab's pane size), `builtInBrowserNavigation.ts` (protocol policy), `builtInBrowserWebAuthn.ts` (credential account choice). Unbound or elevated callers cannot force takeovers, forge scope, read another agent's tab, read cookie-domain diagnostics or administer permissions. **Presence**: `builtInBrowserPresence.ts` derives "an agent is using the browser" from commands (touched per chat-carrying call, held while recording, cleared on close or login handoff, expiring 20 s after the last command; see [An agent is using the browser](#an-agent-is-using-the-browser)); `builtInBrowserPresenceRouter.ts` turns that into per-window events (transitions, the shared project-scope projection, the subscription, close/dispose hooks). Scratch observations live under `.ade/cache/browser-observations/` (personal: user-data `browser-observations/personal/`), promotable through the proof broker's import allowlist. Backs `ade.builtInBrowser.*` for `ChatBuiltInBrowserPanel` and `openExternal.ts`. |
-| `apps/desktop/src/shared/types/builtInBrowser.ts` | Browser types: `BuiltInBrowserStatus`, `BuiltInBrowserTab` (owner/lease, `isLaunchpad` for an unnavigated "New tab", `faviconUrl` cleared on cross-origin navigation, `emulation` as the letterboxing contract), `BuiltInBrowserSession`, `BuiltInBrowserContextItem` (`built_in_browser_element` \| `built_in_browser_capture`), `BuiltInBrowserSelectResult`, `BuiltInBrowserScreenshot`, observation / DOM snapshot / element map, diagnostics and trace DTOs, agent action args (click, type, key, scroll, fill, clear, wait), `BuiltInBrowserOpenPanelArgs`, and `BuiltInBrowserEventPayload` (`status`, `open-request`, `selection`, `selection-cleared`, `found-in-page`, `diagnostics`, `dev-server-detected`, `error`). Navigate / create / switch args take `openPanel: boolean` to open the Browser tool with the navigation. |
-| `apps/desktop/src/shared/types/personalChats.ts` | The personal-chat action, capability, result, queue-policy and event contract over `AgentChatSession`. `PersonalChatCapabilities` may advertise `pushEvents` and `mcpServers`, so clients can tell a runtime that supports them from an older one. |
-| `apps/desktop/src/shared/mcpRegistry.ts`, `apps/desktop/src/main/services/chat/mcpRegistryLaunch.ts` | The MCP registry: servers defined once in Settings (`mcp.servers` account setting, off lists per computer and repository, secrets in the vault), resolved per chat launch. See [MCP servers](../onboarding-and-settings/mcp-servers.md). |
-| `apps/desktop/src/shared/callerMcpServers.ts` | Caller-injected MCP: validation (name, url, transport, reserved DAEX names, `MAX_CALLER_MCP_SERVERS`), per-provider `CALLER_MCP_SUPPORT` (level, mechanism, residual, delivery) and `resolveCallerMcpCapability`, the one report from `createSession` and model switch. Shared by desktop and ade-cli; summarized by `@ade-dev/sdk`. |
-| `packages/sdk/` | The embeddable sidecar client. See [DAEX SDK](../sdk/README.md). |
-| `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds Claude SDK user messages for `query()`: base64 image blocks and MIME inference. |
-
-| `apps/desktop/src/shared/attachmentLabels.ts` | The `[Image #k]` / `[File #k: name]` grammar ([composer doc](composer-and-ui.md#source-file-map)). Every runtime puts the label right before each attachment it sends, so the number the user types names what the model gets: Claude v2 prefixes each block; OpenCode's `buildStreamingUserContent` and the v1 "Attached context" hint carry it; Codex's `buildCodexAttachmentInputItems` emits a text item before each `localImage` / `mention` (start and steer); Cursor and Pi/Droid send images in list order and end the prompt with `formatAttachedImageLegend`. A reference-only attachment (`hydrate: false`) is labelled too. |
-| `apps/desktop/src/main/services/chat/sessionTurnLimits.ts` | `runSessionTurn` limits: `clampTurnTimerMs` (15 s floor, Node timer ceiling), `trackTurnInFlight` (open tool calls, commands, foreground subagents and approvals keep the stop-when-idle watch off; background subagents do not), `SessionTurnAbandonedError` (chat ended, deleted, disposed or shut down mid-turn; do not retry). |
-| `apps/desktop/src/main/services/chat/claudeInputPump.ts` | The async input pump feeding live user turns into Claude `query()`. |
-| `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Runtime system-prompt assembly: native-subagent vs DAEX-child guidance and the scheduled-work contract. |
-| `apps/desktop/src/shared/claudeGuiSlashCommands.ts`, `claudePermissionDialog.ts`, `claudeAgentSdkFields.ts`, `chatSubagentTree.ts`, `chatTurnStatus.ts` | Claude Agent SDK GUI adapters: drop terminal-only commands (`/exit`, `/quit`, `/statusline`, init `terminal_slash_commands`); `default_to_no` options and `suppress_always_allow_rule`; ambient / `skip_transcript` housekeeping; spawn-depth tree connectors; `chat.getTurnStatus` for `daex chat status`. `chatTurnStatusRow(key, text)` owns the key column width and `formatChatTurnStatus(status, {extraRows})` puts extra rows inside the key/value block (after the subagent tree they read as subagents); the CLI `resume` line uses both. |
-| `apps/desktop/src/main/services/chat/claudeSdkCompat.ts` | Claude SDK shims: the interrupt receipt (`still_queued` / `cancelled`), rewind `skippedLinks`, a message's model across shapes, and `claudePluginDeliveryForSource` (`"initialize"` over stdin for bundled / tools-cache binaries, argv for a user binary DAEX cannot vouch for). |
-| `apps/desktop/src/main/services/chat/claudeThinkingTranscriptRepair.ts` | Repairs Claude JSONL where distinct assistant responses reused one `message.id`: rekeys later responses before resume, keeping threading, tool ids, thinking content and signatures. |
-| `apps/desktop/src/main/services/chat/chatEnvelopeSpliceRepair.ts` | Resume-time repair of envelope streams whose Claude text fragments lack the stable SDK message id: only runs of three or more text envelopes in one turn with distinct ids, rebuilt from SDK text when possible, else merged; other lines verbatim; files over 64 MB skipped; atomic rewrite with a one-time `.splice.bak`. |
-| `apps/desktop/src/shared/claudeSessionQuota.ts` | Classifies hard Claude session-quota rejects (`session limit`, non-`allowed` `rate_limit_event`), parses reset clocks and builds the sticky `claude_session_quota` `ade_card`; `allowed_warning` stays a quiet notice. |
-| `apps/desktop/src/main/services/chat/claudeSubprocessReaper.ts` | Tracks Claude SDK subprocesses, ends them at shutdown, and keeps a tmpdir registry (`ade-claude-subprocesses.json`) so a crashed owner's children are reaped next start. **Both platforms kill the tree, never the leaf**: an SDK process owns 2–4 MCP servers with children, and a leaf signal or leaf SIGKILL orphans them. Windows uses `taskkill /T /F` (`terminateProcessTree` / `killWindowsProcessTree`) for SIGTERM, SIGKILL and the stale-registry reap. POSIX spawns the child `detached` (its own group) and signals `-pid`, falling back to the handle, then the pid. A stale record is checked with one `ps -o pgid=,etime=,command=` read: the command line must match, the pid must not be younger than its record (one minute of slack; younger means recycled), and group leadership allows one group signal. Interpreter names (`node`, `electron`, `ade`) are not identity, and the reaper never signals its own pid. An unreadable answer is still reaped as a single pid. `recordsForSession` feeds `daex session show`. Each child allows 20 listeners per event: about a dozen `exit` listeners pile up over one process's life (Node's abort-signal one, Sentry's, DAEX's three, the SDK's seven while it shuts down), none per turn, and Node's default of 10 printed a false `MaxListenersExceededWarning` at every Claude shutdown. |
-| `apps/desktop/src/main/services/chat/claudeOutputStyles.ts` | Discovers Claude output styles and plugins, and reads settings (`readClaudeOutputStyleSelection`, `readClaudeWorkflowSizeGuideline`) across the SDK's own file chain (`null` when undeclared). Project roots are walked; marketplace plugins load only from the installed-plugin registry when enabled. The user root and registry come from `claudeConfigHome()` (honours `CLAUDE_CONFIG_DIR`; the real `~/.claude` leaves the ancestor walk when it moved); roots dedupe through `pathKey` / `pathsEqual`. |
-| `apps/desktop/src/main/services/chat/markdownSlashCommandDiscovery.ts` | The shared markdown command engine: frontmatter (strict YAML, then each failing top-level key re-read as one quoted string, so an unquoted `: ` or `[` keeps name, description, `user-invocable` and `disable-model-invocation`), filesystem walk, command/agent/skill discovery, resolution, `$ARGUMENTS` expansion, ancestor roots, dedupe. Used by the Claude, Codex and Cursor discovery modules. |
-| `apps/desktop/src/main/services/shared/providerConfigHomes.ts` | Each CLI's config home (`claudeConfigHome`, `codexConfigHome`, `factoryConfigHome`) and the config-ownership rule. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` name the directory; `FACTORY_HOME_OVERRIDE` replaces the HOME `.factory` is appended to. See [Provider config ownership](agent-routing.md#provider-config-ownership). |
-| `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Claude commands (ancestor and home `.claude/commands/**/*.md`) and skills (`getAgentSkillRootCandidates()`: `.claude/skills`, `.agents/skills`, `.ade/skills`, `.cursor/skills`, `.codex/skills`, env roots, bundled resources, `*/SKILL.md`), enriching `chat.slashCommands` and prompt context. |
-| `apps/desktop/src/main/services/chat/cursorSlashCommandDiscovery.ts` | Cursor commands from `.cursor/commands/**/*.md`, `.cursor/agents/**/*.md`, built-in subagents (`/explore`, `/bash`, `/browser`) and skill roots, for Cursor's `chat.slashCommands` and expansion. |
-| `apps/desktop/src/main/services/chat/slashCommandPromptExpansion.ts` | The one slash pre-expansion for every provider and path (send, steer, queued steer, scheduled wake, parent wake, kickoff): a leading `/<name>` resolves to its markdown body (`$ARGUMENTS` substituted) from `.claude/commands`, `.claude/skills`, `.agents/skills`, `.ade/skills`, user and bundled roots, Codex `.codex/prompts` and Cursor `.cursor/commands`. Names in `harnessCommandNames` (built-ins and advertised commands) go to the harness, so its own `/name` wins. OpenCode sends only a listed name to `session.command` (other `/word`s go as text); ACP sends only an advertised command bare. |
-| `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming text (100 ms); each flush has a reason (`timer`, `identityBreak`, `interleave`) recorded as `chatTextFlush` during a perf run. |
-| `apps/desktop/src/main/services/perf/chatTextProbe.ts` | Perf-run probe on the coalescer: `chatTextFlush` (chars, deltas, ms since last flush, reason, pid). Free when `ADE_PERF_RUN_ID` is unset; calls `initPerfRunFromEnv()` on first flush because the daemon never loads `main.ts`. |
-| `apps/desktop/src/main/services/chat/chatTranscriptEntries.ts` | Flattens envelopes into `AgentChatTranscriptEntry[]` for `chat.getTranscript`, the paged reader and internal title/handoff reads. A message's text is the **verbatim** concatenation of its fragments: fragments sharing the `messageId` / `itemId` pair (Claude sets only `messageId`; Codex sets it per turn and `itemId` per message) concatenate regardless of interleaving, and only `isTranscriptContentEvent` rows (an allowlist) end a run, and only for fragments without provider identity. Whitespace-only fragments drop only when no run is open. Never insert separators: clients reconciling against the live stream would render the message twice. A steer is written as `user_message` twice (`deliveryState: "queued"`, then on consumption); a queued row whose steer id also has a non-queued row in the batch is skipped, and a still-pending one is kept. See [Transcript and turns](transcript-and-turns.md#canonical-assistant-text-fragile--read-before-editing). |
-| `apps/desktop/src/main/services/chat/chatTranscriptHistoryPager.ts` | Reads history backwards by byte offset or sequence for `getChatEventHistoryPage`, `chat.readTranscriptPage`, `chat.getChatEvents` and the sync host's resume (`apps/ade-cli/src/services/sync/chatLogResume.ts`). A row over the 2 MB page cap becomes a display-only `system_notice` (`history_row_omitted`, no `sequence`); see [transcript-and-turns.md](./transcript-and-turns.md#a-row-too-large-to-page). |
-| `apps/desktop/src/main/services/chat/chatSourceAdapters.ts` | Pure adapters to `ChatSourceRef`: Codex memory citations, Claude `WebSearch` / `WebFetch` results and text citations, Cursor `webSearch` / `webFetch`, OpenCode `websearch` / `webfetch`, Droid `WebSearch` / `FetchUrl`, ACP fetch/search tools and `resource_link`. See transcript-and-turns.md → Sources. |
-| `apps/desktop/src/shared/chatSources.ts` | The source model: `ChatSource`, URL normalization and dedupe, `deriveChatSources` (groups + `byTurn`), bounding helpers. |
-| `apps/desktop/src/main/services/chat/claudeStructuredActivity.ts` | Normalizes Claude server `web_search` / `web_fetch` and MCP blocks into `web_search` and paired `tool_call` / `tool_result`, closing unfinished blocks at turn end. |
-| `apps/desktop/src/main/services/chat/openCodeStructuredActivity.ts` | Maps OpenCode image `file` parts to compact image-generation events, keeping a local path when the URL is a file. |
-| `apps/desktop/src/main/services/chat/openCodeEventMapper.ts` | Pure mapping for one OpenCode 2.0 turn (text, reasoning, tools, steps, usage, compaction, retries). `session.tool.failed` maps only to a failed `tool_result`, never a chat `error` (the model often carries on). Lifecycle, steering and permissions live in `agentChatService`. |
-
-| `apps/desktop/src/main/services/chat/openCodeBackgroundShells.ts` | Tracks OpenCode `shell` calls with `background: true`: a tracked shell keeps the chat listening (and the shared server held) until its exit, shown as the same `background_task` row as Claude's. `stopOne` kills the process tree and settles only once it is gone (a survivor stays tracked); `reconcile` settles shells that ended while the stream was down. `openCodeBackgroundShellStarted` / `Ended` are the pure adapters. |
-| `apps/desktop/src/main/services/opencode/**` | OpenCode 2.0: server lifecycle, generated config, session create/resume, owned data home, inline/queue steering, child-session permissions. See [OpenCode integration](opencode-integration.md). |
-| `apps/desktop/src/main/services/chat/codexAppServerPool.ts` | One `codex app-server` for many chats: spawn or reuse per pool key, JSON-RPC ids, responses to the requester, thread lines to the owning chat (a new thread's first lines wait for its id; a departed chat's lines drop), process-wide broadcasts, exit fan-out, `thread/closed` on leave, stop at the last detach. See [One app-server for many Codex chats](agent-routing.md#one-app-server-for-many-codex-chats). |
-| `apps/desktop/src/main/services/chat/codexEphemeralFork.ts` | Runs a local Codex fork's `thread/fork` in a private short-lived app-server with every config.toml MCP server off by name (`codexMcpOff.ts`; an empty `mcp_servers={}` merges and starts them all) and returns after it exits. Codex holds a per-thread writer lock (`<CODEX_HOME>/thread-writer-locks`) in the loading app-server, so forking on the source's server would lock the fork's `thread/resume` out. Forking takes no source lock; the fork resumes in its own chat's app-server with its MCP servers. |
-| `apps/desktop/src/main/services/chat/codexMcpElicitation.ts` | MCP elicitations for Codex and Claude (`onElicitation`): JSON Schemas → pending-input questions, answers coerced back to boolean/number/array/object. Codex MCP tool approval (`_meta.codex_approval_kind: "mcp_tool_call"`, tool from `_meta.tool_name` or the message) becomes an `approval` judged by the host policy. "Allow for session" sends `_meta.persist: "session"` when offered; `"always"` (written to `config.toml`) only when it is the only scope. |
-| `apps/desktop/src/main/utils/codexComputerUse.ts` | After explicit opt-in, resolves and strictly verifies the OpenAI-signed Computer Use client and supplies the `computer_use` MCP config to Work chats and tracked Codex CLI launches. |
-| `apps/desktop/src/main/services/chat/chatRuntimeOwnership.ts` | The DAEX-home ownership stamp: a stamp that is unset, dead-owner or same-process is adopted; one live brain never relaunches, sends to, interrupts or mutates another's chat runtime (`ChatRuntimeOwnedElsewhereError` names the owner's socket). See [One brain per chat](#one-brain-per-chat). |
-| `apps/desktop/src/shared/chatOrphanRunReconcile.ts` | Pure decisions for closing stale subagent and background rows after the owner is gone, telling a finished or failed child from a live one. |
-| `apps/desktop/src/main/services/chat/turnDiffSummary.ts` | Turn before/after fingerprints, including working-tree and untracked changes without a commit delta. A scoped summary reads only the untracked files the turn touched; a failed capture at either end returns nothing. Added lines are counted by a native buffer scan. |
-| `apps/desktop/src/main/services/chat/turnFileDiff.ts` | The file-diff reader: committed or working-tree sides, path containment, bounded binary and large files. |
-| `apps/desktop/src/main/services/chat/cursorSdkPool.ts` | The Cursor SDK adapter: pools `cursorSdkWorker.ts` Node workers per session, sends turns, brokers permission and hook callbacks, maps events, tears down. **Env**: DAEX ownership variables are stripped; packaged `NODE_PATH` entries stay so workers under `Resources/ade-cli/` resolve `@cursor/sdk`. The envelope carries durable-state keys, model parameters, worker and SDK request ids and `CursorSdkErrorDetail` for log correlation. **Hook sockets** are per worker instance (`…/ade-cursor-sdk-<uid>/<pool+instanceHash>/hook.sock`; named pipes on Windows), with pool and instance hashed into one segment and a `/tmp` fallback when tmpdir is too deep: macOS `sun_path` holds 104 bytes and a longer bind fails with `EINVAL` (`MAX_CURSOR_SDK_SOCKET_PATH_BYTES`; a test binds a real listener). The instance directory is reclaimed whenever the worker goes (failed init or teardown), apart from `cleanupStateRoot`, which governs only durable state. **Poison**: `poisonCursorSdkConnection(poolKey, generation?)` evicts a worker regardless of refcount and the next acquire forks a new one after the old exits (failing rather than overlapping on timeout). `CURSOR_SDK_REPLACE_WAIT_MS` is the dispose grace plus the SIGTERM→SIGKILL escalation, because a wedged worker answers neither. Liveness (`isCursorSdkPooledAlive`) is not health: a transport death leaves the process alive and the Cursor thread wedged. Pool keys embed the session id. **One-shots**: `runCursorSdkCloudRequest` shares a `cloud-oneshot:<workspace>` worker (60 s idle timer on the pool entry, cancelled on acquire). `runCursorSdkLocalPrompt` serves titles, status lines, lane names, summaries, commit messages and PR descriptions on a `local-oneshot:<workspace>` worker (same idle window), serialized per key, with `resetConversation` per prompt, every tool call denied, and poison after a timeout; nothing runs the SDK in the host. Workers get `--ade-owner-pid=<pid>` in argv for the orphan sweep. `disposeAllCursorSdkConnections` (brain shutdown, desktop quit) releases everything and waits up to `CURSOR_SDK_REPLACE_WAIT_MS`. |
-| `apps/desktop/src/main/services/chat/cursorCloudConversation.ts` | Cursor Cloud unwrap, turn fingerprints, live-run status, presence-gated inbound sync. `run.conversation()` is per run, so fingerprints with prefix/suffix matching skip known turns. `nextCursorCloudMirrorDelay` walks 3 s → 8 s → 20 s → 45 s while quiet and resets on new turns; `releaseCursorCloudAttachLease` drops a failed `cloud.run.attach`. |
-| `apps/desktop/src/main/services/chat/cursorCloudMirrorWatch.ts` | Per-session watch refcount and backoff: the first watch hydrates, later ticks poll that session, the last unwatch clears the timer. Clients call `ai.watchCursorCloudMirror` (preload `cursorCloudWatchMirror`): desktop while the cloud chat is visible, iOS while active; the sync host registers it and `ai.openCursorCloudChat` as real commands. This poll is the inbound path for an open cloud chat (no create-time webhook). The **fleet view** does not use it: the ingress relay (`cursorCloudIngressService`) re-broadcasts FINISHED/ERROR deliveries as `ade.ai.cursorCloud.fleetEvent` (dispatched in `main.ts`), and it polls and registers its webhook secret only while the project has an enabled `cursor.*` automation rule; otherwise refresh is manual. |
-| `apps/desktop/src/main/services/chat/cursorCloudFleetService.ts` | The account-wide fleet view behind `ade.ai.cursorCloud.fleet` / `.pullIntoLane` / `.resolveLane` / `.stopRun` (DAEX actions on `ai` and sync commands). Follows every page at the 100-item cap with short caching. Each row has `matchedBy: "session" \| "repo" \| "both" \| "account"` (session via `cursorCloudAgentId`; repo via `cursorCloudRepoMatch.ts`, which normalizes SSH, HTTPS and `.git` to `host/owner/repo`). Only live rows fetch their latest run (concurrency 4). **Pull into lane**: target = linked session's lane → a local lane on the pushed branch → a new lane from the remote branch; refuses dirty worktrees; fetches and merges `FETCH_HEAD`; on conflict aborts and says where things stand; multi-repo agents use only branches pushed to this project's repo; remote refs pass `safeBranchRef`. `resolveLaneForAgent` resolves without git; `stopAgentRun` cancels the latest run without a DAEX chat. |
-| `apps/desktop/src/main/services/chat/cloudAgentsService.ts`, `cloudAgents/cloudAgentsContext.ts`, `cloudAgents/devinCloudAgents.ts`, `cloudAgents/cursorCloudAgents.ts`, `devinCloudDirectory.ts`, `devinCloudBinary.ts`, `acpHost/acpDialects/devinCloud.ts`, `apps/desktop/src/main/services/lanes/cloudLaneMirror.ts`, `apps/desktop/src/shared/cloudLanes.ts`, `apps/desktop/src/shared/devinCloud.ts`, `apps/desktop/src/shared/types/cloudAgents.ts` | Cloud lanes and agents. `cloudAgentsService` is the provider-neutral list/open/stop/archive/launch behind `ai.*CloudAgent*` (IPC, preload, sync). `devinCloudDirectory` is a short-lived `devin acp --cloud` client (list, cancel, archive); the `devinCloud` dialect runs Devin Cloud chats over the CLI login (its only transport). `cloudLanes.ts` owns the `ade:cloud:<provider>` lane tag; `devinCloud.ts` the versions, platforms, chat config, id validation and branch pin; `cloudLaneMirror.ts` fast-forwards a cloud lane's worktree after a turn. See [Cloud agents](composer-and-ui.md#cloud-agents-devin-cloud-and-cursor-cloud). |
-| `apps/desktop/src/main/services/chat/cursorSdkWorker.ts` | The Node worker hosting `@cursor/sdk`, speaking the JSON line protocol in `cursorSdkProtocol.ts`. It sets the lane workspace/state root, HTTP/1 by default (`ADE_CURSOR_SDK_USE_HTTP1_FOR_AGENT=0` disables), SDK retries, DAEX mode and idempotency keys, and survives stream failures long enough to `run.wait()` and send a structured result. `local.force` (expire the active persisted run) is set only by `forceExpireActiveRun` on DAEX's automatic recovery re-send, never a normal send. **Steer** (inline send): only the live local run; a `Run` without `steer` reports `unsupported`; nothing throws for a missing channel; any outcome but `complete_delivered` becomes `revert_to_followup`, so the host keeps the message. Images are read here from paths or URLs (`workerAttachmentImages.ts`), never sent as base64 over IPC (large screenshots stall the turn). |
-| `apps/desktop/src/main/services/chat/cursorSdkWorkerGuards.ts` | The worker's self-defence once its brain is gone: `sendToCursorSdkParent` drops sends when `process.connected` is false and uses a callback; `ignoreCursorSdkWorkerPipeErrors` swallows EPIPE on the process and stdio; `createCursorSdkWorkerExit` gives every exit a 2 s timer deadline (`CURSOR_SDK_WORKER_EXIT_DEADLINE_MS`; timers fire when promises cannot); `cursorSdkOwnerPidArg` / `readCursorSdkOwnerPid` and `cursorSdkOwnerStillOwns` (the 2 s owner poll). See [Cursor worker orphan guard](#cursor-worker-orphan-guard). |
-| `apps/desktop/src/main/services/chat/cursorSdkWorkerOrphans.ts` | `recoverCursorSdkWorkerOrphans`, a once-per-process startup sweep in the brain and desktop main: lists processes asynchronously (`ps -ww -axo`; PowerShell CIM on Windows); `selectOrphanedCursorSdkWorkers` picks workers whose owner pid is dead, plus unmarked older workers only on POSIX with ppid 1 and the exact old command shape; re-lists before every kill after the first. |
-| `apps/desktop/src/main/services/chat/chatWebhookRegistry.ts` | Chat webhooks (`chat.armWebhook` / `listWebhooks` / `cancelWebhook`, `daex chat notify`, `--notify-url`): a retried POST to a public https URL, pinned to a checked address, when a chat goes idle, needs input or fails. Stored in `.ade/secrets/chat-webhooks.json` with tombstones, so two brains agree; only the chat's brain queues news. `chat.getChatEvents` (`daex chat events`) is the polling twin (`readEnvelopesBackToSequence`, `chatEventsPage`). |
-| `apps/desktop/src/main/services/chat/chatWaitRegistry.ts` | Event-driven waits: the `chat.waitFor` long-poll and durable waiters (`chat.armWait` / `listWaits` / `cancelWait`), re-checked on each target's events one at a time, signalled from `emitChatEvent`. A match while the session to wake cannot take one (a CLI mid-turn) is kept (`matchedWhileDeferred`) and fires later. |
-| `apps/desktop/src/main/services/chat/agentCliWakes.ts` | Wakes for tracked agent CLIs (`createAgentCliWakes`): typed at the prompt only at a turn boundary, one at a time per CLI; a subagent's report to a CLI parent retries every 5 s for up to a day. An archived CLI refuses wakes and is no parent. |
-| `apps/desktop/src/main/services/chat/agentCliTyping.ts` | A person's text for a running agent CLI (Work input box, phone, web; `chat.typeIntoCli`): typed through the wake path at a free prompt, a 2 s settle before it queues, the durable queue (a send wait on the CLI itself), one text per CLI at a time, and a ledger that types a resent `clientMessageId` once. A CLI whose prompt DAEX cannot read (`agentCliReadsFreePrompt`) gets it at once, with `typedAtOnce`. |
-| `apps/desktop/src/shared/chatGoals.ts` | `parseClaudeGoalCommand` and the `goal_reached` / `goal_blocked` statuses the push publisher alerts on. |
-| `apps/desktop/src/shared/prWatch.ts` | PR Watch / Ship's evaluator (`evaluatePrWatch`), wake text and card, `PrChatWatchSummary`. See the PR docs. |
-| `apps/desktop/src/main/services/ai/tools/toolDeadline.ts` | DAEX's per-tool deadline (default 120 s) under a 65-minute MCP transport cap; approval-card time does not count and overlapping cards count once. See `tool-system.md`. |
-| `apps/desktop/src/main/services/shared/processOrphans.ts` | Shared by the OpenCode and Cursor sweeps: `parseProcessRows` (`ps` and tab-separated CIM rows), `waitForProcessExit`, `terminateOrphanProcess` (SIGTERM then SIGKILL on POSIX, `taskkill /T /F` twice on Windows, optional `confirm` before each). Each sweep keeps its own listing and rule. |
-
-| `apps/desktop/src/main/services/chat/cursorSdkErrors.ts` | Cursor SDK error normalization for the worker: `code`, `status`, `requestId`, `operation`, `endpoint`; terminal run details through the public local store API; resource/backoff vs transport. Classification is a bare `CursorSdkErrorKind` with no `retryable` bit; each call site decides what to do. |
-| `apps/desktop/src/main/services/chat/cursorSdkProtocol.ts` | Worker IPC types: chat mode, approval policy, hook requests and decisions, `CursorSdkModelParameterValue`, `CursorSdkWorkerInit`, local/cloud sends, request ids, `CursorSdkErrorDetail`, path/URL images (`CursorSdkUserImage`). **`CursorSdkSteerOutcome`**: `complete_delivered` (the turn owns the message; drop the staged row), `revert_to_followup` (the host still owns it), `unsupported` (diagnostics only; treat as a refusal, never branch on it). **Classifiers**: transport (`nghttp2`, dropped sockets, stream closures, `ECANCELED`, `EPIPE`, `write after end`, which wedge the server thread too) and backoff (`resource_exhausted`, `rate_limited`, `NGHTTP2_ENHANCE_YOUR_CALM`, 429 text). `classifyCursorSdkErrorText` → `auth` / `rate_limit` / `network` / `busy` / `not_found` / `configuration` / `unknown`, where `configuration` is the shared `isSandboxUnsupportedFailureText`. **Stale token**: `CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT`, `isCursorSdkStaleAccessTokenText` (matches the two halves separately, so reflow or a request id still matches; a bad API key does not) and `readCursorSdkStaleTokenFailure` (the worker's terminal `status: ERROR` → `CursorSdkStaleTokenFailure` with `turnId`, message, code, request id; else `null`). `CursorSdkPermissionPolicy.fullAuto` only separates the worker pool and labels logs; it never maps to `local.force` (that is `CursorSdkSendPrompt.forceExpireActiveRun`, recovery only). |
-| `apps/desktop/src/main/services/chat/workerAttachmentImages.ts` | Forked-worker image IPC: screenshots become `{ path, mimeType, rootPath }` (Cursor also `{ url }`; Pi and Droid refuse `url`), and the worker reopens the `.ade/attachments` file through `readFileWithinRootSecure` (10 MB cap) instead of base64 over `child.send`. |
-| `apps/desktop/src/main/services/chat/cursorSdkPolicy.ts` | DAEX permission modes → Cursor chat mode + approval policy (+ the `fullAuto` marker) and which tool calls auto-approve. Local workers always pass `sandboxOptions.enabled: false`. Hard guards keep tool paths in the lane, with read-only exceptions for this lane's `terminals` / `agent-transcripts` / `assets` under `~/.cursor/projects/<slug>/` and `<project>/.ade/attachments` when init supplies the project root (no root fails closed; the realpath basename must be `attachments`; writes, shell, other slugs, `.ade/secrets` and symlink escapes stay denied). Owns `CURSOR_SDK_KILL_ESCALATION_MS` (1.5 s), used by the dispose ladder and the orphan sweep. |
-| `apps/desktop/src/shared/chatErrorPresentation.ts` | Failed-turn copy for every provider. `presentChatFailure` → `{ title, body, nextAction?, technicalDetail? }` for `rate_limit` / `auth` / `network` / `busy` / `configuration` / `unknown` (`not_found` uses the generic stopped-turn copy because DAEX recycles and resumes). Copy is provider-neutral with the provider name substituted; only a Cursor label may mention Cursor's sandbox and DAEX's hook fallback. `isSandboxUnsupportedFailureText` is the one sandbox predicate and outranks the caller's kind; `configuration` discards the host message (it tells users to edit `local.sandboxOptions` or `~/.cursor/sandbox.json`). Raw text lives only in `technicalDetail`, deduplicated. `externalStopSignal` reads SIGTERM/SIGKILL deaths (exit 143/137) and `presentExternalProcessStop` builds "stopped from outside DAEX", naming another live brain when one holds the chat; Claude uses it only when its own reaper did not signal the process (`claudeSubprocessReaper.terminatedByAdeSince`); on Windows an outside `taskkill` exits normally, so the normal card stays. `chatErrorKindFromCategory` narrows `errorInfo.category`; `readChatErrorPresentation` is the client reader; clients render `errorInfo.presentation`, never "Error" or "Unknown". **ACP stderr**: `summarizeAcpStderrTail` / `sanitizeAcpStderrTail` strip ANSI and control characters, redact credentials (keyword pairs, provider prefixes, JWTs, any 32+-character digit-and-letter run; a canonical UUID is kept), headline the last meaningful non-stack line and put the full tail in `technicalDetail`. The tail comes from `onProcessExit`, or for a crash during `initialize` from the rethrown error (`readStderrTail` / `readAcpStderrTailFromError`); an empty or noise-only tail leaves the copy alone. |
-| `apps/desktop/src/main/services/chat/cursorSdkSystemPrompt.ts` | The Cursor worker's system prompt (lane context, DAEX CLI guidance, persona overlays). |
-| `apps/desktop/src/main/services/chat/cursorSdkEventMapper.ts` | `@cursor/sdk` events → `AgentChatEventEnvelope`. SDK `task` messages are parent-run summaries; typed `Task` calls make subagent start/result keyed by tool call id (with the child agent id). MCP calls keep identity in `event.mcp`; image tools become compact rows. **Todos**: the terminal `updateTodos` call maps to `todo_update` plus `plan` and the raw tool row is hidden (partials are skipped; ids are positional; `cancelled` reads `pending` on the todo row and `failed` on the plan step). The ` ```ade_update_plan ` block still works. `user` events map to nothing (ADE writes its own `user_message`, including for `Run.steer()` echoes). `todo_update` and `plan` are in `CURSOR_SDK_VISIBLE_OUTPUT_EVENT_TYPES`. **Errors**: a terminal `ERROR` reads `adeErrorCode` / `adeErrorDetail`, classifies, and passes the Cursor sentence to `presentChatFailure` (category `rate_limit`, `network`, `busy` or `auth`). Transport failures read **Cursor's connection dropped mid-run.**; the request id, raw lines and the replaced code (first `detail` line) stay in `detail`. |
-| `apps/desktop/src/main/services/chat/cursorModelsDiscovery.ts` | Probes the `@cursor/sdk` and `cursor-agent` model lists, merges descriptors and records `cursorAvailability` (chats see SDK models; CLI launches may add CLI-only ones). Both probes keep aliases, descriptions, `parameters[]` and `variants[]`; `*-fast` rows fold into the base model (`aliases` + `serviceTiers: ["fast"]`). Metadata becomes `reasoningTiers` (`none`/`dynamic`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`thinking`) and `serviceTiers` (`fast`). `peekCursorSdkCatalogRows` reads memory only; `readCursorSdkCatalog(apiKey, { failFast })` fetches once per key, and with `failFast` a fetch that failed in the freshness window answers at once. **Caches** are stale-while-revalidate: rows serve past the 120 s window (up to ~6 h) with at most one background warm per window, so models never blink on passive reads. `markCursorModelCachesStale` ages without dropping (generic readiness invalidation); only a Cursor key change runs `clearCursorCliModelsCache`. Auth or SDK-resolution failures drop the SDK cache; transient ones keep last-known-good. CLI "No models available" drops its cache and raises a runtime failure (re-auth with `cursor-agent logout`). |
-| `apps/desktop/src/main/services/chat/cursorModelSelection.ts` | A chat's Cursor choices (effort, Fast or tier, options) → `ModelSelection.params`, all via discovery's catalog. **Local** (`resolveCursorSdkLocalSelection`): reads memory, loads only when memory cannot answer and the chat chose a control (`hasExplicitCursorSelection`), sends what resolved on `ok` or `partial`. **Cloud create** (`verifyExplicitCursorModelSelection`): fails closed unless `ok`. **Cloud follow-up** (`resolveCursorSdkFollowUpSelection`): refuses only an unlisted model; otherwise sends what resolved with one notice (`describeUnappliedCursorSelection`). Cloud paths use the warm catalog. `cursorModelFastTierFromCache` answers from memory (`null` keeps Fast); `unsupportedCursorSelection` names choices an adopted cloud model cannot take; `cursorSdkConfigOptions` reports an unset option as `null`. |
-| `apps/desktop/src/main/services/chat/sdkWorkerProcess.ts` | Starts every SDK worker (Copilot, Cursor, Droid, Pi) with IPC: `fork()` of `<name>SdkWorker.cjs`, or inside the standalone `ade` SEA (where `fork()` re-enters the CLI) `spawn(process.execPath, ["__ade-<name>-sdk-worker", …])`. `SDK_WORKER_COMMANDS` is the CLI's dispatch table (`cli.ts`); `isEmbeddedAdeRuntime` is in `shared/processExecution.ts`. |
-| `apps/desktop/src/main/services/chat/copilotSdkPermissions.ts` | Copilot's "Allow for this session" rule (`copilotSessionApproval`) and its scope label (`copilotSessionApprovalLabel`). See [copilot-sdk-provider.md](./copilot-sdk-provider.md). |
-| `apps/desktop/src/main/services/chat/droidSdkPool.ts` | Droid adapter: forks `droidSdkWorker.cjs` per session with `baseEnv` (DAEX session id and role), `acquireDroidSdkConnection` / `releaseDroidSdkConnection`, and proxies prompts, settings, permission decisions, ask-user answers and cancel. The CLI comes from `resolveDroidExecutable` (PATH, bundle, configured paths). |
-| `apps/desktop/src/main/services/chat/droidSdkWorker.ts` | The worker hosting `@factory/droid-sdk/node`: streams events and forwards permission and ask-user prompts over JSON lines; images read from paths (`workerAttachmentImages.ts`). |
-| `apps/desktop/src/main/services/chat/droidSdkProtocol.ts` | Worker IPC types: `DroidSdkSessionSettings` (autonomy, interaction mode, effort), `DroidSdkReasoningEffort`, permission and ask-user request/response, `DroidSdkReady` (SDK session id, resolved model; `availableModels` stays empty), `DroidSdkSendPrompt`, `DroidSdkUserImage` (path or tiny inline `data`; no `url`). |
-| `apps/desktop/src/main/services/chat/droidSdkEventMapper.ts` | `DroidSdkEventMapperState`, `mapDroidSdkMessageToChatEvents`, `mapDroidSdkRunResultToDoneEvent`: streaming text/thinking/image ids, tools, `mission_worker_started` / `_completed` → subagent lifecycle keyed by worker session id, compact image rows, token usage. |
-| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | `listDroidModelsFromSdk`; custom models (`customModels` in `<factoryConfigHome>/settings.json`; see [Provider config homes](agent-routing.md#provider-config-homes)) come from the SDK. The generic `opus` row becomes Opus 5.5 (`medium` default); retired Claude ids resolve forward (Sonnet 4.6 → Sonnet 5; Opus 4.8, basic Opus 4.7, Opus 4.7 1M → Opus 5). `discoverDroidSdkModelDescriptors` (also exported as `discoverDroidCliModelDescriptors`). |
-| `apps/desktop/src/main/services/chat/piSdkPool.ts` | Pi adapter: forks `piSdkWorker` per session key, `acquirePiSdkConnection` / `releasePiSdkConnection`, proxies prompts, model/thinking, compaction, inventory, `login` / `cancelLogin`, `fork` ([agent-routing](agent-routing.md#pi)) and `respondToUi`, and routes the reverse UI channel to `bridge.onUiRequest` / `onUiNotice` / `onUiCancel`; with no `onUiRequest` handler it answers `{ ok: false }` at once. |
-| `apps/desktop/src/main/services/chat/chatProviderFork.ts` | The native fork table (`createChatProviderFork`: Codex, OpenCode, Droid, Copilot, Muse, Pi, Kimi) shared by Fork (`handoffSession`) and side chats; caller differences (Codex goal order, `beforeTurnId`, Muse `session/sideChat`, Pi's cut entry, error text) are options. |
-| `apps/desktop/src/main/services/chat/claudeMcpConfigFile.ts` | Moves the SDK's inline `--mcp-config` JSON (headers, env values) into a private file under `<ADE home>/mcp-launch/chat`, deleted at process exit (`claudeSubprocessReaper.spawnClaudeCodeProcess`), with a startup sweep for unclaimed files. |
-| `apps/desktop/src/main/services/chat/piSdkWorker.ts` | The worker hosting DAEX's pinned Pi package (tools-cache `pi` tree, resolved by `piInstallation.ts` and `import()`ed; `ADE_PI_PACKAGE_ROOT` overrides for dev/test): the session, model runtime, `ModelRuntime.login`, tools (`ask_user` and approval-gated built-ins), extensions, MCP (`createMcpExtension` with codemode and tool search, registry servers via `registerMcpServer`, the approval hook), and settings pinning `projectTrusted: false`; images from paths. Beside it: `piSdkWorkerFork.ts`, `piSdkWorkerMcp.ts`, `piSdkWorkerAuth.ts`, `piSdkWorkerValues.ts`; the read-only tool list is `shared/piTools.ts`. |
-| `apps/desktop/src/main/services/chat/piSdkProtocol.ts` | Worker IPC, protocol version 2: `ui_request` / `ui_notice` / `ui_cancel` / `ui_response`, `login` / `login_cancel`, init fields `extensions` / `askUserTool` / `approvalTools` / `readOnly` / `mcp`, `fork` (`PiSdkForkPayload` → `PiSdkForkResult`), and `PiSdkReady`'s `extensions` / `extensionsError` / `ungateableTools` / `activeTools`. Images are paths or tiny `data`; `url` is refused. Every frame is validated both ways. |
-| `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side bridge from Pi's UI callbacks to DAEX cards (no Pi imports): `createPiUiBridge` (never rejects), `createPiAskUserTool`, `createPiApprovalGate`, `withPiApproval`, `createPiAuthInteraction` (`AuthInteraction`), `createPiExtensionUiContext` (`ExtensionUIContext`). |
-| `apps/desktop/src/main/services/chat/piSdkEventMapper.ts` | Pi events → `AgentChatEvent`, plus `piUiRequestToPendingInput` (`source: "pi"`), `piUiResponseFromAnswer` (`accept` / `accept_for_session` → `allow` / `allow_session`), `piUiNoticeToChatEvents`, `piExtensionLoadNotice`. |
-| `apps/desktop/src/main/services/chat/piSessionStore.ts` | The one native Pi session store for chats, tracked Pi CLIs and discovery. `piSessionStoreForEnvironment` → `{ root, storageDir }` (root is the authorization boundary; `storageDir` only when configured, since Pi nests per-cwd folders only by default). Header reads (`readPiSessionHeader`, `piSessionHeaderMatchesCwd`), file authorization (`resolvePiSessionFile`, `classifyPiSessionFile`), per-cwd listing, `repositoryOverridesPiSessionDir`. A checkout's `.pi/settings.json` is never read. |
-| `apps/desktop/src/main/services/chat/piSessionLease.ts` | The `<session>.ade-lease` live-writer lock: pid + process-start keyed (`owner: "sdk" \| "cli"`), removed on release, reclaimable once the owner is gone. `piSessionLeaseIsHeld` is the pre-launch probe; `piSessionCreationLeaseTarget(sessionRoot, cwd)` is the per-cwd token held before a JSONL exists. |
-| `apps/desktop/src/main/services/chat/piSessionOwnership.ts` | The never-removed `<session>.ade-owner` claim (`{ owner, ownerSessionId }`), because chat and CLI share one store. `piSessionIsAdoptableByTerminal` leaves unclaimed sessions adoptable; `piSessionCouldBelongToTerminal` rejects a resume pointer older than the terminal. |
-| `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in on an inventory-only worker: providers, one flow per provider, prompts and notices via `addPiAuthStatusListener`, answers, cancel, a 10-minute bound. A user cancel gives Pi `PI_LOGIN_CANCEL_GRACE_MS` to report a finished login; a superseding attempt settles the old flow silently. Relays credentials, never keeps them. |
-| `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | DAEX's own OpenCode, never a user install: the tools cache (`cachedToolEntryPath("opencode")`), then a checkout's `node_modules` copy, then the previous pin while a new one downloads, else `missing`. `ADE_OPENCODE_BUNDLE_ROOT` is a hermetic test override. `resolveOpenCodeBinary` returns the `OpenCodeBinarySource`. Hits are re-validated with `canRunBinaryCandidate`; misses are not cached. `clearOpenCodeBinaryCache()` runs on the AI full cache reset. |
-| `apps/desktop/src/main/services/ai/pinnedProviderTools.ts`, `apps/desktop/src/shared/pinnedToolSpawnEnv.ts` | Pinned copies, provider side: `pinnedToolForProvider` (ACP providers from `ACP_PROVIDER_IDS`, Cursor → `cursor-cli`), `pinnedToolBlocker` (the one download-state sentence), `requirePinnedProviderExecutable` (awaits; `PinnedToolNotReadyError`), `getPinnedProviderToolStatus` / `startPinnedProviderToolDownload` (`ai.pinnedToolStatus` / `ai.pinnedToolDownload`). `pinnedToolSpawnEnv.ts` holds vendor self-update switches for every spawn. See [agent-tools-cache.md](../onboarding-and-settings/agent-tools-cache.md#resolution-order). |
-| `apps/desktop/src/main/services/ai/providerVersionRejection.ts`, `providerFallForward.ts`, `claudeFallForward.ts`, `codexFallForward.ts`, `museFallForward.ts` | Exact "version too old" refusals: Claude (startup `cli_version_too_old`, API `claude_code_version_too_old`, client-data floor), Codex ("the '<model>' model requires a newer version of Codex"), Meta's Muse floor, Copilot's organisation floor. **Claude**: download npm's newer build, probe, record an override; restart once after a startup refusal, notice after a mid-turn one. **Codex**: re-check, download npm's newest, probe with one short request for that model (tiny quota); never resend. **Muse**: checks the floor at host start; falls forward only to a build that pairs with the pinned SDK, else "Update DAEX". A failed probe deletes the build. `providerFallForward.ts` holds the one-attempt, fetch and probe helpers. Copilot gets only a precise message. See [agent-tools-cache.md](../onboarding-and-settings/agent-tools-cache.md#claude-fall-forward). |
-
-| `apps/desktop/src/main/services/opencode/openCodeInventory.ts` | The OpenCode provider/model probe: variants → `reasoningTiers` + `serviceTiers` (aliases `minimal`/`mini`/`med`/`xhigh`/`extra-high`), `capabilities` (tools, vision, reasoning), and `modelIds` (selectable ids of connected providers; descriptors exist for every entry, so an unconnected id still resolves). Anthropic `opus` becomes Opus 5.5 (`medium` default, Fast); retired Sonnet 4.6 / Fable 5 / Opus 4.8 / Opus 4.7 resolve to Sonnet 5 / Fable 5.1 / Opus 5. `availableModelCount` is separate from `modelCount`. Each good probe is written to `opencode-inventory-cache.json` in `userData` (`ADE_OPENCODE_INVENTORY_CACHE_FILE` overrides); a cold Settings page loads it as stale (`opencodeProvidersStale`) so ~160 providers render at once; writes are best-effort. |
-| `apps/desktop/src/main/services/opencode/openCodeSession.ts` | Session create/resume, the DAEX instruction entry and shell env, prompt files, the personal-store guard (`OpenCodeSessionInPersonalStoreError`). **Re-attach is 404-gated**: only a confirmed missing session (`isOpenCodeNotFoundError`: HTTP 404 / `NotFoundError` through a bounded `cause`/`body`/`error`/`data` walk; any explicit non-404 status stops it) falls through to a new session; anything else closes the lease and shows, so a thread is never silently replaced. **Prompts ride an instruction entry** (`session.instructions.entry.put`, rendered as `<context key="ade">` in the system prompt), never a synthetic text part. **`/event` is bounded**: `openCodeServer.ts` caps retries, because the SSE client reconnects forever and OpenCode sends no event ids. |
-| `apps/desktop/src/main/services/opencode/openCodeAuthService.ts` | Subscription connect and API-key seeding through the managed server's auth API on the shared inventory lease (no own process). `listAuthMethods` (`GET /provider/auth`); `startOAuth` (`POST /provider/{id}/oauth/authorize`, open the URL, poll `provider.list().connected` every 2 s up to 5 minutes, re-probe on success); `cancelOAuth`; `setProviderKey` (`PUT /auth/{id}`, mirrored into `apiKeyStore`). One flow per provider (a new start supersedes). `addOpenCodeOAuthStatusListener` fans out `pending` / `connected` / `cancelled` / `timeout` / `failed` to desktop windows and the remote event buffer. Credentials go to DAEX's managed dir (`userData/opencode-runtime/xdg-v*`), never `~/.local/share/opencode`. |
-| `apps/desktop/src/shared/chatTranscript.ts` | The JSON-lines parser for envelopes (main and renderer). `userMessageStartsTurn`: a message carrying the open turn's id, a steer the live turn took, or one that went nowhere does not start a turn; desktop groups a turn's tools by it. |
-| `apps/desktop/src/shared/chatEventCompaction.ts` | The one payload compaction policy for storage (`compactChatEventForStorage`) and the sync wire (`compactChatEventForWire`, via `compactChatEventEnvelopeForSync`). Caps: command output 4 KB running / 16 KB completed / 64 KB failed; `tool_result.result` 16 KB (64 KB failed or interrupted); `tool_result.structured` 8 KB; diffs 32 KB; reasoning 8 KB; inline `data:image/*` 64 KB. `compactRunningCommandOutput` is exported whole. Shortened payloads keep byte counts (`outputOriginalBytes`, `resultOmittedBytes`, `diffOmittedBytes`, `textOmittedBytes`, `urlOmittedBytes`, …). The wire variant then drops `structured` and `toolResultMeta` (no client reads them). |
-| `apps/desktop/src/shared/chatSubagents.ts` | Subagent helpers: `normalizeSubagentLifecycleEvent` (`subagent_*` and `subagent.*`), the stable `groupPaneSectionItems` partition and caps (source order, pinned rows in the active cap, cleared Completed ids out), and display-only model chips (`subagentModelAttribution`: a reported `model` is truth; else the parent's label marked **inherited**, never written back). Classification: `isBackgroundShellCommand`, `isRealSubagent`, `isNonAgentTaskRun` (a `task_type` `other` run without agent metadata stays out of the roster), `subagentAgentKey`; Claude `local_bash` counts as background only with explicit evidence (`background_tasks_changed`, `is_backgrounded`, `run_in_background`). Summary helpers and `deriveSubagentTimelineRows` → `SubagentTimelineRow` (`spawn` / `result` / `background_chip`), the portable shape iOS mirrors (desktop renders through `chatTranscriptRows.ts`). `collapseLegacySubagentEndEvents` runs first: stored history may hold a `subagent_result` + `subagent.completed` pair for one ending, so it drops only the `subagent.completed` half when a `subagent_result` for the same key exists, returning the input untouched otherwise; two real `subagent_result`s (completion, then stopped teardown) both stay. |
-| `apps/desktop/src/shared/chatScheduledWork.ts` | Scheduled-work validation and derivation. `resolveScheduledWorkTiming` takes exactly one form (five-field brain-local cron, offset-qualified `runAt`, or `delaySeconds`) and rejects ambiguous, past, non-integer or unrepresentable ones. `scheduled_work_update` envelopes fold into snapshots (wakeups, cron, `/loop`, remote triggers, background work), merged with `AgentChatSessionSummary.scheduledWork`: stale durable transcript rows missing from the store go, provider-only activity stays, only DAEX-managed rows are cancellable. `deriveScheduleItems` (`wakeup` / `cron` / `loop` / `remote_trigger`) and `deriveBackgroundItems` (`background_task` not duplicating a subagent's `sourceTaskId`). A parent's terminal event does not stop surviving background work; only its own terminal state or teardown does. `isEarlierBackgroundItem`, `isFiredOneShotWakeup`, `isEarlierScheduleItem` define Earlier (mirrored by iOS). |
-| `apps/desktop/src/main/services/chat/claudeWorkflowProgress.ts` | Normalizes the SDK's undocumented `workflow_progress` on `system:task_progress`: phases and agents (capped, clipped, malformed dropped, unknown states → queued/running, unparseable → undefined). `planClaudeWorkflowAgentTransitions` diffs each tick to emit `subagent_started` / `progress` / `result` under `<taskId>::a<index>`, latching the first agentId; interrupts close running agents as `stopped`. A Workflow `task_progress` has no `task_type` and shares background sets with shells, so `classifyClaudeTaskMessage` must not read a tracked `local_workflow`, `subagent` or `cron` task as a shell. Agent transcripts live in `<session>/subagents/workflows/<runId>/agent-<id>.jsonl`, outside `getSubagentMessages`; `claudeWorkflowTranscript.ts` reads them (every account home when unloaded; 8 MiB stream cap). |
-| `apps/desktop/src/renderer/components/chat/ChatWorkflowActiveCard.tsx` | Workflow runs in Chat Actions → Agents: one header per run, status/usage metrics, a phase list (reported order, then unstarted declared phases dimmed); finished phases collapse, active or failed ones open; agent rows show live model/tool/activity, usage, or a failure/stop summary. Membership uses the `<taskId>::a<index>` lineage or the run's own agent ids (snapshots key by agentId). Workflow rows appear only here. Duration is the run's own span (not Claude's `duration_ms`); totals sum the roster, else the parent's usage. Script phases without telemetry show a waiting caption, never progress. A running run has its own Stop; the raw prompt is never shown. |
-| `apps/desktop/src/shared/chatScene.ts` | Scenes (agent-authored UI). `SCENE_FENCE_LANGUAGE` (`scene`); `SCENE_LIMITS` (96,000 source bytes, 1,400,000 assembled bytes checked by `scenePrepare`, 120-char title, 8 s ready timeout); `SCENE_CONTENT_SECURITY_POLICY`; `parseSceneFence` / `isSceneParseFailure`; `hasOpenSceneFence`; `sceneScopeKeyFor` (row identity + fence-body hash) and `sceneRowIdentity` (`messageId`, else `turnId`+`itemId`, else the render key; the render key alone shifts when older pages load); `extractSceneFence`. Fence detection and splitting share one line scanner. `SceneTheme`, `SCENE_FALLBACK_THEME`, `sceneThemeVariables` / `sceneThemeSignature` / `sceneThemeMessage`, `sceneFrameMessage`, and `parseSceneHostMessage` (checks every inbound frame message). Uses `TextEncoder`. Agents learn it from the `daex-scene` skill (`apps/desktop/resources/agent-skills/ade-scene/SKILL.md`). |
-| `apps/desktop/src/shared/chatSceneDocument.ts` | `buildSceneDocument` (CSP meta first, base styles, `escapeForScript`, the restored flag, inlined fonts) and the dependency-free in-frame SDK (`window.ade`: settle watch, idle, restore, theme and data, links, policy reports). Imports from `chatScene.ts`, never the reverse. |
-| `apps/desktop/src/shared/sceneGuide.ts` | `SCENE_GUIDE` for `daex scene guide`. Guidance has three layers: a trigger line (`adeCliGuidance.ts`), this guide, the full skill. `lintSceneSource` tips in `daex scene preview` on hand-drawn charts and fixed hex colours. |
-| `apps/desktop/src/shared/chatSceneChart.ts` | `ade.chart`, library-free SVG charts (bar grouped/stacked, line, area, donut, sparkline) with gridlines, legend, tip and refit. `SCENE_CHART_SOURCE` and `SCENE_CHART_STYLES` are added by `buildSceneDocument`, with `--chart-1` … `--chart-6`. |
-| `apps/desktop/src/renderer/components/chat/SceneFrame.tsx` | Hosts one scene: builds and caches the document, resolves a URL (`window.ade.scene.prepare` → `ade-scene://view/<id>`, blob fallback), renders `<iframe sandbox="allow-scripts">` with `referrerPolicy="no-referrer"`, accepts messages only from its `contentWindow` and nonce, clamps height to 120–960 px. Runs while on screen (`useSceneOnScreen`) and shows the still otherwise; a played scene wakes **restored**; the settle-time still is taken once for a scene without one; theme and data go in; `open` messages route to DAEX (focus + rate limit). Only a hover toolbar (title, Expand → `Dialog` with `variant="expanded"`, Proof; Proof only when `chatRunsOnThisComputer`, since filing goes through this computer). `useSceneStillLatch` decides whether a mount starts from a stored picture; settle deadline and latch are per document. Mounted from `MarkdownBlock`'s fence handler, not gated by context (the sandbox makes it safe). On hosted web it loads `/scene-frame.html` (`src/renderer/public/scene-frame.html`, policy in `webclient/public/_headers`) and hands over the document on request (`__adeSceneBoot`). Exports `SceneReplyContext` (`ade.reply` → the prompt box, only with frame focus and transient activation) and `SceneAnswerContext`. |
-| `apps/desktop/src/renderer/components/chat/useSceneOnScreen.ts` | When a frame is up: an IntersectionObserver on the transcript scroller (240 px prefetch margin), 120 ms dwell, a 150 ms pause in the scene's own scroll ancestors, 4 s linger. |
-| `apps/desktop/src/renderer/components/chat/sceneCapture.ts` | Still capture: `measureCapturableSceneRect` (fully on screen, inside clipping ancestors, on top at its corners), `captureSceneShell` (measured before and after; a moved rect is discarded), retry backoff. |
-| `apps/desktop/src/renderer/components/chat/sceneDocumentCache.ts` | Per-window scene memory: built documents and prepared URLs (24 each; `forgetPreparedUrl`), played scenes, last heights, `mintSceneNonce`. |
-| `apps/desktop/vite.sceneThree.ts` | Bundles `three` + `OrbitControls` with esbuild into one classic script (`window.THREE`, ~760 KB) shipped once as `assets/ade-scene-three.js`; `virtual:ade-scene-three` is its URL. In `vite.config.ts` and `vite.webclient.config.ts`; tests stub it. |
-| `apps/desktop/src/shared/chatSceneThree.ts` | `sceneUsesThree` (`THREE.` or `ade.three` inlines three.js) and `ade.three`: `view(el, options)` renders on demand (changes, `onFrame` callbacks, damping), pixel ratio ≤ 2, low-power GPU, waits out a lost context, disposes on `pagehide`; `color(name)` → `THREE.Color`. Idle mode throttles it. |
-| `apps/desktop/src/renderer/components/chat/sceneThree.ts` | Fetches the three.js bundle the first time a 3D scene runs; `claimThreeFrameSlot` allows `MAX_LIVE_THREE_FRAMES` (4) live 3D frames (sandboxed frames share one process with a 16-context WebGL limit); past it the least recent shows its still. |
-| `apps/desktop/src/renderer/components/chat/chatMath.ts` | `normalizeMathDelimiters`: Pandoc's rule for `$` (so "$5 and $10" stays money), rewriting `$x$`, `\(x\)`, `\[x\]` and whole-line `$$x$$` to the forms `remark-math` parses with single-dollar math off; code and escapes untouched. |
-| `apps/desktop/src/renderer/components/chat/MathFormula.tsx` | One formula via lazily loaded KaTeX: 600-entry cache, 4,000 characters, 1,000 macro expansions, `trust: false`; bad or partial TeX shows as source. Wired in `chatMarkdownBlock.tsx` through `language-math` nodes. |
-| `apps/desktop/src/renderer/components/chat/sceneTheme.ts` | `readSceneTheme` (palette, `color-scheme` from `data-theme`, prose size, `--font-sans` / `--font-mono`) and `useSceneTheme` (one MutationObserver on `<html>`). |
-| `apps/desktop/src/renderer/components/chat/sceneFonts.ts` | Geist and JetBrains Mono fetched once from the bundle (woff2 magic checked) and inlined as `@font-face` data URLs; empty on failure or after 1.5 s; a late load serves later scenes. |
-| `apps/desktop/src/shared/sceneFontFaces.ts` | `SCENE_FONT_FACES`, the woff2 check and the rule, shared by the chat's and the preview's loaders. |
-| `apps/desktop/src/renderer/components/chat/sceneData.ts` | `SceneDataFeed`: live `lanes` / `sessions` / `prs` for a data scene from the chat's machine (`useChatRuntimeScope`: `useChatMachineLanes`, `useSessionsForPin`, the pinned PR read), mounted only with its frame up; sent on change, at most once a second. |
-| `apps/desktop/src/shared/sceneDataProjection.ts` | The read-only projection shared by the chat and `daex scene preview` (`preview_scene`). |
-| `apps/desktop/src/renderer/components/chat/ScenePreviewThumb.tsx` | The drafting box under the working indicator while an agent runs `daex scene preview` (never its screenshot): `readScenePreviewPath` (either separator, spaces, JSON results), `latestScenePreviewOutput`, and `isScenePreviewImagePath`, which `CodexImageViewLine` uses to show "Checked the scene preview" when the agent opens its own PNG (`path`, `url` or OpenCode `title`). |
-| `apps/desktop/src/renderer/components/chat/SceneDrawingBox.tsx` | The "Agent is drawing a scene" box (spinner, stepped shimmer, transform-only sweep; off with reduced motion), while drafting and while the fence streams. |
-| `apps/desktop/src/renderer/components/chat/lruCache.ts` | The small LRU for highlighting and math; `has` is true for cached `null`. |
-
-| `apps/desktop/src/shared/scenePreview.ts` | The `daex scene preview` contract: request/result types, the light preview palette, `sceneSourceFromInput` (body or whole fence), `lintSceneSource` (source mistakes the policy turns into blanks). |
-| `apps/desktop/src/main/services/scenes/scenePreviewRenderer.ts` | `renderScenePreview`: one scene in a hidden offscreen window on an in-memory partition that refuses network, navigation, popups and permissions; the chat's own document in a sandboxed srcdoc frame; ready/settle/errors/console collected; a PNG at content height; serialized, 20 s deadline, window destroyed after each. Fonts from packaged assets or dev packages. Served to the brain as `scene_preview.render` by `desktopBridgeServer.ts`. |
-| `apps/ade-cli/src/services/builtInBrowser/desktopBridgeConnection.ts` | The daemon's one lazy desktop-bridge connection for the App Control recorder, demo engine and scene preview: connect deadline, reconnect after close, socket dropped only on a transport failure (an error answer keeps it, since the desktop ties work to its connection). |
-| `apps/ade-cli/src/services/builtInBrowser/scenePreviewBridgeClient.ts` | The brain's side of `scene_preview.render`, one render at a time so each timeout starts at send; `runtime.getScenePreviewer()` is null with no desktop. The `preview_scene` tool (`adeRpcServer.ts`) writes the PNG under `.ade/cache/scene-previews/` (newest 20); `daex scene preview` (`cli.ts`) reads a file or stdin and formats the result. |
-| `apps/desktop/src/renderer/components/chat/useSceneStillLatch.ts` | "Show this scene's stored picture, or run its code?" Latched on the first render that can answer, so `live` turning false never yanks a watched frame. A picture decides at once; a broker record with bytes in flight also holds a placeholder (a record proves the code ran); with neither, once the index settles or `SCENE_STILL_INDEX_WAIT_MS` (1.5 s, the index listing only) passes, the scene runs. An empty preview read (rejected, no route, non-string) releases the latch to run the scene. Live mounts and mounts without a scope key never wait. |
-| `apps/desktop/src/main/services/scenes/sceneDocumentStore.ts` | The Electron-free store behind `ade-scene:`. `put()` → `ade-scene://view/<id>`; `respond()` returns the document with `Content-Security-Policy` and `Referrer-Policy`, or 404; `parseSceneRequestId` accepts the authority and `///view/<id>` forms only. Bounded at `SCENE_STORE_CAPACITY` (64) and `SCENE_STORE_BUDGET_CHARS` (25M; a 3D document carries ~760 KB of three.js); oldest goes first, newest always stays. `mcpAppDocumentStore` (`policy: "per-document"`, `ade-scene://app/<id>`) serves each MCP App page with its stored policy; the scene store always serves the scene policy; `respondToSceneProtocolRequest` picks the store by host. |
-| `apps/desktop/src/shared/mcpApp.ts` | MCP Apps, shared half: `MCP_APP_LIMITS`, `readMcpToolUiMeta` (`ui.resourceUri`, `ui.visibility`), `mcpAppMayCallTool`, `sanitizeMcpAppCsp` / `buildMcpAppContentSecurityPolicy` (only declared origins), `McpAppDocument`, `parseMcpAppFrameMessage` and readers for `ui/message`, `ui/open-link` and size reports, `toMcpAppToolResult`, `mcpAppStyleVariables`. Pure. |
-| `apps/desktop/src/main/services/chat/mcpAppHost.ts` | The brain's half: `observe` watches `tool_call` / `tool_result` for a call with a page; `capture` reads it through the live provider session, files it and emits the `mcp_app` `ade_card`; `get`; `request` routes `tools/call` and `resources/read` to the recorded server, asks before a tool not marked read-only, refuses app-hidden tools. Provider links (`claudeMcpAppLink`, `codexMcpAppLink`) are built in `agentChatService.ts` from an existing runtime. |
-| `apps/desktop/src/main/services/chat/mcpAppGrants.ts` | "Always allow" for an app's tool calls: one grant per server and tool in the project kv store, with `mcpServerFingerprint` (command + args, or URL) so a re-added server with another command is not covered. |
-| `apps/ios/ADE/Views/Work/WorkMcpAppView.swift`, `WorkMcpAppDocument.swift` | The iPhone MCP App host: `WorkMcpAppController` (web view, shell, scheme handler, JSON-RPC, tap rule), `WorkMcpAppCardView`, and the pure half (`chat.getMcpApp` parsing, policy check, readers, theme variables). |
-| `apps/desktop/src/main/services/chat/mcpAppStore.ts` | A chat's apps on disk: `<project>/.ade/transcripts/chat-apps/<chat>/`, one record per call, one copy per distinct page (by hash). Bounded by page size, 40 apps per chat, and a prune of unnamed pages; `deleteSession` removes the folder; `sweepOrphans` removes folders of missing chats. |
-| `apps/desktop/src/renderer/components/chat/McpAppFrame.tsx` | One app (`McpAppCard`): loads when the row is on screen (`chat.getMcpApp`, `scene.prepareApp`), runs `<iframe sandbox="allow-scripts">`, answers `ui/initialize`, replays tool input and result, follows size reports, sends theme and width, and handles `ui/open-link`, `ui/message`, `tools/call`, `resources/read`. `canHostMcpApps` is false on hosted web (the card shows fallback text). |
-| `apps/desktop/src/main/services/scenes/sceneSnapshot.ts` | Electron-free capture plumbing: `resolveSceneCaptureRect` (CSS px → DIP by page zoom; a rect outside the page is refused), `clampSceneCaptureRect` (`capturePage` resolves empty otherwise), `decodeScenePngDataUrl` (PNG magic, 12 MB cap). |
-| `apps/desktop/src/main/services/scenes/sceneSnapshotIngest.ts` | `ingestSceneSnapshot` behind the CTO-only `computer_use_artifacts.ingestSceneSnapshot`: path jail (lexical, then realpath), file check, title clamp, owner resolution. |
-| `apps/desktop/src/main/services/scenes/sceneStills.ts` | `fileSceneStill` files a settled scene's PNG through the broker (`metadata.kind = "scene_still"`, `sceneScopeKey`, `sceneTitle`) and keeps one still per scope key and `SCENE_STILL_MAX_PER_SESSION` (32) per owning chat, oldest first, both scoped to the owner (an unowned still prunes nothing). `sceneStillFileLabel` clamps titles to 80 chars. `resolveSceneStillOwner`, and `requireSceneStillScopeKey` / `SceneStillScopeKeyError`, the one scope-key validation. |
-| `apps/desktop/src/shared/types/chat.ts` | All chat types: `AgentChatSession`; the `AgentChatEvent` union; `AgentChatEventHistorySnapshot` (`sessionFound` for stale sessions); `AgentChatMcpToolSource` and app context; Codex goal, token-usage and runtime-state DTOs (`CodexSafetyBufferingState`, moderation, sleep / thread-deleted / stall events); `web_search` `CodexWebSearchResult[]` (`results`, max 8, `resultsTotal`); goal and recovery args; image generation/view events with omission metadata; permission modes; pending input (with `autoResolutionMs`); completion reports; `AgentChatMessageSession*` (`auto` / `queue` / `wake` / `interrupt-replace`); `AgentChatCreateScheduledWork*`, `AgentChatSetScheduledWorkPaused*`; `PARALLEL_CHAT_MAX_ATTACHMENTS` and parallel launch DTOs. Also: `AgentChatSubagentSnapshot.label` (for example Codex Agent #N); `AgentChatScheduledWakeMetadata` (schedule id, kind, fire time, reason, late); `readSpawnCompletedNotice` (the one reader of `spawn_completed`, either wording); `scheduled_work_update` (with `paused`, `firedAt`, `late`) and `AgentChatSessionSummary.nextWakeAt` / `scheduledWorkPaused`; `transcript_retraction` (hides superseded text without rewriting JSONL); `user_message` metadata such as `hideFullPrompt`, with `displayText` shown; `AgentChatSessionSummary.linearIssueLinks` from `session_linear_issues`; `AgentChatContextAttachment` (Linear, GitHub, Jira; `jira_issue` carries `LaneJiraIssue`); `session_meta_updated`'s optional mode fields (a title-only emit carries none). |
-| `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | The top-level surface: state derivation, IPC, composer and list mounts, End/Delete in the header, parallel multi-model launches, transient-lane cleanup, multi-lane deep links; mounts `AskQuestionComposer` in place of the textarea for a question card. **Pending input**: `pendingInputsBySession` (raw `derivePendingInputRequests`) is never read directly; every reader (composer, plan gate, `pendingApprovalIds`, send guard, "needs you" dot) reads `resolvedPendingInputsBySession` (joined through `resolvePendingInputs`). **Accent**: `chatAccentForRenderedChat(...)` from the rendered session's provider, with model inputs withheld until the composer describes the chat on screen; `lockSessionProvider` lets a host paint the switch frame right ([Resolving the accent](composer-and-ui.md#resolving-the-accent-for-the-chat-on-screen)); question and plan cards inherit `--chat-accent`. **Streaming**: visible grid tiles flush on the normal schedule and poll-recover missed events even unfocused; a visible empty transcript whose summary looks inactive gets two forced history reads (900 ms, 3 s); `sessionFound: false` clears locked-pane state. **Drafts**: last-launch config is scoped by project/lane/surface/draft kind and local edits are marked touched; composer text is keyed by session id or `draft:<laneId>`; during a project switch sends and mutations block with "Project is switching...". **Drawers**: on macOS `ade.iosSimulator.getStatus` gates the iOS drawer ([iOS Simulator](../apple-device/README.md); selections become `IosElementContextItem` chips); `ade.appControl.getStatus` gates `ChatAppControlPanel` ([App Control](../computer-use/app-control.md); `AppControlContextItem` chips). As a Work tile (`hideLaneToolDrawers={true}`) the iOS, App Control and terminal toggles hide and their polling stops. Remote panes keep proof polling and subscriptions, defer App Control until opened, delay parallel-launch cleanup recovery after mount, cache session lists and slash catalogs per project root, and skip mount-time delta fetches until a remote turn completes. Window events `ade:agent-chat:add-attachment` / `add-ios-context` / `add-app-control-context` / `add-builtin-browser-context` / `insert-draft` match `sessionId` or `draftTargetId`. **CLI launches** pass the lane worktree (lane-aware skill roots), drop `command` / `args`, and send `startupCommand` with `workCliStartupDelayMs = 180` ([pty-and-sessions.md](../terminals-and-sessions/pty-and-sessions.md#create-flow-createargs)); `onLaunchCliSession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>` passes `disposition` so background launches keep focus. **Draft launch jobs** (`DraftLaunchMode`, `DraftLaunchKind`, `DraftLaunchLaneTarget`, `StartedDraftLaunch`, `DraftLaunchJob`): `creating-lane` → `starting-session` → `sending-prompt` → `ready` \| `failed`; new lanes get a deterministic name and the AI rename runs in the background (`startBackgroundLaneNaming` / `startBackgroundParallelLaneNaming`, `laneNamingStore`). Jobs live in the root store's `draftLaunchJobsByScope` (`useRootAppStore` / `rootAppStoreApi.getState()`), keyed by project root, lane, surface and draft kind, so they survive remounts and a remote project switch. The launch captures its `OpenProjectBinding` and pins every branch/lane/chat/orchestration/PTY call and rollback (`lanes.delete` / `agentChat.delete`) to it, each step capped by `withDraftLaunchTimeout` (90 s). The composer clears when the job starts; strips offer Open/Restore, Dismiss and hide-status; Restore merges attachments and context by identity; `clearDraftLaunchComposer` resets after success; `draftKind` lets Open restore chat vs CLI. **Navigation**: locked embeddings take a session-title index for spawned-chat labels; a spawned chat shows a back control (parent title); a runtime subagent view shows **Back to main thread**; Proof stays on the chat header. **Per-chat routing**: a chat's machine is its lane's. `createChatMachineRouter` (`renderer/lib/chatMachineRouting.ts`) resolves the lane's `OpenProjectBinding`, and every chat-scoped `window.ade` call passes it as a trailing argument from `chatRuntimePinRef.current` (preload treats `null` and `undefined` as the bound path). `useChatScopeDerivation` resolves the scope once and `ChatRuntimeScopeProvider` wraps the subtree; the pin goes to the terminal drawer, the Claude login bar and the rewind dialog, and the proof subscription keys on `pin.key`. App Control support is `appControl.getStatus(chatRuntimePin)` (support belongs to the chat's machine); `iosSimulatorProjectRoot` is `chatLaneWorktreePath ?? (chatRuntimePin ? chatRuntimePin.rootPath : projectRoot)`. Router inputs come from `collectOpenProjectBindings` and `buildChatMachineRoutingState` (the active binding's live lanes win), the same pair as `useWorkMachineRouter`. A chat on the tab's binding resolves to `null`. Opening a chat never rebinds the tab; a differing pin is checked with `isLivePinnedBinding`. The composer notice keeps the raw message (`chatNoticeReducer`); `shownChatNotice` (`chatNotice.ts`) shows a remote "connection closed/interrupted/failed" as a status line ("the chat keeps running there") only for a chat on another machine. |
-| `apps/desktop/src/renderer/components/chat/chatUnconfirmedSends.ts` | The composer's record of sends whose answer or transcript confirmation has not arrived, kept outside the pane so a project switch or a closed pane cannot lose it: one entry per (chat, payload) keeps the `clientSendId` a retry must reuse, the words and the moment the send was made, the composer text it took, and what a put-back restored (files and issue context). `markSendDelivered` records a send seen in its chat for 60 s, so every put-back refuses it and a pane showing that chat clears exactly that content from the composer and the saved drafts, leaving anything the person typed or attached since. It reads the brain's side through `apps/desktop/src/main/services/chat/chatClientSendLedger.ts`, which recognizes a retried `clientSendId` for the send that ran here and returns the id the brain writes on the message it wrote. |
-| `apps/desktop/src/renderer/components/chat/ChatRuntimeScope.tsx` | The one answer to "which machine is this chat on". A Work tab unions chats from every machine, so chat surfaces (Git toolbar, iOS simulator, App Control, browser, file changes, PR pane, terminals) must read the chat's machine, never the tab's (what global `useAppStore` selectors give). `useChatRuntimeScope()` → `{ pin, binding, laneId, lane, laneWorktreePath, rootPath, isRemote, machineName, online }`; `pin === null` means only "on the tab's binding"; outside a provider it returns the local fallback. `useChatRuntimeScopeForPin(pin, laneId, bindingOverride?)` serves surfaces outside a pane (the CLI header's `ChatGitToolbar`). `useChatScopeDerivation({...})` starts from a session, finds its lane (foreign lanes via `useForeignSessionLaneId`), and returns `chatScopeLaneId`, `chatRuntimePin`, `chatEffectiveBinding`, `isRemoteChat`, `chatMachineName`, `handoffLaneSourceLanes`, `chatLaneWorktreePath`. **Rules**: (1) a foreign lane's worktree comes only from the pinned machine's slice (`useLanesForPin`, `renderer/state/crossMachineLanes.ts`), never `state.lanes` (ids are unique only per machine); (2) `handoffLaneSourceLanes` targets the chat's machine; `availableLanes` / `lanes` fit only an unpinned chat; (3) `online` is false only when the pinned machine is known unreachable; (4) `machineName` comes from `machineNameForBinding` (`shared/machineIdentity.ts`) and is always absolute ("This computer", "MacBook Pro (97)"), never "remote". **Lint**: `apps/desktop/eslint.config.mjs` bans `useAppStore` / `useRootAppStore` reads of `projectBinding` or `lanes`, `project.rootPath`, and `selectActiveProjectRoot` imports under `src/renderer/components/chat/**` (exempt: `AgentChatPane.tsx`, this module, tests). `chatRunsOnThisComputer(scope)` (`!isRemote && pin == null`) gates affordances that open or file onto this disk: the scene **Proof** button and the Codex generated-image **Open** button (`codex/CodexImageGenerationCard.tsx`, `codex/CodexImageViewLine.tsx`; the thumbnail still reads through the pin). |
-| `apps/desktop/src/renderer/components/chat/usage/contextUsageModel.ts` | The provider-neutral context meter reducer. Live Claude `context_usage` (`origin: "live"`) feeds only the meter (`ContextUsageDial` hover); only `/context` (`origin: "command"`) renders an inline card. It reads the typed breakdown (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheCreationTokens`; total as input when absent). A completed `context_compact` invalidates older usage for Claude, Codex, OpenCode, Cursor and Droid, and same-turn generic counters are ignored after it; Claude `postTokens` / exact `context_usage` and Codex `thread/tokenUsage/updated` refill the meter at once. `done` totals are turn sums, so `usage.contextTokens` (last request) is read when present, and an exact sample in the same turn wins over summed `tokens` / `done`. iOS (`workContextUsageViewModel`) mirrors both rules. `normalizeCodexTokenBreakdown` (`agentChatService.ts`) maps `cacheWriteInputTokens` / `reasoningOutputTokens` to `cacheWriteTokens` / `reasoningTokens`, shown as `cache write` and `reasoning` segments. |
-| `apps/desktop/src/renderer/components/usage/ActivityModule.tsx` | Activity, tokens, code and client mix. `AgentChatPane` mounts `WorkActivityModule` under an empty Work draft composer (desktop and web), width-capped to the launch shelf on an opaque `--work-popover-bg` plate; reads `usage.getAdeStats` through `window.ade`, defaults to all-time, keeps tab/range choices locally. |
-| `apps/desktop/src/renderer/lib/agentChatSessionListCache.ts` | A short cache for `ade.agentChat.list` keyed by project root, lane, automation and archive flags. Reads coalesce; forced reads bypass an older promise, and promise identity stops a superseded response from refilling it; mutations invalidate by project/lane. |
-| `apps/desktop/src/renderer/lib/chatSessionEvents.ts` | `announceWorkChatSessionCreated` invalidates both Work list caches and publishes the session (Work and Lanes seed an optimistic row); `shouldRefreshSessionListForChatEvent` gates list refreshes on streamed events. |
-| `apps/desktop/src/renderer/lib/agentChatSlashCommandsCache.ts` | A short cache for `ade.agentChat.slashCommands` keyed by project root and session or lane/provider; system notices can force-refresh. |
-| `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Draft-launch job DTOs and pruning: `NativeControlState`, `DraftLaunchSnapshot`, `PreparedDraftLaunch`, `DraftLaunchJobStatus`, `DraftLaunchJob`, `isDraftLaunchJobTerminal`, `isDraftLaunchJobStale`, `pruneDraftLaunchJobs` (active first, terminal rows fill the rest, at least one terminal kept). `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout(promise, label)` (the IPC keeps running detached; the timeout only frees the job); `LAUNCH_PROJECT_CHANGED_MESSAGE` (only when no originating binding exists and the project drifts). `noteNewDraftRequested` / `markNewDraftRequests` / `launchMayOpenItsSession`: a launch opens its session only if the person asked for no new draft in its project tab after the send. `noteLaunchUrlOpen` / `takeLaunchUrlOpenAllowed`: the same rule for the Work URL (`?sessionId=`) that the open writes, which applies once the chat is listed. |
-| `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | In-flight handoff placeholders: the DTO, scope keys, status labels (`preparing-summary` for brief, `forking-history` for fork), search matching, the stable placeholder id, and `handoffJobLikelyMaterialized`, which hides a placeholder once a matching real row (same lane + tool type, started at/after the job) shows, so a handoff never reads as two sessions. |
-
-| `apps/desktop/src/renderer/lib/chatHandoffIntent.ts` | A one-shot module bridge from **Hand off…** in the session menu to the pane that owns handoff. `openChatHandoff(sessionId, intent)` records `"local"` \| `"remote"` and notifies; `subscribeChatHandoff` / `takeChatHandoff` let a pane that renders later drain it. One slot, last write wins; an intent older than 30 s is discarded; one for another session stays for its own pane. A module, not store state: it is a transient command. |
-| `apps/desktop/src/renderer/state/appStore.ts` | The shared renderer store: selection, preferences (`launchPromptClipboardEnabled`, `launchPromptClipboardNoticeEnabled`, default-on `draftsButtonEnabled`, mirrored into project stores), and in the **root** store `draftLaunchJobsByScope` (+ `setDraftLaunchJobs`) and `handoffLaunchJobsByScope` (+ `setHandoffLaunchJobs`), so in-flight launches survive a remote project switch that destroys the project store. |
-| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx` | The virtualized transcript. **Scrolling**: coalesced measurements; while stuck to the bottom it follows height changes across frames; a shrinking viewport (a growing composer) is a pin, not a user scroll; programmatic scrolls are tracked by target position so coalesced events never swallow a real gesture; older history prefetches about two viewport-heights early (`resolveOlderHistoryPrefetchTriggerPx`); `stabilizeTranscriptToolActivity` reuses unchanged per-turn arrays so `React.memo` holds. A view's opening rows skip their entrance animation; the first virtual window is sized from the last pane height and placed at the restore target. **Paths**: workspace paths in links and inline code get a file glyph and open with a relative path + lane id via `chatWorkspacePaths.tsx` (fed the `runtimePin`); a file in this chat's lane on this machine opens in the Work Files panel, anything else goes to `FilesTab`, which resolves on that machine. **Rows**: `work_log_group` rows are hidden except computer-use groups (`ChatComputerUseActions.tsx`; [transcript-and-turns.md](transcript-and-turns.md)). After `done`, `ChatTurnWorkSummary` is one expandable `N tools · M files` line above the time/usage cutout (file count omitted with a checkpoint-backed `turn_diff_summary`). Activity bundles fold todo/scheduled and placeholder subagent updates and open Chat Info instead of duplicating the roster; real subagents render inline as `SubagentSpawnCard` / `SubagentResultCard` with jump links; consecutive background shells fold into one `BackgroundJobRunRow`; two or more interrupt-stopped subagents fold into `SubagentStoppedGroupCard`. Scheduled turns show an amber `Woke on schedule` divider (time, reason, late). Proof is bucketed by capture time under the producing turn (filmstrip open by default). Consecutive `codex_image_view` events fold into `Viewed N images` (local thumbnails read through the chat's machine). Interim narration lines float hover actions below. Codex goals render as `Goal set` / `Goal paused` / `Goal cleared`; `codex_safety_buffering`, `codex_moderation_metadata`, `codex_thread_deleted` render as chips; a Codex sleep is a tool row (`codex_sleep` exists only in saved chats); `codex_turn_stalled` is a live recovery card (Wait re-arms, Nudge steers, Retry interrupts and replays, Resume restarts the app-server and retries). **Messages**: `hideFullPrompt` handoff briefs show only `displayText`, and the first gets an origin divider (`Started from a brief of the previous chat` or `Continued from another computer`, which also carries the fork line); a long markdown user message renders as markdown (`userTextLooksLikeMarkdown`, `MarkdownBlock tone="bubble"`), only what the reader typed; `providerOrigin: "handoff_fork"` history gets one `Forked from the previous chat — full history above` divider. **Errors**: each is one `TurnFailureLine` from `errorInfo.presentation` (or the same derivation locally): glyph, title, **Retry** and **Details** (with Copy); a usage limit draws no line (turn end reads `Usage limit`, the composer chip owns it; `turnFailureRows.ts`); `errorInfo.agentCli.category` `"unauthenticated"` renders a quiet `ProviderSignInReceipt` (the sign-in card sits above the prompt). The `working for <elapsed>` counter paints through a callback ref that survives the status line's remount ([composer-and-ui.md](composer-and-ui.md)). **`ChatInfoHostContext`**: `AgentChatPane` provides it (it owns the actions pane and `ade:chat:open-info`), `PersonalChatsPage` does not, so affordances that open that pane render only where they work; it is per-subtree because hidden `ProjectSurface`s stay mounted. |
-| `apps/desktop/src/shared/threadComments.ts`, `apps/desktop/src/main/services/chat/threadCommentService.ts`, `apps/desktop/src/renderer/components/chat/ThreadCommentLayer.tsx`, `ThreadCommentControls.tsx`, `threadCommentAnchors.ts`, `ThreadMediaActions.tsx`, `threadCommentsStore.ts`, `threadCommentsHeldOnDevice.ts`, `chatUserMessageCards.tsx` | **Thread comments and Add-to-chat quotes.** Notes pinned to parts of a reply stay pending on the host (per-session JSON under `chatSessionsDir/thread-comments`, never synced) until a send carries them as one `<ade-review>` block before the typed text. Anchors: quoted text, a table row, or one image or video (`kind: "media"`: kind, source, label, index). `ChatInlineMedia` and `ChatProofCitation` mark media with `data-thread-media*` in every state, so anchors survive remounts; `ThreadMediaActions` shows **Comment** and **Add to chat** on hover. Add to chat attaches the file (an image as image, a video as a path with `hydrate: false`), only for a shown file the send accepts (relative, or absolute inside the project or lane on that machine). A media comment rings via `data-thread-comment-media-state`. The host also fills text/row fields (`quote`, `cells`, …) in a media anchor for builds that do not know media. An open unsaved box closes on a chat or machine change, pane unmount, or a hidden page; its text is kept per chat and anchor until Cancel, Escape or save. `shared/threadComments.ts` owns format/parse/normalize/caps (tag neutralization, surrogate-safe cuts); the service owns create/update/delete/`takeForSend`/restore; the renderer sends `includeThreadComments` (plus the exclusion list below). `threadCommentsStore` keeps the host list as truth, overlays an unanswered create (merged on success; on failure it stays in the list as a failed comment, with its text, until **Retry** saves it again or **Discard** drops it) and patches edits until `session_meta_updated` replaces them; a refused write re-reads. Each local comment sends a `clientId` with its create; the host stores it and answers a repeat (same chat, id and author) with the comment it already made, and refuses one that a send took or a delete removed. Retry re-sends the same id; Discard deletes the host's copy found by that id (pinned; a failure shows "Couldn't discard." and keeps it for another Discard); a send names every comment this client shows as not on the host (still saving, failed, or being discarded) in `excludeThreadCommentClientIds`, and the host leaves those copies pending, out of that send (an older host ignores the field). Only for an older host that drops `clientId` does the store match a lost save by content, against the host ids seen before the first attempt (a list read before a chat's first comment save). A failed comment shows "Couldn't save." with Retry and Discard (no Edit/Delete), is never sent, and the composer's comments button shows a "!" badge and says how many couldn't be saved. A connection failure reads as one line about the chat's machine, with no "Report…" (`threadCommentError`). Unsent comments are private: the `ade` edge strips `includeThreadComments` from agents and denies the four `chat.*ThreadComment*` actions. A provider slash command or disk-refused send keeps them pending; a dropped, cancelled or emptied steer restores them. **A resting DAEX Cloud computer**: a comment written while the chat's computer rests (the pane's `machineIsCloudResting`, read as `useChatRuntimeScope().machineRests`) stays on this device (`threadCommentsHeldOnDevice.ts`: `holdNewAgainst`, reached through the store's `holdThreadCommentOnDevice`, localStorage `ade.threadComments.heldOnDevice.v1`, keyed by chat id; desktop and DAEX Web), since a create is a write and would wake it. It shows with the host's comments ("On this device until you send"), and its edit, hold-back and delete stay on the device. So does an edit, tick, untick or delete of a comment the host already has, made while the computer rests (`holdThreadCommentChange`, `holdThreadCommentDelete`, kept in the same storage as `changes`, one per comment): shown at once ("Change on this device until you send"; a deleted one leaves the list), and a change back to the host's value drops it. Once one waits, later changes to that comment wait too, so they apply in order. A send that carries comments first hands everything over (`handOverHeldThreadComments`, before the exclusion list is built): the held changes first (`update` / `delete`; one the host no longer has is skipped), then one create per held comment, in the order written, with its `clientId`, each write through the send's own reach (`prepareDeviceHeldForSend` passes `chatSendReach`, `withSavedChatReads`' `forSend`: a resting chat's computer by its machine key, else a computer that refused the call before it left woken first). The send's guest selections are read from the store after a hand-over, so an applied edit's new `revision` counts. A copy with other text is updated; one the host refuses as already sent (`THREAD_COMMENT_GONE_MESSAGE`) is dropped. The host then builds the review block from its own list, as for any comment. A failed hand-over sends nothing, puts the text back, and keeps every comment it did not hand over. Held-back comments, and ones deleted here after a try, are named in `excludeThreadCommentClientIds`; the next hand-over deletes the host copy of a deleted one. A send that carries no comments hands them over too while the computer is awake (a delete or untick of the last comment); while it rests such a send goes to the account's queue without waiting for the wake, so a computer that wakes gets them with the first send after it is awake. Until then another device's send still sees the host's older list. Such a send never goes through the account's queue (`sendThroughAdeCloudQueue` answers `unsupported`: a queued message reaches the host without its comments). iOS creates text comments from its selection sheet (see [iOS Companion › Select, copy and comment](../sync-and-multi-device/ios-companion.md#select-copy-and-comment-on-a-reply)): `WorkMessageSelectableDocument.swift` builds the quote the way `captureTextAnchor` does, including the soft space `collapsedTextOf` puts after a text node in a block or `code` element and leaves out after a path link (`looksLikeWorkspacePath`); keep the two in step. The code block's Copy and Run controls carry `data-thread-comment-ignore`, so a quote never reads "Copy". Its comment commands ride a live connection only, so it never wakes a computer for them. **Shared lanes**: a guest may comment (`author` stamped by the host, `shared/messageAuthor.ts`); an owner's send includes a guest comment only when named in `includeGuestComments` with the seen `revision` (`parseGuestCommentSelections`); an edit bumps `revision` and drops it from that send; `formatThreadReviewBlock` marks it as another person's and breaks its `@word:` chips. See [lane sharing](../lanes/lane-sharing.md#message-author). |
-| `apps/desktop/src/shared/messageAuthor.ts`, `apps/desktop/src/main/services/chat/laneShareMoveChat.ts`, `laneShareMoveTransfer.ts` | **Lane sharing.** `AdeMessageAuthor` (`{ kind: "host" \| "guest", userId, name }`) rides as `metadata.author` on `user_message`, `DraftEntry` and `ChatThreadComment`; the host strips caller authors and stamps its own; none means the host's user. The list shows "From <name>" under a guest message. A guest send carries `expectedTurnId` (checked before routing) and runs as a plain prompt (no slash, `!`, skill or `@` expansion). `laneShareMoveChat.ts` lands a chat moved from the other person in a new lane, in plan mode, on a model signed in here, and marks the source with `lane_share_moved` (`AgentChatNoticeDetail.laneShareMoveId`). See [lane sharing](../lanes/lane-sharing.md). |
-| `apps/desktop/src/shared/claudePluginUi.ts`, `apps/desktop/src/main/services/chat/claudePluginUiService.ts`, `apps/desktop/src/renderer/components/chat/ClaudeModUi.tsx`, `ClaudeModUi.css`, `ClaudeModTree.tsx`, `claudeModUiStyle.ts`, `claudeModUiStore.ts`, `claudeModUiPrefs.ts`, `useClaudeModsPrompt.tsx`, `apps/desktop/src/renderer/components/settings/ClaudeModsSection.tsx` | Claude mod UI for plugins with a hooks module: snapshot types, the two action names, `sanitizeClaudePluginUiTree`; the service keeps one snapshot per chat, asks Claude for band and pane trees, forwards presses; the component draws one composer dock (status lines, panes, band, fold) and toasts; `useClaudeModsPrompt` offers the setting once to people with mods. See [Claude mod UI](#claude-mod-ui). |
-| `apps/desktop/src/renderer/hooks/usePinnedToolStatus.ts`, `apps/desktop/src/renderer/components/settings/providers/bodies/PinnedToolStatusRow.tsx` | A provider's pinned copy on one machine: `window.ade.ai.pinnedToolStatus({ provider }, pin)` once per provider and `pin?.key`, polled every second only while downloading, `onReady` once on landing. `pinnedToolLine` gives the one line for Settings and the chat card: "Ready (pinned vX)", "Downloading <Tool> for <machine>… N of M MB", "Couldn't download <Tool>: <reason>." + Retry, "not available on this machine", "DAEX downloads <Tool> for <machine> the first time it is used." + Download, or a fall-forward notice ("Running untested Claude Code X…", "…Codex X…", "…Muse Code X…", or Muse's "Update DAEX."). Download/Retry calls `pinnedToolDownload` with the same pin. See [agent-tools-cache.md](../onboarding-and-settings/agent-tools-cache.md#status-and-the-downloadretry-action). |
-| `apps/desktop/src/renderer/components/chat/chatMarkdownBlock.tsx` | `MarkdownBlock`, the transcript markdown renderer: `remarkThreadEntities` chips, headings from `--chat-font-size`, `ade://` links as composer-style chips, `tone` (`"thought"` or `"bubble"`, neutral white for user briefs), optional `tailMarkdown` (a byte-stable settled body plus a re-parsed tail in one flow). Right-clicking an `http(s)` link opens `useChatLinkContextMenu` (**Copy link**, **Open in** DAEX browser, system browser or a detected browser with its icon); a `localhost` link stays on the chat's machine (`runtimePin`). |
-| `apps/desktop/src/renderer/components/chat/useChatLinkContextMenu.tsx`, `components/ui/OpenLinkInSubmenu.tsx`, `components/ui/BrowserTargetLogo.tsx`, `apps/desktop/src/shared/browserTargets.ts` | The link menu: anchor state and `ContextMenu` entries (`Copy link`, the `open-link-in` row as `OpenLinkInSubmenu`) listing DAEX Browser, System Browser and detected browsers (icon data URLs, glyph fallback). On hosted web `getInstalledBrowsers` is absent and only the two generic choices remain. |
-| `apps/desktop/src/renderer/components/chat/threadEntities.tsx` | Thread-entity chips, renderer half: `ThreadEntityProvider` builds the lookup from the chat's machine (`useLanesForPin` / `useSessionsForPin`) and slash commands, keyed on the index value; `remarkThreadEntities` rewrites matched code and prose into `ade-entity` nodes; `ThreadEntityNode` draws a chip, a `file_line` follow-up or a local timestamp. Wired by `AgentChatPane`. |
-| `apps/desktop/src/shared/threadEntities.ts` | The pure entity rules: `buildThreadEntityLookup` (lanes, sessions, Linear keys, skills), `matchInlineCodeEntity`, `findProseEntities`, `formatThreadEntityTimestamp`, `threadEntityKey`. Inline code is the strong signal; lanes and chats chip only on an index match; prose matches only full UUIDs, zoned ISO timestamps, `PR #123` and known Linear keys. iOS port: `WorkThreadEntityRules.swift`. Adds `permission` and `skill` kinds to `shared/chips.ts`. |
-| `apps/desktop/src/renderer/components/chat/AssistantTextBody.tsx`, `textReveal.ts`, `useRevealedText.ts` | Paced reveal of the trailing streaming text row in a visible main transcript: the pure state machine (pacing, grapheme-safe cuts, settled/tail scan, the `ade.textRevealHorizonMs` kill switch), the rAF/visibility hook, the 60 Hz leaf. Subagent views and idle sessions paint on arrival. See [composer-and-ui.md](composer-and-ui.md#paced-text-reveal). |
-| `apps/desktop/src/renderer/perf/streamSmoothness.ts` | Perf-run rAF sampler: per ~1 s window, frames that advanced the revealed text (`data-stream-text-len`) and the gaps between them, as `streamSmoothness` events. Inert in production. |
-| `apps/desktop/src/renderer/components/chat/chatRuntimeState.ts` | `deriveRuntimeState` (turn-active, pending input, queued steers), `userMessageVisibleText`, `PendingSteerEntry`. Cached per event list; an appended list reuses the previous answer unless an appended event matters (`eventAffectsRuntimeState`). A new event type read by the fold or `derivePendingInputRequests` must be added to that predicate. |
-| `apps/desktop/src/renderer/components/chat/chatTranscriptPresentation.ts` | `deriveTranscriptToolActivity`: each `done` gets its turn's tools; the open turn gets what follows the last boundary. Queued steers are skipped; other user messages are boundaries when `userMessageStartsTurn` says so ([Transcript and turns](transcript-and-turns.md)). |
-| `apps/desktop/src/renderer/components/chat/chatHistoryWindow.ts` | Bounded history for project and personal chats: `chatDisplayEvents` (no `subagent.*` twins or obsolete queue notices; extends the previous answer for an appended list, returns the same list when nothing shows), event identity, byte estimates and caps, seam merging, strict cursors, bounded continuation through empty pages, stale-request checks. `readOlderHistoryBatch` is turn-anchored (byte-cut pages may fold to one line): it pulls until the span holds a `user_message`, within `maxPages` (8) and `maxAnchorEvents` (400), and returns pulled pages even if a later read says `sessionFound === false`. A known exhausted head is kept only when the refresh overlaps and keeps its oldest event; replacements and cap eviction re-arm paging. |
-| `apps/desktop/src/renderer/components/chat/chatWorkspacePaths.tsx` | Path recognition and navigation for every chat surface: `parseWorkspacePathLocation` / `looksLikeWorkspacePath` / `resolveWorkspacePathFromHref` (line:col, `#L12C3`, `line=`, `file:` URLs, Windows drives), `resolveFilesNavigationTarget` (longest root, the chat's lane first), `useWorkspacePathOpener(runtimePin)`: a foreign chat's paths are listed and probed on its machine, and roots are cached per machine. `probeWorkspacePath` checks the name index first: a bare name resolves, duplicates open search, a folder reveals in the tree, a path under no root raises a toast. A miss is not fatal for a path with `/` (the index is watcher-fed only while a Files/Git panel is open, skips gitignored files, caps at 25,000), so a just-created file still opens. Same machine + own lane + `/work` opens the Work Files panel via `files/v2/filesOpenRequests.ts`; otherwise `/files` with `openFilePath`, `laneId`, `startLine`, `startColumn`, `openPathType`, `searchQuery`, `filesPin`. `ChatWorkspacePathProvider` + `useChatWorkspacePaths` / `useChatWorkspacePathOpener` let shared `ChatMarkdown` route paths; without a provider a path is inert text. Roots load lazily on first click or `ensureWorkspacesLoaded` and re-read once after a miss, so navigation always resolves against a fresh read. |
-| `apps/desktop/src/renderer/components/chat/chatAppearance.ts` | Density and font geometry, and the width contract: `--chat-content-width` = `min(100%, clamp(720px, 62vw, 1180px))`, aliased as `--chat-column` for prose, composer, cards, pills, plans, file changes and pane reserve math. |
-| `apps/desktop/src/renderer/components/chat/chatCardPrimitives.tsx` | Transcript-card vocabulary: a `[16px glyph \| content \| auto meta]` grid; line/inset/bordered/rail/plain skins; tones; chips, meters, detail rows, diff stats; agent identity and schedule formatting; the proof filmstrip (open by default). One-line facts use a hairline row, live rows inset chrome, failures an amber rail. |
-| `apps/desktop/src/renderer/components/chat/AdeCard.tsx` | The `ade_card` renderer from the primitives. Shape follows state: success is one line, live work adds progress, failures show warning rows, unknown variants fall back to text + deeplink, degraded re-emits keep prior detail as stale. |
-
-| `apps/desktop/src/renderer/components/chat/SubagentActivityCards.tsx` | Inline subagent cards from `chatTranscriptRows.ts` events. `SubagentSpawnCard` sits where the agent started: identity from `chatSubagentIdentity`, task title, name, one live activity line, `tokens · elapsed`; kind, provider, model, effort, tool count and spawner live in the tooltip. At the end the same row becomes `SubagentResultCard` (status badge `Finished` / `Failed` / `Stopped`, the line becomes the finding; a failure's message is that line in the error tone with the full error in the tooltip). Four or more cards get a `N agents · N running · N done` rollup (`SubagentRunHeader`); same-cause stops fold into `SubagentStoppedGroupCard` (one amber "N agents stopped when you interrupted" line expanding to `jump to start` links). Both use `SUBAGENT_CARD_CHROME`; `SubagentCardGrid` lays consecutive cards side by side, stretching a short last row. A bottom-right 20 px `ToolLogo` (`chatToolTypeForProvider`) from the child's provider, else the chat's; none for a blank provider. Background shells use `BackgroundJobRunRow.tsx` ([transcript-and-turns.md](transcript-and-turns.md)). Status glyphs are Phosphor components (bare `⚙`/`✓`/`✗` become off-baseline emoji on Windows). |
-| `apps/desktop/src/renderer/components/chat/ChatShellsSection.tsx`, `SubagentWorkflowRunView.tsx`, `WorkflowScriptRow.tsx` | `ChatShellsSection`: a chat's attached terminals (six rows then `Show all`, one status line each, click to open, `⋯`/right-click for the Work menu). `ChatTerminalsReadNotice`: the one notice for a failed shells or watches read (`ChatReadFailure` from `chatReadFailure` in `chatMachinePin.ts`). When every failed read only lost its way to another computer (machine not known yet, link dropped or timed out, computer asleep; `isLinkLostReadError`), it is a quiet `info` line with Retry and no Report. A read on this computer, a link DAEX stopped retrying until the person acts (`isRemoteConnectStoppedError`), or any other failure is one error notice whose raw error sits in the details fold and goes with its report. Both reads re-run when a dropped link comes back (`useReadRetryOnReconnect`). `SubagentWorkflowRunView`: a dynamic workflow run as one group (name, tally, span, a block per phase with full-width agent lines); `workflowRunShape` detects a run (`::a<index>`); an interrupted phase reads `stopped`, not `failed`. `WorkflowScriptRow`: the `Ran workflow script · N lines · Scan → Report` row for the `Workflow` call, script behind a disclosure. |
-| `apps/desktop/src/shared/chatWorkflowScript.ts` | Reads a workflow script's `meta.name` and `meta.phases` only inside the `meta` literal (a helper's `name:` is not the run's). Pure; never throws. |
-| `apps/desktop/src/renderer/lib/workSessionRequests.ts` | `focusWorkSession` and `openWorkSessionMenu` as window events (`ade:work:select-session`, `ade:work:open-session-menu`) so `TerminalsPage` keeps the one `focusSession` and `SessionContextMenu`. Both carry the row's binding. |
-| `apps/desktop/src/renderer/components/chat/spawnNavigation.ts` | `navigateToSpawnedChat(sessionId, laneId?, binding?)` dispatches `ade:work:select-session` (try/catch, no-op on a falsy id); `binding` pins the jump to the chat's machine. Used by `SubagentSpawnCard`, `spawn_wake_divider`, completion lines, `ChatSubagentsPanel` rows, the parent breadcrumb and the `SessionCard` lineage glyph. `TerminalsPage` resolves a missing lane from the session list, and a not-yet-loaded chat is focused once the list renders (`pendingSessionFocusRef` / `applySessionFocus`). |
-| `apps/desktop/src/renderer/components/chat/spawnCompletionLines.ts` | Folds `spawn_completed` notices in `filterVisibleTranscriptRows`: `foldSpawnCompletionLines` keeps each child's newest (`repeatCount` = its turns) and joins neighbours ("N chats finished their turns: A ×3 · B", `spawnCompletionSiblings`). `spawnCompletionNoticeOf` parses once; `findSpawnCompletionLine` serves deep links (`chatListScrollAnchoring.ts`). A notice without a child id keeps its row. |
-| `apps/desktop/src/renderer/components/chat/quietNoticeLines.ts` + `quietNoticeIcon.ts` | Receipt notices. `isQuietNoticeEvent`: kind `info` / `config` / `hook` / `file_persist`, no error or warning severity, no dedicated row status (model switch, spawn, host sleep, reset credit, voice, continuity/disk-pressure). `foldQuietNoticeLines` joins neighbouring receipts of one turn (`quietNoticeSiblings`, `+N`), ending at any other row, turn or notice kind; the first keeps the key, untouched rows keep identity. `quietNoticeIcon.ts` picks the glyph from `detail.permissionModeTransition`, `status`, `noticeKind`, then a message-pattern table for older transcripts, using `Map`s (a `constructor` value misses). Drawn as one muted line with count and a chevron that opens each member's detail; warnings, sign-in, limit usage, errors, reset credits, spawn cards, host sleep and continuity keep their own treatment. |
-| `apps/desktop/src/shared/sessionSpawnNesting.ts` | The Work by-lane filing rule: same-lane `spawnKind: "subagent"` chats (and tracked CLI `--type subagent`) nest under the parent; peers stay top-level; demote un-nests; quiet parents pull up unfinished children; grandchildren file under the root parent (one mark on its row; `filedSubagentsOf` lists them in its actions pane); only chat parents file subagents. `isChatToolType` tells chats from CLI subagents. Desktop and iOS both read it; `daex chat list` stays flat. |
-| `apps/desktop/src/renderer/components/chat/ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | The progress drawer: one scroll, no tabs, sections (progress, proof, Droid mission, sources) shown only with content, dividers only between them, one short line when empty. The pinned footer `ChatAccountNote.tsx` shows the provider logo and account: the latest turn's reported `account` (email, key name or local endpoint), else `instanceId` resolved in the registry (an absent id pins once to the thread's holder, else the default); a turn reported on another account is ignored; only the email (label and plan in the hover); on Claude and Codex with another signed-in account it opens the switcher ([Provider accounts](#provider-accounts)); nothing without a reported identity. The header's progress icon is the only control. Sources groups Cited → Web → Files → Apps from `shared/chatSources.ts`, can narrow to one turn from the `N sources` chip, opens HTTP(S) in DAEX's browser, and excludes `node_repl` plumbing and unsafe protocols. |
-| `apps/desktop/src/renderer/components/chat/ChatGitToolbar.tsx` | The Git/PR status strip above the composer. The PR badge shows only when the lane has a PR (open, merged or closed) and opens the lane's PR tool; no create-PR handoff. Opening the PR pane or menu asks `prReadCache.refreshLinkedPrCoalesced` for `prs.refresh({ prIds })`. An unmapped PR (`pr.unmapped`, synthetic `gh:` id) skips refresh and `getChecks`. Manual sync (↻) lives in the PR pane; elsewhere reconcile-on-focus and `prs-updated` heal. Optional `runtimePin` (the CLI header renders it without a provider) derives scope via `useChatRuntimeScopeForPin(runtimePin, laneId)`; reads and subscriptions go to the lane's machine; effects key on `pin.key`. Under a pin the unpinned `diff.getChanges` read is skipped and PR creation is withheld ([Pull requests](../pull-requests/README.md#which-machine-answers-a-pr-read)). |
-| `apps/desktop/src/renderer/components/chat/ChatPrPane.tsx`, `ChatPrInlineCreator.tsx` | The lane PR tool. The tools variant stacks checks, merge, reviewers and files above comments; the pane variant has a title bar (`Pull request`, ↻, ✕). Cached details render first, then the same cooldown-bound targeted refresh. Terminal PRs hide stale running-check labels. Unmapped PRs skip refresh and enrichment. With no PR it embeds `ChatPrInlineCreator` (title = chat title), except under a `runtimePin`, where it says `Switch to <machine> to open one` (the creator uses the bound machine's lanes and unpinned `createFromLane`). Reads, the subscription and the embedded `PrDetailPane` (`runtime`) follow the pin. Open/closed is per chat and persisted via `chatCompanionUiState` ([Composer and chat UI](composer-and-ui.md#source-file-map)). |
-| `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Serializes iOS, App Control, browser and attachment context into prompt text. |
-| `apps/desktop/src/renderer/components/chat/RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | File-rewind confirmation. Claude uses SDK `rewindFiles`; Codex uses DAEX's git-backed restore plus `thread/fork` before the target turn (≥ 0.145.0), with `thread/rollback` only on ≤ 0.144 or a target without a usable id, before 0.156 ([agent-routing.md](./agent-routing.md#codex-rewind-and-0145-readiness)). `rewindFilesPreview.ts` maps the message to turn diff summaries and per-file SHA ranges; the dialog lists files, expands into `AdeDiffViewer`, no native confirm. |
-| `apps/desktop/src/renderer/components/chat/ChatSubagentsPanel.tsx`, `chatExecutionSummary.ts`, `chatSubagentIdentity.tsx`, `codex/CodexGoalCard.tsx` | Chat Info content: the Codex goal card, capped plan and task sections, capped Subagents / Background / Schedule rosters. Model chips per row (reported `model`, else the parent's label marked **inherited**). Running durations tick each second from the wall clock; finished rows keep their final duration. Finished work moves into one **Completed** disclosure without reordering; failed and pinned rows stay active; Clear hides finished Completed rows, Restore reverses. Schedule pause/play sits in its header; recurring rows show last and next run; active DAEX-managed rows have Cancel; provider-only rows have none. Running native subagent and background rows with a `sourceTaskId` (not DAEX `chat:` tasks) get a stop square (`ade.agentChat.stopTask`). Spawned-chat snapshots carry `childSessionId` (the merge keeps the `chat:` id and `spawnKind`), show the child's live title with the runtime in the kind chip, and open the child. `chatSubagentIdentity.tsx` gives deterministic identity and sized glyphs. The **Shells** section is `ChatShellsSection` (`sessionStatusDisplay` + `SessionStatusLabel`, click to open, menu via `lib/workSessionRequests.ts` with the pane's `pin`). A failed shells or watches read is stated once, above both sections, by `ChatTerminalsReadNotice`; the sections themselves draw only rows. |
-| `apps/desktop/src/renderer/components/chat/ChatBuiltInBrowserPanel.tsx` | The browser panel: address bar, tabs, navigation, inspect/select toolbar, status-derived empty/error states; positions the `WebContentsView` via `ade.builtInBrowser.setBounds`. The trusted-renderer **Profile** panel shows cookie counts/domains, cache size, last safe flush and site permissions with Remove and Clear all. The native view sits above the renderer, so it hides while DAEX overlays, dialogs, menus or popovers overlap. Mounted by `WorkSidebar` as `browser`; `openUrlInAdeBrowser()` opens the tool and a fresh tab. Inspect selections go out through `onAddContext` as `BuiltInBrowserContextItem`. |
-| `apps/desktop/src/renderer/components/chat/browser/` | Presentational pieces: `BrowserTabStrip.tsx` (roving-focus tablist, tabs outlined in their lane group colour), `browserTabGroups.ts` (`orderBrowserTabsByLane`: current lane, other lanes by first tab, then no lane), `BrowserToolbarRow.tsx` (nav, omnibox, buttons shed as it narrows), `BrowserOverflowMenu.tsx` (every shed ability reappears here), `BrowserFindBar.tsx` (owns its Escape), `BrowserHandoffBar.tsx`, `BrowserProfilePanel.tsx`, `BrowserStage.tsx` (8 px inset, 10 px radius frame; snapshot underlay, capture crop, grouped launchpad, letterbox caption). `browserChrome.tsx` holds shared geometry and `BrowserChromeShared`, with the same ghost buttons as `terminals/workToolChrome.tsx`. |
-| `apps/desktop/src/renderer/components/chat/browser/builtInBrowserToolbar.ts`, `browserToolbarLabels.ts`, `browserViewGeometry.ts`, `browserPanelNormalizers.ts`, `browserPanelTypes.ts`, `browserCapture.ts`, `browserDevServers.ts`, `browserRecentUrls.ts` | The pure half: toolbar fit from measured width (`BROWSER_TOOLBAR_URL_MIN_WIDTH`; drop a control before squeezing the omnibox), labels, letterbox arithmetic, field-by-field normalizers (the main side may be older or the web stub), `browserCapture.ts` (the DOM half: `object-fit: contain` measuring, canvas drawing), `browserDevServers.ts` (one deduplicated list from `getDevServers()` and `dev-server-detected`), `browserRecentUrls.ts` (launchpad recents in `localStorage` per collection, sanitized: no query, fragment, credentials or ephemeral loopback port). |
-| `apps/desktop/src/renderer/lib/appCommandClaims.ts`, `appMenuCommands.ts`, `appZoomCommands.ts`, `typingTarget.ts` | Who answers a native-menu command. `appCommandClaims.ts`: claims stack newest first, a handler returns `false` to pass, then the default runs. Instances: `appMenuCommands.ts` (⌘F/⌘W; `installFindKeyBridge` routes ⌘F/Ctrl+F on hosted web) and `appZoomCommands.ts` (⌘+/−/0). Claims exist because Electron consumes accelerators before renderer keydown and the browser page has focus in another `WebContents`. `typingTarget.ts` is the one "is this person typing?" test: inputs, textareas, contenteditable and any `data-ade-escape-scope`. |
-| `apps/desktop/src/renderer/components/chat/ChatFindLayer.tsx`, `useChatFindIndex.ts`, `chatFind.ts`, `chatFindGeometry.ts`, `userMessageBody.ts`, `chatFindTargets.ts`, `chatFindPalette.ts` | Find in a chat (⌘F). `chatFind.ts`: searchable text per row (replies as displayed text, plan checklists), the incremental `ChatFindIndex` (markdown in 3 ms slices, unchanged rows kept), match arithmetic. `userMessageBody.ts` decides what a user row shows (bubble, brief, review, chips, board move, PR-watch wake) for the renderer and find alike. `useChatFindIndex.ts` keeps the index in step while open. `chatFindGeometry.ts`: painted ranges, the first row in view, the start point. `ChatFindLayer.tsx` reveals via `scrollToRowKey`. `chatFindTargets.ts` / `chatFindPalette.ts`: the ⌘K route. See [Find in a chat](#find-in-a-chat-f). |
-| `apps/desktop/src/renderer/lib/findScope.ts`, `findText.ts`, `highlightRegistry.ts`, `components/shared/FindBar.tsx`, `useFindSession.ts` | Shared ⌘F plumbing. `findScope.ts`: the innermost `data-ade-find-scope` around focus, or around the last press (through shadow roots). `findText.ts`: offset-keeping case-insensitive matching, a DOM walk that skips `data-ade-find-skip` chrome and buttons (unless `data-ade-find-include`), `publishFindHighlights`, zoom-aware `scrollRangeIntoView`, `focusFindInput`. `highlightRegistry.ts`: several owners' ranges under shared names (find, thread comments). `useFindSession.ts`: the claim, focus in and out, ⌘G / ⇧⌘G / Escape, the paint frame. `FindBar.tsx`: `FindField` and the floating `.kit-card.kit-find-bar`. |
-| `apps/desktop/src/renderer/components/chat/browser/useNativeBrowserViewBounds.ts` | Bounds, the suppression count that hides the view for drags and overlays, and the frozen-frame underlay (no black rectangle under menus). Measures the pane's content box (the frame's rect lags a resize). Holds no product state. |
-| `apps/desktop/src/renderer/components/chat/browserRemoteTunnels.ts` | Per-tab memory that a tab views another machine: the view loads `http://127.0.0.1:<ephemeral>`, so the URL bar, title and agent observations show the requested origin on the pinned machine. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserRemoteViewport.ts` | Phone size for a remote watcher (`createRemoteViewport`): one slot per tab, applied and cleared through injected debugger and emulation calls, released before a recording, DevTools or a sign-in hand-off takes the tab. |
-| `apps/ade-cli/src/services/sync/workToolsOpenBrowserTab.ts` | `workTools.openBrowserTab` (`openLaneDevServerInBrowser`): the loopback and lane-port check, reuse of a lane tab on that port, and the background open; a forwarded open sets `revealWhenForwarded` and `groupLaneId`. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserTabCapabilities.ts` | Per-tab capabilities: emulation, zoom, find, DevTools, network log and HAR export, hover / drag / select / upload, the preview stream, recording. Reaches the service only through `BuiltInBrowserTabCapabilityDeps` (resolve a tab, trace, hold the debugger, emit), like `appControlAgentActions.ts`. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserCapabilities.ts` | Electron-free rules: zoom clamp (0.25–5); a 500-entry network ring and read limits; credential-header and query-parameter redaction for observations, HAR and transcripts (the profile is signed in, so a raw log would hand agents live sessions); the HAR shape; recording FPS and wall-clock cap; upload paths via `resolvePathWithinRoot`. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserFind.ts` | The `found-in-page` waiter, handling an inverted `findNext` flag, a 400 ms debounce that drops request ids, and a result Chromium may emit before `findInPage` returns its id. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserCdp.ts` | The one way to evaluate an expression in a tab (DOM collector, element-map overlay, focused-element scripts): a plain function of two debugger primitives, importable from both sides without a cycle. |
-| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserPreviewStream.ts` | Preview frames for the Work corner card: refcounted per owner, skip-never-queue, paused when invisible; `capturePage` / `nativeImage.resize` / `toJPEG` are injected. |
-| `apps/desktop/src/main/services/devServers/devServerRegistry.ts` | Passive dev-server discovery on `ptyService`'s output pass: one bounded regex per chunk plus a carry across chunks; no sockets or requests; in memory only. |
-| `apps/desktop/src/main/services/devServers/agentShellOutput.ts` | An agent's own shell output (a Codex `command` event, a Claude `Bash` result), which never passes a PTY: per-item carries, and a finished command prompts a look for a backgrounded server. |
-| `apps/desktop/src/main/services/devServers/devServerStop.ts` | `work_tools.stopDevServer` (the chat row's server mark Stop, `daex browser dev-servers stop <port>`), decided again at stop time: every listener on the port must be the chat's (`ADE_CHAT_SESSION_ID` in its env on macOS/Linux; on Windows the chat's record and a listener no newer than it); never this runtime, its ancestors, the two levels below it (agent CLIs, PTY host, shells) or a tree holding one. SIGTERM to the group when it is the chat's alone, else the server and children; SIGKILL after 3 s to the same process (same start time). Windows: `taskkill /T`, then `/T /F`. An agent caller is pinned to its chat. |
-
-| `apps/desktop/src/main/services/devServers/devServerWatcher.ts`, `devServerListenerScan.ts`, `windowsPortScan.ts` | Runs in the runtime that hosts the lanes. Asks the OS which TCP ports listen and who owns them: `lsof -nP -iTCP -sTCP:LISTEN -F pcn` on macOS and Linux; on Windows `ade-port-scan.exe listeners` (`native/ADEPortScanWin`, about 45 ms), with a `Get-NetTCPConnection` + `Win32_Process` PowerShell fallback (about 1.4 s) when the helper is missing or fails, logged once as `dev_servers.native_scan_fallback`; Stop's port and process reads use the same helper. Keeps a port whose owner runs from a lane worktree (cwd on POSIX, command line on Windows; deepest root wins) and forgets a port that stops listening. No timer: it scans after an agent's shell command finishes (at 1.5 s and 6 s) and when a desktop asks. One scan serves every project, at most every 4 s (15 s on the Windows fallback); it never connects to a port. Without `lsof` it finds nothing and the output matcher still works. Each new listener's `ADE_CHAT_SESSION_ID` is read once (`ps -E` on macOS, `/proc/<pid>/environ` on Linux) to attribute it to a chat, shown on the Work row (`SessionDevServerBadge`, one machine-wide list per machine via `useSessionDevServers`). |
-| `apps/desktop/src/renderer/lib/laneDevServers.ts`, `components/work/WorkHeaderDevServerButton.tsx` | `useLaneDevServers(laneId, pin)` reads `work_tools.listDevServers` from the lane's machine and re-reads on its `dev_server_event`; one shared entry per (machine, lane). While a server shows, it re-checks on window focus and every 60 s (a stopped server sends nothing). The Work header globe (beside Tools) lights while the lane serves a page and opens the newest in the DAEX Browser. |
-| `apps/desktop/src/shared/agentObservationNormalizers.ts`, `apps/desktop/src/main/services/shared/agentObservationCache.ts` | Shared by the built-in browser and App Control, which run the same DOM collector and write the same `<id>.json` / `<id>.png` / `<id>.map.png` triples. The normalizers validate untrusted CDP shapes and own the one trace-target redaction rule (typed secrets record `textLength`, never the text); the cache owns the two disk sweeps. Dependency-free, so Electron and the headless App Control service both import them. |
-| `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`, `workLiveCard.ts`, `workLiveIosPictureInPicture.ts`, `apps/desktop/src/renderer/state/workLiveCardState.ts` | The floating live-preview card: the tool it shows (scoped to the chat on screen), the aspect-derived box, per-chat closed/floated flags (`chatCompanionUiState.ts`), per-tool/per-lane dismissal stamps, fractional position and persisted width, and the Apple-device H.264 stream keyed by udid with picture-in-picture via `canvas.captureStream()`. Persisted shapes and normalizers live in `state/`. |
-| `apps/desktop/src/renderer/components/terminals/useNativeToolSessions.ts`, `NativeToolFeedsContext.tsx`, `workToolErrors.ts` | The three native tool feeds (browser, App Control, simulator) as one subscription set from `TerminalsPage`, read by the tools pane and the corner card, plus the fold over browser `diagnostics` events behind the red activity dots. |
-| `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Work header chrome. `AgentChatPane` renders `CenteredWorkSurfaceHeader`: no lane chip, the title centred on the plain rail-height header, and a right cluster (cache badge, trailing actions such as browser presence and **Open terminal** when `useAttachedTerminalShells` finds a shell, the badge-only git toolbar, the progress icon `actionsToggle`, the Tools toggle). CLI surfaces render `WorkSurfaceHeader` (title and lane chip left). The dismissible Claude login CTA runs `claude auth login` in a tracked PTY on the lane's machine (`runtimePin`). `WorkSurfaceTitle` shimmers once when a provider default (`Claude Chat`, `Codex Chat`, …) becomes a real title, honouring `prefers-reduced-motion`. Settled and snoozed state is `ChatLifecyclePill` above the composer, not a header chip ([composer-and-ui.md › Header](composer-and-ui.md#header)). |
-| `apps/desktop/src/renderer/components/chat/AgentCliAuthCard.tsx` | The transcript download card for an agent not yet downloaded (`errorInfo.agentCli.category: "missing"`): "&lt;Agent&gt; is not on &lt;machine&gt; yet", the pinned-tool line with Download/Retry (`usePinnedToolStatus` on `useChatRuntimeScope().pin`), then **Retry turn** via `CHAT_RETRY_AUTH_TURN_EVENT` (`ade:chat:retry-auth-turn`); collapses to "&lt;Agent&gt; is ready" on `CHAT_AUTH_RECOVERED_EVENT` (`ade:chat:auth-recovered`). Exports both events for the sign-in receipt. |
-| `apps/desktop/src/renderer/components/chat/ProviderSignInCard.tsx`, `providerSignInCard.css` | The sign-in card for a provider signed out on the chat's machine (`ProviderSignInComposer` above the prompt via `ProviderSignInSlot.tsx`), its transcript line (`ProviderSignInReceipt`) and `providerSettingsEntryId` (the picker's Sign in chip). `useProviderSignInFlow` runs one sign-in via `providerInstances.login*`, `ai.cliLogin*`, `ai.antigravitySignIn*` or Cursor's login on the composer's `pin`, polls each second only while running, stops the login on unmount, and records `chat` / `provider_sign_in` once per attempt (`docs/logging.md`). Styling reuses `ade-icc-*` and `providerBrand`. |
-| `apps/desktop/src/renderer/components/chat/ProviderSignInSlot.tsx`, `providerSignInSlot.css` | The composer's `aboveComposerSlot` for a signed-out provider. `ProviderSignInStrip`: "<Provider> isn't signed in on <machine>." + **Sign in** ("<Provider>: not signed in" at the narrowest). `ProviderSignInCardHolder` keeps focus in the prompt unless the card was opened from the strip, and returns it when the card goes. Both are tabs on the box's top edge in its opaque panel colour with the provider tint. |
-| `apps/desktop/src/renderer/components/chat/TurnFailureLine.tsx`, `turnFailureRows.ts` | A failed turn in the transcript: one unboxed line (warning glyph, title such as `This turn stopped` or `Model at capacity`, `×N` for folded retries, quiet **Retry** and **Details**; provider text behind Details with Copy). `foldTurnFailureRows`: a usage-limit end (`classifyProviderFailure` → `isUsageLimitChatError`) draws no error row and marks `done` `endedAtUsageLimit`; a retry of the same prompt failing the same way folds into the previous failure, keeping the newest prompt, error and turn end with `repeatCount`. |
-| `apps/desktop/src/shared/chatAutoResume.ts` | The auto-resume contract: the deterministic schedule id/tag, 90 s buffer, continue prompt, structured usage-limit classifier, host-zone notice copy, `autoResumeFireAtMs`, `isPendingAutoResumeScheduledWork`, `resolveUsageLimitResumeState`, the deprecated `usageLimitParkedUntilMirror`, `isUsageLimitChatError`. A known future reset arms one durable `auto-resume:<sessionId>` row for every provider; a missing reset gives `no_reset` with no wake. Only explicit `false` from `sessionAutoContinueAtUsageLimit()` opts out. Don't continue cancels (`opted_out`); Turn on / Try again resets the two-arm streak and arms; Resume now cancels, resets and sends `AUTO_RESUME_PROMPT` as a user turn with `metadata.usageLimitResume: "manual"`. `resuming` derives after the row is due; only `armed` / `resuming` mirror `fireAt` into `usageLimitParkedUntil`. |
-| `apps/desktop/src/renderer/components/chat/UsageLimitChip.tsx`, `apps/desktop/src/shared/usageLimitResumePresentation.ts` | The composer status-row chip: `Usage limit reached` + one detail (`resumes in 2 hr 5 min`, `auto-resume off`, `paused after 2 tries`, `resuming…`, or the provider name without a reset) and one toggle (**Cancel**, or **Resume in …** / **Try again**) via `updateSession` on the chat's pin; **Continue on <account>** when the host publishes `alternateAccount`. The exact clock and provider sentence are in the tooltip; failures toast. The shared module owns `usageLimitChip`, `parseUsageLimitResume` (the one strict reader; an unknown state or missing provider is discarded whole), `usageLimitResumeRowStatus` (Work row: `armed`/`resuming` → `Resumes <clock>` / `Resuming`, `paused` → attention `Paused · limit`, `opted_out`/`no_reset` → attention `Usage limit`), `formatUsageLimitCountdown` (`59 s`, `4 min 30 s` under five minutes, `3 min`, `2 hr 5 min`), `usageLimitTurnFooterLabel`, and `isUsageLimitFailureText` (a bare `429` needs a rate/usage/limit/quota word). |
-| `apps/desktop/src/shared/chatStopModes.ts` | The stop matrix (`stop_only`, `stop_and_clear`, `stop_and_background`, `stop_and_clear_and_background`, child modes `stop_and_clear_and_children` / `stop_everything_and_children`), per-provider support with reasons (`providerStopModeSupport`), default `stop_and_clear`, live job-count copy, hyphen/flag aliases, and `shouldDeclarePerTaskStopAffordance` (Claude SDK `perTaskStopAffordance` only once public `stopTask` controls are reachable). iOS mirrors it in `WorkChatStopCapability`. |
-| `apps/desktop/src/shared/claudeContextUsage.ts` | Normalizes SDK `context_usage` / `getContextUsage` into `ClaudeContextUsage`, classifying rows by `categories[].kind` (`used` / `free` / `buffer` / `deferred`), never by the name `"free"`; a free row is synthesized only when the SDK omitted it. |
-| `apps/desktop/src/shared/claudeClassifierContext.ts` | Builds the PostToolUse `classifierContext`: only explicit user approvals and user-typed consent, never tool output, model text, summaries, session-override auto-allows or policy allows. Approval without text becomes `"The user approved this tool call."`. 2000 UTF-16 cap; synchronous return; each relay emits a `system_notice` `status: "classifier_context"`. |
-| `apps/desktop/src/shared/claudeModelSwitch.ts` | Parses PreModelSwitch / PostModelSwitch args; PostModelSwitch emits a quiet divider (`system_notice` `status: "model_switched"`). |
-| `apps/desktop/src/main/services/chat/chatAutoResumeCoordinator.ts` | The host's auto-resume subsystem: per-chat streaks, the durable row, notices, `usageLimitResume` transitions and the arm/cancel/fire races; `agentChatService` only reports limit errors, dispatches, dismissals and turn ends. **`cancelEpoch`**: arming is async (scheduler, then upsert), so every cancel bumps the epoch and an arm undoes its own row if the epoch moved. **`whenArmed`**: resolves when the in-flight arm has written or declined its row; the Claude path awaits it before reaping the query. **Re-arm cap** (`AUTO_RESUME_MAX_CONSECUTIVE_ARMS = 2`): a published reset may not match the rejecting limit (Claude's session-scoped snapshot can carry a stale `resetsAtMs`), so after two arms against distinct resets the chat shows `Paused after 2 tries`. A resume that runs without hitting the limit resets the streak (`noteResumeTurnStarted` / `noteTurnFinished`, needed because fired resumes carry `scheduledWake`, which the cancel sweep skips). `resetStreak` backs Turn on / Try again and bumps the epoch. Resume now relies on its awaited cancel to zero the streak; a failed send restores it. **Notice ordering**: notices emit after one microtask so they render below the failure they explain; they are `system_notice` `noticeKind: "rate_limit"`, attributed to the failed turn, one per armed fire time. `onResumeStateChanged` is the only writer of `usageLimitResume`. **Early resume**: `agentChatService.noteUsageSnapshot` calls `resumeEarly` when a post-limit reading shows every window of the chat's account under 100%; the row moves to `AUTO_RESUME_EARLY_FIRE_DELAY_MS` (5 s) with "Usage is back early", once per limit (a failed move gives the try back). **Same-reset retry**: a resume refused at the same reset gets one more try `AUTO_RESUME_SAME_RESET_RETRY_MS` (2 min) later, then `no_reset`. A requested Stop (`stopRequested`, behind `interrupt` and the CTO's stop) cancels the row in every chat it reaches; DAEX's own stops keep it. |
-| `apps/desktop/src/main/services/chat/claudeInlineDocument.ts` | PDFs as Claude `document` blocks. `buildClaudeV2MessageAsync` inlines a PDF only within the chat's `claudeRetainedMedia` budget: 100 pages (`CLAUDE_RETAINED_PDF_MAX_PAGES`), 24 MB of inlined base64 media including images (`CLAUDE_RETAINED_MEDIA_MAX_BYTES`), 18 MB per file; Claude Code resends the whole history, so a rejected document fails every later turn. `countPdfPages` reads the page tree and Flate object streams and errs high; encrypted, unreadable or over-budget PDFs go as a path hint (`agent_chat.claude_pdf_sent_as_path` with the reason). The builder spends with no await between check and add and records each message's spend, re-adding it once if a compaction reset the budget mid-build. The budget persists, clears on compaction or session reset, and is copied by forks (native, side chat, cross-machine). |
-| `apps/desktop/src/main/services/chat/claudeFastModeNotice.ts` | `claudeFastModeFallback` reads `fast_mode_state` / `fast_mode_disabled_reason`; when Fast was asked for and standard speed served, one `info` notice names why (no paid plan, extra usage off, cooldown, non-Anthropic provider, …), once per reason. |
-| `apps/desktop/src/main/services/chat/attachmentInlineGuard.ts` | The size check and text stand-ins for adapters that base64 attachments. Claude PDFs follow `claudeInlineDocument.ts`. Other non-image files over `MAX_PROVIDER_INLINE_FILE_BYTES` (10 MB) become `inlineAttachmentHintPart` (path, size, limit). Images go through `providerInlineImage.ts`; one that cannot fit becomes `imageNotInlinedHintPart`. The turn still runs and the agent can read the file itself. |
-| `apps/desktop/src/main/services/chat/clipboardImageEncoding.ts` | `encodeClipboardImageWithinCap` fits a clipboard image under the 10 MB pasted-bytes ceiling (`app.readClipboardImage`, `app.saveClipboardImageAttachment`): Electron re-encodes the bitmap as PNG (a 12 MP photo is 15–30 MB), so a fitting PNG stays PNG and anything larger becomes q85 JPEG, shrinking the long edge from 4096 px by 0.75 per try and refusing below 768 px. Electron main only (`NativeImage`); about 80 ms for 12 MP. |
-| `apps/desktop/src/main/services/chat/providerInlineImage.ts` | `fitImageForProviderInline` makes every inlined image fit the strictest limit so an attachment cannot end a turn (Claude Code rejects over 5 MB base64 or 8000 px, 2000 px with more than 20 images, ending the turn with `terminal_reason: "image_error"`, including for steered images it does not downsize). Images within `MAX_PROVIDER_INLINE_IMAGE_BYTES` (3.5 MB raw) and `MAX_PROVIDER_INLINE_IMAGE_EDGE_PX` (2000 px) pass untouched. Larger PNG/JPEG are box-filtered to a 1568 px long edge and re-encoded (PNG first, then JPEG q85/q70, shrinking further if needed); codec from magic bytes; JPEG EXIF orientation applied. Oversized GIF/WebP (header sizes read), interlaced PNGs and anything over 25 MP become a path hint. Pure-JS codecs (pngjs, jpeg-js, `providerInlineImageCodec.ts`) so the brain, Electron main and SDK workers share it on every OS; a 5–9 MB Retina PNG costs about 1–2 s of CPU. **Off the event loop**: the header checks run in the caller; the decode, resize and re-encode (and `encodeDisplayImage`'s display copies) run on worker threads (`providerInlineImageWorkerPool.ts`), at most two (one on a two-core machine), one image each, the rest queued in order, each stopped after 15 s idle. The worker is its own bundle, `providerInlineImageWorker.cjs`, beside `cli.cjs` / `main/main.cjs` / the SDK worker bundles (both tsup configs; shipped in the desktop's `ade-cli` resources), and an SEA asset of the same name in the standalone runtime (`build-static.mjs`); its source is read once and started with `eval`, so `app.asar` never matters. Same input, same bytes as in-process. With no bundle (tests, `tsx` dev; a packaged build or the standalone runtime without one is reported once, `inline-image-worker`/`source-missing`, and the packaged payload check requires the file, `packaged-ade-cli-resources.cjs`) or a worker that cannot start (reported once to Sentry, `inline-image-worker`/`start`, retried after a minute) the same codec runs in-process and yields every 64 rows and before each encode. A worker that dies mid-image or runs past 60 s omits that image with the reason (`the image worker stopped (…)`, `image worker timed out after 60 s`). Logs `agent_chat.inline_image_resized` (with `offThread`) / `agent_chat.inline_image_omitted`. Callers: `buildClaudeV2MessageAsync` (sends and `dispatchClaudeSteerMessage`), `buildStreamingUserContent` (OpenCode), `buildAcpPromptBlocks`, `materializeWorkerImages` (Cursor/Pi/Droid; omitted-image hints are appended to the prompt). Codex gets a staged path and resizes itself. |
-| `apps/desktop/src/main/services/chat/providerInlineImageWorkerEntry.ts` | The worker thread's entry for `providerInlineImageWorkerPool.ts`: decodes, fits and encodes one image with the same `providerInlineImageCodec.ts` code as the in-process path, needing only Node built-ins (pngjs and jpeg-js are bundled in). Built as `providerInlineImageWorker.cjs` beside the desktop main bundle and the CLI bundle, and as a SEA asset in the standalone runtime. |
-| `apps/desktop/src/shared/chatAttachmentStagingFs.ts` | The one disk rule for staging into `<projectRoot>/.ade/attachments`, shared by desktop main, the local brain's action registry, the CLI sync host's HTTP upload route and `imageAttachment.ts`. `projectAttachmentsDir` names the directory; `stageAttachmentCopy` copies a file on this machine's disk; `stageAttachmentBytes` writes held bytes; `resolveStagedAttachmentExtension` picks the extension (display name first, then source path; separator-agnostic); `commitStagedAttachmentPart` renames `.part` to final with the bounded Windows sharing-violation retry; `unlinkStagedAttachmentQuietly` cleans torn uploads. The CLI host's streamed and chunked base64 routes both use these. Destinations get a fresh UUID basename with only a regex-validated extension (`safeAttachmentExtension`), and containment is re-checked with `path.relative`, not a string prefix (a prefix rejects a drive root and misses cross-drive paths). `stageAttachmentCopy` is not limited to the project root (drags from Downloads), stats size before copying, and must only be reachable from the machine that owns the file. |
-| `apps/desktop/src/renderer/components/chat/chatTurnState.ts` | The renderer turn-state rule for cache hydration, history snapshots, live flushes and locked-session refreshes: a terminal `status`/`done` at the transcript end outranks an eventually consistent `status: "active"` summary, so failed or interrupted turns restore an idle composer. Also finds the user message of a failed turn, including Codex optimistic rows without a `turnId`. |
-| `apps/desktop/src/renderer/lib/claudeAuthPrompt.ts` | Classifies Claude logged-out / `/login`-required text, including DAEX's "Authentication failed for &lt;model&gt;"; drives the header and sticky login CTAs. |
-| `apps/desktop/src/renderer/lib/openExternal.ts` | Outbound URL routing: `ADE_OPEN_BUILT_IN_BROWSER_EVENT`, `openUrlInAdeBrowser(url)` (dispatch the event so Work opens Browser, then `window.ade.builtInBrowser.navigate({ url, newTab: true })`) and `openExternalUrl(url)`. Non-`http`/`https`/`about:blank` URLs go to `window.ade.app.openExternal`. Every in-renderer URL click goes through it. |
-| `apps/desktop/src/renderer/components/chat/ChatSubagentTakeoverBanner.tsx` | A non-blocking banner on a subagent chat that still reports to its parent. **Take over** demotes to peer; **Keep reporting** and dismiss persist `subagentTakeoverPromptShownAt` and keep the report channel. Sending does not answer it. |
-| `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx`, `DraftMachinePicker.tsx`, `useDraftMachineRouting.ts`, `draftAttachmentTransfer.ts` | The composer and draft routing: prompt entry, attachments, model/permission controls, slash commands, pending-input answers, parallel launch slots, smart-link chips. **Paste**: large pasted text is staged as a file and sent in full with its filename and paste origin; the transcript shows it in the attachment tray plus any typed text. **Chips**: completed GitHub, Linear, DAEX and web URLs become atomic violet chips whose literal URL stays the prompt text (Copy link / Remove link, hover shows the URL, Backspace/Delete removes the token). **Running chats** show a read-only amber tower and the owning machine; moving is **Hand off… → Another machine**. **Active Claude turn**: the Send caret picks inline, after-turn or interrupt; the button and Enter run it; staged messages offer send-during-turn, interrupt, cancel and Edit. Permission rows show only the mode title (explanation in the tooltip). Codex MCP elicitations: Allow once / Deny, conditional Always allow, safe URL authorization in DAEX's browser. **Attachments** are copied through `ade.agentChat.saveTempAttachment` on the draft's runtime. `launchPromptClipboardEnabled` gates copying and `launchPromptClipboardNoticeEnabled` the reminder text. Orchestration model-selection inputs decode `workDescription`, `filesHint`, `dependsOn` without preselecting a model. **Launch shelf**: `DraftMachinePicker` is separate from the lane list, lanes are scoped to the machine, Shell and Import sit beside the target, the machine control hides with one choice, Auto-create survives machine changes. Attachments, model/auth discovery, slash commands, file search, parallel state, creation, rollback and recovery carry the captured `OpenProjectBinding`; an unresolved or disconnected binding fails closed. `useDraftMachineRouting` restores the tab's machine before enabling the composer, lists only that machine's lanes, re-resolves the lane by identity on a machine change, and holds it behind `Loading lanes for <machine>…` (shown in the combobox and thrown by every launch path) while a foreign catalog is unread. On a machine change `draftAttachmentTransfer` re-stages pastes, files this window staged and images on the new runtime and rewrites paths; portable image URLs stay; files without a source and visual context stay behind, named in an amber notice. Sends block while a move is pending; a failed move blocks sending until switching back or removing them. A tab scope change sets the restored machine as owner without a transfer. **This computer** comes from `deriveLaneMachineOptions` (`components/lanes/laneMachines.ts`). |
-| `apps/desktop/src/renderer/components/chat/ComposerDrafts.tsx`, `DraftSchedulePopover.tsx` | The **Drafts** bookmark (left of the context meter) and scheduled send. Cmd/Ctrl+S and the bookmark share a path: with content, the composer is saved and cleared only after the runtime confirms; without, the keyboard-navigable menu opens. All / Scheduled / Needs you filter one list whose counts come from the same entries; a plain row claims before it fills (the claim is the delete); a scheduled row shows fire time and `lastError` and is not claimed back. A save copies up to ten images into the owning runtime and rolls back if it cannot; on another runtime the row keeps text and image count, marks the images as elsewhere, and refuses to attach them. `DraftSchedulePopover`: explicit "this chat" or "new chat in a lane" target, an offset-qualified time on the target machine's clock, the if-late policy (wait / strict / grace), and the captured provider/model/permission/thinking config, with elevated permission badged. See [Composer and UI](composer-and-ui.md) and [Drafts and scheduled send](drafts-and-scheduled-send.md). |
-| `apps/desktop/src/renderer/components/shared/ModelPicker/ReasoningEffortPicker.tsx` | The reasoning control. The trigger has an `EffortMeter` bar glyph; the open control is a segmented track with one sliding tinted indicator (click, drag, arrows, Home/End), a directional label roll, GPT-5.6 labels (Light, Medium, High, Extra High, Max, Ultra where supported), short labels above four levels (`reasoningEffortTrackLabel`), and an Ultra usage note. Anthropic-family models offer a one-turn Ultrathink switch that edits the keyword in the draft; Opus 5.5, Sonnet 5.5, Haiku 5.5 and Opus 5 expose Ultracode. A Custom provider uses the source model's saved ladder (DeepSeek's Low/High/Max) filtered to what the harness sends, without Ultrathink for non-Claude models. The frame reflects Ultrathink or the top effort; the keyword is coloured per letter in plain drafts up to 2,048 characters. Full tier names on desktop, abbreviations when narrow, no second border. Picking a tier keeps the popover open; outside click or Escape closes it. |
-| `apps/desktop/src/renderer/components/app/cloudAgents/CloudAgentsPanel.tsx`, `CloudAgentRow.tsx`, `cloudAgentsModel.ts` | The Devin Cloud / Cursor Cloud agents panel: launch bar (prompt, model, VM, lane), filters, sections, row actions (open in DAEX, stop, VM shell, port forward, archive). See [Composer and chat UI › Cloud agents](composer-and-ui.md#cloud-agents-devin-cloud-and-cursor-cloud). `renderer/lib/cloudAgentsEvents.ts` opens a panel from anywhere. |
-| `apps/desktop/src/shared/cursorCloudNaming.ts` | The Cursor Cloud rename rule: the blocked sentence plus `cursorOwnsSessionName` / `assertCursorCloudRenameAllowed`, used by menus, IPC, `session.updateMeta` and `work.updateSessionMeta` so one refusal has one wording. |
-
-| `apps/desktop/src/renderer/lib/cursorCloudUtils.ts` | Cloud launch helpers: origin push (`pushAutoCreatedLaneOriginForCursorCloud` / `ensureExistingLaneOriginReadyForCursorCloud`), PR create fields, agent URL, Electron error-wrapper stripping. |
-| `apps/desktop/src/renderer/components/chat/useLaneGitRemote.ts`, `useCursorCloudModelEligibility.ts`, `draftModelControls.ts` | Cloud-draft readiness: a tri-state remote probe, catalog eligibility, and reasoning/fast reconciliation on a model change. |
-| `apps/desktop/src/renderer/components/app/cloudAgents/CloudAgentsQuickViewButton.tsx` | One top-bar button per cloud (`provider` prop) owning its `CloudAgentsPanel`. Icon, visibility (a Cursor connection; a signed-in Devin CLI via `providerConnections.devin.authAvailable`) and the finish badge (Cursor `fleetEvent`) come from `CLOUD_PROVIDER_BRANDS`. It polls while visible, so a removed credential hides it. |
-| `apps/desktop/src/renderer/components/chat/ChatSurfaceShell.tsx` | Wraps every chat surface (desktop pane, mobile lane, CTO chat) with header/footer slots and `--chat-accent`. `layoutVariant="mobile"` is mirrored on iOS; `canvasFill` (`transparent` for the Work new-chat draft) shows the host mesh instead of `--chat-canvas-bg`. |
-| `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Chat chrome tokens: `PROVIDER_CHAT_ACCENTS` (claude amber, codex warm white, cursor near-black, droid/factory burnt orange, opencode periwinkle, pi near-black, …), `providerChatAccent(provider)`, `NEUTRAL_CHAT_ACCENT`, and the one synchronous resolver `chatAccentForRenderedChat({ sessionProvider, lockSessionProvider, modelFamily, modelColor })`: best evidence first, caller-owned staleness, neutral grey rather than a borrowed colour ([composer-and-ui.md](composer-and-ui.md#resolving-the-accent-for-the-chat-on-screen)). The user bubble shades from `--chat-accent` itself; Claude keeps its gradient, Codex a softer violet, near-black accents a lifted gradient (`isDeepChatAccent`, luminance < 0.22). iOS mirrors it in `ADEDesignSystem.swift`. |
-| `apps/desktop/src/main/services/chat/pendingInputRecovery.ts` | Reads a pending-input card back from the transcript after its in-process waiter is gone; an `accepted` receipt means it was answered, so a second response changes nothing. |
-| `apps/desktop/src/main/services/chat/sessionApprovalGrants.ts` | `sessionApprovalGrantKey`: the exact key for an "Accept all", so a grant on one Codex thread or OpenCode child answers the same request from the parent or another subagent; null when nothing exact exists. See [Subagent cards](composer-and-ui.md#subagent-cards). |
-| `apps/desktop/src/shared/pendingInputRequest.ts` | The one reader from untyped data (a transcript event, a synced envelope) to `PendingInputRequest`, for the renderer and the service; keeps explicit `false` fields such as freeform. |
-| `apps/desktop/src/main/services/chat/laneAppleDeviceDirective.ts` | The turn-time hint that the lane has an Apple device. See [Apple device](../apple-device/README.md#agent-discovery). |
-| `apps/desktop/src/renderer/components/chat/useChatPaneShowRequests.ts` | `daex ui show proof` (and `apple` outside Work) for this pane's chat. See [Agents open panes](#agents-open-panes-ade-ui-show). |
-| `apps/desktop/src/renderer/components/chat/useArtifactPreview.ts` | One proof artifact's preview source and failure cause. See [computer use › Renderer](../computer-use/README.md#renderer). |
-| `apps/desktop/src/renderer/components/chat/IntegrationConnectCard.tsx`, `McpServerCard.tsx`, `composerCardParts.tsx`, `McpRefreshChip.tsx`; `shared/nativeInputCards.ts`; `main/services/chat/chatCardRequest.ts` | Cards an agent raises in the composer's place: the connect card (GitHub, Linear, Jira) and the MCP server card. `composerCardParts.tsx` holds the shared parts (key field with Show, "Claude asks to …" heading, Settings and Not now, Esc, the error line, the transcript receipt). `readNativeInputCard` tells the composer, transcript and pane which card a pending input is (the secret card included). `chatCardRequest.ts` is the brain side of the three cards: the wait (30 minutes by default), answer helpers, and `joinInFlight` so a second ask joins the open card. `McpRefreshChip` shows **Refresh chat** when the running agent lacks a server the registry has. See [Connect card](composer-and-ui.md#connect-card). |
-| `apps/desktop/src/renderer/components/chat/AskQuestionComposer.tsx` | The ask-question surface, inside the composer frame in place of the textarea. Header: provider mark + a kind verb (`{Provider} asks` / `{Provider} · Plan ready` via `pendingInputHeaderLabel`), a dot rail for paged sets, minimize `⌄`, decline `×`. Body: the `header` kicker, then the question once; options as a one-column ledger with radio/checkbox roles and a flush-right `✓`; previews via `QuestionOptionPreview` (a monospace `<pre>` for wireframes detected by `looksLikeWireframe`, else fence-aware `ChatMarkdown`) in a capped region, opened by click. Only long option content scrolls; header, note row and footer stay pinned. `--chat-accent` appears in two places plus one hairline. Keys: `1-9` pick, `↵` next/send, `←→` page, `esc` decline. Selecting never submits; a pick and a note both travel (`shared/pendingInputAnswers.ts`); nothing is preselected. `QuestionReceipts.tsx` draws the transcript record: "awaiting you" while open, a one-line expandable receipt after. |
-| `apps/desktop/src/renderer/components/chat/chatScheduledWorkRows.ts` | Scheduled-work passes before the turn fold: `foldScheduledWorkRows` (one entry per schedule id; a one-shot cancelled after its fire time reads as fired), `moveScheduledWorkToTurnEnds` (an ended turn's schedules become chips on its turn-end line), and the wake-loop passes `deriveWakeTurnIds`, `deriveWakeChains`, `applyWakeChains`. See [Transcript and turns](transcript-and-turns.md). |
-| `apps/desktop/src/renderer/components/ui/notice/StatusChip.tsx` | The composer status primitive: `StatusStrip`, one sideways-scrolling row of 22 px chips on the composer's top edge (`ChatLifecyclePill`, `LaneBranchComposerChip`), and `StatusChip` (tone from `noticeTone`, label, detail, text actions, tooltip). |
-| `apps/desktop/src/renderer/components/chat/useWakeLoopFolds.ts` | Which turns are wake turns (no `Worked for` row; the turn-end `ran …` opens the fold) and which chains fold under `+N more checks`. |
-| `apps/desktop/src/renderer/components/chat/chatComputerUseRows.ts` | The non-React half of `ChatComputerUseActions.tsx`: which work-log entries are computer-use commands (`hasComputerUseEntries`, `collectComputerUseActions`) and run placement (`arrangeComputerUseRuns` sets `computerUseCompact` on non-last runs). Summaries come from `shared/computerUseActionSummary.ts` (output via `shared/computerUseActionOutput.ts`); `shared/computerUseActionPresentation.ts` words them and lays out a run (`layoutComputerUseRun`: merges identical actions, carries the app or device forward, folds a PR post into the proof line). iOS: `WorkComputerUseSummary.swift` / `WorkComputerUsePresentation.swift`. |
-| `apps/desktop/src/renderer/components/chat/ChatComputerUseActions.tsx` | Computer-use rows: the full latest row (app icon via `window.ade.app.getAppIcon` cached per name, browser icons, else a glyph; surface line with amber "Your browser" for the user's own browser) and compact earlier lines, all one size, the latest told apart by colour. Only warnings and failures get a mark, and each failure says why. A line with pictures (its proof or images its actions wrote) opens them on click. See [transcript-and-turns.md](transcript-and-turns.md). |
-| `apps/desktop/src/renderer/components/chat/ChatViewedImages.tsx` | Images an agent opened: read through the chat's machine only when their line opens, drawn small, opened in `MediaLightbox`. Used by `codex/CodexImageViewLine.tsx` and computer-use lines that wrote the file. |
-| `apps/desktop/src/renderer/components/chat/chatTranscriptRows.ts` | The two-layer event-to-row pipeline (render events + grouped envelopes). **Anchors**: per-subagent state emits identity-keyed `subagent_spawn_anchor` / `subagent_result_card` / `background_job_line` / `workflow_script` events (keys `subagent-spawn:` / `subagent-result:` / `background-chip:<agentKey>`), mutated in place and repaired when a `transcript_retraction` splices a row, so measured heights survive. `background_job_line` has two producers on one key space (`scheduled_work_update {kind:"background_task"}` and older `subagent_*` events with `taskType: background`), so each job renders once; a settled row never reopens on a late tick; a job stays a job if a late `agentType` would reclassify it; a real subagent reported through the background stream has its job line removed before its anchor lands. **Dividers**: `scheduled_wake_divider` before each synthetic `user_message` with `metadata.scheduledWake`; `spawn_wake_divider` (**Subagent returned**) before `metadata.spawnCompletion` deliveries, steered or idle. **Workflows**: progress rides on card events (`workflowProgress`, `workflowName`, `taskId`) so one run is drawn; a `Workflow` call becomes a `workflow_script` row and swallows its `tool_result`. **Todos** diff per turn; dotted `subagent.*` events normalize to the renderer shape; a full collapse runs when incremental append would miss todo state. **Replacement**: a provider can resend a tool call under the same item id; the incremental path detects it (live-merge lineage or a reference compare) and replays from the newest checkpoint, a copy of the collapse context taken every 128 events (row-key counts shared in frozen layers). **Grouping**: `groupStoppedSubagentResultCards` folds two or more consecutive same-cause result cards into `subagent_stopped_group`; `stoppedGroupCauseOf` knows `interrupt` (a `stopped` status) and `usage_limit` (a `failed` card matching `isUsageLimitFailureText`); other failures keep their cards, a lone casualty stays a card, a cause change splits the run, and the key is `subagent-stopped-group:<cause>:<firstAgentKey>`. Adjacent `spawn_completed` notices for the same `childSessionId` fold into one row with `repeatCount` (`×N`), checking only the row just appended so incremental and full collapses match; unidentified children never fold. `filterVisibleTranscriptRows` then runs `foldSelfHealedFailures` (`selfHealedFailureLines.ts`: a rebuilt lost thread or keychain retry reads as one quiet line without its FAILED rows; iOS `workFoldSelfHealedFailures` in `WorkTimelineHelpers.swift`) and `foldSpawnCompletionLines`. See [Spawn types and completion reporting](#spawn-types-and-completion-reporting). |
-| `apps/desktop/src/main/services/opencode/openCodeTerminal.ts` | Points a tracked OpenCode TUI at DAEX's shared server: resolves or creates the session, writes DAEX's instructions as an instruction entry (`buildCodingAgentSystemPrompt({ runtime: "opencode" })`), and launches `opencode --server <lease url> --session <id>`. See [OpenCode CLI: attach to DAEX's server](../terminals-and-sessions/README.md#opencode-cli-attach-to-ades-server). |
-| `apps/desktop/src/main/services/ai/tools/` | Tool tiers for Claude/Codex/OpenCode runtimes ([Tool System](tool-system.md)). |
-| `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args; `agentChat.*` handlers (scheduled-work create, list, per-job cancel, per-chat pause); parallel launch recovery in `kv`; refreshes the scheduler after the global AI pause changes. |
-| `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` channel constants. |
-| `apps/desktop/src/shared/codexRequestUserInput.ts` | Parses Codex `requestUserInput` `isBlocking` / `is_blocking`; missing means blocking. |
-| `apps/desktop/src/shared/codexPluginList.ts` | Parses Codex `plugin/list` (`PluginListResponse`) into installed/enabled rows. |
-| `apps/desktop/src/renderer/components/settings/providers/bodies/CodexBody.tsx` | The Codex Settings card: list-only plugins via `listCodexPlugins`, with Refresh from a live Codex chat. |
-
-**Regenerating session metadata.** A user-invoked, one-shot call through the chat's runtime returns all three fields in one JSON response, even when the menu applies only some.
-
-| Field | Input |
-|---|---|
-| Status line only | The lane name, chat title, worktree folder and the last two or three paragraphs of the latest reply; the model copies title and lane name unchanged. |
-| `chatTitle` | This thread's full transcript. |
-| `laneName` | Every thread in the lane plus the git work that differs from the base (`baseRef...HEAD`, commits, uncommitted files). |
-
-- The primary lane keeps its name. An explicit request may replace a user-chosen title.
-- Naming tries the provider's cheap helper (Haiku 5.5 at low effort for Claude), then the chat's own model, both on the chat's account.
-- Extra keys, fenced JSON and surrounding prose are accepted. If every model misses, DAEX keeps the values and reports why.
-- Streamed chunks are joined per turn as streamed (one paragraph per message).
-- While a field regenerates, the Work sidebar and chat header show the shimmering "Naming …" mask.
+| `main/services/chat/agentChatService.ts` | The chat service: sessions, runtimes for every provider, turns, steers, pending input, handoff, persistence, scheduled work, spawns. Very large; search by symbol. |
+| `shared/types/chat.ts` | All chat types and many single-sourced tables (`ACTIVE_TURN_DISPATCH_MODES`, stop support, notice copy). |
+| `shared/ipc.ts`, `main/services/ipc/registerIpc.ts`, `preload/preload.ts` | `ade.agentChat.*` channels, arg validation, the renderer API (pinned calls). |
+| `apps/ade-cli/src/adeRpcServer.ts` | Agent-facing RPC: action policy, `runtimeActor` stamping, standalone-chat restrictions. |
+| `main/services/adeActions/registry.ts`, `actionPolicy.ts` | `chat.*` runtime actions and their remote/agent access. |
+| `main/services/chat/chatRuntimeBudget.ts`, `chatRuntimeOwnership.ts` | Warm-runtime budget; DAEX-home ownership stamp (one brain per chat). |
+| `main/services/chat/chatLaunchService.ts`, `chatLaunchArgs.ts`, `chatLaunchRecords.ts`, `chatLaunchDelivery.ts`, `shared/types/chatLaunch.ts`, `shared/chatLaunch.ts` | Brain-owned new-lane launches. |
+| `main/services/chat/chatLaunchDefaults.ts`, `renderer/components/chat/accountLaunchDefaults.ts` | Launch defaults per machine and per account. |
+| `renderer/components/chat/useAdeCloudDraft.ts`, `AdeCloudComposerParts.tsx`, `renderer/state/cloudAccess.ts` | Run on DAEX Cloud from the composer. |
+| `renderer/state/adeCloudChatQueue.ts`, `renderer/state/cloudSavedChats.ts` | The account's message queue for an asleep or deleted DAEX Cloud chat. |
+| `main/services/chat/sideChatService.ts`, `shared/sideChat.ts`, `sideChatClaudeCut.ts`, `piForkCut.ts` | Side chats (`/side`). |
+| `main/services/chat/chatProviderFork.ts`, `crossMachineForkTransport.ts`, `codexEphemeralFork.ts`, `shared/crossMachineHandoff.ts` | Native forks and cross-machine fork transport. |
+| `main/services/chat/deletedChats.ts`, `cliSessionLifecycle.ts`, `cliCrossMachineMove.ts` | Recently deleted chats; tracked agent CLI lifecycle and moves. |
+| `main/services/chat/agentCliWakes.ts`, `agentCliTyping.ts`, `main/services/pty/cliStatusInspector.ts` | Wakes and typed text for tracked agent CLIs; idle-terminal check. |
+| `main/services/chat/spawnMissionOwnership.ts`, `parentWakeBatcher.ts`, `childReportText.ts`, `childAncestry.ts`, `shared/sessionSpawnNesting.ts` | Spawns: who a child works for, parent wakes, child reports, orphaned children, Work filing. |
+| `main/services/chat/chatScheduledWorkScheduler.ts`, `claudeCliScheduledWork.ts`, `shared/chatScheduledWork.ts` | Durable scheduled work for chats and tracked Claude CLIs. |
+| `main/services/chat/chatAutoResumeCoordinator.ts`, `shared/chatAutoResume.ts` | Auto-resume after a usage limit. |
+| `main/services/chat/chatWaitRegistry.ts`, `chatWebhookRegistry.ts` | Event-driven waits; chat webhooks. |
+| `main/services/chat/draftService.ts`, `draftDelivery.ts`, `draftScheduler.ts` | Drafts and scheduled sends ([doc](drafts-and-scheduled-send.md)). |
+| `main/services/chat/sessionNaming.ts`, `sessionMetadataService.ts` | Titles, lane names, status lines. |
+| `main/services/chat/chatMentionService.ts`, `shared/chatMentions.ts`, `shared/chips.ts` | `@` mentions and chips. |
+| `main/services/chat/slashCommandPromptExpansion.ts`, `markdownSlashCommandDiscovery.ts`, `claudeSlashCommandDiscovery.ts`, `cursorSlashCommandDiscovery.ts` | Slash command discovery and the one pre-expansion path. |
+| `shared/mcpRegistry.ts`, `main/services/chat/mcpRegistryLaunch.ts`, `shared/callerMcpServers.ts` | The MCP registry; caller-injected MCP and per-provider support. |
+| `shared/mcpApp.ts`, `main/services/chat/mcpAppHost.ts`, `mcpAppGrants.ts`, `mcpAppStore.ts`, `renderer/components/chat/McpAppFrame.tsx` | MCP Apps. |
+| `shared/chatScene*.ts`, `shared/scene*.ts`, `renderer/components/chat/SceneFrame.tsx`, `main/services/scenes/*` | Scenes (agent-drawn UI) and their stills and previews. |
+| `shared/claudePluginUi.ts`, `main/services/chat/claudePluginUiService.ts` | Claude mod UI for plugins. |
+| `main/services/chat/piSdkUiBridge.ts`, `piSdkEventMapper.ts` | Pi UI bridge (`ask_user`, extensions). |
+| `main/services/chat/externalChatHistoryImport.ts` | Import of external Claude and Codex chats. |
+| `main/services/chat/chatTranscriptEntries.ts`, `chatTranscriptHistoryPager.ts`, `chatTextBatching.ts`, `shared/chatEventCompaction.ts` | Transcript text, paging, batching, compaction ([transcript doc](transcript-and-turns.md)). |
+| `main/services/chat/runtimeEvents.ts`, `contextCompactionEmitter.ts`, `turnDiffSummary.ts`, `turnFileDiff.ts` | Canonical events, compaction events, turn diffs. |
+| `main/services/chat/pendingInputRecovery.ts`, `shared/pendingInputRequest.ts`, `sessionApprovalGrants.ts`, `codexMcpElicitation.ts` | Pending input after restart, untyped reader, session grants, MCP elicitations. |
+| `main/services/chat/turnEndQuestionCheck.ts`, `turnEndAsk.ts`, `awaitingOwnWorkTracker.ts`, `statusLineStaleCheck.ts`, `settleNudgeSweep.ts` | Jev checks on chats. |
+| `main/services/jev/*`, `shared/jevSettings.ts` | Jev decisions. |
+| `main/services/chat/nextPromptSuggestion.ts` | Next-prompt suggestions. |
+| `main/services/chat/hostSleepChipTracker.ts`, `shared/hostSleepNotice.ts` | "Paused — computer asleep". |
+| `main/services/runtime/brainUnplannedRestart.ts`, `liveTurnProjects.ts`, `renderer/components/app/BrainRestartNotice.tsx` | Continuing chats after an unplanned brain restart. |
+| `main/services/chat/providerThreadMove.ts`, `providerResumeClassifier.ts`, `continuityConversation.ts` | Moving a thread between accounts; resume failure classes; continuity summaries. |
+| `main/services/chat/claudeInputPump.ts`, `buildClaudeV2Message.ts`, `claudeSdkCompat.ts`, `claudeSubprocessReaper.ts`, `claudeMcpConfigFile.ts`, `claudeOutputStyles.ts` | Claude runtime pieces. |
+| `main/services/chat/codexAppServerPool.ts`, `codexPlanHandoff.ts`, `codexErrorPresentation.ts`, `codexThreadSample.ts` | Codex runtime pieces. |
+| `main/services/chat/cursorSdk*.ts`, `cursorCloud*.ts`, `cloudAgentsService.ts` | Cursor adapter, Cursor Cloud, cloud agents. |
+| `main/services/chat/droidSdk*.ts`, `piSdk*.ts`, `piSession*.ts`, `copilotSdk*.ts`, `museSdkHost.ts`, `acpHost/`, `main/services/opencode/*` | Other provider adapters (see provider docs). |
+| `main/services/chat/sdkWorkerProcess.ts`, `workerAttachmentImages.ts`, `main/services/shared/processOrphans.ts` | Forked SDK workers, worker image IPC, orphan sweeps. |
+| `main/services/ai/pinnedProviderTools.ts`, `shared/pinnedToolSpawnEnv.ts`, `main/services/ai/providerFallForward.ts` | Pinned provider binaries and fall-forward. |
+| `main/services/chat/providerInlineImage.ts`, `attachmentInlineGuard.ts`, `clipboardImageEncoding.ts`, `claudeInlineDocument.ts`, `shared/chatAttachmentStagingFs.ts` | Attachment fitting and staging. |
+| `main/services/builtInBrowser/*`, `shared/types/builtInBrowser.ts`, `renderer/components/browser/*`, `renderer/components/chat/ChatBuiltInBrowserPanel.tsx` | The DAEX browser (Work tool and Browser top tab). |
+| `main/services/devServers/*`, `renderer/lib/laneDevServers.ts` | Dev-server discovery and stop. |
+| `renderer/components/work/WorkLiveCornerCard.tsx`, `renderer/components/terminals/useNativeToolSessions.ts` | Corner card and native tool feeds. |
+| `renderer/components/chat/ChatFindLayer.tsx`, `renderer/lib/findScope.ts` | Find in a chat (⌘F). |
+| `shared/threadComments.ts`, `main/services/chat/threadCommentService.ts` | Thread comments and Add-to-chat quotes. |
+| `shared/messageAuthor.ts`, `main/services/chat/laneShareMoveChat.ts` | Lane sharing message authors and moves. |
+| `shared/types/personalChats.ts`, `packages/sdk/` | Personal chats contract; the embeddable SDK. |
+| `main/services/ai/tools/` | DAEX tools ([tool system](tool-system.md)). |
+| `shared/chatStopModes.ts`, `shared/steerOrder.ts` | Stop modes; queue reordering. |
+| `shared/chatErrorPresentation.ts`, `shared/providerAccountRefusal.ts` | Failed-turn copy; provider account refusal verdict. |
 
 ## Gotchas / fragile areas
 
+**Scope and machines**
+
 - **Personal chats** use the same engine with `surface: "personal"` and a hidden
-  internal lane, but replace the coding prompt, cwd, environment, slash-command
-  discovery, DAEX guidance, browser profile and project tooling at the boundary.
-  Do not make the project chat schema nullable or treat a missing lane or
-  project id as personal scope. See [Personal chats](../personal-chats/README.md).
-- **Drafts follow the project.** Work draft lanes and restored selections are
-  checked against the active project's lanes; a stale local draft selects the
-  main checkout before launch. An explicit draft on another machine keeps that
-  machine while its catalog loads. A project switch replaces lane state at once
-  and rejects late runtime or sync responses.
-- **Text limits** cut at code-point boundaries
-  (`apps/desktop/src/shared/codePointText.ts`), never inside a surrogate pair.
+  internal lane, but replace prompt, cwd, env, slash discovery, guidance and
+  browser profile at the boundary. Never treat a missing lane or project id as
+  personal scope. See [Personal chats](../personal-chats/README.md).
+- **Provider-account injection lives in `buildAgentRuntimeEnv`.** Every
+  Claude/Codex process a chat starts derives env there; a path that builds env
+  from `process.env` silently runs as the machine's default account.
+  `sessionProviderLookupEnv` is only for lookups that must not pay its cost.
+- **Claude slash/skill discovery is not per-account** (walks ancestor `.claude`
+  dirs, ignores `CLAUDE_CONFIG_DIR`). Known boundary.
+- **Pointer reconciliation probes one Codex home**
+  (`reconcileThreadPointerFromRedundantSources`); with all state gone, a
+  non-default Codex account's chat starts fresh.
+- **Identity session filtering:** only `listSessions({ includeIdentity: true })`
+  lists CTO chats. Check this in every new chat list.
+
+**Turns and events**
+
+- **Event emission order.** Text, tools, status and `done` come from several
+  async sources; `chatTextBatching` must flush on every non-text event.
+- **Claude streamed tool input is not optional.** On idle turns
+  `content_block_start` often has `input: {}` and the real payload arrives in
+  `input_json_delta` chunks. Parse at `content_block_stop` and re-emit with the
+  same item id, or task lists freeze.
+- **Claude system subtypes are triaged at the type level**
+  (`HandledClaudeSystemSubtype`, `IgnoredClaudeSystemSubtype`, `AssertNever` on
+  the rest), so an SDK bump adding one fails typecheck. Triage it in both
+  stream readers; never widen the ignored union to pass the build.
+- **Provider failures are terminal once.** One visible `error` per turn and
+  error identity, then terminal `status` + `done`. `willRetry: true` is a
+  `provider_health` notice, not a failure.
+- **Terminal transcript evidence outranks a stale active summary**
+  (`chatTurnState.resolveTurnActive`, used by every rehydration path).
+- **A detached chat closes the turn that died with its runtime:** on hydration
+  DAEX appends one `interrupted` close-out and a notice (all providers).
+- **Interrupt idempotency:** each adapter guards repeat `interrupt()`.
+- **Steer delivery:** `deliverNextQueuedSteer()` runs on every turn-end path;
+  rows being dispatched sit in `dispatchingSteerIds` so a completing turn cannot
+  push them. Claude's `pendingSteers` persist (`MAX_PENDING_STEERS`), paths
+  re-resolved within the lane root.
 - **Auto-resume after a brain restart** retries only when its wake message is
-  definitely absent and no turn started. After a 60-second settling window, a
-  delivered message, a started turn or an unreadable transcript keeps it
-  closed.
-- **Refusals.** `classifyProviderAccountRefusal`
-  (`apps/desktop/src/shared/providerAccountRefusal.ts`) reads the provider's
-  words and returns `plan`, `auth`, `model` or none. A plan or model refusal
-  shows a plain card; health sends it to Sentry as a warning and leaves the
-  provider state alone. Only `auth` marks the sign-in failed. A usage limit is
-  never `plan`: it keeps its card, reset time and auto-resume.
+  definitely absent and no turn started (60 s settling window).
 
-- **Transcript measurement is in layout pixels.** The hosted web client zooms with `body { zoom }`, so `getBoundingClientRect()` returns screen pixels while `scrollTop`, `offsetHeight`, `clientHeight` and stored row heights are layout pixels. In `AgentChatMessageList.tsx` every rect length or difference that meets those values goes through `toLayoutPx()` (`lib/webZoom.ts`; divides by the stored zoom, identity in Electron). A raw rect over-measures every row at 110%+: a blank band grows above the working indicator, and a pinned reader drifts past the stick threshold, showing Jump to latest without scrolling.
-- **Command text is redacted before it is shortened.** Every compact command display (working-indicator label, command rows, tool headers, an expanded shell body's `command`/`cmd`, approval headlines, background-task titles) goes through `redactCommandLine` / `oneLineRedacted` (`shared/secretRedaction.ts`); truncating first cuts a key below its pattern and leaks its prefix.
-  - The redactor is for command lines only. Edit/Write/patch content, diffs, prompts and memory never pass through it (`main/utils/redaction.ts` has narrower rules for those).
-  - `maskShellCommandArgs` (`toolPresentation.ts`) masks only shell tools' string or argv-array `command`/`cmd`, keeping the array shape. It masks literal secret assignments, flags, provider keys, authorization headers, JSON values, URL passwords and private-key blocks.
-  - Secret names use bounded segments: `APIKEY` and `PGPASSWORD` match; `MONKEY`, `MAX_TOKENS`, `--tokenizer`, `--max-tokens` do not. A following flag is not a value.
-  - Placeholders and expansions (`$TOKEN`, `$(...)`, backticks) stay visible, because approval cards must show the code that runs. Single-quoted values do not expand and are masked, including single-quoted JSON and authorization headers.
-  - Local-server drafts omit a command that masking changes or that already holds a redaction marker. iOS uses the display-only `WorkCommandRedaction.swift` mirror before clipping previews and in expanded shell arguments and command/background cards.
-- **A Codex async question is a card, not a waiter.** It lives in `managed.asyncQuestions` (mirrored to `PersistedChatState.asyncQuestions`), never in `localPendingInputs` or `runtime.approvals`, whose contents teardown settles and `hasLivePendingInput` counts. So `hasLivePendingInput` returns false for it, `summarizeSessionRow` sets live-only `asyncQuestion: true` instead of `awaitingInput` / `pendingInputItemId`, and `latestPendingInputItemIdFromEvents` skips `approval_request`s with `blocking: false`. Any one wrong locks the composer on a question the user may ignore.
-- **An unanswered `approval_request` is never trimmed out of history.** Windows keep the newest N events, which is wrong for a control: an aged-out card disappears while the backend still counts the session as blocked, so `send` is refused with nothing to answer. `shared/chatPendingInputRetention.ts` is the one rule, applied in main's `getChatEventHistory` and the renderer's `trimChatEventHistory` (shared with hosted web). A card with a `pending_input_resolved` receipt trims normally.
-- **Provider-account injection lives in `buildAgentRuntimeEnv`.** Every Claude/Codex process a chat starts derives its env there, so one `Object.assign` covers the SDK query, background CLI, app-server spawn and helper lookups. A launch path that builds env from `process.env` silently runs the chat as the machine's default account: the turn works and writes to the wrong account. Lookups that must not pay for `buildAgentRuntimeEnv` (it writes a Linear context file) use `sessionProviderLookupEnv`; that is its only reason.
-- **Claude slash-command and skill discovery is not per-account.** `claudeSlashCommandDiscovery.ts` walks ancestor `.claude` directories and does not consult `CLAUDE_CONFIG_DIR`, so a non-default Claude account sees the machine's command files. Codex's equivalent takes the account env. This is a known boundary: fixing it changes what `ancestorConfigRoots` means for every caller.
-- **Pointer reconciliation probes one Codex home.** `reconcileThreadPointerFromRedundantSources` runs when persisted chat state is gone and reads the account from whatever persisted state remains. If that is gone too, it probes the default account's rollouts, so a non-default Codex chat starts fresh (the same silent fallback as the removed-account path).
-- **An unchanged head sha is not an empty turn.** When `beforeSha === afterSha` (every turn that edits without committing), `collectTurnDiffSummary` compares against the working tree and adds untracked files. The renderer drops its entry-derived fallback whenever a `turn_diff_summary` exists for the turn, so nothing double-renders.
-- **`normalizePendingInputAnswers` keys answers by question id.** Claude's `question.reply` takes one answer array per asked question; a synthetic `"response"` key matches nothing and drops the reply. A shared `responseText` (sent by CLI and mobile beside the per-question `answers`) goes to the last answered question, or the first when none is. Only a request with no questions uses `"response"`.
-- **The Codex plan-limit notice re-arms on a low reading.** A five-hour percent back under `CODEX_PLAN_LIMIT_NOTICE_PERCENT` is the rollover signal, so a chat open across rollovers warns for each window. A `null` percent is an absent measurement and must not re-arm, or the notice fires twice in one window.
-- **`disable-model-invocation` skills are withheld from the injected prompt.** "Project slash commands and skills" tells the model to read and use a skill; listing one whose author disabled model invocation would contradict that from a louder place. The user can still run `/<name>`, which is expanded before the model and does not read this list.
-- **Cursor local chats read images from two paths outside a lane worktree.** DAEX inlines attachment bytes in the SDK send; Cursor copies them to `~/.cursor/projects/<lane-slug>/assets/` and tells the model to Read that file. Oversized attachments skip inlining and are named as `<project>/.ade/attachments/<uuid>.<ext>`.
-  - The host hook allowlists those two roots for read only (`cursorSdkPolicy.ts`).
-  - The attachments grant needs the explicit project root from worker init; a missing root fails closed and never walks up from the lane. After realpath the basename must still be `attachments`, so a junction onto `.ade` or `.ade/secrets` gets nothing.
-  - Writes, shell `cat`, other projects' Cursor dirs and `.ade/secrets` stay denied. Do not copy attachments into the lane (it dirties git).
-- **Caller MCP strict mode is a guarantee on Claude only.** `strictMcpConfig: true` is a real isolation switch on the Claude Agent SDK (`opts.strictMcpConfig`); every other provider is best-effort with a named residual in `CALLER_MCP_SUPPORT`. Do not infer isolation from `mcpCapability`, `delivered: true` or a best-effort `level`: read `strictRequested`, then branch on `level === "enforced"`. An explicit `strictMcpConfig: false` on a lightweight/personal session must survive create and persist; collapsing it to absent re-imposes the profile default and withholds the MCP the embedder asked for.
-- **The in-memory chat-event ring is live-tail only, LRU-capped at 64 sessions** (`CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS`). `eventHistoryBySession` lets a snapshot merge events not yet on disk; it is not a transcript cache. Writing a merged snapshot back parks up to 4 MB per hydrated chat until process death (about 1 GB of heap, enough to stall the brain event loop for 30 s). Snapshots read the transcript (LRU-cached, 32 sessions) and must not copy it into the ring; live emits still touch it.
-- **Quiet chats give their history back** (`releaseIdleChatHistory`, on the 15 s cleanup tick). The count caps bound caches per project, not over time.
-  - A chat quiet for 10 minutes drops its ring once every event in it is on disk. After a failed transcript append the ring is the only copy, so the idle release skips it (count and size caps still apply).
-  - Parsed transcript windows drop when no history read (`readTranscriptEnvelopesForSessionIdAsync`) used them for 10 minutes. Path resolution also parses a window, and the stale-run sweep resolves every chat's path every 10 minutes, so it must not count as use.
-- **Chat-event compaction is one idempotent policy with two consumers.** `shared/chatEventCompaction.ts` serves the stored transcript and the sync wire. A heavy field added to `AgentChatEvent` goes in its cap table (an uncapped `tool_result.structured` grew to 56.6% of a real 8 MB transcript).
-  - The wire compacts events that came off disk compacted, so re-wrapping must be a no-op, detected by wrapper shape, never a marker key (object-shaped tool results render as raw JSON everywhere).
-  - The wire runs storage compaction before dropping fields, so a live push and the same event after reconnect are byte-identical; an event shrinking on reconnect is a visible bug. See [Persisted transcript](transcript-and-turns.md#persisted-transcript).
-- **Event emission order in `agentChatService.ts`.** Text, tool, command, file-change, status and `done` events come from several async sources (Claude SDK stream, Codex JSON-RPC, OpenCode runtime, buffered-text flush). The `chatTextBatching` buffer must flush on every non-text event, or renderer state corrupts. Transcript reads flush buffered text first, so they show the latest streamed content.
-- **Claude streamed tool input is not optional.** On background/idle turns `content_block_start` often carries `input: {}`, and the full `TaskCreate`/`TaskUpdate` payload arrives in `input_json_delta.partial_json` chunks. Keep per-index input and tool metadata until `content_block_stop`, then parse and apply the full input even if a placeholder `tool_call` was emitted. Gating Task/schedule derivation on the first emission freezes later transitions (TASKS stuck at 0/N). Re-emission reuses the item id so clients update in place.
-- **Claude system subtypes are triaged at the type level.** `agentChatService.ts` splits `Extract<SDKMessage, { type: "system" }>["subtype"]` into:
-  - `HandledClaudeSystemSubtype`: `api_retry`, `background_tasks_changed`, `commands_changed`, `compact_boundary`, `files_persisted`, `hook_response`, `informational`, `init`, `local_command_output`, `memory_recall`, `mirror_error`, `model_refusal_fallback`, `notification`, `permission_denied`, `session_state_changed`, `status`, `task_notification`, `task_progress`, `task_started`, `task_updated`, `worker_shutting_down`;
-  - `IgnoredClaudeSystemSubtype` (dropped on purpose): `control_request_progress`, `elicitation_complete`, `hook_progress`, `hook_started`, `model_refusal_no_fallback`, `plugin_install`, `thinking_tokens`.
+**Pending input**
 
-  The rest becomes `UntriagedClaudeSystemSubtype`, fed to `AssertNever<T extends never>`, so an SDK bump adding a subtype fails typecheck. On an upgrade, triage the new subtype after checking both stream readers (the active-turn reader and `handleClaudeIdleMessage`) and the renderer; never widen the ignored union just to pass the build.
-- **Provider failures are terminal once; retry notices are not failures.** Codex can send an `error` notification before a failed `turn/completed` with the same message. DAEX emits one visible `error` per turn + semantic error identity, then the terminal failed `status` and `done` that release the composer. Distinct errors in a turn stay visible. An error with `willRetry: true` is a `provider_health` notice and must not end or duplicate the turn.
-- **Terminal transcript evidence outranks a stale active summary.** `chatTurnState.resolveTurnActive` is the one invariant for snapshot hydration, resident cache hydration, live flushes and locked-session summary refreshes: if the latest turn ends in terminal `status`/`done` and none starts after, an eventually consistent active summary cannot return the UI to running/Stop. Keep every rehydration path on it.
-- **A detached chat closes the turn that died with its runtime.** Brain startup marks dead-owner chat rows `detached`. On next hydration `agentChatService` finds the latest parent turn without a terminal `status`/`done` pair, appends one provider-neutral `interrupted` close-out and a restart notice, and reopens the session idle. It is idempotent and covers Claude, Codex, OpenCode, Cursor and Droid; do not restore chat exclusions in the brain's stale-session reconciliation.
-- **Turn-health events are provider-neutral; the Codex watchdog is the first producer.**
-  - MCP startup status and moderation notifications are diagnostics, not progress, and must not clear the no-first-output watchdog.
-  - If app-server state is readable, recovered items are backfilled and the terminal state finalized; only a silent or unreadable turn emits `turn_health` plus its `codex_turn_stalled` twin. Clients prefer the neutral event, keep a mirrored child's `sourceSessionId`, and never render both.
-  - Recovery calls `recoverTurn` when advertised, else `recoverCodexTurn`. Wait re-arms reconciliation; Nudge sends a progress steer; Retry interrupts/finalizes, then retries on the same runtime; Resume also tears down the app-server and resumes the persisted thread. One action per session/turn; a late card fails rather than touching a newer turn.
-  - `thread/deleted` clears live turn state, stops active Codex subagents and removes the persisted thread id, so the next message starts a fresh thread.
-- **Codex app-server requests always resolve or stay visibly pending.** Codex can request `currentTime/read` (reply in whole Unix seconds) and `mcpServer/elicitation/request` (form or URL); unanswered, they stop the turn. `serverRequest/resolved` can arrive for a request completed outside DAEX: remove the approval and emit `pending_input_resolved`. JSON-RPC decoding tolerates the `emittedAtMs` envelope field (0.145 and later), and the server version from the `initialize` `userAgent` gates fork-before-turn rewind ([agent-routing.md](./agent-routing.md#codex-rewind-and-0145-readiness)).
-- **Every path that ends a Codex turn settles its pending cards.** A Codex approval is an open JSON-RPC server request recorded only in `runtime.approvals`. Clearing the map alone leaves an unanswerable card, keeps `hasLivePendingInput` true (refusing every send) and strands the app-server. `settleCodexPendingInputs` answers the request, drops the entry, drains staged `pendingPlanFollowups`, cancels local `codex`/`ade` cards and emits one `pending_input_resolved` per card. Every turn-ending path calls it: `interrupt`, `finishCodexTurnInterruptedLocally`, the `turn/aborted` handler, `teardownRuntime`, `thread/deleted`, the `proc.on("error")` / `proc.on("exit")` handlers, and settlement. It deletes each entry as it settles, so a late `turn/aborted` after a local interrupt finds nothing. Load-bearing details:
-  - **Queue-preserving modes do not settle Codex cards.** `stop_and_background` and `stop_only` stop work but leave the user's decision; only `stop_and_clear`, `stop_and_clear_and_background` and **Dismiss & settle** settle cards.
-  - **Runtime-death paths pass `planApprovals: "preserve-cards"`** (`teardownRuntime`, `proc` error/exit). A plan approval outlives its runtime: the entry drops, but its receipt is withheld, so `respondToInput` can rebuild the card from the transcript (`latestTranscriptPlanApprovalRequest`) and stage the follow-up. Every other kind dies with the process and gets its receipt.
-  - **A completed turn passes `planApprovals: "retain-waiters"`.** The app-server lives; unanswered plan cards stay in `runtime.approvals` so persist writes `awaitingInput`. Steering and other turn-bound waiters are settled.
-  - **The `proc` error/exit handlers settle only while still the current runtime** (`!managed.runtime || managed.runtime === runtime`). Local cards belong to the session, and a replaced runtime's exit can arrive after its successor started.
-  - **Settlement takes staged plan follow-ups before its first `await`**, or a `turn/completed` during the interrupt drains one and starts a turn on the session the user just settled.
-  - **Receipts are exactly one per card.** A pass arms `pendingInputSettlementResolvedIds` (in `try`/`finally`, so a throw cannot silence later settles), records what its own drains resolved and skips those for the cards it remembered. Two receipts are two durable, synced events.
-- **Dismiss & settle quiets the provider before writing settle.** Keep it one backend transaction through `settleTerminalSession` and `dismissPendingInputForSettlement`, never a renderer `respondToInput` then settle: declines can continue work, restored waiters can lack a live request, and Codex plan responses can stage a revision. Native CLI prompts stay non-dismissible (DAEX cannot truthfully answer a terminal UI).
-- **Structured provider activity shares one compact event contract.** Claude server web/MCP blocks, Codex `mcpToolCall` + app context, Cursor MCP/image tools, OpenCode image file parts and Droid image content map to the shared work-log/image events with stable item ids: at most one start and one terminal event per item, and any open Claude server block finishes at turn completion. Large inline media stays out of durable/mobile frames, with byte-omission metadata kept on compaction.
-- **Transcript read merges streaming fragments.** `MAX_TRANSCRIPT_READ_CHARS` is `120_000`. The reader collapses consecutive assistant text sharing a `messageId` or `turnId` into one row: a map keyed `message:<id>` / `turn:<id>` for fragments with an id, and a running `assistantDraft` for those without. Both flush to plain `AgentChatTranscriptEntry` rows, so the wire shape is unchanged.
-- **Resume-time envelope splice repair is bounded and lossless outside the detected run.** Before rebinding a persisted Claude SDK session, DAEX queries SDK messages and scans the durable chat transcript and the managed transcript once per process.
-  - Runs of three or more consecutive assistant text envelopes in one turn, each with a distinct message id, are rebuilt with SDK-stable ids and full text, or merged locally without SDK matching.
-  - Unknown, malformed and DAEX-only lines are kept byte-for-byte. Healthy files are a byte-identical no-op; repaired files are written by temp-file rename with a one-time `.splice.bak`; files over 64 MB are skipped.
-  - Cache invalidation and a transient `session_meta_updated` make an open renderer refetch.
-- **The full session transcript is an on-demand Claude-only IPC.** `ade.agentChat.getMainTranscript` resolves the chat's live, persisted or mirrored SDK session id, requests system messages, and applies the 4 MB subagent-transcript budget through the same conversion. It omits DAEX-only events (approvals, schedules, notices) and never replaces DAEX's envelope backend. No UI control opens it; the IPC/action serves programmatic callers.
-- **Claude tags are lightweight session metadata.** The first tag in the mirrored session pointer fills optional `claudeTag` on `AgentChatSessionSummary`. `updateSession({ tag })` writes or clears the SDK tag and refreshes the mirror. Desktop shows it in Work rows and the chat header and searches it in the sidebar.
-- **`AgentChatSessionSummary.pendingInputItemId` is the addressable pending input.** While awaiting input, the service takes the latest item id from the runtime's approval / permission / structured-question maps, else replays the last 512 events for an unresolved `approval_request` / `structured_question`. It is mirrored to `TerminalSessionSummary.pendingInputItemId` for sync clients keyed on the terminal row; iOS uses it for Approve/Deny/Reply in the Activity drawer without opening the chat.
-- **Steer delivery vs. turn completion.** `deliverNextQueuedSteer()` runs on every turn-end path (success, failure, interrupt, Claude SDK error); a missed path strands a steer. It does not auto-deliver during an explicit dispatch: Claude's inline/interrupt push and Cursor's interrupt-and-continue redirect hold the row id in `dispatchingSteerIds` for the whole dispatch, so a turn completing underneath cannot push the next staged row into a turn about to be cancelled. The same set makes `cancelSteer({ requireQueued: true })` report an in-flight row as busy.
-- **Pending steer persistence.** Claude's `pendingSteers` is mirrored to `PersistedChatState.pendingSteers` on every flush and rehydrated by `hydratePersistedPendingSteers`. Attachment paths are re-resolved through `resolvePathWithinRoot`, so the lane worktree (or project root for absolute paths) is the boundary. The cap is shared with the live queue (`MAX_PENDING_STEERS`).
-- **Dispatched steer cancellation.** Every priority message gets a fresh client-side SDK UUID. DAEX keeps a bounded UUID-to-`steerId` map, returns attributed messages in interrupt receipts, and probes `cancelAsyncMessage(uuid)`. Queue cancellation on the raw interrupt request is used only when the session advertises `interrupt_cancel_queued_v1`; otherwise the per-message path. A successful cancel clears the row through `cancelDispatchedSteer` (desktop, web, mobile). A user `stop_and_clear` snapshots the cancelled `QueuedSteer` payloads first and offers one bounded restore; `stop_only` never does.
-- **Authoritative Claude context lifecycle.** Streamed usage is the estimate; `getContextUsage()` snapshots at initialization, settled turns and compaction are authoritative. `sampleId` and query/request generations reject late responses. A started compaction shows `compacting`; a boundary without exact `postTokens` shows `recalculating`; a failed read shows `unknown`. Clients must never paint an old 100% as current.
-- **Pending input derivation.** The renderer's `derivePendingInputRequests` (`pendingInput.ts`), its only pending-input derivation, handles:
-  1. `askUser` tool calls;
-  2. Claude `AskUserQuestion` SDK events;
-  3. Codex `permissions` requests;
-  4. Codex DAEX CLI elicitation responses (JSON-schema coercion);
-  5. explicit `pending_input_resolved` events;
-  6. `done` events, which clear approvals but keep plan-approval/question inputs when the turn `completed`. Codex raises a plan approval after its turn completes, so this rule must stay; a stale card is prevented by `settleCodexPendingInputs`' explicit receipt, never by inferring death from a terminal turn.
+- **Derivation.** `derivePendingInputRequests` (`pendingInput.ts`) is the only
+  renderer derivation. A `done` or mooting tool result only marks a card
+  `sweptWithoutReceipt`; `resolvePendingInputs(derived, summary)` keeps it if
+  the summary's `pendingInputItemId` names it. Only `pending_input_resolved`
+  deletes. Main biases toward over-claiming (`latestPendingInputItemIdFromEvents`),
+  because the opposite bias wedges a chat with no card while sends are refused.
+  iOS mirrors this split (`workPendingInputSweepState`); change both together.
+- **Answering a card whose asker is gone still writes a receipt**
+  (`settleUnclaimedPendingInput`: `pending_input_resolved` plus "That request is
+  no longer active."), recorded as `cancel`.
+- **An unanswered `approval_request` is never trimmed out of history**
+  (`shared/chatPendingInputRetention.ts`, applied in main and renderer).
+- **A Codex async question is a card, not a waiter** (`managed.asyncQuestions`);
+  it never sets `awaitingInput`, or the composer would lock on an ignorable
+  question.
+- **`normalizePendingInputAnswers` keys answers by question id**; a shared
+  `responseText` goes to the last answered question.
+- **Every path that ends a Codex turn settles its cards**
+  (`settleCodexPendingInputs`): interrupt, `turn/aborted`, teardown,
+  `thread/deleted`, process error/exit. Runtime death passes
+  `planApprovals: "preserve-cards"` so plan approvals can be rebuilt from the
+  transcript; a completed turn passes `"retain-waiters"`; queue-preserving stop
+  modes do not settle cards. Exactly one receipt per card.
+- **Dismiss & settle** is one backend transaction (`settleTerminalSession`,
+  `dismissPendingInputForSettlement`), never renderer `respondToInput` then
+  settle.
 
-  Rule 6 marks rather than deletes:
-  - A swept entry keeps `sweptWithoutReceipt: true` (the `tool_result` / `command` / `file_change` sweep is not a turn boundary). `resolvePendingInputs(derived, summary)` decides at read time: an entry the summary names in `pendingInputItemId` survives; other swept entries go. Only `pending_input_resolved` hard-deletes, so a stale summary cannot resurrect an answered card.
-  - Main's id: `summarizeSessionRow` gates on `hasLivePendingInput(liveManaged) || persisted?.awaitingInput === true`; with no resident runtime it uses `latestPendingInputItemIdFromEvents`, which clears only on `pending_input_resolved` / `auto_approval_review`. It biases toward over-claiming, so after a restart a card mooted by its tool can be drawn; clicking it takes `respondToInput`'s not-found path, which writes a receipt. The opposite bias causes the invisible wedge.
-  - Main names at most one card; the composer draws `pendingInputs[0]`, and the "needs you" badge reads `awaitingInput`, true while any blocking card is live.
-  - Codex `isBlocking: false` steering sets live-only `steeringInput: true` (never persisted), not `awaitingInput` or `pendingInputItemId`; the list stays Working with a `?` pip.
-  - Why: a card's asker can outlive its turn. `requestChatInput` stamps `turnId` from the active turn, but a backgrounded `daex actions run` or an abandoned `ask_user` keeps blocking. If the sweep alone decided, the renderer would delete the card while main still counted it: no card, `send` refused with "Answer or decline the pending request before sending another message", fork refused.
-  - `resolvePendingInputs` sits outside the derivation and view cache, like `resolveTurnActive`, applied at read time in `AgentChatPane`'s `resolvedPendingInputsBySession` memo. `appendRetainedChatSessionEvents` writes the cache with no summary, so keep the raw derivation raw.
-  - iOS mirrors the split (`workPendingInputSweepState`, `WorkPendingInputQueue.resolved(hostPendingInputItemId:)`, `canonicalPendingInputs`); change both together. The one deliberate difference (iOS sweeps `plan_approval` after a completed turn and relies on the summary) is in [iOS companion](../sync-and-multi-device/ios-companion.md).
-- **Answering a card whose asker is gone still writes a receipt.** `respondToInput` has a not-found branch per waiter registry (the DAEX-local card map, Claude's `canUseTool` waiters, OpenCode's `pendingApprovals`, Cursor's `permissionWaiters`, Droid's) plus the no-live-runtime fallback, reached after a double-click, an interrupted turn, or an over-claiming summary. All six go through `settleUnclaimedPendingInput`: `pending_input_resolved`, a `system_notice` "That request is no longer active.", and a persist. A silent return would let the next derivation redraw an unanswerable card. An `accept` / `accept_for_session` is recorded as `cancel`, since nothing consumed it and the synced transcript must not claim acceptance. These branches log at `warn`, since they write a durable receipt and a notice.
-- **Interrupt idempotency.** Each adapter guards repeat `interrupt()` calls, or duplicate `subagent_result` or `error` events appear.
-- **A compacted CTO thread is replaced, not re-injected.** When the CTO's provider thread completes a compaction, `refreshCtoProviderThread()` runs once the turn settles: the runtime is torn down, provider pointers forgotten, the static prompt and 40-message tail re-staged, and notes, open work and live state ride the next send. See [CTO](../cto/README.md#what-the-cto-is-given-each-turn).
-- **Transcript persistence.** Sessions persist version-2 state under `.ade`, re-derived through `PersistedChatState` (`agentChatService.ts`). Changing the on-disk format without a version bump silently drops entries.
-- **Continuity recovery.** A resume failure never silently replaces the saved provider thread. DAEX keeps the pointer, classifies the failure, and emits a `system_notice` with `detail.kind: "continuity_recovery"`, the contract for `ChatContinuityRecoveryCard`.
-  - A thread the provider no longer has (`thread_missing`) is rebuilt by DAEX once from the full conversation (`detail.autoRecovery`); retry-original, recover-from-history and start-new-chat show only when that fails or for other reasons.
-  - The bounded `.ade/cache/chat-sessions/thread-pointers.jsonl` ledger keeps the latest pointer transition apart from metadata. Without primary and `.lkg` metadata, reconciliation restores the pointer from it, the resume command or the transcript. See [Storage and recovery](../storage-and-recovery/README.md#durable-metadata-and-chat-continuity).
-- **Parallel launch recovery.** The renderer owns the launch loop; crash recovery is behind IPC in `kv`. Change `AgentChatParallelLaunchState` (`shared/types/chat.ts`), `registerIpc.ts`, `preload.ts` and `global.d.ts` together. Cleanup must tolerate already-deleted lanes.
-- **Identity session filtering.** `listSessions({ includeIdentity: true })` is the only way to list CTO chats; regular surfaces pass `undefined`, the CTO page `true`. Check this in every new chat list.
-- **OpenCode 2.0 runtime details** (server lifecycle, config, sessions, event mapping, steering, permissions, subagents): [OpenCode integration](./opencode-integration.md).
-- **New `ai.*` config fields go in both `coerceAiConfig` and `mergeAiConfig`** (`projectConfigService.ts`). `coerceAiConfig` parses a field off disk; `mergeAiConfig` folds shared + local layers. A field in only one is silently dropped. `ai.customProviders` and `ai.customModelSlugs` are in both. The merge replaces rather than unions: `local` wins outright (`localAi ?? sharedAi ?? []`), because the same merge runs on the `ai.updateConfig` write path, where a union would make removals impossible (absent keeps the list, `[]` clears it). Also add new fields to `AiConfig` (`shared/types/config.ts`).
+**Transcript and memory**
+
+- **The in-memory event ring is live-tail only** (64 sessions,
+  `CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS`). Never write a merged snapshot back
+  into it (it once grew to ~1 GB). Quiet chats release history after 10 min
+  (`releaseIdleChatHistory`), except a ring holding events a failed append did
+  not write.
+- **Compaction is one idempotent policy** for storage and wire
+  (`shared/chatEventCompaction.ts`); new heavy fields go in its cap table. See
+  [Persisted transcript](transcript-and-turns.md#persisted-transcript).
+- **Transcript reads** merge fragments by `messageId`/`turnId`
+  (`MAX_TRANSCRIPT_READ_CHARS` 120,000).
+- **Resume-time splice repair** (`chatEnvelopeSpliceRepair.ts`) rebuilds runs of
+  split Claude text with SDK ids; other lines stay byte-for-byte; writes via
+  temp rename with a one-time `.splice.bak`; files over 64 MB skipped.
+- **Persisted state is versioned** (`PersistedChatState`, version 2); change the
+  format only with a version bump.
+- **Continuity recovery:** a resume failure never silently replaces the saved
+  thread. DAEX classifies it and emits a `continuity_recovery` notice
+  (`ChatContinuityRecoveryCard`); a `thread_missing` thread is rebuilt once from
+  the conversation. Pointer ledger:
+  `.ade/cache/chat-sessions/thread-pointers.jsonl` (see
+  [Storage and recovery](../storage-and-recovery/README.md#durable-metadata-and-chat-continuity)).
+- **An unchanged head sha is not an empty turn:** `collectTurnDiffSummary`
+  compares against the working tree and untracked files.
+- **Text limits** cut at code points (`shared/codePointText.ts`).
+
+**Presentation**
+
+- **Transcript measurement is in layout pixels.** The hosted web zooms with
+  `body { zoom }`; rect values go through `toLayoutPx()` (`lib/webZoom.ts`).
+- **Command text is redacted before it is shortened**
+  (`redactCommandLine` / `oneLineRedacted`, `shared/secretRedaction.ts`; shell
+  args via `maskShellCommandArgs`). Placeholders like `$TOKEN` stay visible.
+  iOS mirrors it in `WorkCommandRedaction.swift`.
+- **Refusals:** `classifyProviderAccountRefusal`
+  (`shared/providerAccountRefusal.ts`) returns `plan`, `auth`, `model` or none.
+  Only `auth` marks sign-in failed; a usage limit is never `plan`.
+- **`disable-model-invocation` skills** are withheld from the injected skill
+  list (the user can still run `/<name>`).
+- **Cursor local chats read images** from `~/.cursor/projects/<slug>/assets/`
+  and `<project>/.ade/attachments/` (read-only grant in `cursorSdkPolicy.ts`;
+  the attachments grant needs the explicit project root and fails closed).
+
+**Config and MCP**
+
+- **Caller MCP strict mode is a guarantee on Claude only.** Read
+  `strictRequested`, then `level === "enforced"`; never infer isolation from
+  `delivered: true`. An explicit `strictMcpConfig: false` must survive create.
+- **New `ai.*` config fields go in both `coerceAiConfig` and `mergeAiConfig`**
+  (`projectConfigService.ts`) and in `AiConfig`. The merge replaces, local wins.
+- **The Codex plan-limit notice** re-arms only on a real low reading, never on
+  `null`.
+- **A compacted CTO thread is replaced, not re-injected**
+  (`refreshCtoProviderThread`; see [CTO](../cto/README.md#what-the-cto-is-given-each-turn)).
+- **Parallel launch recovery:** change `AgentChatParallelLaunchState`,
+  `registerIpc.ts`, `preload.ts` and `global.d.ts` together.
 
 ## Find in a chat (⌘F)
 
-⌘F anywhere in a chat pane (the composer included) opens a find bar over the transcript. It counts matches over the whole chat the pane holds, steps through them in time order (Enter / Shift-Enter, ⌘G / ⇧⌘G), wraps at both ends, and closes on Escape without moving the reading position.
+⌘F in a chat pane opens a find bar over the transcript (`ChatFindLayer.tsx`,
+`useChatFindIndex.ts`, shared plumbing in `renderer/lib/findScope.ts`).
 
-- **It searches rows, not the page.** Most rows are virtualized or folded, so the search runs over `presentedRows` (rows before folding) and matches what a reader sees:
-  - the user message as the bubble shows it;
-  - the reply with markdown reduced to displayed text (link labels, not URLs; no scene, mosaic or diagram source);
-  - plan checklists.
+- It searches `presentedRows` (before folding) as a reader sees them: user
+  bubbles, replies with markdown reduced to displayed text, plan checklists. It
+  skips reasoning, tool output, duplicate answers and queued steers.
+- The pane backfills history, so a chat under the resident cap is searched in
+  full; while pages load the count reads `N+`.
+- Moving uses `scrollToRowKey`, which opens a hiding fold first.
+- Painting uses the CSS Custom Highlight API (`ade-find`, `ade-find-active`),
+  never touching reply DOM. Closed, it costs nothing.
+- ⌘K offers `Find "…" in this chat`.
+- Clear timer/frame handles on unmount, not just cancel them.
 
-  It skips reasoning, tool calls and tool output, an earlier copy of an answer (`duplicateAnswerKeys`), folded agent text under a PR-watch wake card, and queued steers (`transcriptEventDrawsNothing`).
-- **The pane holds the whole chat.** The pane backfills older history in idle slots, so a chat under the 60,000-event / 32 MB resident cap is searched in full shortly after it opens. While pages load, the count reads `N+`.
-- **Moving uses the list's own jump.** `scrollToRowKey` opens the fold or wake chain that hides the row, then the words scroll into the reading band only if they are off screen. The band excludes the find bar and the composer (`data-chat-composer-overlay`). A new query starts at the first match in or below the view (inside a long reply that starts above the view, at the first occurrence on screen).
-- **Painting never touches the reply's DOM.** Mounted rows are searched in `[data-chat-find-text]` elements (hover actions, review cards and attachments are `data-ade-find-skip`) and painted with the CSS Custom Highlight API (`ade-find`, `ade-find-active`). Where the renderer draws different text from the stored text (a path chip, a model display name, a reformatted timestamp), the page can show fewer hits than the count. The bar then stays on the last shown hit, and a new query trusts a painted position only when painted and counted hits agree.
-- **Closed, it costs nothing.** The memoized layer never re-renders for a streaming reply. It holds an index, subscribes to rows and watches the DOM only while open; closing releases the index. Open, it re-counts at most every 300 ms and repaints at most every 100 ms.
-- **A streaming reply folds at the count's pace** (at most every 300 ms); between folds it is searchable by its last fold, which replaces its earlier text in the cache. A row never folded (paged-in history, a new message) folds at once. New words, or Enter at a count of zero, fold the streaming row first; a match that streams in after a zero count is counted but does not move the view.
-- **⌘K hands off.** With a chat on screen and words typed, the palette offers `Find "…" in this chat`: first, unless the words lead a command title, then right after the commands. It opens the bar with the palette's free-text terms. Opening a chat from a palette message hit lands on the hit and shows the count without moving; Enter starts walking. A hand-off nothing picks up within 10 s is dropped.
-- **Timer and frame handles are cleared on unmount, not only cancelled.** A dev double mount or a returning parked surface cancels them, and a handle left set turns every later paint request into a no-op.
+## Built-in browser
 
-## Built-in browser authentication limits
+The DAEX browser (`main/services/builtInBrowser/*`) is a main-process broker of
+`WebContentsView` tabs on one shared profile (`persist:ade-browser`), shown as
+the Work tools Browser panel (`ChatBuiltInBrowserPanel.tsx`) and the Browser top
+tab. Agents drive it with `daex browser …`.
 
-- **Touch ID WebAuthn.** Signed, packaged macOS builds embed DAEX's Developer ID profile and turn on Electron's Touch ID platform authenticator with the `VQ372F39G6.com.ade.desktop.webauthn` keychain access group. Source builds need `ADE_ENABLE_TOUCH_ID_WEBAUTHN=1`; `=0` is a kill switch. The account-selection event resolves exactly once, with a native chooser for several credentials.
-- **Those credentials are device-bound** to the Mac's Secure Enclave and scoped by Electron session metadata. One global browser partition makes them global across projects in a release channel, but they are not iCloud Keychain passkeys. See [`app.configureWebAuthn`](https://www.electronjs.org/docs/latest/api/app#appconfigureweb-authnoptions-macos) and [`select-webauthn-account`](https://www.electronjs.org/docs/latest/api/session#event-select-webauthn-account).
-- **Not supported:** Apple's managed-browser credential entitlement, native AuthenticationServices, Apple Passwords and arbitrary Chrome Web Store extensions (Electron supports a [subset of extension APIs](https://www.electronjs.org/docs/latest/api/extensions-api)). Roaming FIDO2 keys and site WebAuthn flows work as Chromium allows.
-- **Cookies stay as the site set them.** DAEX never turns persistent cookies into session cookies or recreates expired or logged-out credentials. A clean restart restores tab URLs only.
-- **HTTP Basic/Digest and proxy auth** use a separate sandboxed modal; values go straight to Electron's callback and are never stored or logged. A client-certificate request always needs a human choice; cancel returns no certificate.
-- **Self-signed local certificates can be trusted, nothing wider.** `builtInBrowserCertificateTrust.ts` handles `certificate-error` on browser tabs only (never DAEX's windows):
-  - Hosts: `localhost`, `*.localhost`, 127/8, `::1`, 10/8, 172.16/12, 192.168/16, link-local, IPv6 unique-local, 100.64/10 (tailnets), and `.local` / `.home.arpa` / `.internal` names.
-  - Errors: `ERR_CERT_AUTHORITY_INVALID`, `ERR_CERT_COMMON_NAME_INVALID`, `ERR_CERT_DATE_INVALID`.
-  - The tab's `loadError.certificate` carries host, port, error and SHA-256 fingerprint; `BrowserCertificateBanner` offers **Trust and reload**.
-  - An approval names one profile, host, port, fingerprint and error, so a new or expired certificate asks again. Shared-profile approvals live in `ade-browser-certificates.json` (0600); an isolated sign-in's live in memory.
-  - Settings → DAEX browser → **Trusted local certificates** lists and removes them (removal closes the profile's connections).
-  - Only trusted-renderer IPC (`ade.builtInBrowser.certificates.*`) can trust. It is not a desktop-bridge method, so an agent can read why a tab failed but cannot approve it. A public host is never offered.
-- **Right-click gives the usual browser menu** (`builtInBrowserContextMenu.ts`, from Electron's `context-menu` params): a link offers Copy link address; an image Copy image / Copy image address; a text field the editor menu (spelling, undo, cut, copy, paste, select all); a selection Copy; the page Back / Forward / Reload; Inspect is last. Actions re-find the tab first, so a closed page does nothing. The menu opens only for the visible active tab of a focused window, so an agent's synthetic right-click cannot pop a menu.
-- **The search engine is a setting.** Settings → DAEX browser → Search engine: Google (default), DuckDuckGo, Bing, Brave Search, Kagi, Ecosia, or a Custom URL with `%s`. A custom URL must be http(s) with `%s` after the host and no credentials (`isValidBrowserSearchTemplate`); an unusable one is saved, flagged, and searches use Google. It is a machine-wide setting stored by this desktop's main process and does not sync.
+### Authentication and trust
 
-## Built-in browser: Chrome identity, tab ownership, cleanup, and other machines
+- Touch ID WebAuthn on signed macOS builds (keychain group
+  `VQ372F39G6.com.ade.desktop.webauthn`; source builds need
+  `ADE_ENABLE_TOUCH_ID_WEBAUTHN=1`). Credentials are device-bound, not iCloud
+  passkeys. No Apple Passwords or arbitrary Chrome extensions.
+- Cookies stay as the site set them; a clean restart restores tab URLs only.
+- HTTP Basic/proxy auth uses a sandboxed modal; values are never stored.
+- **Self-signed local certificates** can be trusted for local/private hosts
+  only (`builtInBrowserCertificateTrust.ts`), per profile, host, port,
+  fingerprint and error, via **Trust and reload**. Only trusted-renderer IPC can
+  trust; agents can read the failure but not approve it.
+- The context menu opens only for the visible active tab of a focused window,
+  so an agent's synthetic right-click cannot pop it.
+- Search engine is a machine-wide setting (Settings → DAEX browser).
 
-- **The browser introduces itself as Chrome.** An Electron UA (and an overridden UA, which drops `Sec-CH-UA*` hints) sends Google account pages to `/not-supported`. `builtInBrowserChromeIdentity.ts` sets one clean UA on every tab session (`session.setUserAgent` in `createBrowserNetworkRouter().configureSession`), and an all-URL `onBeforeSendHeaders` pass strips leftover tokens and adds Chrome's low-entropy hints on secure requests (`"Not?A_Brand";v="24", "Chromium";v="152", "Google Chrome";v="152"`, `?0`, `"macOS"`). A non-Chrome UA (the iPhone and iPad presets are Safari) is left alone. The tab preload (`preload/browserMedia.ts`, `installChromeBrandHook`) sets the same brands on `navigator.userAgentData` (`brands`, `fullVersionList`), with the GREASE brand spelled as Chromium spells it. DAEX's own window keeps its UA. Google sign-in can still refuse embedded browsers; the login import is the fallback.
-- **Who owns a tab** (`browser/browserTabOwnership.ts`): **you**, **a chat** (its agent opened it), or **free** (its chat let go). Real input makes an agent's tab yours (`keptByPerson`): a mouse-down or key-down on the visible active tab of a focused window (`before-mouse-event` / `before-input-event`, ignored for 1.5 s after an agent action), hand navigation, Attach to chat, or **Keep** (`builtInBrowser.keepTab`, renderer IPC only). Opening or viewing a tab does not count.
-- **The strip groups an agent's tabs under its chat**, like Chrome tab groups: one coloured label with the chat's name (the lane colour, else a colour picked by chat id) and a line under the tabs. Click folds the group (never the active tab); right-click opens the chat, keeps the tabs or closes them. Tooltips name the owner and any close countdown. A single tab normally hides the strip, but not an agent's tab. `closeTab` re-finds its tab after awaits, because the sweep and **Close tabs** run concurrently. `browserPanelNormalizers.ts#normalizeTab` is a field allowlist: add new tab fields there.
-- **One lane toggle.** In a lane the strip shows that lane's tabs plus your lane-less tabs (**This lane**, with a `+N` of the hidden ones) or every tab (**All tabs**). The tab on screen keeps its chip. The choice is per computer (`localStorage` `ade.browser.laneFilter`). There is one browser per project (one profile per install), never one per lane.
-- **Agent tabs clean themselves up.** The brain tells every desktop when a chat starts a turn, goes idle (`done`) or ends (`releaseChatBrowser`) through the bridge-served `chatBrowserLifecycle` method, locally and to desktops holding a pin, only for chats that sent a browser command through that brain.
-  - Unkept agent tabs close 15 minutes after the chat goes idle (`CHAT_IDLE_CLOSE_MS`; a browser command re-arms it, a new turn cancels it), and at once when the chat ends or its lane is archived or deleted.
-  - A tab on screen, recording, watched or mid-handoff waits and retries every 5 minutes.
-  - Each lifecycle word or browser command bumps the chat's generation; a running close pass stops at the next tab when it sees a newer one.
-  - A two-hour sweep closes untouched agent tabs whose word never arrived (a brain restart).
-  - `tab.autoCloseAt` carries the deadline to the strip.
-- **Background tabs sleep.** A tab unused for 30 minutes drops to `about:blank` and remembers URL, title and entries (`tab.sleeping`), unless it is active, audible, recording, watched, emulating, in DevTools or logging, has an agent action running, or holds something a reload would lose (a field in use or changed, an editor with text). Showing it, an agent read or action, or a watcher wakes it with `navigationHistory.restore` (fallback: load the URL). Status, persistence and access checks use `tabPageUrl`. Every blocker is re-read after the awaited page check, and a sleeping tab sent to a new page (`navigate` with `activate: false`) forgets the old one.
-- **PDFs and printing.** Tabs run with `plugins: true` (Chromium's PDF viewer); the page menu has **Print…**. Each profile's disk cache is capped at 320 MB (`--disk-cache-size`). Per-project profiles are deleted once every live persistent cookie is confirmed in the shared profile (`builtInBrowserProfileMigration.ts`: verified partitions go in `retiredPartitions` and are removed at the next launch before any session opens).
-- **Notices never freeze the page.** See "Bottom-right notices and the browser" in `docs/design/notices.md`: corner cards use the first bottom corner no live page covers, or wait.
-- **Tabs on other machines** stay on the machine that opened them.
-  - A pane pinned to another machine lists that machine's lane tabs under the strip (`RemoteBrowserTabs.tsx`, from `work_tools.getLaneState` every 5 s while visible).
-  - Picking one streams it: `work_tools.readBrowserTabFrame` renews a 6 s watch on that desktop, which runs a preview stream with owner `remote` and returns the newest frame; frames are polled one at a time at about 4 fps.
-  - **Take control** sends clicks, scrolls and typing as frame fractions (`work_tools.sendBrowserTabInput`, via `webContents.sendInputEvent`/`insertText`) and makes the tab the person's.
-  - Both calls are person-only: scoped for every caller (the CTO included) and in `ADE_ACTION_USER_ONLY`, so only the desktop app reaches them over RPC.
-  - The viewer is keyed by machine and tab; input goes only to a fresh picture, and after 3 s without a frame it says the link is lost and ends control.
-  - **Open here** loads the page locally (a remote localhost through a tunnel). The pane notes once when this chat's agent starts working in a tab there. A local-server row for a port open there asks whether to watch it there or tunnel it here.
-  - The phone's Browser card uses the same calls through `workTools.readBrowserTabFrame` / `workTools.sendBrowserTabInput`.
-  - **Phone size.** A read may carry `viewport` (the phone's picture in points and its screen scale). The desktop then lays the tab out at that size for the watch: a touch-device emulation through the device-preset path (`builtInBrowserRemoteViewportEmulation`, labelled "Phone view · W×H", an iPad UA from 700 pt wide). Only a controller peer's read carries it: the sync host sets `controller` on the command context from the pairing, and `readBrowserTabFrame` drops `viewport` for anyone else, so a read-only viewer cannot change a desktop tab. It is the watch's own, one slot per tab in `builtInBrowserRemoteViewport.ts` (an apply in flight counts as where the tab is heading, and the watch and blockers are checked again after each await), and only that code takes it off: when the watch lapses (6 s), or when reads come without `viewport` for 2 s (two viewers can share a tab). It never goes over an emulation someone else set, and a `setEmulation` during the watch (the toolbar, an agent) takes the tab over until the watch ends. It yields while the tab is in front of the person at the desktop (the pane's tab in a focused window), records, has DevTools open or is mid sign-in; starting a recording or DevTools awaits its removal first (`releaseRemoteViewport`), so neither starts at phone size. The frame says `viewportApplied` and, when it keeps its own size, `viewportNote` (a sentence). An older desktop ignores `viewport`; an older brain drops it.
-  - **Input under a preset.** Remote clicks and scrolls are frame fractions of the drawn box. Under an emulation that box is the emulated size times its input scale (a mobile page with no viewport tag reports a 980 px `innerWidth`, so the page's own width would miss); otherwise it is `innerWidth` times zoom times the recording viewport's scale. Take control lands right on a letterboxed or phone-size tab.
-  - **Opening a dev server from the phone** (`workTools.openBrowserTab { laneId, url }`, sync only, controller-only, not queued). The brain accepts only http(s) on `localhost`, `127.0.0.1` or `[::1]`, no sign-in in the address, at a port one of the lane's dev servers serves (`work_tools.listDevServers`); anything else is refused with a sentence. A lane tab already on that loopback port is returned (`reused`). Otherwise it calls the bridge's `createTab { url, groupLaneId, activate: false, openPanel: false }`: a background tab grouped with the lane, owned by nobody (the person's open: no lease, no consent gate), that does not take the desktop user's screen. It answers `{ ok, tabId, reused }`.
-    - On a computer with no DAEX desktop (a DAEX Cloud lane), the forwarder's open path sends it as a request to a desktop that holds the lane, which tunnels the port; the answer then has `tabId: null` and `openedOn` (and `awaitingApproval` when that desktop asks to allow the tunnel). Nobody taking it is "No DAEX desktop is open to show this page. Open DAEX on a computer, or use the lane's Linux Desktop."
+### Chrome identity, tab ownership, cleanup
 
-## Built-in browser: new tabs, device presets, find, and dev servers
+- The browser presents a clean Chrome UA and client hints
+  (`builtInBrowserChromeIdentity.ts`, tab preload `installChromeBrandHook`), so
+  Google pages work; Google sign-in may still refuse (login import is the
+  fallback).
+- **Tab owners** (`browser/browserTabOwnership.ts`): you, a chat, or free. Real
+  input on the visible tab, hand navigation, Attach to chat or **Keep** makes an
+  agent's tab yours (`keptByPerson`).
+- Agent tabs group under their chat in the strip. One browser per project
+  profile, never per lane; a lane toggle filters.
+- **Agent tabs clean themselves up**: the brain reports chat lifecycle through
+  `chatBrowserLifecycle`; unkept tabs close 15 min after the chat goes idle
+  (`CHAT_IDLE_CLOSE_MS`) and at once when the chat ends or its lane is archived;
+  a 2 h sweep catches lost signals.
+- Background tabs sleep after 30 min unless they hold something a reload would
+  lose.
+- `browserPanelNormalizers.ts#normalizeTab` is a field allowlist: add new tab
+  fields there.
 
-- **A new tab is a launchpad, not a home page.** `createTab` with no URL parks on `about:blank` with `isLaunchpad` and the title "New tab"; DAEX sends no request nobody asked for. Closing the last tab leaves zero tabs, and revealing the pane does not create one. `open-request` and the agent `open` command navigate. The v2 tab store drops the google.com home page an earlier store saved; a google tab saved later is the person's own and is kept.
-- **The launchpad offers known addresses.** `BrowserStage` renders a centred 576 px column of grouped rows: **Clipboard** ("Paste a link", only when the clipboard holds a URL), **Local servers** (the dev-server registry), **Recently used**. The chrome row's omnibox is the only URL field.
-- **Recents are per window and sanitized on write.** `browser/browserRecentUrls.ts` keeps the last `BROWSER_RECENT_URL_LIMIT` (10) pages in `localStorage` (`ade.browser.recentUrls:<scope>`, scoped like tabs). Bad JSON, a quota error or no `localStorage` degrade to no recents.
-  - `sanitizeBrowserRecentUrl` drops the query and fragment, refuses a URL with a credential in either (`isRedactedBuiltInBrowserQueryParam`), and refuses loopback ports at or above `EPHEMERAL_LOOPBACK_PORT_MIN` (32768, a tunnel forward). A tunneled tab records its remote-origin display URL.
-  - Rows have "forget"; the group has **Clear**. A row shows the favicon and a cleaned title (`cleanBrowserRecentTitle`: the first segment of a " · " / " | " / " — " / " - " title, at most 60 characters).
-  - The image CSP has no wildcard, so main fetches the favicon on `page-favicon-updated` through the tab's session (5 s, `image/*`, at most 64 KB, http(s) only, no credentialed URL or ephemeral loopback), caches it per origin, and publishes a `data:` URL in `faviconUrl` (the raw URL on failure). `sanitizeBrowserRecentFaviconUrl` applies the same refusals.
-- **The page is framed and rounded on both layers.** `BrowserStage` insets the page 8 px inside a 10 px-radius frame with a hairline ring. CSS cannot mask the composited `WebContentsView`, so main rounds it with `View.setBorderRadius` to `BUILT_IN_BROWSER_VIEW_CORNER_RADIUS` (9). Both sides read the constant; an Electron without `setBorderRadius` shows a square page.
-- **⌘F and ⌘W arrive through the app menu.** Electron consumes accelerators before renderer keydown, and a focused page is another `WebContents`. The menu sends `IPC.appCommand`; `lib/appMenuCommands.ts` (an instance of `lib/appCommandClaims.ts`) picks the answer. The browser claims both when `panelOwnsAppCommands` says it holds the keyboard (the zoom chords' rule): `find` opens or refocuses the bar; `close-tab` closes the active tab and returns its own answer, so an unhandled ⌘W is never reported as taken. Unclaimed, `close-tab` is the window close with its prompt and `find` replays as an untrusted keydown.
-- **Emulation shows in the caption.** A device preset is shown by the letterbox caption (CSS pixel size) and the toolbar's device control, with no banner over the page.
-- **A device preset owns the tab's debugger.** `setEmulation` sends `Emulation.setDeviceMetricsOverride` (with `screenWidth`/`screenHeight`), `Emulation.setUserAgentOverride` (with `userAgentMetadata` for mobile), `Emulation.setTouchEmulationEnabled` and `Emulation.setEmitTouchEventsForMouse`. Chromium reverts overrides when their CDP session detaches, so the preset holds a debugger attachment and re-applies on `did-navigate`. DevTools refuses an emulating tab; clearing the preset releases it.
-- **Letterboxing.** A non-null `tab.emulation` carries the effective `{ width, height, deviceScaleFactor, mobile, label }`. Surfaces size the view to exactly `width × height` CSS px, centre it and letterbox the rest (never stretched or scaled), so an agent's screenshot matches what the human sees.
-- **Find resolves on the first result.** `findInPage` resolves with the first `found-in-page` result for its request (`matches`, `activeMatchOrdinal`, `finalUpdate`); Chromium sends a final update only after walking the whole document, and never for a superseded find. Later updates stream as events. A timeout is reported only when no result arrived.
-- **Dev servers are found on the lane's machine and shown on every machine.**
-  - Sources, in the runtime that hosts the lane: DAEX terminal output, an agent's own shell output, and the listener scan (servers started in the background).
-  - The runtime publishes starts and stops as `dev_server_event` and answers `work_tools.listDevServers`, so another machine lights the same globe, Tools-pane status (`localhost:4180 running` with no tab open) and launchpad chips. Nothing opens by itself on another machine.
-  - The phone reads the same list through `workTools.listDevServers` (sync, viewer-allowed), and `workTools.getLaneState` carries `devServers` (what the runtime already knows, no scan) so the phone's Browser chip shows for a lane with a server and no tab.
-  - `builtInBrowser.getDevServers(args, pin)` reads that list; the Electron registry is added only for a lane on this computer.
-  - The chat's `localhost` chip probes via `localhost.probePort(port, pin)` on the chat's machine and tries both loopbacks (Vite and Next on macOS often bind only `[::1]`).
-- **Dev servers are discovered, never probed.** The PTY pipeline matches ready lines (`Local:   http://localhost:5173/`, `ready on`, `listening on`) with one bounded regex per chunk plus a carry, and records `{ port, url, source: { sessionId, laneId, projectRoot }, detectedAt }` in `main/services/devServers/devServerRegistry.ts`, forgetting a session's ports when its terminal ends. Renderers read `builtInBrowser.getDevServers()` / `localhost.getDevServers()`.
-  - When a lane's server appears and the lane already has a browser tab, or the Browser tool is empty, DAEX opens it in a background tab once per (lane, port) per app session (`openPanel: false`) and emits `dev-server-detected` for the corner card.
-  - The target and the event's collection come from the record's `projectRoot`, captured at detection, so on a two-project machine the chip goes to the right project. A project with no Browser collection gets no chip event; its pane lists the server when it opens.
-  - `browser.autoOpenDevServer` (default `true`, in the `browser:` block with `linkOpenMode`) turns off auto-open but keeps discovery.
-- **`daex browser proof --har`** exports the tab's HAR with the screenshot and files it as a `browser_trace` artifact under the same owners. It needs network logging on and fails with that message otherwise.
+### Tabs on other machines
+
+Tabs stay on the machine that opened them. A pane pinned to another machine
+lists its lane tabs (`RemoteBrowserTabs.tsx`); picking one streams frames
+(`work_tools.readBrowserTabFrame`, ~4 fps, 6 s watch) and **Take control** sends
+input as frame fractions (`work_tools.sendBrowserTabInput`). Both are
+person-only (`ADE_ACTION_USER_ONLY`). The phone uses the same calls and may ask
+for a phone-size viewport (controller peers only; `builtInBrowserRemoteViewport.ts`).
+`workTools.openBrowserTab` opens a lane's dev server from the phone (loopback
+ports the lane serves only).
+
+### New tabs, presets, find, dev servers
+
+- A new tab is a launchpad on `about:blank` (Clipboard, Local servers, Recently
+  used); DAEX sends no request nobody asked for. Recents are sanitized
+  (`browserRecentUrls.ts`: no query, no credentials, no ephemeral loopback
+  ports).
+- ⌘F and ⌘W arrive through the app menu (`IPC.appCommand`,
+  `lib/appMenuCommands.ts`); the browser claims them only when it holds the
+  keyboard.
+- A device preset owns the tab's debugger (CDP emulation, re-applied on
+  navigate) and is letterboxed at exact CSS size; DevTools refuses an emulating
+  tab.
+- **Dev servers are discovered, never probed**: PTY ready lines, agent shell
+  output and a listener scan in the lane's runtime
+  (`devServerRegistry.ts`), published as `dev_server_event` and
+  `work_tools.listDevServers` to every machine. `browser.autoOpenDevServer`
+  (default true) opens a background tab once per lane and port.
+- `daex browser proof --har` files a `browser_trace` artifact (needs network
+  logging).
 
 ## The Browser top tab
 
-The DAEX browser is also a top-level tab beside Chats (`renderer/components/browser/BrowserPage.tsx`, route `/browser`, `browserTabOpen` in the app store). It needs no project and stays in the strip across project changes.
+The DAEX browser is also a top-level tab beside Chats
+(`renderer/components/browser/BrowserPage.tsx`, route `/browser`,
+`browserTabOpen` in the app store). It needs no project.
 
-- **Same profile, personal tabs.** It mounts `ChatBuiltInBrowserPanel` full size with `projectRootOverride={null}`: the `personal` collection on the global `persist:ade-browser` profile, with every DAEX browser's sign-ins and the tabs a project-less chat's agent drives.
-- **The page lives in main.** Leaving the tab hides the `WebContentsView` (`useNativeBrowserViewBounds` cleanup); coming back re-attaches the same page, scroll and history. Resizes and the dock re-measure through the hook's observer.
-- **Entry points:**
-  - the home page's **Browser** button and its right-click menu;
-  - `Mod+Shift+B` (`shell.browser.open` in `shared/keybindings.ts`, rebindable; a renderer keydown, so it does not fire while focus is in a page);
-  - link routing: links in the docked chat open here, and links in a Chats page chat open here when this tab is open and the Chats page's own Browser panel is not.
-- **No chat, no chat tools.** Without a chat the panel has no `sessionId`, so Inspect, Attach and "insert into the message" hide, and the host's `toolbarEnd` slot replaces Work's preview toggle and maximize. With a docked chat, Inspect sends the element to that chat.
-- **Ask agent** docks a project-less chat on the right (`AgentChatPane` with `usePersonalChatPaneScope`, shared with the Chats page).
-  - Opening the dock puts the front tab into the composer like **Attach to chat**: one `<ade-browser-tab …>` token from `formatBrowserTabMentionToken` (`shared/browserTabMention.ts`), drawn as a `browser_tab` chip, never twice for the same chat and tab. With the dock open, the panel's **Attach to chat** inserts into the dock's composer.
-  - The tab goes to the chat via renderer-only `handTabToChat` (`ownerChatSessionId`, a fresh 10-minute lease) when the first message creates the chat, at once when the dock has a chat, and on a header chat switch. It overrides another chat's lease, does not focus the tab and asks no consent; agents cannot call it.
-  - The dock keeps its chat (`browserDock`) until **New chat**. Its header switches chats, opens the chat in Chats (`/chats?chat=<id>`) or closes the dock. Its draft has its own key (`personalDraftKey`).
-- **The token tells the agent it is a live tab.** Besides id, title and URL (one line, control characters stripped), its text is `browserTabTakeoverHint`: the tab is live in front of the user; claim it with `daex browser claim --tab <id>`, act in place with `daex browser <command> --tab <id>`, and do not fetch the URL or open a new tab. Every attach path (Browser tab, Chats page, Work terminals via `formatBrowserTabMentionForPrompt`) uses these words.
-- **Sound in the background.** An off-screen tab is muted, except media that started while it was on screen or that someone played from Now Playing (`allowBuiltInBrowserBackgroundAudio`); a new document forgets it (`builtInBrowserMediaHooks.ts`). Closing the Browser tab only hides views, so playing tabs stay in Now Playing (`home/browserMediaSessions.ts`).
-- **On the wallpaper.** With a scene picture, the Chats page and the dock sit on it: `ChatSceneBackdrop` mounts `SceneImageLayer`, and each pane is a `.ade-chat-scene-plane` with the kit card's tint and frost (`--kit-card-bg`, `--kit-card-blur`) under `html[data-scene="image"]` (`styles/scene.css`), using `canvasFill="var(--ade-chat-scene-canvas)"`. The gradient scene and Work chats are unchanged.
-- **From Chats back to the page.** A browsing Chats chat, or the dock's chat, shows **Show in the Browser tab** (`openChatInBrowserTab`): it docks the chat and brings its tab forward.
-- **Machine.** The dock chat lives on the Chats tab's machine (the window's binding). The browser is always this computer's; with a remote project tab active, `localhost` maps to that machine as in the Chats page's Browser panel.
+- It mounts `ChatBuiltInBrowserPanel` with `projectRootOverride={null}`: the
+  `personal` collection on the shared profile.
+- The page lives in main; leaving hides the view and coming back re-attaches it.
+- Entry points: the home **Browser** button, `Mod+Shift+B`
+  (`shell.browser.open`), and link routing from docked/Chats chats.
+- Without a chat, Inspect and Attach hide. **Ask agent** docks a project-less
+  chat (`usePersonalChatPaneScope`); the front tab goes into its composer as a
+  `<ade-browser-tab …>` token (`shared/browserTabMention.ts`) and is handed to
+  the chat with `handTabToChat` (renderer-only; agents cannot call it).
+- The token text (`browserTabTakeoverHint`) tells the agent to claim the live
+  tab (`daex browser claim --tab <id>`), not fetch the URL.
+- Off-screen tabs are muted unless media started on screen
+  (`builtInBrowserMediaHooks.ts`).
+- The dock chat lives on the Chats tab's machine; the browser is always this
+  computer's.
 
 ## Attach to the user's own browser
 
-An agent drives DAEX's browser by default. Only when the user asks it to use their own browser does it run `daex browser attach [--tab <title or URL text>] [--browser chrome|edge|brave|arc|helium|chromium]` on the chat's machine.
-
-- Attach prints `attached: <browser> on <machine>, tab "<title>" (<url>)`, and the agent tells the user the machine and tab.
-- While attached, the chat's page commands act in the user's tab and print `target: your <browser> on <machine>` first. `daex browser detach` returns to DAEX's browser.
-- The browser needs remote debugging on (`<scheme>://inspect/#remote-debugging`) and asks the user once to allow the connection.
-
-Details: [computer-use README](../computer-use/README.md#attach-to-the-users-own-browser).
+Only when the user asks, an agent runs `daex browser attach [--tab …]
+[--browser chrome|edge|brave|arc|helium|chromium]` on the chat's machine; page
+commands then act in the user's tab and print `target: your <browser> on
+<machine>`. `daex browser detach` returns. Details:
+[computer-use README](../computer-use/README.md#attach-to-the-users-own-browser).
 
 ## The corner card and parked preview views
 
-The Work tab shows one screen tool at a time, so the browser is often hidden. `WorkLiveCornerCard` ([UI surfaces](../terminals-and-sessions/ui-surfaces.md#the-floating-live-preview-card-worklivecornercardtsx)) shows it anyway, which puts these contracts in the main process.
+`WorkLiveCornerCard` shows the browser when the Work tools pane shows something
+else ([UI surfaces](../terminals-and-sessions/ui-surfaces.md#the-floating-live-preview-card-worklivecornercardtsx)).
 
-- **A preview stream is not a recording.** `builtInBrowserPreviewStream.ts` has no file, encoder or `getDisplayMedia` grant: a small picture a few times a second while someone watches.
-  - It is refcounted: two watchers share one loop; zero means no loop, timer or capture.
-  - It skips rather than queues: a tick during an outstanding `capturePage()` is dropped, so a slow page gets a lower frame rate.
-  - It pauses (not stops) while the window is hidden or minimised.
-  - Counts are keyed by owner (`webContents` id), so a departed renderer releases only its own holds.
-- **Parked, not detached.** A removed or `setVisible(false)` view has no compositor surface: `capturePage()` returns an empty image and CDP `Page.captureScreenshot` never answers. A watched tab moves past the union of every display's bounds (both axes, plus a margin), so Chromium keeps compositing and no window can grow onto it. Display events and the window's move/resize (debounced) re-run placement. Only watched tabs pay for this; others detach.
-- **Parking keeps a surface; it cannot create one.** A view that never intersected the content rect has no surface, so its card stays black (an agent's background tab, a launchpad, a tab switched to while the pane showed Terminal). Warming fixes it:
-  1. Place the view at its parked size with exactly its top-left pixel inside the window's bottom-right content corner.
-  2. Hold for `BUILT_IN_BROWSER_PREVIEW_WARM_MS` (120 ms).
-  3. Move it to the park point.
-
-  The bottom-right corner hides under the window's rounded corner, and a 2 px `warmingCornerRadius` clips it on square windows. Electron has no hit-test opt-out for a `View`, so do not lengthen the 120 ms. Warming is skipped while the window is minimised, hidden or has no content rect; the tab parks and warms later. `surfacedTabIds` tracks surfaced tabs with a per-tab timer, and the mark drops whenever the view leaves the window, so the next park warms again.
-- **A parked view keeps its size when it can** (`parkedPreviewSize`):
-  - A recorded tab parks at the fixed 1280×800 viewport.
-  - A device preset parks at the drawn device size (preset × fit scale), since the device is pinned top-left.
-  - Otherwise it reuses the last panel rect, however narrow (resizing would fire real `resize` events); 960×600 only when the panel never showed the tab.
-
-  An observation of a page narrower than `BUILT_IN_BROWSER_NARROW_PAGE_WIDTH` (640) carries `narrowPageHint` (why the site may be in mobile layout, and `daex browser emulate --width 1280 --height 800` / `--off`), except under a preset or recording.
-- **The remembered rect is where the pane stopped** (`createPanelRectSettler`). The pane reports every frame of open, close and drag, so a rect becomes `lastPanelRect` only after 300 ms on screen at that size. A pane that hides or keeps moving leaves the previous size; a tab never settled parks at 960×600.
-- **An off-screen size change needs a warm.** Chromium does not re-lay out a view wholly off the window. `surfacedSizes` records the size given to `setBounds` while overlapping the window (panel or warm rect); a park at a different size drops the surfaced mark and warms again. The size is recorded as set, never read back, so rounding cannot loop. A preset change or a re-applied override after a fit-scale change re-runs attach once the scale lands (`onTabEmulationChanged`).
-- **A failed load is reported, not painted.** Main-frame `did-fail-load` (except `-3`, aborted) sets `loadError` (code, description, URL); `did-start-loading` clears it. The corner card steps aside while it is set.
-- **Focus.** Parking keeps the page's caret. On the attended → parked edge the service returns focus to the host window only when that window is frontmost, because `WebContents.focus()` raises its owner window.
+- `builtInBrowserPreviewStream.ts` is refcounted per owner, skips rather than
+  queues, pauses while hidden; it is not a recording.
+- A watched tab is **parked** off every display (a detached view has no surface
+  and captures come back empty). A view that never surfaced is **warmed** for
+  `BUILT_IN_BROWSER_PREVIEW_WARM_MS` (120 ms) at the window's bottom-right
+  corner first; do not lengthen it.
+- A parked view keeps its size (`parkedPreviewSize`: 1280×800 when recording,
+  the preset size, else the last settled panel rect via
+  `createPanelRectSettler`, else 960×600). A size change off-screen needs a
+  warm (`surfacedSizes`).
+- Main-frame load failures set `loadError`; the card steps aside.
 
 ## The Work tools pane on iOS and the hosted web client
 
-The pane runs on the desktop: the browser owns a `WebContentsView`, App Control a CDP socket, the iOS panel a capture stream. iOS and hosted web get a **read-only mirror**, never controls.
+The pane runs on the desktop; iOS and hosted web get a **read-only mirror**
+built by `apps/ade-cli/src/services/workTools/workToolsStateService.ts`:
 
-`apps/ade-cli/src/services/workTools/workToolsStateService.ts` builds the mirror per lane from three owners:
-
-- **`activeTool` and `openTools` come from the desktop renderer.**
-  - The mirror carries the whole tab strip in order plus the tab on screen. A desktop that publishes no `openTools` is read as a one-tab pane.
-  - `useWorkSidebarTool` debounces 250 ms and calls `work_tools.setActiveTool` with the focused chat's pin, re-publishing on a binding or runtime-status change, so a Studio chat on a MacBook tab updates Studio's state.
-  - The state is in memory only, not a cr-sqlite table, so it never outlives the desktop that set it.
-  - An unknown tool id (a newer desktop's tool such as `pr`) is recorded as active `null` and dropped from `openTools`, so clients see only tools they render.
-- **`browser` is proxied from the desktop bridge** (`built_in_browser.getStatus` over `desktop-bridge.sock`).
-  - No desktop on the machine: `browser: null` with `browserUnavailable: "desktop_not_attached"`, shown as absence.
-  - The bridge is machine-wide and the daemon project-scoped, so `getStatusForRuntime` carries its `projectRoot` (only the two capability-lifecycle methods skip the scope rewrite), and the desktop answers from that project's windows.
-  - If it cannot answer for that project, the daemon gets an empty list with a reason: `"desktop_not_attached_for_project"` (DAEX Desktop runs but no window has the project) or `"browser_pane_not_opened"` (the Browser pane was never used; a poll does not build a collection, which would load a background project's tabs).
-- **`appControl` is read in-process** from the daemon's App Control service, so it survives a quit desktop.
-
-Frames never travel with the state. The state carries the newest observation's path (under `.ade/cache/browser-observations` and `.ade/cache/app-control-observations`); a client fetches bytes through `workTools.readObservationPreview`, which resolves only inside those roots, rejects non-image extensions and caps at 10 MiB.
-
-`work_tools` reads are lane-scoped and deny by default:
-
-- `getLaneState` and `readObservationPreview` are denied when the caller is not a user client and no lane resolves from its chat (a caller with only `runId`/`stepId`/`attemptId`, or an unresolvable chat).
-- A caller-supplied `callerLaneId` is always stripped.
-- User clients (desktop, iOS, hosted web) carry no `chatSessionId` or run identity and keep the unscoped path.
-- A CTO-role caller is exempt, the same cross-lane role as `external-sessions`.
-
-| Surface | Action / entry point | Behaviour |
-| --- | --- | --- |
-| Desktop | `work_tools.setActiveTool`, `work_tools.getLaneState` via `window.ade.workTools` | Owns the pane; publishes the strip and the tab on screen. |
-| Hosted web | `workTools.getLaneState` / `workTools.readObservationPreview` | `WorkToolReadOnlyView` replaces the browser and App Control panels; `isReadOnlyWorkTool` (`workTools.ts`) is the gate; `setActiveTool` is a no-op. The iOS Simulator tool stays unavailable (a live video stream). |
-| iOS | the same two commands, gated on `SyncService.supportsWorkToolsState` | Lane tool chips after the PR chip in the chat's badge row (`WorkLaneToolChips.swift`): the running simulator (opens `AppleDeviceViewer`, gated on `apple.status`), browser tabs ("2 tabs") and App Control (app name), which open `WorkToolsSheet` (active-tool card with tab capsules, filled = on screen, and the last frame; then tabs; then App Control). The Mac's active tool alone is no chip. Pull to refresh; the sheet polls every 3 s while open; the chat polls both reads every 10 s but skips while the sheet or viewer is up. |
-| `ade` CLI | `work_tools.getLaneState` via `daex work-tools state` | The mirror as text. `work_tools.actions` lists the inventory; `setActiveTool` is user-client-only, so an agent asks with `daex ui show`. |
-
-Both remote commands are `viewerAllowed` and in `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`, so a brain without them (or a chat-only runtime) omits them and the phone hides the row instead of entering `limited` mode.
-
-iOS and web poll only while the sheet or pane is visible. The brain has no named-event channel to them (web gets only cr-sqlite changesets, and this state has no table), so `work_tools_state_changed` goes on the runtime event stream for surfaces that receive it.
+- `activeTool` / `openTools` from the desktop renderer
+  (`work_tools.setActiveTool`, in memory only); unknown tool ids drop.
+- `browser` proxied from the desktop bridge (`built_in_browser.getStatus`,
+  scoped by `projectRoot`); without a desktop, `browserUnavailable` explains.
+- `appControl` read in-process.
+- Frames never travel with state; clients fetch the newest observation through
+  `workTools.readObservationPreview` (only inside the observation cache roots,
+  images only, ≤ 10 MiB).
+- `work_tools` reads are lane-scoped and deny by default for non-user callers
+  without a resolvable lane; `callerLaneId` is always stripped; the CTO is
+  exempt.
+- Hosted web shows `WorkToolReadOnlyView`; iOS shows lane tool chips
+  (`WorkLaneToolChips.swift`) and polls only while visible; `daex work-tools
+  state` prints the mirror. Both remote commands are optional
+  (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`).
 
 ## Agents open panes: `daex ui show`
 
-Only a desktop renderer can open the panes that show an agent's work. `daex ui show <surface>` asks the desktop to show a surface of the agent's own chat:
+<a id="agents-open-panes-ade-ui-show"></a>
 
-- `apple`, `mac-desktop`, `app-control`: those tools in the Work tools pane;
-- their `floating-*` forms: the players over the chat;
-- `browser`: the Browser tool;
-- `proof`: the chat's proof drawer.
+`daex ui show <surface>` (`apple`, `mac-desktop`, `app-control`, their
+`floating-*` forms, `browser`, `proof`) asks a desktop to show a surface of the
+agent's own chat. `daex apple show [--floating]` is the same.
 
-`daex apple show [--floating]` is the same request.
+1. The brain (`workToolShowRequests.ts`) publishes `work_tool_show_request` on
+   the runtime event stream.
+2. `renderer/lib/workToolShowRequests.ts` routes it to the pane registered for
+   that chat (`useWorkShowRequests.ts`, `useChatPaneShowRequests.ts`).
+3. `shown` only when the surface is mounted, has width and the window is visible
+   (`workToolOnScreen.ts`); a closed tools pane floats the player instead.
+4. No pane showing the chat → `held` (expires after 10 min). No answer in 8 s →
+   `no_desktop`.
 
-1. The brain (`apps/ade-cli/src/services/workTools/workToolShowRequests.ts`) publishes `work_tool_show_request` on the runtime event stream, which every desktop on the project reads, local or paired.
-2. `renderer/lib/workToolShowRequests.ts` sends it to the pane registered for that chat: the Work page through `useWorkShowRequests.ts` (only for the session in front), or a chat pane outside Work through `useChatPaneShowRequests.ts` (proof and Apple drawers).
-3. The answer is `shown` only when the surface's element is mounted, its pane has real width and the window is visible (`renderer/lib/workToolOnScreen.ts`). The tools pane's open state is the person's choice: a screen, app or device show activates the tool in an open pane, or floats the player over the chat when the pane is closed (`useWorkSidebarTool.showTool`); `WorkToolShowAck.shownAs` names what appeared. The pane opens itself only when no floating player can take the ask: the browser's handoff, a lane-less chat, a request for another lane, or a declined float (no device).
-4. With no pane showing the chat, the answer is `held`; it lands when the user opens the chat and expires after 10 minutes.
-5. The CLI prints `shown`, `held` or `no_desktop`, waiting up to 8 s for a paired desktop's idle poll. No answer is `no_desktop` (exit 1).
-
-An agent's input to the Apple device also sends an automatic floating-player request (`auto: true`), at most once per 5 s per chat. The Work page floats the player only when the Apple tool is not on screen and the chat's "Show preview when minimized" is on; the player's close button turns that off. Automatic requests are never held or answered.
+Agent input to the Apple device sends automatic float requests (`auto: true`, at
+most every 5 s), never held.
 
 ## "An agent is using the browser"
 
-Every chat surface shows whether the chat is driving the browser now: a pulsing globe on the session card and by the header title, a live dot on the Browser tab of the Work tools header, a line in the iOS Tools sheet, and a glyph on the row above the transcript.
-
-Presence is derived, never announced: nothing an agent says feeds it. `desktopBridgeServer` records presence for every `built_in_browser.*` command that carries a chat, keyed by the session the runtime tagged. Reads (`status`, `observe`) count too.
-
-`apps/desktop/src/main/services/builtInBrowser/builtInBrowserPresence.ts` owns the lifecycle, in memory and per process:
-
-- **Expires** 20 s after the last command, on a timer.
-- **Held** while a tab records or has a preview/observe subscriber (taken at the first subscriber, released at the last). A recording's hold is released by the `recording` stop event, including stops no agent asked for (the wall-clock cap, a login handoff). Each hold also has a ten-minute deadline, so a lost release costs one deadline.
-- **Clears** when the tab closes, the chat's capability is revoked, a login handoff gives the tab to a human, or a window closes (for all its tabs).
-
-Two paths carry it:
-
-- **Desktop renderer.** An `agent-presence` browser event carries the whole set each time, plus a one-shot `builtInBrowser.getAgentPresence()` seed for a surface that mounts mid-stretch.
-  - The seed has no side effects. Do not seed through `getStatus`: it is a creating resolver that restores and loads every persisted tab.
-  - Asking for the seed subscribes the window to the pushed event, since a window that never opens the Browser tool has no other path.
-  - The event goes per window, scoped to that window's projects, so one project's window never lights another project's agent.
-  - `agentBrowserPresence.ts` is one module store with one shared subscription.
-- **Read-only clients.** `agentBrowserPresence` rides on the Work-tools lane state, projected from `getStatusForRuntime` and filtered to the lane like the tab list (a personal chat's lane-less entry is shared browsing).
-  - The daemon proxies every `daex browser` call and fires `work_tools_state_changed` on both edges of a browsing stretch.
-  - Presence is recorded on both edges of each call, in daemon and bridge, so a `wait`, slow navigation or long `observe` lights the globe.
-  - A throwing command retracts what it announced only when that call opened the window; the retraction matches by sequence (parallel calls share a millisecond) and stands down while a recording holds.
-  - `closeTab` and `startHandoff` skip the trailing edge; they clear presence themselves.
-  - The daemon keeps no copy of presence: only the desktop sees tabs close and recordings end.
+A pulsing globe (session card, header, Work tools tab, iOS Tools sheet) shows a
+chat driving the browser. Presence is derived from `built_in_browser.*` commands
+that carry a chat, never announced (`builtInBrowserPresence.ts`): expires 20 s
+after the last command, held while recording or watched (10 min cap), cleared
+on tab close, capability revoke or login handoff. Desktop gets `agent-presence`
+events (seed via `builtInBrowser.getAgentPresence()`, not `getStatus`, which
+loads every tab); read-only clients get `agentBrowserPresence` in the Work-tools
+lane state.
 
 ## Where the chat service runs
 
-The chat service is built once per project inside the runtime that owns the project. The desktop renderer reaches it only through the runtime IPC bridge.
-
-- A window bound to this machine talks to the Electron main process's service.
-- A window bound to a remote runtime talks to the remote `daex serve` daemon's `agentChatService`. `apps/ade-cli/src/bootstrap.ts` uses the same `createAgentChatService`, so the surface is identical.
-- The iOS app is a client through the sync command surface.
-
-Chat sessions are runtime-owned: the renderer and the iOS app render them, but neither runs them.
+The chat service is built once per project inside the runtime that owns it: the
+Electron main process for a local window, the remote `daex serve` daemon
+(`apps/ade-cli/src/bootstrap.ts`, same `createAgentChatService`) for a remote
+one. Renderers and iOS render chats; they never run them.
 
 ### One brain per chat
 
-Two brains can share one DAEX home (a dev brain beside the installed app), and so one project database. Each chat's persisted state has a `runtimeOwner` stamp (brain id, pid, process start, DAEX home, socket) that the brain holding its provider process writes on every persist. The rules live in `chatRuntimeOwnership.ts`:
+Two brains can share one DAEX home (a dev brain beside the installed app). Each
+chat's persisted state carries a `runtimeOwner` stamp (`chatRuntimeOwnership.ts`):
 
-- **Only the owner drives a chat.** Send, steer, `messageSession`, interrupt, resume, handoff, input answers, queued-message edits, account switch and rerun go through `assertChatRuntimeOwnedHere`. On another live brain's chat they throw `ChatRuntimeOwnedElsewhereError`, naming the owner's pid, socket and the `daex --socket "<owner>" …` route (a named pipe on Windows). This prevents a second provider process writing into the same transcript.
-- **Live ownership crosses DAEX homes.** A chat stamped by a live brain stays non-adoptable even with different `ADE_HOME` folders (both see the project's process registry). A dead owner's chat can be adopted when its provider account is available here.
-- **A chat from an unknown cross-home account cannot resume here.** An explicit send to its Claude or Codex conversation is refused before launch, pointing to the DAEX that owns the account or a new chat.
-- **A non-machine socket yields unattended work to a live installed machine brain** on this project: startup recovery, prewarm and scheduled wakes skip chats it is not running; its own chats and direct messages still work. Secondary brains do not yield to each other. A chat stamped with an installed brain's socket (its own home's, `~/.ade`'s, `~/.ade-alpha`'s) waits for that brain even while it is down (`isMachineBrainSocket`), because launchd restarts it and it recovers its own chats.
-- **The machine brain takes its chats back.** A send, `messageSession`, `runSessionTurn` or rerun there for a chat another live brain holds asks that brain over its socket to release it (`takeChatRuntimeOrRefuse` → `chat.releaseChatRuntime`, CTO-only), after the request's cheap checks.
-  - One 10 s deadline covers the exchange (`chatRuntimeReleaseClient.ts`); a late answer releases nothing.
-  - The owner stops its agent process like "Restart agent session" (the conversation stays), clears its stamp, and the send runs here.
-  - While a turn, accepted send or background work runs there, it answers `busy` and the send is refused in plain words (`ChatRuntimeBusyElsewhereError`).
-  - A brain that does not answer, or one started by hand at the `agent` role (which may not release), leaves the owner-socket refusal.
-- **A non-owner never re-stamps or releases.** Without a runtime, a persist keeps the owner on disk; teardown or hand-back releases only its own or a dead brain's stamp (`persistedRuntimeOwner`).
-- **A non-owner does not guess.**
-  - Its summary carries `runtimeOwnedElsewhere` instead of `runtimeAlive`.
-  - Turn status reports `BUSY … runs under another ADE brain` (phase `running`).
-  - `chatWaitTargetMatches` never matches such a chat (except a real end), and its wait registry does not fire waiters for callers it does not run.
-  - Its scheduler defers that chat's scheduled work to the owner.
-- **The CLI says which brain it reached.** When a chat result names an owner on another socket, `ade` writes one warning to stderr.
+- **Only the owner drives a chat.** Mutating calls go through
+  `assertChatRuntimeOwnedHere`; elsewhere they throw
+  `ChatRuntimeOwnedElsewhereError` naming the owner's socket
+  (`daex --socket "<owner>" …`).
+- Live ownership crosses DAEX homes; a dead owner's chat can be adopted when its
+  provider account is available here.
+- A secondary brain yields unattended work (recovery, prewarm, wakes) to a live
+  installed machine brain; a chat stamped with an installed brain's socket waits
+  for it (`isMachineBrainSocket`).
+- **The machine brain takes its chats back:** a send there asks the owner to
+  release (`takeChatRuntimeOrRefuse` → `chat.releaseChatRuntime`, 10 s). A busy
+  owner answers `busy` (`ChatRuntimeBusyElsewhereError`).
+- A non-owner never re-stamps or releases, reports `runtimeOwnedElsewhere`, and
+  defers the chat's scheduled work.
 
 ## Caller-injected MCP
 
-An embedder (the DAEX SDK, or `daex chat create --arg-json`) can pass MCP servers at create time, plus a tristate `strictMcpConfig` that withholds the user's own MCP config. The servers merge with DAEX-managed servers (the CTO lease keeps working).
+An embedder (the DAEX SDK, or `daex chat create --arg-json`) can pass MCP
+servers at create time, plus a tristate `strictMcpConfig` that withholds the
+user's own MCP config. They merge with DAEX-managed servers.
+`CALLER_MCP_SUPPORT` in `shared/callerMcpServers.ts` is the source of truth;
+`resolveCallerMcpCapability` reports it as the session's `mcpCapability`
+(`level`, `mechanism`, `residual`, `delivered`, `strictRequested`).
 
-`strictMcpConfig` is a request, not a uniform guarantee:
-
-| Provider | Strict level | Residual under strict |
-|---|---|---|
-| claude | enforced | none for MCP (user rules, commands and output styles still load) |
-| codex | best-effort | Codex plugin servers, which never appear in `config.toml`'s `mcp_servers` |
-| cursor | best-effort | user-layer servers (`~/.cursor`, where DAEX's preToolUse hook lives) |
-| droid | best-effort | tools that appear only after the first session-scoped disable pass |
-| opencode | best-effort | the global OpenCode config directory, still read for auth |
-| pi | unsupported | n/a: create refuses injected servers |
-
-- Absent `strictMcpConfig` loads the user's MCP, except on the lightweight profile every SDK/personal chat uses, which is strict by default. An explicit `false` loads it (an embedder's `loadUserMcpServers: true`).
-- The session carries `mcpCapability` (`level`, `mechanism`, `residual`, `delivered`, `strictRequested`). Read `strictRequested`, then branch on `level`; only `"enforced"` means the caller's servers are the whole MCP surface.
-- `CALLER_MCP_SUPPORT` in `shared/callerMcpServers.ts` is the source of truth. See [DAEX SDK](../sdk/README.md#strict-mcp-honesty).
-- Create refuses an invalid server, a reserved name (`computer_use`, `daex-cto`, and `ade-cto`, its name before the DAEX rename), a transport the provider cannot express (Codex has no SSE client), more than 32 servers, or any injected servers on Pi. An empty `mcpServers` map is omitted, so no capability report is invented.
+- Strict is **enforced only on Claude**; Codex, Cursor, Droid and OpenCode are
+  best-effort with a named residual; Pi refuses injected servers.
+- Absent `strictMcpConfig` loads the user's MCP, except on the lightweight
+  profile (SDK/personal chats), which is strict by default.
+- Create refuses invalid servers, reserved names (`computer_use`, `daex-cto`,
+  `ade-cto`), transports the provider cannot express (Codex has no SSE), more
+  than `MAX_CALLER_MCP_SERVERS`, or any injected servers on Pi.
+- See [DAEX SDK](../sdk/README.md#strict-mcp-honesty).
 
 ## The MCP registry
 
-A user defines MCP servers once in Settings › Integrations › MCP servers, and every ordinary chat gets them at launch beside the provider's own config.
+Servers defined once in Settings › Integrations › MCP servers reach every
+ordinary chat at launch. The list is the account setting `mcp.servers`; names
+can be turned off per device or per repository; secret values live in the
+account vault (`readAccountSecret`). `registryMcpServersForLaunch` resolves
+through `resolveMcpRegistryForLaunch` (`mcpRegistryLaunch.ts`) from the account
+settings cache, so offline launches work. Caller-injected servers win on name
+clashes. See [MCP servers](../onboarding-and-settings/mcp-servers.md).
 
-- The list is the account setting `mcp.servers`. Names can be turned off on one computer (`device.<deviceId>.mcp.off`) or one repository (`mcp.off` in the `repo:<remote>` scope).
-- Secret env and header values live in the account vault and are read at launch (`readAccountSecret`), never in the list.
-- `registryMcpServersForLaunch` (`agentChatService.ts`) resolves through `resolveMcpRegistryForLaunch` (`mcpRegistryLaunch.ts`) from this computer's account settings cache, so a new server reaches the next chat without a restart and offline launches still work.
-- Caller-injected servers win over registry servers of the same name.
-
-See [MCP servers](../onboarding-and-settings/mcp-servers.md) for the page, data and import.
-
-What a chat does not get:
-
-- No registry servers on the light profile (personal chats, side jobs, SDK chats) or with `strictMcpConfig: true`.
-- No registry servers for a provider without `registryMcpSupport` (`shared/callerMcpServers.ts`): Grok, Qwen, Devin. The support list is `CALLER_MCP_SUPPORT` plus Pi (its worker registers them in Pi's MCP support; [Agent Routing › Pi MCP servers](agent-routing.md#pi-mcp-servers)) and Kimi (ACP `session/new`). Copilot gets DAEX's and the registry's servers through the SDK's `mcpServers` ([copilot-sdk-provider.md](copilot-sdk-provider.md)).
-- A server on a transport the provider cannot use is left out with a warning notice (Codex and Pi, SSE).
-- A server whose secret this computer lacks starts without it, with a warning notice naming it.
+- Not on the light profile or with `strictMcpConfig: true`.
+- Only providers with `registryMcpSupport` (`shared/callerMcpServers.ts`) get
+  them: Grok, Qwen and Devin do not. Pi registers them in its worker
+  ([Pi MCP servers](agent-routing.md#pi-mcp-servers)); Kimi and Antigravity via
+  ACP `session/new`; Copilot via the SDK's `mcpServers`.
+- Unusable transports and missing secrets are left out with a warning notice.
 
 ## Caller-supplied permission policy
 
-An embedder can pass a structured `permissionPolicy` at create time: `allowedTools`, `deniedTools`, `autoApproveMcpServers`, `sandboxRoot`, and a required `fallback` of `"ask"` or `"deny"`. `shared/permissionPolicy.ts` normalizes it once; it is persisted on the session and re-read on every tool call, so a chat reopened by key is gated the same way.
+An embedder can pass `permissionPolicy` (`allowedTools`, `deniedTools`,
+`autoApproveMcpServers`, `sandboxRoot`, required `fallback` `"ask" | "deny"`),
+normalized by `shared/permissionPolicy.ts`, persisted, and re-read on every tool
+call. It applies on the personal (SDK) surface only; on a Work chat it is
+ignored and logged once.
 
-- With a policy and no explicit provider permission value, DAEX sets `claudePermissionMode: "default"`, `codexApprovalPolicy: "on-request"` and `codexSandbox: "workspace-write"`, the settings that still raise requests. `bypassPermissions` or `never` would never consult the policy.
-- The policy applies on the personal (SDK) surface only. `permissionPolicy`, `instructions` and `settingSources` sit on the base create args, so the CLI can put one on a Work chat; there it is ignored and logged once, because no Work surface shows a policy.
-
-**Claude.** The policy installs a `canUseTool` gate on the personal path; without a policy there is no gate, tool list or approval event. `Bash` names no path, so the tool rules and then `fallback` decide it; name `Bash` in `allowedTools` for unattended commands.
-
-- The SDK's ask metadata rides on every Claude approval card. `defaultToNo` opens it without a preselected Accept; `defaultToNo` and `suppressAlwaysAllowRule` both omit "Allow for Session".
-- Under `suppressAlwaysAllowRule` the rule would be broader than the action, so the host persists none: `accept_for_session` becomes a one-shot allow, and an earlier session-wide override does not auto-answer the card. Desktop builds controls from the request's options (`claudeApprovalOptionsOfferSession`) and iOS routes option-bearing asks to its question card; a client that still answers with a session choice (a scripted answer, a hard-coded control) gets a one-shot allow.
-- An option-chip client answers `accept` with the chosen value in `answers` (a typed note only in `responseText`), and the host reads the option value as the decision (`claudeApprovalDecisionFromOptionAnswers`): Deny or a typed "deny" declines; Allow for Session persists. This applies only to tool approvals, not `AskUserQuestion` options.
-- For an MCP tool, the ask's `mcpServer: { name, source }` is logged (`agent_chat.claude_tool_approval_mcp_server`), not shown: `source: "sdk"` is a server this host registered through `createSdkMcpServer`; every other source (`user`, `project`, `plugin`, …) is configuration-authored and its name is untrusted.
-- DAEX asks the CLI for a zeroed error result on a known startup failure (`CLAUDE_CODE_STARTUP_FAILURE_RESULTS`); `startup_failure_reason` logs as `agent_chat.claude_startup_failure`.
-
-**Codex.** The sandbox decides first: under `sandbox: workspace-write`, a command or file change inside the thread's `cwd`, `$TMPDIR` or `/tmp` raises no request, so the policy governs only sandbox escapes. With `sandboxRoot`, that root replaces the lane worktree as the containment root the three approval handlers check, and requests inside it are accepted. Without `sandboxRoot`, nothing is auto-accepted and every escape goes to `fallback`. Codex raises no approval for a plain MCP tool call, so the tool fields do not gate MCP there (`permissionCapability.residual` says so).
-
-`PERMISSION_POLICY_SUPPORT` in `shared/hostSessionConfig.ts` is the source of truth. An unanswered approval blocks the turn until answered or interrupted, with no timeout. See [DAEX SDK](../sdk/README.md#permission-policy-and-approvals).
+- With a policy and no explicit provider permission, DAEX uses settings that
+  still raise requests (`claudePermissionMode: "default"`,
+  `codexApprovalPolicy: "on-request"`, `codexSandbox: "workspace-write"`).
+- **Claude:** a `canUseTool` gate; `Bash` names no path, so tool rules then
+  `fallback` decide it. Under `suppressAlwaysAllowRule`, "Allow for session"
+  becomes a one-shot allow.
+- **Codex:** the sandbox decides first; the policy governs only sandbox
+  escapes; `sandboxRoot` replaces the lane as the containment root. Codex raises
+  no approval for plain MCP calls.
+- `PERMISSION_POLICY_SUPPORT` in `shared/hostSessionConfig.ts` is the source of
+  truth. See [DAEX SDK](../sdk/README.md#permission-policy-and-approvals).
 
 ## Durable scheduled work
 
 ### Creating a schedule
 
-Every chat provider runtime and DAEX-tracked provider CLI can create a DAEX-owned schedule with `chat.createScheduledWork`.
+Every chat runtime and tracked provider CLI can create a DAEX-owned schedule
+with `chat.createScheduledWork`: a prompt (≤ 4,000 chars) and exactly one of
+`delaySeconds`, `runAt` (ISO with offset or `Z`) or `cron` (five fields, brain
+machine's local zone; `recurring: false` for one shot). The result carries the
+brain's IANA `timeZone` and `nextRunAt`. Ids are `action:<sessionId>:<uuid>`.
+Chats get the wake through `messageSession({ kind: "wake" })`; tracked CLIs
+through `ptyService.sendToSession` at a verified prompt boundary. Recurring rows
+expire after seven days.
 
-- The prompt is non-empty, at most 4,000 characters.
-- Exactly one timing input:
-
-  | Input | Meaning |
-  |---|---|
-  | `delaySeconds` | A relative one-shot. |
-  | `runAt` | An absolute one-shot: a future ISO 8601 time with `Z` or an offset. |
-  | `cron` | Five fields in the brain machine's local timezone; recurring by default, `recurring: false` for one shot at the next match. |
-
-- The result carries the brain's IANA `timeZone` and the item's absolute ISO `nextRunAt`.
-- The durable id is `action:<sessionId>:<uuid>`, with no provider owner. Chat delivery uses `messageSession({ kind: "wake" })`; tracked CLI delivery uses `ptyService.sendToSession` after a verified composer boundary. DAEX cancels directly, with no provider `CronDelete`.
-- Recurring action schedules have the same seven-day TTL as recurring Claude cron rows.
-
-**Claude SDK chats** can arm `ScheduleWakeup` one-shots, `CronCreate` jobs and `/loop` self-pacing work.
-
-- Claude decides whether the tool succeeded and owns the canonical job id. DAEX's durable mirror decides delivery; the SDK's `CronList` view is advisory.
-- DAEX records a job only after the successful `PostToolUse` hook returns its id, clamped fire time and recurrence. A failed call or a tool-use intent creates nothing.
-- Every successful `CronCreate` is stored with `durable: true`, even without the flag. Claude's own `durable: true` persists the provider copy; DAEX's mirror is an independent delivery guarantee and owns DAEX's controls.
-- `CronCreate` always creates a new job. To replace a watcher, an agent must `CronList` + `CronDelete` the old job first.
+**Claude SDK chats** can also arm `ScheduleWakeup`, `CronCreate` and `/loop`.
+Claude owns the job id; DAEX records a job only after the successful
+`PostToolUse` hook and mirrors it durably as an independent delivery guarantee.
+`CronCreate` always creates a new job.
 
 ### The durable schedule store
 
-The project-scoped store is the SQLite `kv` key `agent-chat:scheduled-work:v1`, so restarts keep the wake boundary. Electron main and headless `daex serve` build the same scheduler. Each record carries:
-
-- the owning DAEX session and the optional exact Claude SDK session that owns provider controls;
-- DAEX and provider schedule ids, provider, kind, full prompt and reason;
-- cron or next fire time, lifecycle and pause state, expiry, last fire, terminal time, late marker.
-
-Claude's Stop/SubagentStop `session_crons` snapshot reconciles the mirror, but DAEX keeps the full prompt from `PostToolUse` instead of the hook's truncated copy.
-
-- A snapshot applies only to its exact provider-session owner: a fresh session's empty snapshot cannot cancel, pause or re-own the previous session's rows.
-- A later snapshot that reports an existing unpaused Claude job by canonical id may adopt that row to the current session.
-- Explicit continuity loss, disposal or lineage replacement quarantines rows whose old owner is unreachable.
+Project-scoped SQLite `kv` key `agent-chat:scheduled-work:v1`
+(`chatScheduledWorkScheduler.ts`), built by both Electron main and `daex serve`.
+Records hold the owning session, provider ids, full prompt, timing, pause state
+and expiry. Claude's Stop-hook `session_crons` snapshot reconciles the mirror,
+but only for its exact provider-session owner, and DAEX keeps the full prompt
+from `PostToolUse`.
 
 ### Firing a schedule
 
-At service start, armed records reload and timers restore.
-
-- An overdue one-shot fires once with `late: true`.
-- An overdue recurring cron runs one catch-up turn, then computes its next occurrence from now; missed intervals are not replayed.
-- Paused schedules stay armed. Work that became overdue during a chat or global pause follows the one-late-fire rule after resume.
-
-**Claude-owned rows** usually fire natively, and `claimNativeFire` claims the mirror. DAEX's own timer is set 90 s later as a backstop for a skipped tick or an unavailable process.
-
-- A native claim needs an explicit SDK cron-task start. An exact provider id claims its row; a task event without an id may claim only the earliest due CronCreate-owned cron, never a `ScheduleWakeup` or loop. Unrelated idle output cannot consume a schedule.
-- A native claim turns any deferred timer into a no-op. If the tick never arrives, a later DAEX retry sends a real `messageSession(kind: "wake")` turn; at expiry the row is cancelled without delivery.
-- Firing at the end of the 90 s grace window is on time (`late: false`); firing beyond grace plus timer tolerance is late.
-
-**Mid-turn.** When a managed schedule comes due while its Claude, Codex, Cursor, Droid or OpenCode session is mid-turn, DAEX keeps the row `scheduled` with its original `fireAt` and fire metadata and retries after 20 s. It never puts the wake in the turn's input queue, whoever created the row, so Claude's native scheduler can still claim it at the turn boundary. Provider-neutral schedules come due at `fireAt` but can deliver late behind a foreground turn or a CLI readiness boundary.
+- On start, an overdue one-shot fires once with `late: true`; an overdue cron
+  runs one catch-up turn (missed intervals are not replayed).
+- Claude-owned rows usually fire natively (`claimNativeFire`, which needs an
+  explicit SDK cron-task start); DAEX's backstop timer is 90 s later.
+- **Mid-turn**, a due row stays `scheduled` and retries every 20 s; it never
+  goes into the turn's input queue.
 
 ### Schedules across brains
 
-Every brain that opens the project (the machine brain, other lanes' dev runtimes, a second `daex serve`) sees the same rows.
-
-- A brain on the machine socket, or a chat's owner, arms its timers.
-- A brain on another socket leaves chats it does not run to a live installed machine brain and does not claim or deliver their wakes. Secondary brains do not yield to each other.
-- To deliver, a brain inserts `agent-chat:scheduled-work:claim:<id>@<fireAt>` into `kv` with `insert or ignore`; only the brain whose insert lands delivers.
-- The others log `agent_chat.scheduled_work_claimed_elsewhere`, settle nothing, and adopt the winner's persisted outcome (a one-shot `fired` or finished, a cron re-armed for its next occurrence), checking every 20 s.
-- A retried delivery, or one whose `fired` write fails, deletes its claim. Claims older than eight days are pruned on the next claim.
-
-**Refused wakes.** If `messageSession` refuses before a turn starts (signed out, dispatch blocked), the occurrence completes with `Not delivered: <reason>`. A disk-pressure refusal releases the claim and retries. A refusal because another brain owns the chat releases the claim for the owner.
+Every brain that opens the project sees the same rows. To deliver, a brain
+inserts `agent-chat:scheduled-work:claim:<id>@<fireAt>` with `insert or ignore`;
+only the winner delivers, the others adopt its outcome. A brain yields chats it
+does not run to the owner or the machine brain. A refused wake (signed out,
+blocked) completes as `Not delivered: <reason>`; disk pressure and ownership
+refusals release the claim.
 
 ### Schedule teardown
 
-Deleting or archiving a chat cancels every schedule it owns.
-
-- **Claude-owned jobs:** DAEX pauses the mirror, sends the chat an exact-id `CronDelete` (or a prompt-exact `CronList` lookup for a current-session wakeup), and waits up to 30 s for the provider hook before archive or delete proceeds.
-- **Manual Cancel** returns at once, saying whether provider cancellation was requested and confirmed; the paused row stays visible until confirmation.
-- If dispatch fails or a destructive operation times out, DAEX restores the pause state and leaves the chat unchanged.
-- If the job belongs to an earlier SDK session Claude no longer exposes, Cancel, archive or delete tombstones the mirror and reports provider cancellation as neither requested nor confirmed. An unreachable owner never blocks chat management.
-
-Explicit dispose, continuity replacement and lane teardown cannot rebind a provider job to another Claude session, so they pause durable provider rows (recoverable in Settings) and cancel local-only work. Reconciliation quarantines a provider job whose owning session ended or disappeared the same way.
-
-Project close and graceful quit end the rows the stopping process owns. A chat at rest ends `completed`. A chat with work in flight (a turn running or awaited, a queued or steered message, an open question or approval, background work it waits on, an owed wake-up) ends `detached`. Either way its schedules stay armed, so restart can late-fire and cold-resume. A `completed` chat is not loaded at the next start until a wake or a send reopens its row. The scheduler's `sessionState`:
-
-| Row | State |
-|---|---|
-| `running`, `detached`, `completed` | `active` |
-| other non-archived terminal | `ended` |
-| archived | `archived` |
-| absent | `missing` |
-
-A tracked provider CLI stays an active target after its process ends, because `sendToSession` resumes it. Before delivery, ended, archived and missing owners are reconciled: local-only work is cancelled, durable provider work is paused.
+Deleting or archiving a chat cancels its schedules. Claude-owned jobs get an
+exact-id `CronDelete` (DAEX waits up to 30 s); an unreachable owner never blocks
+chat management. Continuity loss and lane teardown pause durable provider rows
+(recoverable in Settings) and cancel local-only work. Quit and project close end
+rows as `completed` (at rest) or `detached` (work in flight); schedules stay
+armed for restart.
 
 ### Schedule delivery
 
-DAEX backstop delivery uses the session peer-message path with `kind: "wake"`.
-
-- While a chat has a foreground turn, the row stays armed and retries. At the next safe boundary the service resumes or cold-starts the session and sends a synthetic turn with `metadata.scheduledWake`.
-- Claude's native idle reader is only an advisory fast path and claims a mirrored cron only from an explicit SDK cron-task start.
-- If a race slips past the boundary check, `messageSession` queues the wake as a new turn, never a steer; Codex drains it through its new-turn path, not `steer()`.
-- Tracked provider CLIs need the PTY service's provider-specific composer check plus a short quiet window; output silence alone never proves a boundary. An ended CLI resumes first.
-- Proven pre-delivery failures restore and retry the occurrence; ambiguous partial writes stay consumed to avoid duplicates.
-- Untracked shells are not schedule targets.
-
-Lifecycle and retention:
-
-- One-shot: `scheduled` → `fired` → `completed`; completed wakeups move into Chat Info history.
-- Recurring: records the fire, keeps `lastRunAt`, and returns to `scheduled` with the next time.
-- Durable recurring Claude and action crons expire after seven days.
-- Terminal rows are kept at most seven days and the newest 200. There is no spend cap.
-
-The startup migration removes `cron-tool:<session>:<toolCall>` placeholder rows (no provider job id). Active rows without provider metadata are treated as Claude jobs, paused and kept for explicit cleanup, never fired.
+- During a foreground turn the row retries; at the boundary the session is
+  resumed or cold-started and gets a turn with `metadata.scheduledWake`. A race
+  queues the wake as a new turn, never a steer.
+- Tracked CLIs need the PTY's provider-specific prompt check plus quiet time;
+  an ended CLI resumes first. Untracked shells are not targets.
+- One-shots go `scheduled` → `fired` → `completed`; crons record `lastRunAt`
+  and re-arm. Terminal rows keep ≤ 7 days / newest 200.
 
 ### Schedule controls and summaries
 
-These project the runtime state; they do not own it.
-
-- **Chat Info:** the Schedule header pauses or resumes every schedule in the chat; active DAEX-managed rows have Cancel.
-- **Settings > AI Features:** the project-wide **Pause all scheduled work** toggle (`ai.chat.scheduledWorkPaused`) and the **Active scheduled work** manager, which lists every eligible session's jobs and cancels one. It is a recovery surface.
-- **CLI:**
-
-  | Command | Action |
-  |---|---|
-  | `daex chat scheduled-work create` | `chat.createScheduledWork`. Exactly one of `--in <duration>` (`s`, `m`, `h`, `d`, `w`; the preferred one-shot), `--at <ISO-with-offset-or-Z>`, `--cron "<expr>"` (brain-local, optional `--once`). Requires `--prompt "<text>"`; accepts `--reason`, `--session`. Prints the brain timezone and the next run in local and ISO forms. |
-  | `daex chat scheduled-work list [session]` | `chat.listScheduledWork`; `--all` adds recent history. |
-  | `daex chat scheduled-work cancel <session> <id>` | `chat.cancelScheduledWork`, provider-aware. |
-  | `daex chat scheduled-work pause\|resume <session>` | `chat.setScheduledWorkPaused`. |
-  | `daex chat scheduled-work status <session>` | `chat.getScheduledWorkState`. |
-
-  In a DAEX-launched chat or tracked CLI, create/list/cancel default `sessionId` to `ADE_CHAT_SESSION_ID`. The daemon rejects a bound agent naming another session and an external caller with no bound session. An ended tracked CLI stays a valid target.
-- **Mobile:** the registry advertises non-queueable `chat.createScheduledWork` and `chat.setScheduledWorkPaused`, plus `chat.cancelScheduledWork`. Controllers gate each on the host's descriptors (a host without one stays read-only for it). Create is owner-only; Pause/Resume and Cancel are viewer-allowed.
-- **Session summaries** expose the earliest unpaused `nextWakeAt` and the live provider background-task count. After the foreground turn ends, Work rows show **Working** while background tasks remain, then **Waiting** with an alarm countdown while a wake is armed, and **Done** only with neither. Active chats use `interactionMode` for violet **Planning**; permission flags and CLI text are not plan-mode truth. The optional `scheduledWork` snapshot lets desktop merge KV truth over stale transcript projections.
-- **Accepted sends read Working.** A send the brain accepted shows at once: the message and a `started` turn under the provider's future id, so the row is up while a cold ACP, Muse, Pi, Copilot or OpenCode runtime starts (`showTurnBeforeRuntime`; Claude, Codex, Cursor and Droid start optimistically). A send held before it can show (the cloud-computer sign-in gate) carries `turnAcceptedAt` while the chat stays `idle`. The marker clears on turn start, end or failure, on archive, and after `TURN_ACCEPTED_START_TIMEOUT_MS` (60 s). A later start error still ends that turn; Stop during the start ends it at once.
-- **Account-wide Activity** applies the same facts. The push publisher tracks live background-task ids per run and holds a finished turn at `running` until the last task drains; the sync roster reports such a chat as `running`. It sends `chatActivityMode: "planning"` beside `running` (the push phase list is frozen) and re-reads the summary on a bounded cadence, since no event marks an interaction-mode change.
-- **Woke on schedule.** Every unattended turn starts with a `Woke on schedule` divider. Desktop tracks the last viewed time per session in `localStorage` and offers a dismissible while-you-were-away card above the composer; Review jumps to the first divider row.
+- Chat Info pauses/resumes all of a chat's schedules; DAEX-managed rows have
+  Cancel. Settings › AI Features has **Pause all scheduled work**
+  (`ai.chat.scheduledWorkPaused`) and an **Active scheduled work** manager.
+- CLI: `daex chat scheduled-work create|list|cancel|pause|resume|status`
+  (`--in`, `--at`, `--cron [--once]`, `--prompt`). Inside a DAEX chat or tracked
+  CLI, `sessionId` defaults to `ADE_CHAT_SESSION_ID`; a bound agent cannot name
+  another session.
+- Mobile: `chat.createScheduledWork` (owner-only), `setScheduledWorkPaused` and
+  `cancelScheduledWork`, each gated on host descriptors.
+- Session summaries carry `nextWakeAt` and the live background-task count: Work
+  rows read **Working** while background tasks run, **Waiting** with a countdown
+  while a wake is armed, **Done** with neither.
+- **Accepted sends read Working** at once (`showTurnBeforeRuntime` for cold
+  ACP, Muse, Pi, Copilot and OpenCode runtimes); a held send carries
+  `turnAcceptedAt` (cleared after `TURN_ACCEPTED_START_TIMEOUT_MS`, 60 s).
+- Every unattended turn starts with a `Woke on schedule` divider.
 
 ### Auto-resume after a usage limit
 
-DAEX creates one kind of schedule on the user's behalf. When a turn dies at a provider usage or rate limit and the provider published a reset instant, `chatAutoResumeCoordinator` arms a durable one-shot at reset + 90 s (providers report the boundary to the minute at best) whose prompt asks the agent to continue without redoing finished work.
+When a turn dies at a usage limit and the provider published a reset (only
+Claude's plan-quota snapshot and Codex's `account/rateLimits`),
+`chatAutoResumeCoordinator.ts` arms a one-shot at reset + 90 s
+(`source: "auto_resume_limit"`, id `auto-resume:<sessionId>`). Others show
+`no_reset`.
 
-- Only Claude's plan-quota snapshot and Codex's `account/rateLimits` publish a reset. Every other provider, and Claude or Codex with an empty snapshot, arms nothing and shows `no_reset` (`Usage limit reached · <provider>`).
-- The row is ordinary scheduled work: it survives restarts, shows in Chat Info, cancels through `chat.cancelScheduledWork`, and obeys the boundary rule (due during a live turn means retry).
-- **The limit holds the queue.** Messages queued behind the limited turn (and the comments riding them) move to `usageLimitHeldSteers`, persisted, and are neither cancelled nor sent into the limited account. The next turn that starts sends them in order; OpenCode and Copilot take them only after that turn's own prompt reached the provider, on the runtime that sent it, and a Stop that clears the queue clears them too. A lane-share guest's message is checked against the share once, as it starts. A switch to another model (`updateSession`) or account clears the hold and the resume and sends the queue after 0.75 s (or the continue prompt when nothing was queued and auto-continue is on); a level picked for the old model is dropped from the held messages. A move that falls back to a new chat takes the queue there, behind the continuation prompt. Closing the chat cancels it.
-- **Claude uses the same row.** `autoContinueAtUsageLimit` is a Claude Settings key, not a query option, so DAEX does not send it; the session flag is DAEX's own opt-out. The arm is awaited (`autoResume.whenArmed`) before `resetClaudeQuerySession`.
-- **Limits come only from structured provider signals:**
-  1. an SDK `rate_limit_event` with a rejected status;
-  2. result-frame errors matching the SDK's `USAGE_LIMIT_ERROR_PREFIXES` or DAEX's session-quota regex;
-  3. for a Claude account set to **Extra usage: Stop the turn**, an `allowed` `rate_limit_event` with `isUsingOverage` or `overageInUse`; DAEX interrupts the turn, cancels its queued messages and ends it like a rejected quota.
-
-  Assistant text is never scanned, so an agent that quotes a limit message does not trigger anything.
-- **Stale state heals.** On hydration (after the scheduler reads its rows) and at the next turn start, a chat with a park instant or live quota card but no armed row, no live quota snapshot and no stored `usageLimitResume` has the park cleared, the card dismissed and its resume state set to null. A false FAILED status is superseded by the next completed turn (`clearLastTurnFailed`).
-
-**One state field.** `AgentChatSessionSummary.usageLimitResume` is the only source every client (desktop, web, iOS, `sessionStatusPresentation`) renders the resume pill from:
-
-| State | Meaning |
-|---|---|
-| `armed` | A row exists, firing at `fireAt`. |
-| `resuming` | The row is due and waits for the turn boundary (derived from `fireAt` at read time). |
-| `paused` | Two arms hit the limit again. |
-| `opted_out` | Don't continue while a limit is live. |
-| `no_reset` | A live limit with no published reset. |
-| absent / null | No live limit. |
-
-It rides the session summary, the iOS/web projection and a transient `session_meta_updated` on every transition. `usageLimitParkedUntil` is a deprecated mirror of `fireAt` for iOS builds that read only that field (set for `armed` and `resuming`).
-
-**Actions (all in the `chat.*` daemon domain):**
-
-| Action | Call | Effect |
-|---|---|---|
-| Don't continue | `chat.updateSession {autoContinueAtUsageLimit: false}` | Cancels the row; state `opted_out`. |
-| Turn on / Try again | the same with `true` | Resets the streak and arms against the known reset, or reports `no_reset`. |
-| Resume now | `chat.resumeUsageLimitNow {sessionId}` (IPC `ade.agentChat.resumeUsageLimitNow`) | Cancels the row, resets the streak, dismisses the quota card, sends the continue prompt as a user turn with `metadata.usageLimitResume: "manual"`. |
-| Continue on | `chat.continueUsageLimitOnAlternate` (also the iOS sheet) | Moves the chat to `alternateAccount` (below). |
-| Fork | the quota card's `fork-local` | A new chat. |
-
-- Resume now refuses without a live limit (`{ok: false, reason: "no_live_usage_limit"}`) or while the row is delivering (`reason: "resume_in_flight"`). Refusals change nothing and carry a ready-to-render `message`.
-- Resume now awaits the row's cancel before dispatch. A dispatch that throws or is refused downstream (disk pressure) restores `usageLimitResume`, its mirror and the `auto-resume:<sessionId>` row, unless the user opted out or the chat stopped being schedulable meanwhile. A failed re-arm reports `no_reset`, never `armed` without a row.
-- `chat.getSessionSummary` reports the brain's IANA `timeZone`, like `chat.createScheduledWork`.
-
-**Another account.** When another signed-in Claude or Codex account has room, the state carries `alternateAccount` (`instanceId`, `label`). The automatic rescue (Smart balance on) and **Continue on** move the chat in place: the runtime stops, the provider thread file is copied to the other account's config home, and the task continues as the next turn with a `Continuing on <account>` notice, cancelling the source auto-resume.
-
-- If the thread cannot move (no provider thread yet, or the copy fails), DAEX starts a new chat in the same lane with a continuation prompt, and the original stops waiting. That chat does not auto-hop again.
-- A subagent is never offered the move. Both actions are owner-only. A press during a running turn or open approval is refused.
-- Refusals: `no_live_usage_limit`, `no_alternate_account`, `handoff_in_flight`, `handoff_failed`, each with a `message`.
-
-Rules for the schedule itself:
-
-- **The tag scopes the sweep.** The row has `source: "auto_resume_limit"` and id `auto-resume:<sessionId>`.
-  - A repeat failure reuses the row; with an unchanged reset it reuses it as it stands (no upsert, transition or timer).
-  - A PAUSED row is skipped: nothing is written and the chat reports `no_reset` (no fire time or id, provider detail kept), so the pill offers Retry. Un-pausing publishes `armed` from the row's time.
-  - The cancel-on-user-activity sweep finds only this row, never a user's or agent's cron, wakeup or `/loop`. It fires at both dispatch commit points (the send and the accepted steer branch), covering send, steer, wake queue, continuity capsule and headless `runSessionTurn`. A message refused upstream leaves the resume armed.
-  - Exempt senders: a send with `scheduledWake` (a fired resume must not cancel itself), and Resume now's `metadata.usageLimitResume: "manual"` prompt (it already cancelled; a second sweep would move the epoch it captured and break its restore).
-  - The renderer strips `scheduledWake` from replayed metadata on a user-initiated retry, so the retry cancels the schedule as its notice promises.
-- **Two arms, then stop.** The visible reset may not be the rejecting limit (Claude's session-scoped snapshot can carry a stale `resetsAtMs`), so after two arms against distinct resets the chat posts `Paused after 2 tries`. A resume that runs without hitting the limit resets the streak.
-- **Transcript notices.** All outcomes are `system_notice` rows with `noticeKind: "rate_limit"`, attributed to the failed turn: `Resumes at 7:31 PM ET` (armed), `Resumed after usage limit` (fired), `Paused after 2 tries`. The host writes times in its zone with a label, because every client reads the same line; the pill and sheet format `fireAt` in the viewer's zone. The live schedule is one pill above the composer, on the newest usage-limit failure only. The quota card stays the transcript evidence and fork entry point, without schedule controls.
+- **The limit holds the queue:** messages queued behind the limited turn move to
+  `usageLimitHeldSteers` (persisted) and go with the next turn. A model or
+  account switch clears the hold and sends the queue.
+- **Limits come only from structured signals** (`rate_limit_event`, result
+  error prefixes, Claude "Extra usage: Stop the turn" overage). Assistant text is
+  never scanned.
+- Stale park state heals on hydration and at the next turn start.
+- **One state field:** `AgentChatSessionSummary.usageLimitResume` (`armed`,
+  `resuming`, `paused`, `opted_out`, `no_reset`, or absent) drives every client.
+  `usageLimitParkedUntil` is a deprecated mirror for old iOS builds.
+- Actions (`chat.*`): `updateSession {autoContinueAtUsageLimit}`,
+  `resumeUsageLimitNow` (refuses `no_live_usage_limit` / `resume_in_flight`;
+  restores the row if dispatch fails), `continueUsageLimitOnAlternate`.
+- **Another account:** with `alternateAccount` set (another signed-in Claude or
+  Codex account with room), Continue on (or Smart balance) copies the provider
+  thread to that account's config home (`providerThreadMove.ts`) and continues
+  in place; if the thread cannot move, a new chat in the same lane continues.
+  Never offered to subagents.
+- User activity cancels only this row (sweep at both dispatch commit points),
+  never a user's cron. After two arms against distinct resets: `Paused after 2
+  tries`.
 
 ### Goals
 
-A goal keeps the agent working across turns until a condition holds.
-
 | Provider | Mechanism |
 |---|---|
-| Codex | The app-server's `thread/goal/*` API. Card has Edit, Pause/Resume, Clear. |
-| Claude | Claude Code's `/goal <condition>`, cleared with `/goal clear`; no pause. Claude reports state only through `active_goal` messages after its Stop-hook check and does not always send them, so DAEX tracks the goal itself (`applyClaudeActiveGoal` still takes the messages). |
+| Codex | App-server `thread/goal/*` (Edit, Pause/Resume, Clear). |
+| Claude | `/goal <condition>` / `/goal clear`; DAEX tracks it (`noteClaudeGoalCommand`, `settleClaudeGoalOnTurnEnd`) because `active_goal` messages are unreliable. |
+| Copilot | Autopilot goals ([Copilot doc](copilot-sdk-provider.md#goals-goal)). |
 
-- `noteClaudeGoalCommand` records the goal when `/goal <condition>` is sent and clears it on `/goal clear` (or stop/off/reset/none/cancel), so it shows during the first turn.
-- `settleClaudeGoalOnTurnEnd`: the Stop hook holds a turn open until the goal is met, so a completed turn with a goal set met it and DAEX clears it. An interrupted or failed turn keeps it; a bare `/goal` turn only showed it.
-- **Desktop goal section.** Shown only while a goal is set, as the first section of the actions drawer (`ChatSubagentsPanel` → `GoalCard`), laid out like Tasks and Schedule: a "Goal" header with the check count, the condition and the last check reason. A Claude goal has Edit (inline; Enter saves, Esc cancels) and Clear on hover; both send `/goal …` and are disabled mid-turn.
-- **iOS goal chip.** A small "Goal" chip with the target icon above the composer opens details and controls.
-- **Setting one.** Type `/goal …`, or use **Set goal…** in the command palette (Claude and Codex).
-- **Work rows.** `projectActiveGoal` sets `activeGoal` on the row, which shows a goal glyph with the objective in the hover card.
-- **Alert.** When a Codex goal turns `complete` or `blocked`, or a Claude goal is met (not cleared), the chat records a "Goal reached: …" / "Goal blocked: …" notice with status `goal_reached` / `goal_blocked`. The push publisher alerts a paired phone (objective kept off the lock screen); an in-process desktop host (`onGoalEnded`) raises an OS notification that opens the chat, unless a DAEX window is focused.
+The goal shows first in the actions drawer and as a Work-row glyph. Reached or
+blocked goals post `goal_reached` / `goal_blocked` notices, a phone push and an
+OS notification.
 
 ### Waits
 
-- **`daex chat wait <session> --for …`** asks the brain (`chat.waitFor`), which re-checks the summary on every chat event, in long-polls of at most 25 s that the CLI repeats until its timeout. A brain without the action is polled every 2 s.
-  - `chatWaitTargetMatches` (`shared/chatWait.ts`) is shared by both sides. A chat another live brain runs never matches here ([One brain per chat](#one-brain-per-chat)).
-  - A wait for `idle`, `active` or `terminal` on a chat that waits on a user-only card (`chatWaitsOnUser`: `pendingInputUserOnly`) stops at once: the long-poll answers `waitingOnUser` and the CLI exits 1 with `error: "waiting_on_user"`.
-- **Durable waits** (`chat.armWait`, `daex chat wait <ids…> --async [--any]`, the CTO tool `waitForChats`) return at once. When all (or any) targets reach the state, DAEX wakes the caller with one line per chat (title, status, note); after the timeout (24 h default) it wakes the caller with their current state.
-  - A deleted target counts as idle or terminal, never active or awaiting input. A failed summary read counts as "not yet". A plain shell cannot be waited on.
-  - Waiters persist in `agent-chat:waiters:v1`, re-arm on start, and re-check on target events with a 15 s backstop. Checks run one at a time, so a waiter fires once and a waiter cancelled mid-check never fires.
-  - A target waiting on a user-only card is reported to the caller once per card (`userWaitsNoticed`, persisted) while the waiter stays armed. This also applies to `daex chat send <B> --after <A>` when the sender runs on A's brain (a cross-machine sender is not woken; its prompt still goes when the card is answered). A caller's own subagent is skipped, since the subagent relay already told it (`callerToldOfUserWait`). A peer never wakes its parent, so this is how a coordinator hears it.
-  - A session-bound agent's wake wait can only wake its own chat.
-  - `main/services/chat/chatWaitRegistry.ts` owns waits. Manage them with `chat.listWaits` / `daex chat waits` and `chat.cancelWait` / `daex chat wait --cancel <id>`.
-- **Start B after A.** `daex chat send <B> --after <A>[,<A2>] "<prompt>"` arms a waiter with a `send` action: once every named chat is idle, B receives the prompt as a wake (a new turn if idle, queued at its boundary if not).
-- **Long MCP calls and subagents in Claude chats** move to the Background list after two minutes (`CLAUDE_AUTO_BACKGROUND_TASKS`) with a Stop button, and the agent wakes when they finish. `mcp_task` maps to `background`. Automation-launched and lightweight chats stay in the foreground, and DAEX's own tool server opts out because its tools can wait on a person.
-- **Waiting on background work** (`chat.holdBackgroundWork`, `daex chat wait --background [--job <id>]`) is the agent's call, with no UI.
-  - A chat with live background work shows **Background work ×N** on its Work row (desktop, iOS), and `daex chat status` reports `◐ WAITING on N background jobs` (`phase: "waiting"`), exiting 0 like `running`.
-  - Watch-only monitors do not count: a chat whose only live work is a monitor reads `idle` there and **Monitoring** on its row.
-  - Both read the summary's counts (`backgroundWork.workingCount`), with no extra polling.
-  - Claude and OpenCode wake their agent when a job finishes, so the action only says so. Codex does not, so DAEX re-reads the held terminals every 15 s and wakes the agent with the commands that ended.
+- `daex chat wait <session> --for …` long-polls `chat.waitFor` (≤ 25 s per poll;
+  `chatWaitTargetMatches` in `shared/chatWait.ts`). A chat waiting on a
+  user-only card answers `waitingOnUser` (exit 1).
+- **Durable waits** (`chat.armWait`, `daex chat wait <ids…> --async [--any]`,
+  CTO `waitForChats`) wake the caller when targets reach the state or after the
+  timeout (24 h default). Persisted in `agent-chat:waiters:v1`
+  (`chatWaitRegistry.ts`). A target waiting on the user is reported once per
+  card. `daex chat waits`, `daex chat wait --cancel <id>`.
+- `daex chat send <B> --after <A>` sends B's prompt once A is idle.
+- Long Claude MCP calls and subagents move to Background after 2 min
+  (`CLAUDE_AUTO_BACKGROUND_TASKS`) and wake the agent when done.
+- `chat.holdBackgroundWork` / `daex chat wait --background`: rows show
+  **Background work ×N**; `daex chat status` reports `WAITING`. Claude and
+  OpenCode wake their agent themselves; for Codex DAEX re-reads held terminals
+  every 15 s.
 
 ### Restart agent session
 
-**Restart agent session** stops the chat's provider process and keeps the conversation. The next message starts a fresh process on the same provider thread, which picks up skills, plugins, MCP servers and project instructions added since the chat started.
-
-Entry points: the session right-click menu, the command palette (chat in front), `daex chat restart [<session>] [--stop | --after-turn]`, the `chat.restartSession` action and the sync remote command of that name.
-
-- **Self-restart.** A bare `daex chat restart` from an agent defaults to `$ADE_CHAT_SESSION_ID` and always sends `afterTurn`, never `stopFirst` (stopping would cut off the call). During a turn the action records `restartAfterTurn`, posts "The agent session restarts when this turn ends" and returns `scheduled: true`. It runs at the next turn end that leaves the chat idle (the hook is in `setSessionIdle`, with `done` as a backstop); a queued message that starts the next turn makes it wait for that turn.
-- `restartSession` is a mesh action like interrupt and stop: a session-bound agent may aim it at any chat (`CHAT_ACTION_SCOPE` in `adeRpcServer.ts`).
-- Teardown uses the `restart` reason, which keeps the provider resume pointer like an idle eviction (Claude session id, Codex thread id, OpenCode/ACP session id, Cursor agent id, Pi session).
-- A running turn is never stopped silently: the action refuses without `stopFirst`, and the desktop asks "Stop the turn and restart?".
-- Background work the process owned ends with it. The result, the toast and a chat notice name the stopped jobs. A chat that ended its turn to wait on that work gets one automatic turn to re-run it ([Background work lost with the agent process](#background-work-lost-with-the-agent-process)).
-- With no runtime running, the next message starts one either way.
+Stops the provider process and keeps the conversation; the next message starts
+a fresh process on the same thread (picking up new skills, MCP and
+instructions). Entry points: session menu, palette, `daex chat restart
+[<session>] [--stop | --after-turn]`, `chat.restartSession`. An agent's bare
+`daex chat restart` restarts its own chat after the turn. A running turn is
+never stopped silently. Lost background work is reported (below).
 
 ### Background work lost with the agent process
 
-Background subagents, workflows and shells (`run_in_background`) live inside the provider process and report only into it. When the process ends they end too, and a chat waiting on them would wait forever.
+Background subagents, workflows and shells live inside the provider process.
 
-**Spared first.** DAEX does not end a Claude process for its own convenience while it runs background work that somebody waits on (`claudeHasAwaitedBackgroundWorkload`: agents, workflows, shells; a watch-only monitor does not count):
-
-- The idle sweep, warm-runtime budget and compact-first skip it (until the 3 h silence backstop).
-- The compaction-settings refresh waits; a caller-MCP replacement queues (`callerMcpReplacementMustWait`).
-- A fast-mode change the live query refuses (from Settings, `updateSession` or a send) stays armed as `pendingSessionReset` (`claudeQueryResetMustWait`).
-- A reasoning-effort change goes to the live query first (`applyClaudeReasoningEffortLive`: `applyFlagSettings({ effortLevel, ultracode })`), which applies it at the next model request, mid-turn too. Only if that fails is the reset deferred.
-
-A deferred reset (any kind, permission mode included) applies on the first turn after the work is gone, at the send (`flushClaudePendingSessionReset`) or at a turn end. Until then the old setting holds, and the summary's `pendingSettingsAfterBackground` (`reasoningEffort` / `fastMode`) says so: a neutral "Fast mode pending" / "Settings pending" chip in the composer strip, and a `pending` row in `daex chat status`. Every query reset clears it. When a reset or replacement ends a monitor, the chat gets the loss notice and next-turn note with no wake.
-
-**Effort change chip (every provider).** The summary's `reasoningEffortChange` (`{ current, next, appliesAfter: "turn" | "background" }`, `managedReasoningEffortChange`) names an effort the running work has not taken yet.
-
-- Other providers take effort per turn: `setSessionActive` records the turn's effort (`turnReasoningEffort`, corrected by `recordTurnReasoningEffort` when a turn went active before its send applied the effort), and a mid-turn change, a steer included, reaches the next turn.
-- Claude applies a send's or steer's effort to the live query (`applyClaudeReasoningEffortChange`, which drops a result overtaken by a reset, new runtime or newer change) and reports a change only while a deferred effort reset holds (`pendingResetRunningEffort`).
-- It clears when the turn ends (stopped or interrupted too), unless Claude background work holds the reset, and when a live change lands.
-- Desktop: "High now · Medium next turn" (or "after background work"); iOS: "High → Medium"; `daex chat status`: an `effort` row.
-- The host lists `reasoningEffort` in `pendingSettingsAfterBackground` only while `reasoningEffortChange` names it. Clients that read the field drop their "Effort pending" chip then (`settingsHeldBesideEffortChange`) and keep it from a host without the field.
-
-**Told when it is lost anyway.** For Claude, every path that ends the process (`teardownRuntime` for model switch, caller-MCP replacement, account move, settings restart, `restartSession`, close, shutdown, eviction; `resetClaudeQuerySession`; the idle reader seeing the exit) reads what still ran (`collectClaudeLostBackgroundWork`) before rows settle, and `reportLostBackgroundWork`:
-
-- adds a warning notice naming the jobs and what happens next;
-- merges a note (`buildBackgroundWorkLostNote`) into the persisted `pendingRestartNote`, so the next prompt tells the agent what stopped;
-- wakes the chat with `BACKGROUND_WORK_LOST_RESUME_PROMPT` (`hostContinuation.reason: "background_work_lost"`) when the turn had ended, the chat waited on non-monitor work, and the cause was a reconfigure, the process exiting on its own, or a named restart. The wake waits a tick and is skipped if a turn started. One wake per chain (`backgroundLossWakeState`): later losses merge into the note, a second restart does not stack, and work the wake turn started never earns another. A teardown on the send path (a fallen-back launch route, a pending profile restart) reports without a wake;
-- on shutdown or project close, records the wake (`backgroundLossWakePending`, persisted) for restart recovery.
-
-A user stop, closed chat, eviction or query reset only tells (notice plus note, no turn). Other providers keep their own notices (OpenCode stops its shells and children on teardown; Codex reports through its held-terminal wake).
+- **Spared first:** DAEX does not end a Claude process that runs awaited
+  background work (`claudeHasAwaitedBackgroundWorkload`) for idle sweeps,
+  budgets or settings changes; resets wait (`pendingSessionReset`) and the
+  summary's `pendingSettingsAfterBackground` shows "Settings pending". Effort
+  changes go to the live query first (`applyClaudeReasoningEffortLive`).
+- `reasoningEffortChange` (`{ current, next, appliesAfter }`) shows an effort
+  the running work has not taken yet, for every provider.
+- **Told when lost anyway:** every Claude path that ends the process runs
+  `reportLostBackgroundWork`: a warning notice, a note for the next prompt
+  (`pendingRestartNote`), and one wake (`BACKGROUND_WORK_LOST_RESUME_PROMPT`)
+  when the chat had ended its turn waiting on that work. User stops only tell.
 
 ### Continue chats after restarts
 
-When DAEX restarts during a running turn (a crash, force quit, reboot or accepted update), the turn is lost but the chat can continue. **Continue chats after restarts** (Settings → Chat › Restarts, on by default) is one value per machine, because each brain decides its own resumes.
+**Continue chats after restarts** (Settings → Chat › Restarts, default on) is a
+per-machine value in `~/.ade/continue-after-restart.json`
+(`continueAfterRestartStore.ts`; `ai.getContinueAfterRestart` /
+`ai.setContinueAfterRestart` with the machine's pin). `continueAfterRestartHold`
+decides for every restart kind.
 
-- It lives in `~/.ade/continue-after-restart.json` (`apps/ade-cli/src/services/runtime/continueAfterRestartStore.ts`), read and set through the machine's pin (`ai.getContinueAfterRestart` / `ai.setContinueAfterRestart`).
-- Without the file, the first read takes the per-project `ai.chat.continueAfterRestart` once: off when any project turned it off, else on.
-- One rule (`continueAfterRestartHold`) decides for every kind of restart, and the update dialog shows its answer per chat.
-
-**Chats:**
-
-- `recoverDetachedChatAfterRestart` closes the orphaned turn and arms one durable "continue" row (`armRestartResume`, `RESTART_RESUME_PROMPT`), with the same deterministic id and `update_restart` tag as an update resume, so nothing is armed twice. Typing into the chat cancels it.
-- Archived chats stay asleep. A settled chat resumes (the resumed turn unsettles it).
-- A chat whose turn had ended, or that the user stopped, is not resumed, unless it waited on background work the restart or shutdown stopped (non-monitor work in `collectRestartCancelledWork`, or `backgroundLossWakePending`). That chat gets a notice and the same row with `BACKGROUND_WORK_LOST_RESUME_PROMPT`.
-- Only recent chats are continued or woken (`RESTART_RESUME_MAX_AGE_MS`, 6 h). A cut-off turn counts by its row's end time (none counts as now). A chat at rest must also have gone quiet within that window, by its idle time or its last `done`, so a chat untouched for days is not woken when its project opens.
-- **An accepted update continues each chat at work** (`armUpdateResume`, `UPDATE_RESUME_PROMPT`). DAEX reopens and arms a chat row an earlier process left `failed`. A `disposed` chat, or one that ended in this launch, is reported `settled` with `not_schedulable` and not asked about again. An unarmed chat stays owed; the desktop retries at 15 s, 60 s, 3 min and 10 min (`UPDATE_RESUME_RETRY_DELAYS_MS`, `apps/desktop/src/main/main.ts`), then waits for the next launch.
-
-**Tracked agent CLIs** (Claude Code, Codex, … in a terminal) follow the same setting (`reopenCliSessionsAfterRestart`, store in `apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`). Two sources:
-
-- **A stop on purpose** (an update, a reboot, the brain quitting): `ptyService.disposeAll({ reopenAfterRestart: true })` saves open CLIs to `.ade/cache/reopen-cli-after-restart.<pid>.json`, marking one still printing away from its prompt as mid-turn. Per-pid files keep two runtimes from overwriting each other; the next runtime claims each with a rename. A brain told to stop writes this list first, with its chats at work, and opens those projects at its next start. A stop for good continues nothing, and a Devin CLI never reopens ([work in flight across a brain stop](../storage-and-recovery/README.md#work-in-flight-across-a-brain-stop)).
-- **A crash, force quit, kill or power loss** writes nothing. The next runtime reads session rows (`findCliSessionsCutOffByCrash`): tracked agent CLI rows, `running` or `detached`, whose owner is in this computer's `runtime_processes` (never synced), is not this process and no longer runs; another machine's rows never qualify. "Recent" is the dead owner's last heartbeat. Mid-turn comes from `.ade/cache/cli-reopen/turns.<pid>.json`, kept from the CLI's exact turn signal (Claude Code hooks, Codex OSC); a guessed turn reopens at the prompt.
-
-Reopen rules:
-
-- The planned list wins; its ids leave the crash list.
-- Each reopen first takes one claim per session and dead owner (`.ade/cache/cli-reopen/<session>.<owner>.claim`, `wx`), so nothing reopens twice and a stop mid-reopen leaves the rest for the next start.
-- After unclean stops a session reopens at most `MAX_CONSECUTIVE_RESTART_RESUMES` times in a row (`.ade/cache/cli-reopen/<session>.json`, written before the reopen); a planned stop or a manual resume resets the count.
-- A brain in a restart loop (`brainStartIsInRestartLoop`, from `brain-starts.json`) reopens nothing. With the setting off or in a loop, crash candidates are claimed and stay closed.
-- A CLI reopens at its prompt (`ptyService.resumeSession`), then gets the durable restart row once at its prompt, naming why DAEX restarted (cause from `brainRestartCause.ts`). A mid-turn CLI is told to continue; any other is told its work or background agents stopped and, if idle, to answer in one short line (DAEX's "was it working" signal misses a CLI waiting on background agents). No row goes to a CLI waiting on the user's answer or whose runtime stopped for good (`stoppedForGood`). Both wordings count toward the chat restart streak. The cost is one short turn per reopened idle CLI per restart.
-- Every reopened CLI shows one line in its terminal for every viewer (`ptyService.showSessionNotice`, `cliReopenedNotice`): the cause and "reopened this session", plus "during a turn … tells the agent to continue" (logged as `continued`) or "tells the agent what happened" (`informed`).
-- Skipped: archived CLIs, ones already open, ones another runtime owns, stops older than 6 h. Removing a project deletes its lists and crash state.
-- Logs: `agent_chat.cli_reopened_after_restart`, `agent_chat.cli_reopen_skipped` (counts only). A brain that reopens CLIs reports `cliSessionsReopen: true` in `runtime.updateImpact`, and the update dialog says so.
-
-**Entry points.** Every entry goes through `runRestartRecoveryIfPending`, which holds the guards (not recovered yet in this process, no runtime here, not deleted, `chatAutoAdoptable`: owner gone, not yielding to the machine brain, account known here) and logs failures per entry. Whichever reaches the chat first:
-
-- **The stale-run sweep**, about 5 s after start then every minute, closes rows a dead process left running in a chat with no runtime here and runs recovery. This recovers untouched chats, without waiting for `detached` (a headless brain's dead `runtime_processes` row is gone, so the startup rescan never sees its pid).
-- **Load and the startup pass**, for rows already `detached` (the last 6 hours, at most 25 chats).
-- **A turn start** (`prepareSendMessage`: a message, wake or scheduled work) on a chat that is `detached` or stamped by a gone brain. The notices and note land ("the agent is told on this turn") and this turn carries the note; nothing is armed.
-
-**After a crash the brain does not wait for a request.**
-
-- Each brain keeps a run record (`runtime/brain-run/<endpoint>.json`, `brainUnplannedRestart.ts`). The next brain calls its start an unplanned restart only when the record is not marked stopped, its pid is gone, it started after this boot and ran the same build. An orderly stop, a forced stop by another DAEX process, an update or a reboot does not count. A brain an app started takes the record without one of its own, so a crash is reported once.
-- Rows of the dead brain close at once (`listDeadProcessIdentities` → `reconcileStaleRunningSessions` `deadOwnerIdentities`, skipping the fresh-activity grace). A run with the new brain's own pid that started before its process is dead too (a restarted container, such as a DAEX Cloud computer, reuses the pid).
-- Projects with a running turn are listed in `runtime/live-turns/<endpoint>.<pid>.json` (`liveTurnProjects.ts`). The next brain claims each file by rename and opens only those projects, one at a time. Unopened ones stay in its `<endpoint>.<pid>.pending.json`, and the project being opened during a second crash is skipped, so one project cannot crash every brain. In a restart loop or with the setting off, the files are claimed and nothing opens.
-- `getRuntimeStatus.lastUnplannedRestart` (`{ts, chats, cliSessions}`, counted for 10 minutes) feeds one dismissible `BrainRestartNotice` per restart (local brain only). In the chat, a restart resume is one quiet line with its time, with no wake divider, "late" mark or "Scheduled wake-up" bubble, in every transcript.
-
-**Reporting.**
-
-- Rows the sweep leaves running on purpose (a live delegate: a child chat or tracked CLI child, per `staleRunSweep.liveDelegateRowIds`) are not reported lost.
-- `collectRestartCancelledWork` counts rows closed after the last finished turn with a restart `stopReason` ("the DAEX brain restarted" or "another DAEX brain took over this chat"), whatever summary the sweep gave. Agents are named by their `subagent_started` description. Reported ids are persisted (`reportedRestartLossIds`), so a later restart before the next finished turn does not report or wake again.
-- The notice says "The agent picks up where it stopped" with the setting on, "retry or continue when ready" with it off.
-- Whether or not the chat resumes, the model learns what the restart did: background commands, monitors, native subagents and workflows still shown running (not spawned DAEX chats, which survive) go into a one-time note (`buildRestartNote`, at most 10 named). It is persisted as `pendingRestartNote` and prefixed to the next provider prompt by `consumePendingTurnContextPrefix`, once, to the model only. A provider slash command does not consume it; a Cursor turn recycled before it lands re-stages it. Lost background work and DAEX Cloud's memory guard (`reportCloudMemoryKill`, see [DAEX Cloud](../ade-cloud/README.md)) use the same channel. So does `queueAgentNote({ sessionId, note })`, for a note from outside the chat service: DAEX Cloud's yes to an agent's size request, and an approval card that closed unanswered when the computer stopped or moved. Both it and the memory guard write through `queueNoteForNextTurn`, which adds the "DAEX note:" prefix; callers pass plain text.
+- **Chats:** `recoverDetachedChatAfterRestart` closes the orphaned turn and arms
+  one durable continue row (`armRestartResume`). Only chats active within 6 h
+  (`RESTART_RESUME_MAX_AGE_MS`); archived chats stay asleep; a chat at rest
+  resumes only if the restart stopped background work it waited on.
+- **Updates:** `armUpdateResume` continues each chat at work; the desktop
+  retries unarmed chats at 15 s, 60 s, 3 min, 10 min.
+- **Tracked agent CLIs** (`cliReopenAfterRestart.ts`): a planned stop saves open
+  CLIs to `.ade/cache/reopen-cli-after-restart.<pid>.json`; a crash is
+  reconstructed from session rows of dead owners
+  (`findCliSessionsCutOffByCrash`). Each reopen claims once per session and
+  owner, at most `MAX_CONSECUTIVE_RESTART_RESUMES` in a row, none in a restart
+  loop. A reopened CLI resumes at its prompt and gets one restart row.
+- Entry points all go through `runRestartRecoveryIfPending`: the stale-run sweep
+  (5 s after start, then every minute), load/startup for `detached` rows, and a
+  turn start.
+- **After a crash:** each brain keeps a run record
+  (`runtime/brain-run/<endpoint>.json`, `brainUnplannedRestart.ts`); projects
+  with a running turn are listed in `runtime/live-turns/`
+  (`liveTurnProjects.ts`) and reopened one at a time.
+  `getRuntimeStatus.lastUnplannedRestart` feeds `BrainRestartNotice`.
+- The model always learns what the restart stopped through a one-time note
+  (`buildRestartNote`, `pendingRestartNote`, prefixed by
+  `consumePendingTurnContextPrefix`). `queueAgentNote` / `queueNoteForNextTurn`
+  use the same channel for other host notes (DAEX Cloud memory guard, size
+  approvals).
 
 ### Codex reset credits
 
-A Codex reset credit is a single-use token that clears an account's rate-limit windows. It is not `CreditsSnapshot` (the billing balance), which the API would refuse to reset with.
-
-- Credits arrive on `account/rateLimits/read` as `rateLimitResetCredits`; only `status: "available"` counts.
-- The HTTP quota poll cannot see them, so DAEX runs a short-lived `codex app-server` probe per Codex account home at most every 15 minutes, forced on Refresh and after a spend. The poll's fast path stays spawn-free (the probe runs at account stamping). Without a Codex binary there are no credits.
-- Spending (`usage.consumeResetCredit`) is single-flight per account home and keeps its idempotency key until an outcome arrives, since a timed-out spend may have applied. The four outcomes are worded once in `shared/usageResetCredit.ts`.
-- When a Codex turn stops at a rate limit with a credit banked, the chat emits one `system_notice` (`noticeKind: "rate_limit"`, `status: "reset_credit_available"`, `detail.accountId`): "Codex hit its limit. A reset credit is banked." Once per five-hour window per chat, re-armed when a reading falls back under the threshold (the rollover signal).
-- "Use reset" appears on that row (desktop), the usage popup's account row, and under the provider card on iOS. Afterwards every surface shows the outcome in place of the button.
+A reset credit clears an account's rate-limit windows (not the billing
+balance). Credits come from `account/rateLimits/read`
+(`rateLimitResetCredits`, `status: "available"`); DAEX probes each Codex account
+home at most every 15 min. Spending (`usage.consumeResetCredit`) is single-flight
+with a kept idempotency key (`shared/usageResetCredit.ts`). A rate-limited Codex
+turn with a credit posts `reset_credit_available` with **Use reset**.
 
 ## Codex models and runtime
 
-DAEX uses Codex app-server 0.169.0 for chats and the same pinned Codex build for
-terminal sessions. New Codex chats default to GPT-6.2 Sol; GPT-6.2 Astra is
-available alongside it. Explicit older model IDs keep their original routing.
-The desktop, hosted web, CLI and iOS catalogs offer the same new model IDs and
-Low, Medium, High, Extra High, Max and Ultra reasoning settings. Fast and
-Ultrafast remain subject to the signed-in account's live model catalog.
-
-The registry records each model's maximum supported context of 1,050,000 tokens.
-Codex's default context is smaller: 500,000 tokens for 6.2 Sol and 272,000 for
-6.2 Astra. The running thread's reported limit is authoritative; selecting a
-model does not raise its configured context limit.
+DAEX pins Codex app-server 0.169.0 (`@openai/codex` in
+`apps/desktop/package.json`) for chats and terminals. New Codex chats default to
+the model the manifest names (`defaults.providers.codex` in
+`shared/model-manifest.json`). The registry records a model's maximum context;
+the running thread's reported limit is authoritative. See
+[agent routing](agent-routing.md#codex-thread-behavior).
 
 ## Key concepts
 
-- **Claude Agent SDK pipeline.** The adapter uses the stable `query()` API, with SDK `0.3.287` pinned exactly in the desktop and DAEX CLI packages so the bundled Claude Code runtime is reproducible.
-  - Every chat owns a `ClaudeQuery` fed by a `ClaudeInputPump` (`claudeInputPump.ts`) async iterable into `query.streamInput`. Warmup uses the SDK `startup()` hook.
-  - Discovery: output styles and plugins in `claudeOutputStyles.ts`; slash commands in `claudeSlashCommandDiscovery.ts` (on the shared `markdownSlashCommandDiscovery` engine).
-  - Plugin paths use `pluginDelivery: "initialize"` for the bundled or tools-cache binary (over stdin, keeping a Windows command line under 32,767 characters); a user-supplied binary keeps one `--plugin-dir` per plugin. When initialize reports `plugins_applied: false`, DAEX logs `agent_chat.claude_plugins_ignored`.
-  - `claudeSubprocessReaper.ts` tracks every subprocess so shutdown reaps children.
-  - Executable resolution: `CLAUDE_CODE_EXECUTABLE_PATH`, then the packaged native binary, then auth/PATH/common locations, passed as `pathToClaudeCodeExecutable`.
-  - Context usage, rewindFiles, forkSession and output-style selection use the SDK control channel on the active `Query`.
-  - The `claude_sdk.version` tag comes from the resolved runtime package (`0.3.287` only as a partial-install fallback).
-- **Claude SDK 0.3.287 event surfaces.** Full Claude chats enable hook events, agent progress summaries, prompt suggestions, tagged-child-frame filtering, file checkpointing and all skills.
-  - Retry, refusal, notification, memory, mirror and permission events become `system_notice` rows. The post-`result` `prompt_suggestion` is drained. `TaskCreate`/`TaskUpdate` become `todo_update` snapshots for the task board.
-  - Streamed tool inputs apply at `content_block_stop`. Background or idle turns can announce a `tool_use` with empty input and send the JSON in later `input_json_delta` chunks; DAEX accumulates by content index, parses at block stop, re-emits the same `tool_call` item with real args, and derives tasks and scheduled work from it. Renderer folds collapse the re-emission by turn + item id.
-  - Refusal-fallback retraction UUIDs and SDK `supersedes` go through `transcript_retraction`. New built-in Claude tools get readable badges.
-  - Full subagent-text forwarding stays off; tagged child frames (with `parent_tool_use_id`) stay out of the parent transcript. The child transcript is read with the backing Claude session id.
-  - **Turn end.** A long-lived idle reader stays attached after a visible turn. The SDK's `system` / `session_state_changed` `state: "idle"` closes an open idle turn: it fires after `heldBackResult` flushes and the background-agent loop exits. Idle turns open on background or subagent output without a result envelope, so without this they stay "running". `finishClaudeIdleTurn` is a no-op without an open idle turn. Completion is event-based; do not add a time-based idle watchdog (it misfires during long tool calls). The background-workload silence backstop below is not one: it never runs on a live turn, any event resets it, and it reclaims a runtime rather than ending a turn.
-  - `conversation_reset` is a real continuity change. DAEX-owned `command_lifecycle` frames are deduplicated. An interrupt receipt that reports queued messages keeps the query.
-  - **Stop modes.** **Turn + queue** (`stop_and_clear`, default) uses the capability-advertised interrupt with `cancel_queued: true`; runtimes without it use the public interrupt plus the probed `cancelAsyncMessage` for attributed queued steers. **Turn only** (`stop_only`) keeps queued messages and background jobs. `stop_and_background` and `stop_and_clear_and_background` call `stopActiveClaudeSubagents` and reset the query; default Stop does not.
-  - **Background exemption.** The level-triggered `background_tasks_changed` set and active subagents protect the query from idle-TTL cleanup and runtime-budget eviction until the work ends. Every terminal task edge and the stop paths that settle background work clear it. As a backstop it expires after `RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS` of total silence, equal to `SESSION_STALE_AFTER_MS` (3 h), when every surface already shows **Stale**. Without it, one task whose completion edge never arrives pins the SDK process, its MCP children and the project context (5 sessions, 5.4 GB across 35 processes when measured). An unchanged re-send of the level is silence, not activity.
-  - The same set decides whether a `local_bash` task is backgrounded (foreground Bash emits the same kind). Stop-hook snapshots keep real child shell/Monitor work but do not add native Agents or workflows as a second Background row.
-  - Subagent completion keeps Claude's status and prefers SubagentStop's real final text over a generic summary. Result entries prefixed `[ede_diagnostic]` are debug-logged, not shown; real errors in the same result stay visible.
-  - **Schedules.** The successful `PostToolUse` hook owns schedule creation and deletion metadata; Stop and SubagentStop snapshots reconcile. The durable mirror re-arms `ScheduleWakeup`, every successful `CronCreate` and `/loop` after a restart. SDK-origin and cold-start wakes produce synthetic turns plus `scheduled_work_update` snapshots for desktop, DAEX Code and iOS Chat Info.
-  - SessionStore reads are limited to resume-time envelope self-heal and the on-demand `getMainTranscript` IPC (no desktop control calls it). DAEX envelopes are the render backend. Not wired: SDK `SessionStore` as the transcript backend, and channels/external message origins.
-  - **Launch settings.** Launch pins `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=3` and `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=20`. `workflowSizeGuideline: "medium"` is sent only when no settings file in the chain states one, because DAEX's `settings` lands at flag tier above every `settings.json`; `outputStyle` is omitted when no settings file names one. See [Provider config ownership](agent-routing.md#provider-config-ownership).
-- **Provider-agnostic sessions.** `AgentChatProvider` is `claude`, `codex`, `opencode`, `cursor`, `droid`, or a free-form string for local providers. Each has an adapter: the Claude Agent SDK query stream, the Codex JSON-RPC app-server, the OpenCode runtime, and the Cursor and Droid SDK pools (`cursorSdkPool.ts`, `droidSdkPool.ts`). Cursor and Droid run their official SDKs (`@cursor/sdk`, `@factory/droid-sdk`) in Node worker children over JSON lines (`cursorSdkProtocol.ts`, `droidSdkProtocol.ts`); DAEX owns permissions, hooks, ask-user prompts and the system prompt, the SDK owns model and tool execution. `cursorSdkEventMapper.ts` / `droidSdkEventMapper.ts` translate events, both using `mapStopReasonToTerminalEvents` (`stopReasonEvents.ts`).
-- **Provider-native subagent lifecycle.** A parent's terminal event never proves every child stopped.
+### Claude Agent SDK pipeline
 
-  | Provider | Child settles on |
+- `@anthropic-ai/claude-agent-sdk` is pinned exactly (0.3.321 in
+  `apps/desktop/package.json` and `apps/ade-cli/package.json`). Each chat owns a
+  `ClaudeQuery` fed by a `ClaudeInputPump` (`claudeInputPump.ts`) into
+  `query.streamInput`; warmup uses `startup()`.
+- Plugins use `pluginDelivery: "initialize"` for DAEX's binary (keeps Windows
+  command lines short); `plugins_applied: false` logs
+  `agent_chat.claude_plugins_ignored`. `claudeSubprocessReaper.ts` reaps
+  children at shutdown.
+- Hook events, progress summaries, prompt suggestions, file checkpointing and
+  all skills are on. Retry/refusal/notification events become `system_notice`
+  rows; `TaskCreate`/`TaskUpdate` become `todo_update`.
+- **Turn end** is the SDK's `session_state_changed` idle event (after
+  `heldBackResult` flushes); no time-based idle watchdog.
+- **Stop modes:** `stop_and_clear` uses interrupt with `cancel_queued: true`
+  when advertised, else per-message `cancelAsyncMessage`; `stop_only` keeps
+  queue and background jobs; `*_and_background` also stops subagents.
+- **Background exemption:** live background tasks and subagents protect the
+  query from idle and budget eviction, up to 3 h of total silence
+  (`RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS` = `SESSION_STALE_AFTER_MS`).
+- Launch pins `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=3` and
+  `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=20`. Settings follow
+  [Provider config ownership](agent-routing.md#provider-config-ownership).
+- SessionStore is read only for resume-time repair and the on-demand
+  `ade.agentChat.getMainTranscript`; DAEX envelopes are the render backend.
+
+### Providers and subagents
+
+- Each provider has an adapter (see [agent routing](agent-routing.md#supported-providers)).
+  Worker SDK adapters (Cursor, Droid, Pi, Copilot) run in forked workers over
+  JSON lines; DAEX owns permissions, hooks, ask-user and the system prompt.
+- **A parent's terminal event never proves every child stopped:** Codex
+  children settle on their own `turn/completed`; OpenCode on the child's
+  execution events; Cursor on the `Task` tool result; Droid on
+  `mission_worker_completed`.
+- **Delegation routing:** a short-lived child whose result belongs in the same
+  thread uses the provider's native subagent tool (Claude `Agent`/`Task`, Codex
+  collaboration, Cursor task, Droid workers, OpenCode `task`). Pi has none, so
+  it uses a DAEX `--type subagent` chat. DAEX child chats are for durable
+  transcripts, scheduling, cross-provider work or separate permissions. The
+  runtime prompt and the `daex-cli-control-plane` skill carry this rule.
+- **Lane-scoped:** every session has a `laneId`; `resolveLaneLaunchContext`
+  resolves the cwd. Edits stay inside the lane worktree; read-only inspection
+  elsewhere is allowed.
+- **Identity sessions** (`identityKey: "cto"`) are left out of the Work list.
+
+### Plan handoff
+
+A Codex plan approval can be implemented here (default) or in a new chat
+(**Implement in a new chat**, or `daex chat respond <session> --new-chat`, a
+person only). The new chat gets the source's lane, model and account, full-auto
+access unless a host permission policy owns approvals, and the plan as its first
+message. Its id is reserved on disk first, so retries reopen the same chat; one
+plan card takes one answer at a time (`codexPlanHandoff.ts`).
+
+### Codex permission switches
+
+Codex takes approval/sandbox changes at thread or turn start. Switching a live
+session to Full Auto auto-answers stale lane-confined gates from the old policy
+(turn-scoped, path-checked); ambiguous grants stay manual.
+
+### Steer queue
+
+Follow-ups during a turn can be staged (cap `MAX_PENDING_STEERS`, 10). Composer
+modes per provider are in
+[composer-and-ui.md](composer-and-ui.md#staged-messages-and-sending-during-a-turn).
+
+- **Claude:** **Send during turn** (`priority: "next"`) and **Interrupt & send**
+  (`priority: "now"`), both `shouldQuery: true`. A person's interrupt carries
+  `origin: { kind: "human" }` (`sentByUser`), so Claude Code detaches a running
+  Bash or web fetch; DAEX keeps the row running
+  (`ClaudeRuntime.detachedToolCalls`) and settles it from the later
+  `<task-notification>`.
+- **Cursor:** `Run.steer()` inline (local only); **Interrupt & continue** stops
+  with `stop_only` + `preserveQueuedSteersOnInterrupt` and sends the message as
+  the next turn. Cursor Cloud refuses steers.
+- `steer()` returns `{ steerId, queued, reason?: "queue_full" }`. Immediate
+  modes are one atomic call. Each steer settles once (`settledSteerIds`).
+- **The CTO thread's queue cap is zero:** deliveries without a mode use the
+  provider's first non-queue mode; the CTO runs only on
+  `CTO_LIVE_REDIRECT_PROVIDERS` (`shared/types/chat.ts`).
+- `sendMessage({ routeActiveToSteer })` turns a phone's mid-turn `chat.send` into
+  a steer ([remote commands](../sync-and-multi-device/remote-commands.md)).
+- `ade.agentChat.stopTask({ sessionId, taskId })` stops one task.
+
+### Inline agent download and the sign-in card
+
+When a chat's provider is not downloaded or signed out, the error carries an
+`agentCli` payload (`classifyAgentCliError`,
+`apps/ade-cli/src/services/agentRegistry.ts`).
+
+- **Missing:** `AgentCliAuthCard` with Download/Retry for the pinned copy on the
+  chat's machine, then **Retry turn**.
+- **Signed out:** a quiet `ProviderSignInReceipt` line plus
+  `ProviderSignInComposer` above the prompt box. Before a send, a strip says
+  "<Provider> isn't signed in on <machine>" with **Sign in**.
+- One tap runs the provider's sign-in **on the chat's machine** (the composer's
+  pin):
+
+  | Flow | Providers |
   |---|---|
-  | Codex | The child thread's own `turn/completed` / `turn/aborted`; children may outlive the parent's `turn/completed` in Chat Info. |
-  | OpenCode | `session.idle` (`session.deleted` means stopped); DAEX keeps reading the event stream after the parent idles until announced children settle. |
-  | Cursor | The typed `Task` tool call/result (the SDK `task` message is the parent summary). No detached child stream exists, and the result summary says so for a background launch. |
-  | Droid | `mission_worker_started` / `mission_worker_completed`. |
+  | `providerInstances.login*` | Claude, Codex |
+  | `ai.cliLogin*` | Copilot, Grok, Kimi, Droid, Muse, Devin |
+  | `ai.antigravitySignIn*` | Antigravity |
+  | Cursor's own login | Cursor |
+  | Settings page on that machine | Qwen, OpenCode, Pi |
 
-  References: [Codex app-server 0.144.5](https://github.com/openai/codex/blob/rust-v0.144.5/codex-rs/app-server/README.md), [Cursor TypeScript SDK](https://cursor.com/docs/api/sdk/typescript), [Droid exec notifications](https://docs.factory.ai/cli/droid-exec/overview), [OpenCode SDK events](https://opencode.ai/docs/sdk/).
-- **Delegation routing.** A short-lived child whose result belongs in the same thread stays in the provider's native subagent tool: Claude's `Agent`/`Task` (with its `model` override for Claude-family switches, not a DAEX `--type subagent` chat just to pick Opus/Sonnet/Fable), Codex's subagent/collaboration tool, Cursor's task tool, Droid's worker capability, OpenCode's `task`. Pi has no supported native lifecycle, so it uses a DAEX `--type subagent` chat. DAEX child chats are for durable independent transcripts, scheduling, cross-provider work, separate permissions or a visible lifecycle. The runtime prompt and the `daex-cli-control-plane` skill carry this rule.
-- **Lane-scoped.** Every session has a `laneId`; branch and worktree path go into the system prompt, and `resolveLaneLaunchContext` resolves the working directory. The workspace directive allows read-only inspection outside the worktree, but edits and mutating commands stay inside the lane unless DAEX relaunches the session elsewhere.
-- **Event stream first.** The transcript is a JSON-lines stream of `AgentChatEventEnvelope`; renderer UI derives entirely from it.
-- **Pending input abstraction.** Approvals, questions, permission prompts and plan approvals from every provider become `PendingInputRequest`, derived by `derivePendingInputRequests()`.
-- **Plan handoff.** A Codex plan approval can be implemented in the planning
-  chat (the default) or handed to a chat of its own. The card's action is a
-  split button: **Implement here** plus a caret menu holding **Implement in a
-  new chat**, and `daex chat respond <session> --new-chat` does the same for a
-  person (never an agent or the CTO). The destination is created in the source
-  chat's lane, model and account, with the access an approved plan grants —
-  full auto, exactly as **Implement here** applies, unless a host permission
-  policy owns the chat's approvals. It receives the approved plan as its first
-  message; the planning chat keeps the whole conversation and gains one quiet
-  notice with an **Open chat** link. The destination id is reserved and written
-  to disk before that chat exists, so a timeout, a disk-full failure or a brain
-  restart reopens the same chat instead of making a second one; a plan whose
-  destination was deleted puts the card back rather than leaving a dead end.
-  One plan card takes one answer at a time (`codexPlanHandoff.ts`), so a phone
-  and the desktop cannot implement the same plan twice. Personal chats, share
-  guests and terminal-launched sessions do not offer it, and on DAEX Cloud the
-  option is hidden while the lane's computer is asleep.
-- **Codex permission switches.** Codex takes approval/sandbox changes at thread/turn start. When a live session switches to Full Auto while a turn still raises requests from the old policy, the service auto-answers stale lane-confined command/file/permission gates and clears their cards. Auto-grants are turn-scoped and check the request `cwd` and concrete grant paths; escaped or ambiguous whole-root grants stay manual, and the planner guard still declines mutations from turns started in plan mode.
-- **Steer queue.** Follow-ups during a turn can be staged for the turn boundary (cap 10) with per-entry edit, cancel and dispatch. The per-provider composer modes are in [composer-and-ui.md](composer-and-ui.md#staged-messages-and-sending-during-a-turn); the host rules:
-  - **Claude** offers two atomic SDK deliveries: **Send during turn** (`priority: "next"`, `shouldQuery: true`: after the current tool step, before the next model call) and **Interrupt & send** (`priority: "now"`, `shouldQuery: true`: redirects the current step without closing the query or killing background work).
-  - **Human interrupts detach tools.** A person's **Interrupt & send** carries `origin: { kind: "human" }` (the composer and paired-device `chat.steer` set `AgentChatSteerArgs.sentByUser`; agents and the CLI do not). Claude Code then backgrounds a running Bash and lets WebFetch/WebSearch continue. The call's `tool_use_result` is `{ detachedToolCall: true }`; its row stays running in `ClaudeRuntime.detachedToolCalls`, and after each turn result DAEX reads the `<task-notification>` from the session transcript (`getSessionMessages`) and settles the row under its turn. Stop or teardown closes a waiting row as interrupted. Claude Code will not detach a call a post-tool hook must see, so `PostToolUse` and `PostToolUseFailure` skip WebFetch and WebSearch (`CLAUDE_POST_TOOL_HOOK_MATCHER`).
-  - **Cursor** has the same three modes through `@cursor/sdk` `Run.steer()` (1.0.31+). **Send during turn** folds into the live local run. **Interrupt & continue** cancels the run, waits for it to settle and sends the message as the next turn on the same agent (the SDK's local store keeps the thread); the previous turn shows as interrupted. Staged messages survive: the stop runs `stop_only` with `preserveQueuedSteersOnInterrupt` armed until the interrupted turn's tail consumes it, and they go after the redirect turn. This softer stop is Cursor-only; `interrupt-replace` on OpenCode, Pi and Droid stays `stop_and_clear`.
-  - A Cursor **Cloud** run refuses every steer, so the renderer withholds the inline handler and the composer downgrades to *Send after turn* ([Agent Routing](agent-routing.md), `cursorSessionRunsInCloud`). A `dispatchMode: "inline"` send a run declines is staged like a queued send, with one notice that it will go as a new message.
-  - The split menu only changes the primary action; the button or Enter runs it.
-  - `steer()` returns `AgentChatSteerResult` (`{ steerId, queued, reason?: "queue_full" }`); a full queue (`MAX_PENDING_STEERS`) returns `queued: false, reason: "queue_full"`. Reasoning effort is normalized and applied at delivery.
-  - **The CTO thread's queue cap is zero.** Child reports, wakes and peer notes must not wait for the boundary, so a delivery with no dispatch mode resolves to the provider's first non-queue mode; `messageSession` applies the same rule, wakes included. `CTO_LIVE_REDIRECT_PROVIDERS` guarantees such a mode: the CTO runs only on Claude, Codex or Cursor, `ensureIdentitySession` refuses another explicit model with copy naming the three, and its fallback is Claude.
-  - Immediate modes are one atomic `steer` call with one correlated user-message lifecycle event, so they never flash as queued.
-  - The pending queue persists with chat state across restarts.
-  - Each steer settles once: delivered and cancelled notices sit behind a per-session claim (`settledSteerIds`), reopened only when the steer really returns to the queue (failed delivery, undone cancel). This stops a queue detach racing a drain (a Cursor thread recycle, a nested turn) from reporting a message both delivered and cancelled.
-  - `sendMessage` takes an opt-in `routeActiveToSteer` (overloaded to return `AgentChatSteerResult`): a non-empty send while `canRouteActiveSendToSteer` reports busy becomes a `steer()`. The sync handler uses it, so a phone's mid-turn `chat.send` queues instead of racing ([remote commands](../sync-and-multi-device/remote-commands.md)).
-  - **Stop** is queue-aware. Active Claude sessions choose **Turn only**, **Turn + queue** (default), **Turn + background** or **Turn + queue + background**. A queue-clearing stop that cancels a DAEX-attributed queued message shows one eight-second Undo card (`restoreCancelledQueue`), restoring the original steer ids, text, attachments and context. `ade.agentChat.stopTask({ sessionId, taskId })` stops one Claude task; siblings keep running.
-- **Identity sessions.** Sessions with `identityKey` (only `"cto"`) are left out of the Work list and rendered by the CTO tab. See [Agent Routing and Identity](agent-routing.md).
+  On success the stopped turn is resent (`resendLastUserMessage(…, {
+  afterSignIn: true })`). See
+  [Agents](../agents/README.md#agent-download--auth-from-chat).
+- **Send is off until the provider is signed in** (`sendBlockedReason` "Sign in
+  to <provider> first"); text stays. Skipped for DAEX Cloud, Cursor Cloud, Devin
+  and CLI drafts (`draftSkipsLocalSignIn`). `/login`, Claude `/usage` and
+  `/context`, and some Codex commands stay exempt (`sendBlockExempt`). Status
+  refreshes on sign-in success, Settings cache invalidation, or window focus
+  (≤ every 15 s), never on a timer.
+- Signed-out models stay listed and selectable with **Sign in**; only other
+  reasons dim a row.
+- **Claude 401 fast-fail:** the first definitive auth signal ends the turn
+  (`failClaudeTurnUnauthenticated`, `CLAUDE_RUNTIME_AUTH_ERROR`). On macOS DAEX
+  first checks the keychain item (`probeClaudeKeychainLogin`); an unanswering
+  keychain retries once after 15 s rather than showing a sign-out.
 
-- **Inline agent download, and the sign-in card.** When a chat's provider has no downloaded pinned copy or is signed out, the service decorates the error envelope with an `agentCli` payload (`classifyAgentCliError` in `apps/ade-cli/src/services/agentRegistry.ts`; a not-ready sentence for the chat's own agent, `isPinnedToolNotReadyMessage`, classifies as "missing").
-  - **Missing:** `AgentCliAuthCard` in the transcript: Download/Retry for the pinned copy on the chat's machine, then **Retry turn**.
-  - **Signed out** (`category: "unauthenticated"`, or Claude's 401 wording from a host without the category, `latestChatSignInFailure` in `renderer/lib/claudeAuthPrompt.ts`): one quiet `ProviderSignInReceipt` line ("Muse Code was signed out on This computer", provider words under Details) plus `ProviderSignInComposer` (`ProviderSignInCard.tsx`) above the prompt box in `aboveComposerSlot` (`ProviderSignInSlot.tsx`). The prompt box stays mounted below, so typed text never hides.
-  - **Before a send**, when the composer machine's `providerConnections` entry reads `runtimeDetected && !authAvailable && !runtimeAvailable` for a provider DAEX can sign in (from the status the picker reads, no extra probe), a one-line strip shows: "<Provider> isn't signed in on <machine>." with **Sign in**, which opens the card. A failed turn opens the card at once.
-  - **One tap** runs the provider's sign-in on the chat's machine (the composer's `pin`) through the Settings host flows:
+### Work draft launches and draft persistence
 
-    | Flow | Providers |
-    |---|---|
-    | `providerInstances.login*` | Claude, Codex (device code when the screen is not that machine) |
-    | `ai.cliLogin*` | Copilot, Grok, Kimi (region tabs), Droid, Muse, Devin |
-    | `ai.antigravitySignIn*` | Antigravity (paste back Google's code) |
-    | Cursor's own login | Cursor |
-    | Settings page on that machine | Qwen, OpenCode, Pi |
+Renderer launch chains, jobs and project-switch safety are in
+[composer-and-ui.md](composer-and-ui.md#parallel-and-auto-create-launches).
+Composer drafts are saved to `localStorage` (`ade.chat.composerDraft.v1`) 350 ms
+after a change (`COMPOSER_DRAFT_WRITE_DEBOUNCE_MS`); on quit main sends
+`ade:app-will-quit` and waits up to 500 ms (`saveWindowDraftsBeforeQuit.ts`) so
+panes flush. A flush never overwrites a newer stored snapshot.
 
-  - The card shows the device code, link or paste field the sign-in printed, opens only http(s) links, and closes once the machine reads the login back. The stopped turn is resent (`resendLastUserMessage(..., { afterSignIn: true })`) after a forced status re-read, which also drops the signed-out mark.
-  - **Not now** (✕ or Esc) hides the strip or card until another failure or machine; Cancel stops the sign-in. The receipt turns to "signed in again" when `AgentChatPane` fires `ade:chat:auth-recovered` after a later success. The picker's **Sign in** chip opens the provider's Settings page on the composer's machine. See [Agents](../agents/README.md#agent-download--auth-from-chat).
-- **No greyed-out models.** A model whose provider is signed out on the picker's machine stays listed and selectable (`ModelPickerContent`'s `modelNeedsSignIn`), with one sign-in control: **Sign in**, or a "Not signed in" tag where the surface has no sign-in.
-  - Only other reasons dim a row: the model needs configuration, the Cursor mode excludes it, the runtime is neither installed nor downloading, or the caller's list does not offer it. The runtime check reads `familiesWithoutRuntime` from the same status (`runtimeDetected`, `runtimeDownloadPending`); a host that passes its own `providerAuthStatus` must pass `providerRuntimeMissing` too, or not-ready families read as missing sign-in.
-  - **Only models I can use** (`useAuthOnlyFilter`, off by default, `ade.modelPicker.onlyUsable.v1`) hides signed-out providers.
-  - Columns after the name are fixed (Sign in, capabilities, speed, star); one Sign in button makes every row keep that column. On a narrow row a size query drops speed, then capabilities, then turns Sign in into an icon; the name is cut last.
-  - In **Continue on another machine**, a picked signed-out model stays picked across catalog updates and a switch to fork.
-- **Send is off until the provider is signed in.** While the before-send need shows (`reason: "no-login"`), `sendBlockedReason` is "Sign in to <provider> first": Send and Enter do nothing, and text and attachments stay.
-  - The Send tooltip gives the reason. A press (`onSendBlocked`) brings back a strip closed with Not now (never the card, so focus stays in the prompt) and forces a status read.
-  - A turn that failed on its sign-in keeps its own card flow and does not turn Send off.
-  - **Skipped** (`draftSkipsLocalSignIn`): drafts for DAEX Cloud, Cursor Cloud or Devin, and CLI drafts (they sign in inside the CLI); open Cursor Cloud or Devin chats. A DAEX Cloud draft that cannot run shows its label above the box, and `sendBlockedReason` holds Send with that text (a sign-in reason comes first).
-  - The check follows the picked model's provider and route (`signInLoginProvider`): a stored key or provider account brings its own credentials; a subscription run in another harness checks that subscription's provider. A parallel draft checks every model; the first without a login shows the strip.
-  - **Exempt commands** (`sendBlockExempt`) still run and Send looks on: `/login` opens the card; a Claude chat's `/usage` and `/context`; a Codex chat's `/memory`, `/memory-reset`, `/shell`, `!command`, and `/goal` shown or cleared. Other commands wait like a message. "Launch in background" and "Scheduled send" stay off with the same reason.
-  - An always-mounted hidden status region tells a screen reader Send is off and why.
-  - The status refreshes by three paths, none a timer:
-    1. The card's sign-in: Send turns on in the same commit as success (`signedInNeedKey`), then a forced re-read confirms.
-    2. Settings in the same window: its cache invalidation makes the pane re-read (one 250 ms settle).
-    3. Another window or an outside terminal: a `focus` listener, present only while Send is off for the login, re-reads without force (`revalidate`: the brain re-reads credential files without running a CLI, so it can trail its 30 s cache), at most every 15 s per machine; other blocked panes take the result from the cache event. A Send press reads forced.
-- **Claude logged-out (401) fast-fail and recovery.** A 401 is not transient, so the adapter does not let the SDK run its retry budget.
-  - On the first definitive auth signal (an `auth_status` error, an `assistant` message with `error: "authentication_failed"`, an `api_retry` with `error_status` 401 or auth wording, or a `result` with invalid-credential errors per `isClaudeRuntimeAuthError`), `failClaudeTurnUnauthenticated()` emits one `system_notice` (`noticeKind: "auth"`, "Claude couldn't sign in — stopped retrying.") and throws `CLAUDE_RUNTIME_AUTH_ERROR`.
-  - On macOS the catch path first checks whether the login's keychain item is readable (`probeClaudeKeychainLogin`, attributes only, 3 s). A keychain that does not answer (waiting on a password dialog) is not a sign-out and shows no re-login card.
-  - If the turn ran nothing yet, it ends with a quiet `system_notice` (`status: "claude_keychain_retry"`; the renderer hides its FAILED pill, `selfHealedFailureLines.ts`) and DAEX retries once after 15 s without echoing the message. It checks the keychain first: present runs the turn, absent is a real sign-out, silent again gives up. A new message during the wait replaces the retry.
-  - Otherwise, or when the retry fails, the turn shows `CLAUDE_KEYCHAIN_UNREADABLE_ERROR` ("You're still signed in. Try again in a moment.").
-  - A non-keychain auth failure closes the query, reports the runtime auth failure and emits an `error` with `errorInfo.agentCli` (`"unauthenticated"`), which takes the sign-in card path. Rate-limit and overloaded retries proceed normally.
-- **Work draft launches.** From an empty Work composer the user can auto-create a lane for one foreground or background chat or CLI session, or turn on parallel mode with two or more model slots and send one prompt.
-  - Types: `DraftLaunchMode` (`"foreground" | "background"`), `DraftLaunchKind` (`"chat" | "cli"`), `DraftLaunchLaneTarget` (lane, worktree, auto-created flag), `StartedDraftLaunch` (session id, kind), `DraftLaunchJob` (progress).
-  - Job states: `creating-lane` → `starting-session` → `sending-prompt` → `ready` | `failed`. Auto-created lanes get a deterministic name up front (`createDeterministicAutoLaneName`) without waiting on a model. With AI titles on, title and branch are generated afterwards; the fallback name stays persisted but shows as `Naming lane…` (per-lane `laneNamingStore`) until the identity lands, and a failure reveals it.
-  - Active turns carry `currentTurnStartedAt`, set once by the optimistic start or `status: started`; activity and steers update `lastActivityAt` without resetting it.
-  - **Jobs live in the root store** (`appStore.draftLaunchJobsByScope`, via `useRootAppStore` / `rootAppStoreApi.getState()`), scoped by project root, lane, surface profile and Work draft kind. A launch can outlive its pane: switching to another remote project tears down the per-project store. Returning re-shows the job (ready jobs auto-open, failures offer Restore), and per-project scoping keeps other panes from inheriting the strip.
-  - **Project-switch safety.** The chain runs detached from the pane, so it captures the project's `OpenProjectBinding` and passes it as `pin` (`callPinnedRuntimeAction`; [Remote runtime internal architecture](../remote-runtime/internal-architecture.md#local-runtime-routing)) to branch discovery, lane create/rename, session start, prompt send and CLI PTY create. Only the fallback with no binding aborts with `LAUNCH_PROJECT_CHANGED_MESSAGE` on project-root drift. Rollback (`lanes.delete` for an auto-created lane, `agentChat.delete` for the session) uses the same binding.
-  - The chat-created announcement carries the pin and the resolved lane name. `TerminalsPage` inserts an active-binding chat through `useWorkSessions`' optimistic path, but puts a chat on another machine straight into that machine's cross-machine Work slice, never into the local list or by raw lane id.
-  - `DRAFT_LAUNCH_TIMEOUT_MS` (90 s, `withDraftLaunchTimeout`) fails a job whose runtime call never settles, so the draft can be re-sent.
-  - The composer clears when the job is created. Active jobs stay visible; terminal rows are pruned per scope, keeping at least one beside active jobs. Each job's strip shows progress, Open (ready), Restore (failed: merges the draft snapshot back), Dismiss (terminal) and a hide-status escape for a launch that never settles. The top error banner repeats Restore for the matching failure.
-  - `DraftLaunchSnapshot` captures `modelId`, `reasoningEffort`, `fastMode`, `fastTier`, `executionMode`, `interactionMode` and `nativeControls`, so `createSessionForLane` and `startDraftCliLaunch` use the frozen settings.
-  - Foreground auto-create opens the session only if it is still the latest foreground job (`latestForegroundDraftLaunchJobIdRef`); background auto-create does not take focus. `clearDraftLaunchComposer` resets text, attachments and context after success.
-  - CLI launches forward the prompt into the PTY through `onLaunchCliSession` (`(args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>`) with a matching `disposition`.
-  - Parallel launch creates lanes from the current branch, starts one chat per lane, sends the same prompt and attachments to each, and opens the Lanes view on the new set.
+### Built-in browser internals
 
-- **Composer draft persistence.** Draft state (text, model, reasoning effort, attachments, context items, draft launch target) is stored in `localStorage` under `ade.chat.composerDraft.v1`, scoped by `projectRoot:companionStateKey:surfaceProfile:workDraftKind`.
-  - `ComposerDraftStorageSnapshot` is the stored shape; `normalizeStoredComposerDraft` validates every field, re-infers attachment types, dedupes context items and defaults invalid entries.
-  - On a session or lane switch the pane writes the current state and hydrates the destination's snapshot, restoring model, reasoning and permission settings for drafts. Active sessions skip model restoration so server config is not overwritten.
-  - The pane writes a change 350 ms after it (`COMPOSER_DRAFT_WRITE_DEBOUNCE_MS`). Quit destroys windows without page lifecycle events, so main first sends `ade:app-will-quit` (`shared/appWillQuit.ts`) to every window and waits up to 500 ms (`main/saveWindowDraftsBeforeQuit.ts`), then flushes web storage to disk. The pane and the CLI input box save their delayed write on that event and on `pagehide` (`renderer/lib/useSaveBeforeQuit.ts`). A flush skips a snapshot older than the stored one, so two panes on one chat keep the newer edit.
-  - `composerDraftHydratingRef` skips the first write-back after hydration.
-- **Built-in browser.** Main owns the persistent `persist:ade-browser` partition with `WebContentsView` tabs, rendered in the Work sidebar's `browser` tool by `ChatBuiltInBrowserPanel`. URLs clicked elsewhere route through `openUrlInAdeBrowser()`. The UA is the clean Chrome identity ([Chrome identity](#built-in-browser-chrome-identity-tab-ownership-cleanup-and-other-machines)).
-  - **Popups.** `setWindowOpenHandler` returns `action: "allow"` with a `createWindow` factory that adopts Electron's pre-created `webContents` as a new tab, keeping Chromium's popup lifecycle and `window.opener` for OAuth `postMessage`. Foreground popups end Inspect on the opener first; `background-tab` popups load with the same secure preferences without taking focus or clearing the opener's selection.
-  - Every view has a white backing canvas. Downloads get sanitized unique names in the user's Downloads folder. The panel hides the native view whenever DAEX overlays overlap it.
-  - **Permissions** are denied by default and allowed only for managed browser contents on secure origins. Promptable ones use a native Allow / Block dialog, remembered per requesting and embedding origin; unknown ones stay blocked. Google Accounts keeps a narrow exception for `storage-access` and `top-level-storage-access`.
-  - The **Profile** panel shows non-secret cookie/cache/flush diagnostics and removes remembered permissions. These APIs are renderer-only, not in `daex browser`.
-  - **`openPanel`.** Navigation, tab create, switch-tab and `built_in_browser.showPanel` / `ade.builtInBrowser.showPanel` take `openPanel: true|false`; `true` emits `open-request`, which `TerminalsPage` turns into showing the Browser tool. `--no-panel` / `--hidden` on `daex browser …` set `false` for headless prefetch.
-  - Browser commands work only in a DAEX-launched chat-bound agent or owned terminal with a valid browser actor capability; an unbound shell cannot use the signed-in profile.
-  - **Inspect.** Hit-tests produce `BuiltInBrowserContextItem` payloads forwarded to the chat as composer chips, like iOS / App Control selections. The picker, drag-to-capture and `daex browser select` share `builtInBrowserHitTest.ts`: points are tab viewport pixels, so the scroll offset is added before `DOM.getNodeForLocation` (document pixels), with `ignorePointerEventsNone: false`; `document.elementFromPoint` is the fallback. A 0×0 viewport makes `daex browser select` fail with "This browser tab has no visible viewport yet", suggesting showing the tab or `daex browser emulate --width <w> --height <h>`.
-  - **Inspect in iframes.** Same-renderer frames get an isolated world with a context-scoped binding; cross-site frames use flattened child debugger sessions, nested frames included. Frames that appear or navigate during Inspect get overlays as contexts are created. `cdpFrameTransform.ts` maps points and rects through the frame's full 2D transform. A picked iframe element keeps the tab's URL and title, with its `frameId`, URL, title and origin in `metadata.iframe`. Start/stop transitions are serialized, clicks from an ended run are dropped, and activating a popup cancels a pending start.
-- **Login import.** A human can seed the shared profile with cookies from a browser they use (`apps/desktop/src/main/services/builtInBrowser/loginImport/`). It finds installed browsers and profiles, reads the jar, and shows a domain picker with counts before importing anything.
-  - Cookies only; reading a password vault is a different consent.
-  - Decryption:
-
-    | Browser | Jar |
-    |---|---|
-    | Firefox | Plaintext SQLite. |
-    | Chromium on macOS | Keychain key via PBKDF2-HMAC-SHA1 (`saltysalt`, 1003 iterations) → AES-128-CBC, fixed 16-space IV. |
-    | Chromium on Linux | libsecret, or the `peanuts` fallback at 1 iteration. |
-    | Chromium on Windows | DPAPI → AES-256-GCM. |
-    | Safari | `Cookies.binarycookies`, unencrypted, gated by TCC. |
-
-  - SQLite reads run on a `VACUUM INTO` snapshot in a temp directory, never the live file.
-  - Expired cookies are skipped; session cookies stay session cookies; partitioned (CHIPS) and Firefox container rows are dropped; `domain` is omitted for host-only cookies (Electron would treat it as a domain cookie, widening scope and breaking `__Host-`). Values are never logged.
-  - The four IPC channels (`ade.builtInBrowser.loginImport.capabilities|listSources|listDomains|import`) are trusted-renderer-only; `daex browser` has no import command, because an agent that imports cookies could take any identity. A completed import emits `login-import-completed` (counts and hosts only).
-  - **On Windows only Firefox and Helium import.** Chrome 127+ App-Bound Encryption ties the key to the browser's code identity, so Chrome, Chromium, Brave, Edge, Vivaldi, Opera and Arc report `unsupported` with that reason.
-  - **Safari needs Full Disk Access.** macOS never prompts and `stat` succeeds without it, so DAEX opens the file and checks for `EPERM` (TCC's errno; `EACCES` is an ordinary failure). The result is `needs_full_disk_access` with a System Settings pane id. `x-apple.systempreferences:` is outside `ALLOWED_EXTERNAL_URL_SCHEMES`, so the renderer names a pane id and main resolves it in `SYSTEM_SETTINGS_PANE_URLS` (`shared/types/systemSettings.ts`) before `shell.openExternal`. Add a pane to that table; do not widen the scheme list.
-  - **Reads run in a child process.** `loginImportReadWorkerClient.ts` spawns `loginImportReadWorkerEntry.ts` with `ELECTRON_RUN_AS_NODE=1` for the decrypt-and-parse pass (`loginImportRead.ts`, `chromiumCookies.ts`, `chromiumKeys.ts`, `firefoxCookies.ts`, `safariCookies.ts`, `cookieDatabase.ts`, `cookieDomains.ts`). The wait has no timeout, because the child may sit behind a Keychain consent modal. Every live child is tracked, its settle path terminates it (spawn errors and unreadable answers included), and `terminateLoginImportReadWorkers` kills the rest at quit (Node does not reap non-detached children on macOS). `loginImportService.ts` coalesces reads per source (`inFlightReads`): one child, one Keychain prompt.
-- **Link rules.** `browser.linkOpenMode` (`in-app` | `external`, default `in-app`) decides where an in-ADE link opens. It lives in the project config's `browser` section, written to `.ade/local.yaml` (a per-machine choice), and shows in Settings → Behaviour → Open links ("In DAEX / In system browser").
-  - **Mod+Click** (Cmd on macOS, Ctrl elsewhere) always opens externally; **Shift+Click** always opens in DAEX; Mod wins when both are held.
-  - `resolveLinkOpenTarget()` (`renderer/lib/linkOpenTarget.ts`) is the rule; every in-content click goes through `openLinkFromUi()` (`renderer/lib/openExternal.ts`): chat markdown, work-log and message-list chips, chat sources, terminal links, Linear/GitHub bodies and Open buttons.
-  - Buttons that open a named external service (provider docs, a GitHub App install page) call `openExternalUrl` directly.
-- **Per-tab browser capabilities.** Besides navigation and the click/type/fill/press/wait actions, each tab has emulation, zoom, find, DevTools, an opt-in network log and screen recording, reachable from the trusted renderer (`window.ade.builtInBrowser.*`) and `daex browser …` with the same per-chat scoping.
-  - `setEmulation` applies `shared/builtInBrowserEmulation.ts` presets (desktop, iPhone 17 / 17 Pro / 17 Pro Max, iPad, Pixel, responsive) via CDP `Emulation.setDeviceMetricsOverride`.
-  - `setZoom` clamps `webContents.setZoomFactor` to 0.25–5 and re-applies after cross-origin navigation.
-  - `findInPage` returns Chromium's counts and mirrors them as `found-in-page`.
-  - `setDevTools` toggles the inspector, logged when an agent-bound caller drives it. DevTools and DAEX's CDP debugger cannot share a target, so network logging and DevTools exclude each other.
-  - `setNetworkLogging` keeps a 500-entry per-tab log from CDP `Network.*` (the only source with headers, protocol, per-phase timings and encoded sizes), redacting `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` before storage. `exportHar` writes HAR 1.2 into the tab's observation scratch directory.
-  - `startRecording` / `stopRecording` capture through a hidden DAEX page calling `getDisplayMedia()`, which `session.setDisplayMediaRequestHandler` answers with the tab's frame only while main has armed that pair. `MediaRecorder` encodes MP4/H.264 where available, else WebM; no native dependencies or permission prompt. A recording reaches the proof drawer only with a caption.
-  - Tab state reports `zoomFactor`, `devToolsOpen`, `emulation`, `networkLogging`, `recording`.
-  - A recording stops at 5 minutes of wall clock, finalized like an explicit stop. A login handoff aborts an in-flight recording to scratch and turns network logging off with the log cleared; neither re-arms on hand-back. Both publish `endedBy` on the `recording` event (`"max_duration"` or `"handoff"`) and write a `stopRecording`-shaped trace entry. (`handoff-ended` has its own `endedBy`: `human`, `auto-offer`, `tab-closed`, `timeout`.)
-- **Localhost shortcuts in the work log.** When tool output contains a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL, the work-log block shows a sky-toned strip above the tool panels. The chip opens the URL in DAEX's browser (`openUrlInAdeBrowser`); **Logs** reveals the chat's terminal in the bottom drawer (`onRevealChatTerminal`), or, with no terminal, drafts a "please move this server into the chat terminal" prompt (`onInsertDraft`). URLs come from `entry.localUrls` (`withLocalhostUrls` in `chatTranscriptRows.ts`), so it works for shell commands, tool calls and other results.
-
-Detail docs:
-
-- [Transcript and Turns](transcript-and-turns.md): event envelope, message and tool lifecycle, batching, virtual scrolling.
-- [Tool System](tool-system.md): the three tiers (universal, workflow, coordinator) and their gates.
-- [Agent Routing](agent-routing.md): provider selection, permission-mode mapping, model registry, handoff.
-- [Composer and UI](composer-and-ui.md): composer, tasks, file changes, terminal drawer, message list.
+- **Popups** become new tabs through `setWindowOpenHandler` + `createWindow`,
+  keeping `window.opener` for OAuth.
+- **Permissions** are denied by default; secure-origin managed contents get a
+  native Allow / Block prompt remembered per origin.
+- `openPanel: true|false` on navigation and tab calls controls whether the
+  Browser tool shows (`--no-panel` / `--hidden` on `daex browser`).
+- Browser commands work only from a DAEX-launched chat-bound agent or owned
+  terminal with a browser actor capability.
+- **Inspect** produces `BuiltInBrowserContextItem` chips; hit-testing is
+  `builtInBrowserHitTest.ts` (iframes via `cdpFrameTransform.ts`).
+- **Login import** (`builtInBrowser/loginImport/`) seeds the shared profile with
+  cookies from another browser after a domain picker. Cookies only. Reads run on
+  a `VACUUM INTO` snapshot in a child process (`loginImportReadWorkerClient.ts`,
+  `ELECTRON_RUN_AS_NODE=1`). Trusted-renderer IPC only; `daex browser` has no
+  import command. On Windows only Firefox and Helium import (Chrome App-Bound
+  Encryption). Safari needs Full Disk Access (checked via `EPERM`).
+- **Link rules:** `browser.linkOpenMode` (`in-app` | `external`, in
+  `.ade/local.yaml`); Mod+Click always external, Shift+Click always in DAEX
+  (`resolveLinkOpenTarget`, `openLinkFromUi`).
+- **Per-tab capabilities** (renderer and `daex browser`, per-chat scoped):
+  emulation presets (`shared/builtInBrowserEmulation.ts`), zoom (0.25–5), find,
+  DevTools (excludes network logging), a 500-entry network log with auth headers
+  redacted and HAR export, and recording via a hidden `getDisplayMedia` page
+  (5 min cap; a login handoff aborts it).
+- Work-log `localhost` URLs get chips (`withLocalhostUrls`) that open in the
+  DAEX browser; **Logs** reveals the chat's terminal.
 
 ## Scenes
 
-A **scene** is a ```` ```scene ```` fence of ordinary HTML, CSS and JavaScript that an agent wrote, rendered live in the transcript. A scene is code, so it never runs in DAEX's renderer.
+A **scene** is a ```` ```scene ```` fence of HTML/CSS/JS an agent wrote,
+rendered live in the transcript (`SceneFrame.tsx`, `shared/chatScene*.ts`). It
+is code, so it never runs in DAEX's renderer. The `daex-scene` skill teaches
+agents to write one; every agent prompt carries one line on when to use it
+(`buildAdeBootstrapGuidance`).
 
-**A scene shows, and it can ask.** `ade.reply(text)`, a `data-reply` button, or the submit button of a `data-reply` form puts a draft in the chat's prompt box (`SceneReplyContext`, `handleSceneReply` in `AgentChatPane`).
-
-- Nothing is sent: the reader edits and sends it. Another pick replaces the earlier pick and keeps typed text.
-- The host accepts a reply only right after a click or key press in the frame, and answers with `picked`.
-- A scene is **answered** once a reader message follows its row. `AgentChatMessageList` derives it from the rows (`sceneAnswers` by `sceneScopeKey`, skipping messages DAEX wrote for the user) through `SceneAnswerContext`. The frame gets `answered` with the reader's text, reply controls go inert, and named options stay marked. It holds across reloads, windows and machines.
-- A reply is a chat message, never a permission; approvals and destructive confirmations use DAEX's native surfaces.
-- A form is read on its submit button's click (the sandbox has no `allow-forms`, so `submit` never fires).
-- `parseSceneHostMessage` allows only `ready`, `resize`, `settled`, `emit`, `error`, `open` and `reply` out of the frame. The `daex-scene` skill states the same rules.
+**A scene shows, and it can ask.** `ade.reply(text)` or a `data-reply`
+button/form puts a draft in the prompt box after a real click (nothing is
+sent). A scene is **answered** once a reader message follows it; reply
+controls then go inert. A reply is never a permission. `parseSceneHostMessage`
+allows only `ready`, `resize`, `settled`, `emit`, `error`, `open`, `reply`.
 
 ### The sandbox is the whole contract
 
-A scene runs in an iframe with its own origin, its own Content-Security-Policy response header, and `sandbox="allow-scripts"` without `allow-same-origin`. Never set both `allow-scripts` and `allow-same-origin`: that pair gives the frame back its origin.
+- An iframe with `sandbox="allow-scripts"` and **never** `allow-same-origin`
+  (that pair gives the frame back its origin).
+- Documents come over `ade-scene:` (registered non-standard, opaque origin,
+  served from memory by `sceneDocumentStore`; the id is a map key, never a
+  path), or a blob URL fallback.
+- `rendererCsp.ts` lists `ade-scene:` and `blob:` in `frame-src` only.
+- `SCENE_CONTENT_SECURITY_POLICY` starts `default-src 'none'` with
+  `connect-src 'none'`: a scene cannot fetch. The policy is sent as a header
+  and as the first `<head>` meta; model-written CSP metas and `<base>` are
+  stripped.
+- It cannot stop CPU use or a misleading drawing; scenes cannot approve,
+  confirm or fetch.
 
-- **Origin.** In Electron the document comes over `ade-scene:`, registered in `main.ts` with `{ standard: false, supportFetchAPI: true, stream: false }` (non-standard gives an opaque origin) and handled by a thin adapter over `sceneDocumentStore.respond()`. Documents live in memory; the id in `ade-scene://view/<id>` is a map key, never a path, so the scheme has no filesystem reach. When `window.ade.scene.prepare` is absent or rejects (browser preview, no main-process half), `SceneFrame` falls back to a blob URL, also a separate origin with the same policy from the in-document `<meta http-equiv>`.
-- **Renderer CSP.** `rendererCsp.ts` lists `ade-scene:` and `blob:` in `frame-src` only, never `img-src`, `media-src` or `connect-src`. `blob:` in `frame-src` is a recorded widening (the comment says so): it is safe because every scene frame is sandboxed without `allow-same-origin`, and the renderer mints those blobs itself. `SceneFrame.test.tsx` asserts the sandbox pair never appears.
-- **Scene policy** (`SCENE_CONTENT_SECURITY_POLICY`) starts `default-src 'none'`; `connect-src 'none'` blocks fetch, XHR, WebSocket, beacon, remote fonts and images. A scene cannot fetch data out.
-  - Navigation is not a fetch. The renderer's `frame-src` bounds nested contexts, and `main.ts`'s `will-frame-navigate` refuses subframe navigation outside `isRendererFrameNavigationAllowed` (`rendererCsp.ts`), built from the same sources as `frame-src` (`'self'`, `file:`, `app:`, local http, `ade-scene:`, `blob:`, `about:`, the Vite origin in dev). A narrower list blanks packaged `file://` spec previews (`PlanMarkdown`).
-  - `script-src 'unsafe-inline'` permits the model's inline script and nothing remote; `img-src data: blob:` allows host-supplied pixels.
-  - The policy travels twice: as the `respond()` header and as the first `<head>` element from `buildSceneDocument`. The meta survives a blob fallback; the header survives a mangled `<head>`.
-  - `unwrapDocument` strips any CSP meta the model wrote and drops `<base>`.
-- **What it does not stop** is CPU use or a misleading drawing. A scene reads as part of the reply: no border or badge, on the reply's text column (`w-screen max-w-full` on the wrapper, since the reply row sizes to its content), in DAEX's font and palette. On hover a top-right toolbar names it as a view the agent drew and offers **Expand** (live, in a `Dialog`) and **Proof**; it stays pinned with the error as its label while the scene reports one. A scene cannot approve, confirm or fetch.
+### The still
 
-### The still: a picture the moment it stops moving
+A scene leaves a still when it stops moving (`settled`: no animations and a
+quiet DOM for 600 ms, or after 4 s). Capture is a window crop only when the
+rect is provably the scene (`measureCapturableSceneRect`). Stills are filed as
+artifacts with `metadata.kind = "scene_still"` and excluded from every proof
+surface; one per `sceneScopeKey` (per fence), at most 32 per chat. The broker
+is the index; rehydrated mounts show the still first.
 
-A scene leaves a **still**, taken when it stops moving, not when its turn ends.
+### Lifetime and idle
 
-- The SDK arms a settle watcher at `ready` and posts `settled` once nothing animates and the DOM has been quiet for `SCENE_SETTLE_QUIET_MS` (600 ms), or after `SCENE_SETTLE_MAX_MS` (4 s). Two signals are needed: `document.getAnimations()` misses a `requestAnimationFrame` counter, and the MutationObserver misses a transform that never touches the DOM. The cap lets a looping scene produce a still. The host runs the same deadline one quiet window later for a frame that never reports.
-- **Capture is a window crop**, taken only when the rect is provably the scene (`measureCapturableSceneRect`): inside the viewport and every clipping ancestor (the transcript scroller sits under the chat header), and a hit test at four corners and the centre lands inside the shell (not the composer, a menu or a dialog). The rect is measured again when the picture returns; if it moved, the picture is dropped and retried 250 ms later. Main converts CSS px to DIP with the page zoom (`resolveSceneCaptureRect`, `webContents.getZoomFactor()`) and refuses a rect outside the page. No deadline: a never-capturable scene has no still. Capture tears nothing down.
-- **A still is a picture, not proof.** Bytes go into `.ade/artifacts/computer-use/` through the Proof button's jail and broker (or the CTO-only `computer_use_artifacts.ingestSceneSnapshot`), tagged `metadata.kind = "scene_still"` and excluded from every proof surface: `buildComputerUseOwnerSnapshot` passes `excludeMetadataKinds: ["scene_still"]`, and `listArtifacts` filters `metadataKind` / `excludeMetadataKind` in the query.
-- Unlike Proof, `storeStill` never deletes bytes it could not file (the renderer shows them back). Stills are bounded: `fileSceneStill` keeps one per `sceneScopeKey` (a re-settle replaces it through the broker's removal path) and at most `SCENE_STILL_MAX_PER_SESSION` (32) per chat, oldest first. An unattributed still prunes nothing.
-- **The broker is the index.** The record carries `sceneScopeKey` and `sceneTitle`; `sceneStillStore` is only a window-lifetime cache. On rehydrate, `SceneFrame` (`useSceneStillRecord`) asks `computerUse.listArtifacts({ ownerKind: "chat_session", ownerId, metadataKind: "scene_still" })` once per chat and matches `metadata.sceneScopeKey`. The renderer keeps no durable state.
-- **The scope key is per fence**: `sceneScopeKeyFor(rowKey, source)` hashes the fence body into the row key. A scene without a scope key stores no still.
-- **Showing it** follows the proof tiles: the in-memory data URL from this window, `ade-artifact://project/` for a local chat, or `computerUse.readArtifactPreview` pinned to a remote chat's machine (`ade-artifact://` is local-only).
-- **Rehydrated mounts** show the stored still first and wake restored (below), the picture covering the frame until it draws. `useSceneStillLatch` waits for the index (`useSessionStillsReady`) and draws a placeholder for that tick. A scene with a still takes no new one (it remounts on every scroll-back, and each capture costs a window grab, PNG encode and file). The Proof button grabs the view as shown now (toolbar hidden), falling back to the settle still.
+- One IntersectionObserver per scene (`useSceneOnScreen`): mount after 120 ms
+  near the viewport with no scrolling for 150 ms, unmount 4 s off screen. A
+  scene that already played comes back **restored** (animations jump to their
+  end).
+- A settled, untouched scene idles: endless animations pause, rAF batches to
+  250 ms. Measured with `scripts/perf-chat-scenes.mjs`.
+- A streaming fence shows a `drawing` placeholder and mounts once when it
+  closes.
+- **Proof** (`window.ade.scene.attachProof`) files the current view through the
+  artifact broker (or the CTO-only `computer_use_artifacts.ingestSceneSnapshot`
+  in runtime-backed builds), with a lexical then realpath jail.
 
-### Lifetime: live on screen, a still everywhere else
+### The injected SDK
 
-`SceneFrame` decides with one IntersectionObserver per scene (`useSceneOnScreen`):
-
-- It mounts a frame once the scene has been on, or within `SCENE_ACTIVATE_MARGIN` (240 px) of, the viewport for `SCENE_ACTIVATE_DWELL_MS` (120 ms) and nothing in the window scrolled for `SCENE_SCROLL_QUIET_MS` (150 ms). Without the scroll gate, a steady scroll through six scenes cost 12% of a core.
-- It unmounts after `SCENE_DEACTIVATE_LINGER_MS` (4 s) off screen, back to the still (or a placeholder of the last height). A parked surface (`content-visibility: hidden`) reads as off screen.
-- While its own turn runs (`live`) the frame stays mounted, so the entrance plays and the still is taken.
-
-A scene that already played (it has a still, or settled in this window, `playedScopes`) comes back **restored**: the document carries `__ADE_SCENE_RESTORED__`, the SDK jumps `ade.animate` and `ade.countUp` to their end state and finishes finite CSS animations that start before the first settle, and the still covers the frame until `ready` plus two frames.
-
-- Built documents and prepared URLs are cached per scene, theme and restored flag (24 entries), so a remount does not rebuild, send over IPC or use another of main's 64 store slots. A reused nonce is safe: messages match the element's own `contentWindow`.
-- `MarkdownBlock` passes `sceneLive`, scoped to the scene's own turn (`renderEvent`'s `turnActive`), not the session.
-- It also passes `streaming` (live turn and `hasOpenSceneFence`). A streaming scene shows a quiet `drawing` placeholder counting lines and KB, and mounts once when the fence closes, instead of reloading on every reveal tick.
-- A scene that throws before `ready` collapses to one warning `Banner`: title, error, **Retry** (fresh document, no cache), **Show code**, **Show anyway** (the frame with the error pinned).
-- A still from another theme is never a cover; the space is held until the frame draws, and a new still is taken.
-
-### Idle: a settled scene nobody touches costs nothing
-
-Once a scene settles and pointer and focus are elsewhere, the SDK idles it in the frame:
-
-- Endless CSS and Web Animations pause in place; SVG (SMIL) animations pause (`pauseAnimations`; Chromium repaints them every frame on the main thread).
-- `requestAnimationFrame` callbacks are batched to one flush per 250 ms, not dropped.
-- Pointer, focus, wheel or a key wakes it at full rate; a new theme or data snapshot wakes it for 1.5 s.
-- Endless animations do not hold back a settle, so a looping scene settles and idles 600 ms after its last real change.
-
-Measured on a 240 Hz display with a canvas particle loop, a blurred CSS shimmer and SMIL spinners (`scripts/perf-chat-scenes.mjs`): the scene process idles at 0.2% of a core, and GPU matches the all-stills baseline (~9% vs ~8.5%).
-
-**Proof.** The Proof button sends the snapshot through `window.ade.scene.attachProof`. Main writes the PNG into `.ade/artifacts/computer-use/`, then files it through `computerUseArtifactBrokerService` in-process, or, in a runtime-backed build (where that broker and `agentChatService` are null in the desktop), hands the path to the daemon via the CTO-only `computer_use_artifacts.ingestSceneSnapshot` (`services/scenes/sceneSnapshotIngest.ts`), which repeats the jail and owner checks.
-
-- Both routes resolve the renderer's claimed session id against this project's sessions. A miss drops the owner, never the artifact.
-- The jail runs twice: a lexical `isPathInside` first (refuses outside paths without probing the filesystem), then the same check on the real path with the root realpathed (a planted symlink passes a string-only jail; on macOS the temp root itself is a symlink).
-- Byte cleanup is tri-state (`filed` / `not-filed` / `unknown`), deleting only on a certain outcome. A lost or failed RPC is `unknown`: the file is kept and logged, and `listBrokenArtifacts` / `pruneBrokenArtifacts` reconcile orphans.
-
-### The injected SDK is dependency-free on purpose
-
-`window.ade` is installed before the model's code: `ade.data`, `ade.theme`, `ade.reducedMotion`, `ade.restored`, `ade.answered`, `ade.on`, `ade.reply`, `ade.open`, `ade.ready`, `ade.resize`, `ade.animate`, `ade.countUp`, and `ade.chart` (from the chart script after the SDK). It arms the settle watcher and idle rules, reports `securitypolicyviolation` as errors, routes `<a href>` clicks through `open`, and listens only to its parent window. It ships no third-party library: `connect-src 'none'` blocks fetching one, and inlining one would put its licence in every view.
-
-- `ade.theme` exists because the frame cannot read DAEX's stylesheet. `sceneTheme.ts` resolves the palette to values (not `var(...)` references); `buildSceneDocument` exposes them as `--fg`, `--accent`, `--border`, `--font-size`, … on `:root`, with `color-scheme` from `data-theme`.
-- One MutationObserver on `<html>` keeps the theme current; a change goes to each live frame as a `theme` message with the exact variable list (`sceneThemeMessage`), applied without reload.
-- Geist and JetBrains Mono are fetched once from the bundle and inlined as `@font-face` data URLs (`sceneFonts.ts`; the frame loads fonts from `data:` only). `maxDocumentBytes` (400,000) has room for them.
+`window.ade` (`ade.data`, `ade.theme`, `ade.reply`, `ade.open`, `ade.ready`,
+`ade.animate`, `ade.countUp`, `ade.chart`, …) ships no third-party library.
+Theme values are resolved and pushed live; fonts are inlined as data URLs.
 
 ### Live data and click-through
 
-A scene may ask for live data on its marker line, `<!-- @scene data="lanes,sessions,prs" -->` (`SCENE_DATA_SOURCES`).
-
-- While mounted, `SceneDataFeed` (`sceneData.ts`) sends a read-only snapshot as a `data` message and again on change, from the chat's machine. Nothing new is polled: lanes from `useChatMachineLanes` (run counts from `laneSnapshots` once the Lanes tab loaded them), sessions from `useSessionsForPin`, PRs from the coalesced local `prs.listAll` through the chat's pin (DAEX's database, never GitHub), refreshed when lanes change.
-- A snapshot is sent only on change, at most once a second, only to mounted frames. It holds names, branches, counts, states and `ade://` deeplinks; no paths, transcripts or file contents.
-
-`ade.open(url)` and `<a href>` clicks post `open`:
-
-- `ade://` deeplinks open in DAEX (`openAdeDeeplink`); http(s) pages in DAEX's browser (`openUrlInAdeBrowser`) with the chat's pin; anything else is refused with a scene error.
-- A scene with live data may open only web links in its source or its data (a PR's GitHub link), never a URL built at run time.
-- The host acts only while the frame element has focus, while the window has transient user activation, and at most once per 800 ms. Every open is visible.
+`<!-- @scene data="lanes,sessions,prs" -->` subscribes to a read-only snapshot
+from the chat's machine (`sceneData.ts`; names, counts, states and `daex://`
+links, never paths or transcripts), sent on change at most once a second.
+`ade.open` opens `daex://` links in DAEX and http(s) in the DAEX browser with
+the chat's pin, only with focus and user activation, at most once per 800 ms.
 
 ### Previewing a scene before it is sent
 
-`daex scene preview <file|-> [--theme dark|light] [--width N]` renders a scene as a chat will (`buildSceneDocument`, the SDK, the policy, a `sandbox="allow-scripts"` srcdoc frame) and prints a screenshot path, ready and settle times, and problems.
-
-1. The CLI reads the file and calls the brain's `preview_scene` tool.
-2. The brain asks the attached desktop over the bridge (`scene_preview.render`, `scenePreviewBridgeClient.ts`).
-3. The desktop renders in a hidden offscreen window with an in-memory `scene-preview` partition that refuses every request, navigation, popup and permission (`scenePreviewRenderer.ts`), one at a time, with a 20 s settle deadline and a 25 s hard stop (the renderer is crashed and the window destroyed), then destroys the window.
-4. The brain writes the PNG to `.ade/cache/scene-previews/` (newest 20 kept).
-
-Problems: SDK script errors, console errors, policy violations, a scene that never readies or settles, and `lintSceneSource` findings (remote URLs, `fetch`, storage, `alert`, nested frames, globals named `top`/`parent`/`opener`/`frames`/`self`, size over the cap). A `data=` scene previews with the brain's own snapshot (`sceneDataProjection.ts`), posted after `ready`. The `daex-scene` skill makes write → preview → look → fix → reply the loop.
-
-While a turn's tool entries include `daex scene preview`, a drafting box ("Agent is drawing a scene", `SceneDrawingBox`) sits at the bottom of the turn under the working indicator, outside the folded tools, never showing the screenshot. When the reply opens its own `` ```scene `` or `~~~scene` fence (`activeTurnReplyWritesScene`, joining fragments and counting same-turn steers), the reply's drawing box replaces it. An agent opening its preview PNG becomes one "Checked the scene preview" line. The lookup reads only entries that ran `scene preview`, cached per entry.
-
-### When agents draw one
-
-Every agent's prompt carries one line (`buildAdeBootstrapGuidance`): use a scene when status across many items, a comparison or a trend reads faster as a picture; skip it for short answers, single facts and plain lists; read `daex-scene` first and check with `daex scene preview`. The skill opens with the same decision and a copyable live-data example.
+`daex scene preview <file|-> [--theme] [--width]` renders in a hidden offscreen
+window on the attached desktop (`scenePreviewRenderer.ts`, a partition that
+refuses every request; 20 s settle, 25 s hard stop) and prints a screenshot path
+(`.ade/cache/scene-previews/`, newest 20) plus problems from `lintSceneSource`.
 
 ### Limits and failure
 
-- Source over `SCENE_LIMITS.maxSourceBytes` (96,000) fails as `too-large`; an empty body as `empty`. `SceneFrame` then shows the fence as highlighted HTML with a one-line reason.
-- The 8 s `readyTimeoutMs` stops the spinner, not the scene (`ade.ready()` is optional).
-- An in-frame `window.onerror` or blocked request posts `error` and becomes the toolbar label, pinned while it lasts, without tearing the frame down. A blocked request is marked `policy` and never collapses the scene.
-- Frame height follows content between 120 and 960 px; taller scenes scroll inside, and Expand shows full window size.
-- `sceneDocumentStore` holds 64 documents; an evicted one returns a 404 to a frame reloading it.
-- `clampSceneCaptureRect` intersects the rect with the window's content box; it never shifts the origin.
-- Tests cover the pure store (`respond`, `parseSceneRequestId`, eviction) and the blob fallback; the `ade-scene:` scheme has not been driven end to end in a running Electron window.
+Source ≤ 96,000 bytes (`SCENE_LIMITS.maxSourceBytes`); height 120–960 px; 64
+documents in the store. Errors pin to the toolbar without tearing the frame
+down; a throw before `ready` collapses to a banner with Retry / Show code.
 
 ## MCP Apps
 
-An **MCP App** is a page an MCP server ships with a tool (the MCP Apps extension, `io.modelcontextprotocol/ui`). The tool declares a `ui://` resource in `_meta.ui.resourceUri`; when the agent calls the tool, DAEX reads that resource and shows the page under the tool call. The page is third-party code.
+An **MCP App** is a page an MCP server ships with a tool (`_meta.ui.resourceUri`
+`ui://…`); DAEX shows it under the tool call. The page is third-party code.
+Runs in Claude and Codex chats on desktop and iPhone; other providers show
+ordinary rows; hosted web shows fallback text.
 
-**Where apps run:** Claude and Codex chats, on desktop and iPhone. Other providers cannot read a tool's page or call back, so their tool calls stay ordinary rows. The hosted web client shows the card's fallback text. The iPhone host has run on a simulator from a saved app document; a tool call from a phone to a paired Mac has not been run end to end.
-
-### How an app gets into the chat
-
-1. `emitChatEvent` hands every `tool_call` and `tool_result` to `mcpApps.observe` (`mcpAppHost.ts`). A Codex call names its page on the event (`mcp.resourceUri`, from `mcpAppResourceUri`). A Claude call names only `mcp__<server>__<tool>`, so the host looks it up in `query.mcpServerStatus()` (which carries `_meta.ui`). A subagent's own calls are skipped.
-2. When the call completes, `capture` reads the page through the chat's provider session: `query.readMcpResource(server, uri)` for Claude (the CLI must advertise `mcp_read_resource_v1`), `mcpServer/resource/read` for Codex. It must be `text/html;profile=mcp-app` and at most 4 MB.
-3. The page, its declared origins, and the tool input and result are filed with the chat (`mcpAppStore.ts`), and the host emits an `ade_card` with variant `mcp_app` and id `mcp-app:<tool call id>`, which survives the turn fold.
-4. The desktop draws it as `McpAppCard`. A reopened chat reads the stored record, so the app shows after the session ends.
-
-DAEX tells servers it renders apps: Codex gets `extensions["io.modelcontextprotocol/ui"]` in `initialize`; Claude Code starts with `CLAUDE_CODE_MCP_APPS_HOST=1`, an undocumented switch read from the CLI that must be rechecked when the CLI changes.
-
-### The sandbox
-
-An app runs where a scene runs: a `sandbox="allow-scripts"` iframe without `allow-same-origin`, on `ade-scene:`, with an opaque origin and no storage. Its document comes from a separate `mcpAppDocumentStore` (`ade-scene://app/<id>`), each with its own CSP header.
-
-- `buildMcpAppContentSecurityPolicy` (main) builds the policy from the resource's `_meta.ui.csp` only; the renderer passes the declaration, never a policy string.
-- `connectDomains` become `connect-src`; `resourceDomains` join script, style, image, media and font sources. An origin is kept only if it is `https://` (or `wss://` for connections) plus a host name and optional port: no path, quotes, keyword, bare `*`, IP address or local host. A resource that declared nothing gets `connect-src 'none'`.
-- Up to 128 origins and 40,000 characters per list (`MCP_APP_LIMITS.maxCspDomains`, `maxCspListChars`), so a whole policy stays under the phone's 256 KB. Real servers declare many: Higgsfield's pages declare more than 40, and the old cap of 24 cut the list so the page never ran. The phone serves a policy under 256 KB (`workMcpAppPolicyIsUsable`); iPhone builds from before the cap rose refuse one of 8,000 characters or more and show "This machine's DAEX is too old to show apps on the phone." for such an app. `capture` logs `agent_chat.mcp_app_csp_gaps` (info, local log only) when declared origins were dropped or the page's own `<script src>` / `<link href>` tags load from an origin its policy does not allow.
-- Narrower than the spec: no `'self'`, no nested frames (`frameDomains` dropped), no base URI, no `'unsafe-eval'`, no `blob:`, no workers, no camera, microphone, geolocation or clipboard. `will-frame-navigate` refuses self-navigation.
-- The row says what it is, outside the frame: the tool name, "app from <server>", and "can reach <origin>" when network access was declared. A border marks the frame.
-
-### What an app can ask for
-
-The frame talks JSON-RPC over `postMessage`. `McpAppFrame` accepts only its own frame's messages and shape-checks each (`parseMcpAppFrameMessage`).
-
-| Message | What DAEX does |
-|---|---|
-| `ui/initialize` | Answers with protocol `2026-01-26`, host capabilities (`openLinks`, `serverTools`, `serverResources`, `logging`, approved origins) and host context: the tool call, the theme and its CSS variables, `displayMode: "inline"`, width and maximum height. |
-| `ui/notifications/initialized` | Sends `ui/notifications/tool-input`, then `ui/notifications/tool-result`, from the stored record. |
-| `ui/notifications/size-changed` | Sets the height, 80–800 px. |
-| `ui/open-link` | Opens an http(s) page in DAEX's browser, only right after a click or key press in the frame, at most one per 800 ms. |
-| `ui/message` | Drafts the text in the prompt box (`SceneReplyContext`), only right after a click or key press. |
-| `tools/call`, `resources/read` | Passed to the brain as `chat.mcpAppRequest` with `userActivated` (see below). |
-| `ui/request-display-mode` | Answers `inline`. |
-| `ping` | Answers. |
-| anything else | Refused (`ui/update-model-context`, `ui/download-file`, sampling). |
-
-DAEX sends `ui/notifications/host-context-changed` on a theme or column-width change, and `ui/resource-teardown` before the frame comes down.
-
-### Calls back to the server
-
-`chat.mcpAppRequest` carries the chat, the originating tool call, the method and params, never a server name: `mcpAppHost.request` reads the server from the stored record.
-
-- **The live session or nothing.** `linkFor(sessionId)` answers only while the chat's Claude query or Codex app-server is up; nothing starts, resumes or wakes one. Otherwise: "The chat that created this app is not running."
-- **Visibility.** A tool whose `_meta.ui.visibility` lacks `app`, or that the server does not list, is refused.
-- **Read-only runs.** A tool marked read-only (`annotations.readOnly` from Claude, `annotations.readOnlyHint` from Codex) runs at once.
-- **Anything else needs a click.** Other tools, and tools without annotations, run only when `userActivated` is true: the hosting client saw a real click or key press just before (focus with transient activation on desktop; a native tap within one second on the phone). The host decides, never the page. Otherwise: "An app can change data only right after you click or press a key in it.", with no card.
-- **The first time, DAEX asks.** The first call to a changing tool raises the native pending-input card (`requestChatInput`) with server, tool and arguments: **Allow once**, **Always allow**, **Don't allow**. Decline, a typed answer or three minutes of silence refuse. One card per app at a time; four calls in flight per app.
-- **Always allow** is kept per MCP server and tool name for the project (`ade.db` key `agent-chat:mcp-app-grants:v1`, `mcpAppGrants.ts`, at most 200), and syncs with the project. After it, the tool needs only the click.
-  - A grant also stores a fingerprint of the server's definition (a hash of command and arguments, or URL; never env or headers) when DAEX can read one, and holds only while it matches.
-  - Claude reports every definition (`mcpServerStatus().config`). Codex does not, so DAEX knows only servers the chat itself was given (`session.mcpServers`); registry or user-config Codex grants are by name only.
-  - The app's row lists always-allowed tools for its server with **Ask again** (`chat.listMcpAppGrants`, `chat.revokeMcpAppGrant`).
-- **Only the user answers.** The card carries `MCP_APP_TOOL_CALL_METADATA_KEY`, which `isUserOnlyConsentCard` recognizes. `chat.mcpAppRequest` and `chat.revokeMcpAppGrant` are in `ADE_ACTION_USER_ONLY`.
-- **Transport.** Codex: `mcpServer/tool/call` and `mcpServer/resource/read` on the chat's thread (the model's server process). Claude: `readMcpResource`, and the `mcp_call` control request through the query's `request` channel (typed by the SDK without a method; if a bump removes it, app tool calls are refused). Claude reads `ui://` resources only. Between turns the link waits for a Claude query that is restarting, and never starts one.
-
-The session's tool list is cached for five minutes (on Codex, `mcpServerStatus/list` starts a second copy of each server).
-
-### On the phone
-
-The iPhone runs the same card (`WorkMcpAppCardView`, `apps/ios/ADE/Views/Work/WorkMcpAppView.swift`, `WorkMcpAppDocument.swift`) on the scene host's base: the same container, tap observer and on-screen rule (`WorkSceneContainerView`, shared through `WorkSceneContainerOwner`), a `WKWebView` with a non-persistent data store, and the same refusals (new windows, alerts, capture prompts, context menus).
-
-- **Two sync commands.** `chat.getMcpApp` (viewer allowed) and `chat.mcpAppRequest` (controllers only, never queued), registered in `syncRemoteCommandService.ts` and optional in `syncMobileCompatibility.ts`. Against a machine without them, and in a personal chat, the phone shows the fallback text.
-- **Bounded.** A page over 1 MB (`MCP_APP_LIMITS.maxRemoteDocumentBytes`) is not sent: "This app is too large to show here. Open the chat in DAEX on desktop."
-- **The policy comes from the Mac.** `chat.getMcpApp` returns `contentSecurityPolicy` from `buildMcpAppContentSecurityPolicy(csp, { sandbox: true })` (the desktop policy plus `sandbox allow-scripts`). The phone serves exactly that header and refuses a page without a policy, `default-src 'none'` or the sandbox (`workMcpAppPolicyIsUsable`).
-- **A frame inside a shell.** The web view loads DAEX's shell (`ade-mcp-app://shell/<token>`), whose `<iframe sandbox="allow-scripts">` loads the page (`ade-mcp-app://app/<token>`); `WorkMcpAppSchemeHandler` serves both from memory with policy headers. The page gets an opaque origin, and its messages are not delivered back to itself. The navigation delegate allows those two loads once each.
-- **The bridge.** A user script in its own content world, in the shell only, relays the frame's posts (`event.source` checked) as bounded JSON text, and posts host messages in. The page cannot see the handler.
-- **Same rules.** `ui/message` drafts text (`WorkSceneChatBridge.reply`, `applySceneReply`) and `ui/open-link` opens an http(s) page, both within one second of a native tap. Tool calls carry `userActivated` from that tap. Approval is the ordinary pending-input card.
-- Not on the phone: revoking "Always allow", and stills.
-
-### Limits
-
-- One page: 4 MB. Stored tool input and result: 512 KB each (beyond that, the app shows without them). 40 apps per chat, oldest first out.
-- Call arguments: 256 KB. A result handed to the app: 2 MB.
-- The frame runs while its row is on screen (`useSceneOnScreen`) and while a call it made is out. Scrolling back restarts it from the stored input and result; there is no still.
-- A page that has not finished the handshake after 10 s folds (desktop): the frame is hidden and an inline warning `Banner` says "Preview from <server> did not load" and "The tool call finished.", with the stored result's text and links. The fold sticks across scrolling; a page that answers late unfolds. **Reload preview** reads the stored app and mounts a fresh frame; it never runs the tool again (the tool already ran, and may have cost money). The phone keeps its frame and says "The preview did not load." with **Reload**, which also only reloads the page.
-- Not built: full screen and picture-in-picture, partial tool input while arguments stream, sampling, `ui/update-model-context`, nested frames, device permissions, apps on hosted web.
+- **Capture** (`mcpAppHost.ts`): on tool completion, read the page through the
+  chat's provider session (`query.readMcpResource` for Claude, needs
+  `mcp_read_resource_v1`; `mcpServer/resource/read` for Codex), require
+  `text/html;profile=mcp-app` ≤ 4 MB, store it (`mcpAppStore.ts`) and emit an
+  `ade_card` `mcp_app` (`mcp-app:<tool call id>`). Claude Code is told it may
+  render apps via `CLAUDE_CODE_MCP_APPS_HOST=1` (undocumented; recheck on CLI
+  bumps).
+- **Sandbox:** same as scenes, served from `mcpAppDocumentStore`
+  (`ade-scene://app/<id>`) with a policy built in main by
+  `buildMcpAppContentSecurityPolicy` from the resource's declared origins only
+  (https/wss hosts; no `'self'`, nested frames, eval, workers or device access;
+  ≤ 128 origins).
+- **Frame messages** (`McpAppFrame.tsx`, `parseMcpAppFrameMessage`):
+  `ui/initialize`, tool input/result notifications, size changes, `ui/open-link`
+  and `ui/message` (only right after a click), `tools/call` and
+  `resources/read` (to the brain). Everything else is refused.
+- **Calls back** (`chat.mcpAppRequest`): only while the chat's Claude query or
+  Codex app-server is live (nothing is woken); read-only tools run at once;
+  others need `userActivated` and, the first time, a user-only approval card
+  (Allow once / Always allow / Don't allow). Grants are per server and tool,
+  stored in `agent-chat:mcp-app-grants:v1` (`mcpAppGrants.ts`) with a server
+  definition fingerprint when readable. `chat.mcpAppRequest` and
+  `chat.revokeMcpAppGrant` are in `ADE_ACTION_USER_ONLY`.
+- **iPhone** (`WorkMcpAppView.swift`): `chat.getMcpApp` and
+  `chat.mcpAppRequest` sync commands; pages ≤ 1 MB; the policy comes from the
+  Mac and the phone refuses pages without it; the page runs in a sandboxed
+  iframe inside a DAEX shell page.
+- **Limits:** 4 MB page, 512 KB stored input/result, 40 apps per chat. A page
+  that does not handshake in 10 s folds to a banner; **Reload preview** never
+  re-runs the tool.
 
 ## Claude mod UI
 
-A Claude Code **mod** is a plugin whose `hooks/hooks.json` names a hooks module (`{ "modules": ["./register.tsx"] }`). The module runs inside Claude Code and can draw a status line (`$.ui.status`), a toast (`$.ui.toast`), a band above the prompt (a `ui.render` hook on `AbovePrompt`) and panes (`$.ui.open` plus a `ui.render` hook on `Pane`). DAEX chat draws all four in one dock on the composer. It is **off by default**; the hooks run in every Claude chat either way, and this feature is only the drawing.
+A Claude Code **mod** is a plugin with a hooks module that can draw a status
+line, toasts, a band above the prompt and panes. DAEX chat draws them in one
+dock on the composer; **off by default** (`ai.chat.claudePluginUiEnabled`,
+Settings › Chat › Claude mods).
 
-### The channel is private
-
-Claude Code's documentation says an Agent SDK host draws nothing. The UI still reaches the host on the channel Claude Desktop uses:
-
-| Direction | Message | Meaning |
-|---|---|---|
-| CLI to host (a `system` message) | `ui_status` | A plugin set or cleared its status line (`text: null` clears). |
-| CLI to host | `ui_toast` | A plugin raised a toast (`timeout_ms`). |
-| CLI to host | `ui_panes` | The open-pane list changed. |
-| CLI to host | `ui_invalidate` | A tree changed; ask again. |
-| CLI to host | `ui_log` | A debug line; ignored. |
-| Host to CLI (a control request) | `ui_render` | Returns one site's element tree (`component: "AbovePrompt"` or `"Pane"`, `surface: "desktop"`). |
-| Host to CLI | `ui_press`, `ui_input`, `ui_select` | A press, a submitted field, a pick, naming the tree's `{ plugin, handle }`. |
-| Host to CLI | `ui_close` | Close a pane. |
-
-None of this is in the SDK's types; control requests go through the untyped `Query.request` (as `setModel` does), and the mod API is early access behind a server flag. **A failure here leaves the chat without mod UI and never touches a turn.** `claudePluginUiService` checks `request` exists, sets a 5 s timeout per request, catches every error and logs at debug only. Checked against Claude Code 2.1.293 (SDK 0.3.293).
-
-### How it flows
-
-1. `ensureClaudeQuery` calls `claudePluginUi.attach(sessionId, query)` when it sets `runtime.query`; each of the four places that clear it calls `detach`.
-2. Both Claude loops (the turn loop and `handleClaudeIdleMessage`) pass every message to `claudePluginUi.ingest` first, which consumes `ui_*` messages. In the turn loop this happens before `bumpClaudeIdleDeadline` (mod drawing is not model activity). After a result, the loop waits one 1 s drain window per read; mod messages share one window from the first, so a timer-driven mod cannot hold a turn open. An interrupt is honoured on a mod message too.
-3. The service asks for the band on attach, on `system/init` and on each `ui_invalidate` or `ui_panes`. Requests during a render fold into one more; renders are at least 200 ms apart.
-4. Each tree passes `sanitizeClaudePluginUiTree`. Every change publishes the whole snapshot as a transient `session_meta_updated` with a `claudePluginUi` field; nothing goes to the transcript or database. Such an event is not chat activity (`isClaudePluginUiOnlyMetaEvent`): it does not reorder the Work list, and the sync host does not send it to phones or web, record it, or refresh the roster. A site whose render failed keeps its tree and controls.
-5. The desktop reads the snapshot with `chat.getClaudePluginUi` when a chat opens, then follows its events. `chat.actOnClaudePluginUi` sends a press, value, pick or pane close. Both use the chat action domain (`callPinnedOrBoundRuntimeActionOr`), so a window bound to another machine reaches that machine's Claude process.
-
-### What a client may draw, and what a press may do
-
-- **Known elements only:** `Box`, `Text`, `Button`, `Link`, `Code`, `Markdown`, `Input`, `Select`, each with fixed props. `Svg`, `Client`, `Raster` and `Image` are dropped (an `alt` stands in).
-- **Bounded:** 1,500 nodes, 40,000 characters, depth 32, 8 status lines, 4 panes. Control characters and bidi overrides are removed.
-- **Links** follow Claude Code's Desktop rule (`safeClaudePluginUiHref`): `https:` or `http://localhost`, no `@`, normalized; anything else is plain text. Links open in the system browser. A mod's `Markdown` links follow the same rule, so a mod cannot open a file or DAEX deeplink.
-- **Attribution.** A status line starts with the mod's name (per Claude Code's [mods API docs](https://code.claude.com/docs/en/plugins/mods/api): `my-mod: checks: 3 passing`); a toast has the mod's name as title. A newer toast replaces the mod's older one. A toast rides only the publish that raised it and shows only for the chat on screen.
-- **Keys.** A control with a `key` keeps its state by key; others by position ([interface docs](https://code.claude.com/docs/en/plugins/mods/interface) tell mods to key controls). A text field stays the same while its key (or label and placeholder) holds; a new field starts from its own value.
-- **A press that does not come back** is never resent (`actOnClaudePluginUi` is a declared write). No answer in 5 s returns `unanswered`, and the window says the mod may still have run it. A call that never left (project switch, lost connection) says nothing ran.
-- **Colours.** Claude Code theme keys, terminal names, hex, `rgb()` and `ansi256()` map to theme colours (`claudeModUiStyle.ts`); terminal black, white and greys follow the theme. No mod style string reaches the DOM.
-- **A press is bound to the process that drew it.** The snapshot carries a `generation` per Claude process. The service refuses another generation, a `{ plugin, handle }` not in its last trees, a value or pick not naming the site it was drawn in, and closing a pane this process does not list. Every argument is checked; Claude Code's fresh handles per render also refuse old controls.
-- **User clients only.** Both actions are in `CLAUDE_PLUGIN_UI_ACTION_NAMES`, shared by the action policy and RPC guard with thread comments, so an agent cannot read or press mod UI. `adeActionAccess.ts` declares the read and write; the preload lists `getClaudePluginUi` among chat-host reads (it waits for the host during a project switch). They are not sync remote commands.
-
-When the Claude process goes away (idle eviction, a reset), the band and panes stay dimmed and not pressable (`live: false`). The next process keeps the dimmed band until one of its renders answers, and has no panes. Late messages of a replaced process are dropped. A `generation` starts at the host's clock, so a restarted host never reuses one. A redraw identical to what clients show is not published. A chat's end removes its mod UI, and status lines are cleared with their process.
-
-### Surfaces
-
-| Surface | State |
-|---|---|
-| Desktop chat | One dock on the composer, as wide as the prompt box: a header with the status lines, then panes and the band, centred. The header folds the dock to one row (kept in window storage). Toasts use the app toast stack. |
-| Hosted web client | Not drawn; the setting is hidden. |
-| iOS | Not drawn; snapshots are not synced. |
-| Tracked CLI session | The real Claude terminal draws its own mod UI. |
-
-The setting is `ai.chat.claudePluginUiEnabled` (Settings › Chat › Claude mods), off unless `true` because the channel is private. A change applies at the chat's next message from Claude.
-
-While it is off, an open Claude chat of this tab's own project (not hosted web, not a subagent view, not a chat pinned elsewhere) offers it once: a floating prompt ("DAEX can show your Claude mods in chats") with a button to the setting. It shows only when `chat.listClaudePlugins` reports a plugin with `isMod`, once per chat per window; closing it or following it ends the offer in that window's storage.
+- **The channel is private:** `ui_status`, `ui_toast`, `ui_panes`,
+  `ui_invalidate` system messages from the CLI; `ui_render`, `ui_press`,
+  `ui_input`, `ui_select`, `ui_close` control requests via the untyped
+  `Query.request`. None is in the SDK types. **A failure here never touches a
+  turn**: `claudePluginUiService` checks `request` exists, times out each call
+  at 5 s, swallows errors.
+- Both Claude loops pass messages to `claudePluginUi.ingest` first; mod
+  messages never count as model activity or hold a turn open.
+- Trees pass `sanitizeClaudePluginUiTree` (known elements only, bounded,
+  control/bidi characters stripped); links follow
+  `safeClaudePluginUiHref` (https or localhost http) and open in the system
+  browser.
+- Snapshots go out as transient `session_meta_updated` (`claudePluginUi`),
+  never to transcript, database, phones or web
+  (`isClaudePluginUiOnlyMetaEvent`). Desktop reads `chat.getClaudePluginUi` and
+  acts with `chat.actOnClaudePluginUi` on the chat's machine
+  (`callPinnedOrBoundRuntimeActionOr`).
+- A press is bound to the process `generation` that drew it and is never
+  resent. Both actions are user-client only (`CLAUDE_PLUGIN_UI_ACTION_NAMES`).
+- Not drawn on hosted web or iOS; a tracked CLI draws its own.
 
 ## Pi UI bridge, `ask_user`, and extensions
 
-Pi asks the human from three places: `AuthInteraction` during login, a custom tool's `execute`, and an extension's UI context. All three are blocking callbacks. `piSdkUiBridge` funnels them into one reverse-RPC channel (protocol version 2), so the desktop has one place to render a card and one place to fail it closed.
+Pi asks the human from `AuthInteraction` (login), custom tool `execute`, and an
+extension's UI context. `piSdkUiBridge` funnels all three into one reverse-RPC
+channel (protocol version 2): `ui_request`, `ui_response`, `ui_notice`,
+`ui_cancel`, each with an `origin` (`auth`, `tool`, `extension`, `approval`).
 
-- **Frames:** `ui_request` (worker → desktop, blocking), `ui_response` (desktop → worker, same id), `ui_notice` (worker → desktop, non-blocking), `ui_cancel` (worker → desktop, "I settled this myself"). Each request has an `origin` (`auth`, `tool`, `extension`, `approval`) that sets the card shape and which requests a targeted drain affects.
-- **`bridge.request()` never rejects.** A dismissed card, aborted turn, extension timeout, malformed abort signal or disposed worker resolves to `null` ("no answer").
-- **Every desktop path answers once.** Every path out of `presentPiUiRequest` ends in exactly one `respondToUi`, including interrupt and teardown via `cancelPendingInputsFrom(managed, "pi", "ade")`. That shared variadic helper must get every source the ending turn owns (its provider's cards and the `ade` cards DAEX's tools raised), or `hasPendingInput` keeps the session blocked. OpenCode drains `"opencode", "ade"` on interrupt and error; Codex drains `"codex", "ade"` in `settleCodexPendingInputs`.
-- Requests become ordinary pending inputs with `source: "pi"`: with options, a `structured_question` that needs a pick (Pi expects an option id); without, a free-text `question`; `approval` origin, an approval card. A `secret` prompt sets `isSecret`.
+- `bridge.request()` never rejects; dismissals, aborts and timeouts resolve
+  `null`.
+- Every desktop path answers exactly once, including interrupt and teardown via
+  `cancelPendingInputsFrom(managed, "pi", "ade")`. That helper must get every
+  source the ending turn owns, or the session stays blocked (OpenCode drains
+  `"opencode", "ade"`; Codex `"codex", "ade"`).
+- Requests become pending inputs with `source: "pi"`.
 
-**`ask_user`.** DAEX injects an `ask_user` tool into every Pi chat, personal chats included, so the model can check in mid-turn. It takes a question, an optional short header and optional labelled choices, and returns text. Declining returns "the user did not answer, continue with your best judgement and state the assumption you made."
+**`ask_user`** is injected into every Pi chat (personal chats too); declining
+tells the model to continue and state its assumption. **Approval gating** of
+`bash`/`edit`/`write` and MCP tools: see [tool system](tool-system.md#pi-tools)
+and [agent routing › Pi](agent-routing.md#pi).
 
-**Approval gating.** `bash`, `edit` and `write` (and `powershell` on Windows) are rebuilt from Pi's definition factories and wrapped so each call clears an approval card. MCP tools ask through a `tool_call` hook on the same gate, codemode scripts' calls included, in every asking mode (`default`, `edit`); `full-auto` runs them. `grep`, `find` and `ls` never ask. See [Agent Routing › Pi](agent-routing.md#pi) for the mode table, MCP and `ungateableTools`.
+**Extensions** load by default (`ai.chat.piExtensionsEnabled`) on DAEX's
+`ExtensionUIContext` (`select`/`confirm`/`input`/`editor` → cards;
+`notify`/`setStatus` → notices; TUI-only surfaces do nothing). Boundaries:
 
-**Extensions.** The user's Pi extensions load in DAEX chat by default (`ai.chat.piExtensionsEnabled`), bound to DAEX's `ExtensionUIContext`:
-
-- `select` / `confirm` / `input` / `editor` become DAEX cards. Dismissal, timeout and abort read as "no answer" (deny for `confirm`).
-- `notify` / `setStatus` / `setWorkingMessage` / `setTitle` become thread notices; `progress` notices render as activity.
-- TUI-only surfaces (widgets, footers, headers, editor hooks, autocomplete, themes) do nothing. A noticeable absence warns once per method; purely visual ones are ignored.
-
-Three boundaries:
-
-- **Repository code never loads.** The worker builds Pi's `SettingsManager` with `projectTrusted: false` for both the resource loader and the session, so only `~/.pi/agent/extensions` loads, never the checkout's `.pi/`. If a Pi build will not let DAEX pin that flag, extensions stay off and `extensionsError` says why.
-- **Extensions load only where the mode grants its tools outright** (`edit`, `full-auto`). Extension tool names are unknown until the session exists, so DAEX switches to `excludeTools` for unwanted built-ins, and extension tools cannot be wrapped in approval cards. Read-only and ask-first modes (`default`, `auto`, `config-toml`) keep the allowlist and skip extensions. Personal chats skip them (no worktree).
-- **Extension tools run outside DAEX's permission modes.** A one-time notice names what loaded and says their tools are not limited to the chat's tool list. Load failures and `ungateableTools` get their own notices.
-
-Sign-in notices never reach a chat: login runs on `piAuthService`'s worker and renders in Settings.
+- **Repository code never loads:** `SettingsManager` with `projectTrusted:
+  false`, so only `~/.pi/agent/extensions` loads, never a checkout's `.pi/`.
+- Only in modes that grant tools outright (`edit`, `full-auto`); not in
+  read-only or ask-first modes, nor personal chats.
+- **Extension tools run outside DAEX's permission modes**; a one-time notice
+  says so.
 
 ## External chat import
 
-The external-session import can turn a CLI session of any provider in `EXTERNAL_SESSION_PROVIDERS` into a full DAEX chat. `externalSessionsService.importExternalSession` checks the shared policy (`shared/externalSessionPolicy.ts`) and delegates `target: "chat"` to `agentChatService.importExternalChatSession`, which creates a lane-scoped `AgentChatSession`, stamps `importedFrom` (`mode: "continue"` or `"fork"`), seeds the transcript and binds future turns where the provider allows. It returns the persisted `AgentChatSessionSummary` with the new id, so desktop and iOS install the row before navigating. Full doc: [External Session Import](../terminals-and-sessions/external-session-import.md).
+The external-session import turns a CLI session of any provider in
+`EXTERNAL_SESSION_PROVIDERS` into a DAEX chat
+(`externalSessionsService.importExternalSession` → policy in
+`shared/externalSessionPolicy.ts` → `agentChatService.importExternalChatSession`,
+which stamps `importedFrom` and returns the summary). Full doc:
+[External Session Import](../terminals-and-sessions/external-session-import.md).
 
 | Path | When | How |
 |---|---|---|
-| Claude native | Target model is Claude-family, or none | Reads the source JSONL from Claude project storage. A copy, or a cwd different from the target lane, makes a non-destructive copied transcript with a new id in the lane's Claude project folder and points SDK resume at it. |
-| Codex native | Target model is Codex-family, or none | Reads turns with `thread/read`; a fork first calls `thread/fork` and seeds from the new thread. |
-| Native continue | Droid, OpenCode, Pi, Copilot, `mode: "resume"` | Seeds the pointer the chat restores from (`droidSdkSessionId`, OpenCode `providerSessionId`, `piSessionId`, Copilot's `copilotSdkSessionId`, or `acpSessionId` for older Copilot chats), so the first turn opens the CLI's own session. The session folder must be the lane root and the model of the provider's family; the recorded effort is kept when the model matches. History is display only. Copilot resumes with the SDK's `resumeSession`. |
-| Replay copy | Every other case, including a Claude or Codex copy into another family | History from `loadExternalSessionEvents` (`externalSessions/events/`) is written in and staged as a transcript replay for the first turn. The model defaults to the recorded one if same-family, else the provider default. |
+| Claude native | Claude-family target or none | Reads the source JSONL; a copy or another cwd writes a copied transcript with a new id and resumes it. |
+| Codex native | Codex-family target or none | `thread/read`; a fork calls `thread/fork` first. |
+| Native continue | Droid, OpenCode, Pi, Copilot (`mode: "resume"`) | Seeds the provider's session pointer so the first turn opens the CLI's own session (session folder must be the lane root). |
+| Replay copy | Everything else | History from `loadExternalSessionEvents` is staged as a transcript replay. |
 
-Chat continue is not offered for Cursor or the ACP providers Qwen, Kimi and Grok, because DAEX has not shown its chat runtime can open a session the CLI created. A copy leaves the original untouched, listed as "imported before".
-
-**Seeding is bounded.** `externalChatHistoryImport.ts` reads the last `MAX_IMPORT_TRANSCRIPT_BYTES` (32 MB) of file transcripts and keeps the newest 2,000 content events.
-
-- It prepends notices for provenance and any truncation.
-- It maps user, assistant, tool, command, file-change, search and image events into `AgentChatEventEnvelope`, skipping metadata-only user rows and known ADE/provider wrappers (ordinary JSX/XML and prompts starting `User request:` are kept).
-- It derives a fallback title from the first imported text.
-- `appendImportedChatEvents` runs `withImportedTurnBoundaries` (`shared/importedTurnBoundaries.ts`), closing each imported turn that used tools with a `done` event, since finished tool calls show only in a turn's `done` summary.
+Chat continue is not offered for Cursor or the ACP providers. Seeding reads the
+last 32 MB (`MAX_IMPORT_TRANSCRIPT_BYTES`) and keeps the newest 2,000 content
+events (`externalChatHistoryImport.ts`); imported tool turns get a `done`
+(`withImportedTurnBoundaries`).
 
 ## Recently deleted chats
 
-Deleting a chat removes DAEX's record and transcript, never the agent's copy (Claude's `projects/<cwd>/<id>.jsonl`, a Codex rollout, an OpenCode store entry). Settings › Deleted & Archived › Recently deleted (anchor `#recently-deleted`; `daex chat deleted list` / `daex chat deleted reopen`) reads those copies back.
+Deleting a chat removes DAEX's record and transcript, never the agent's own
+copy. Settings › Deleted & Archived › Recently deleted (`daex chat deleted
+list|reopen`) reads those copies back (`deletedChats.ts`).
 
-- A row is written just before the delete, from the record's provider pointer. It stays on this machine: `deleted_chats` is excluded from CRR sync.
-- Rows whose chat still exists (a failed delete) and hidden rows (reopened or removed) are never listed. A chat that never reached its agent gets no row.
-- The delete returns `{ recoverable }` (also on the `chat.delete` sync command); the Work toast offers Undo and the Recently deleted link only when true. A machine that returns nothing reads as recoverable.
-- **Reopen** uses the external-session import: same lane continues in place; another lane is a copy (the session is tied to its folder); a chat whose lane is gone asks for a lane. It refuses a conversation a live or archived chat holds, and drops the row when the agent no longer has the copy.
-- **Remove from list** hides the row without touching the agent's files and is user-only (`chat.removeDeletedChats` in `actionPolicy.ts`).
-- A lane delete records its chats (`origin: lane_delete`, listed with `withLane: true` under their lane's row) first; merging duplicate lanes re-points them at the keeper. Restoring the lane reopens them into the new lane (`deletedChats.reopenWithRestoredLane`, through the external-session import, so each is a copy tied to the new folder); one that cannot come back stays listed. Deleted Claude chats without a row appear through a `claude_sessions` backfill with `insert or ignore`, so reopened or removed rows never return.
-- UI: `RecentlyDeletedSection.tsx`, one list for every online machine; each row's calls carry that row's machine pin. Hosted web and a Work row's Reopen use the `chat.listDeleted`, `chat.getDeletedDetail`, `chat.reopenDeleted` and `chat.removeDeleted` sync commands; a machine without them says the action is unavailable.
+- A row is written just before the delete; `deleted_chats` stays on this machine
+  (excluded from CRR sync). The delete returns `{ recoverable }`.
+- **Reopen** goes through the external-session import (same lane continues;
+  another lane is a copy). **Remove from list** is user-only
+  (`chat.removeDeletedChats`).
+- A lane delete records its chats first; restoring the lane reopens them.
+- `RecentlyDeletedSection.tsx` lists every online machine; each row's calls
+  carry its machine pin. Hosted web uses `chat.listDeleted`,
+  `chat.getDeletedDetail`, `chat.reopenDeleted`, `chat.removeDeleted`.
 
 ### Agent CLI sessions
 
-A tracked agent CLI terminal (Claude Code, Codex, OpenCode, Cursor CLI, Droid, Pi, …; `row.tracked && isTrackedAgentCliToolType(row.toolType)`) follows a chat's lifecycle through the same `chat.*` actions, so every surface (Work menu, `daex chat delete|archive|unarchive|handoff|fork`, the phone, web) reaches it on its owning machine. Code: `chat/cliSessionLifecycle.ts`, called from `deleteSession`, `archiveSession`, `unarchiveSession` and `handoffSession` in `agentChatService.ts`.
+A tracked agent CLI terminal (`row.tracked && isTrackedAgentCliToolType(row.toolType)`)
+follows a chat's lifecycle through the same `chat.*` actions, on its owning
+machine (`cliSessionLifecycle.ts`).
 
-- **Delete** stops the CLI (refused while another DAEX runtime holds its terminal), waits up to 3 s for its conversation id to appear in its output (Codex, Droid and OpenCode name it only there), writes a `deleted_chats` row with `kind = 'cli'` and the terminal row as `cli_json`, then removes the row. The terminal recording and the agent's file stay on disk. A CLI is listed even without a known conversation id. A worker CLI a chat spawned stays hidden (its chat owns it), as does a Devin CLI. Every terminal-row delete (`sessions.delete`, the phone's `work.deleteSession`, Settings › Archive) routes a CLI here through `deleteSessionRowWithRuntimeCleanup`; a plain shell is removed outright.
-- **Recently deleted** shows a CLI with its tool logo and "CLI session" (`kind: "cli"`, `toolType`, `resumable`); the preview is the agent's conversation file, else the tail of DAEX's recording. **Reopen** restores the row under the same id in its lane and resumes it (`ptyService.resumeSession`, the Work row's Resume launch) when the agent still has the conversation. Otherwise (no id, another lane, a live chat holds it, resume failed) it starts a fresh CLI with the old launch (`runtimeCliLaunch`: agent, permission mode, model, account, preset), and `DeletedChatReopenResult.notice` says why. The result has `kind: "cli"`, `mode: "continue" | "fresh"`, no `chatSummary`.
-- **Archive** stops a CLI at its prompt, lets a mid-turn one finish and stops it after (`stopArchivedAfterTurn`, as chat archive does), cancels its scheduled work and sets `archived_at`. Unarchive clears it and starts nothing. Settings › Deleted & Archived › Archive lists it by the CLI's name (`ArchivedItem.toolLabel`, replacing a placeholder title such as "Shell").
-- **Handoff and fork** start a new chat and leave the CLI as it was. A fork with a known conversation id goes through the import with `fork: true` (native for the same agent, a replay for another). A brief, or a fork without the id, uses `buildDeterministicHandoffBrief` fed from the conversation file (last 12 messages, 12,000 characters), else the CLI's last message and terminal lines. An empty `targetModelId` keeps the CLI's model, else its agent's default. Mid-turn is refused. `cliContextSource` names the context's source.
-- **Moving to another machine** moves a CLI as a CLI through the chat move (`startCrossMachineHandoff`, `startCrossMachineBatchMove`, `daex chat move`, Work menu › Hand off › Another machine), with the same record, outbox, lane import, retry, `--when-turn-ends` queue and move lock. The CLI steps live in `chat/cliCrossMachineMove.ts` (`prepareCliCrossMachineMove`, `validateCliCrossMachineSource`, `acceptCliArrival`).
-  - **Source.** Refused mid-turn (use `--when-turn-ends`, or a batch's `--interrupt` presses cancel first) and while the CLI waits at its own prompt. The lane is checked, the CLI stopped (`cliLifecycle.stopForMove`, up to 5 s), and its conversation packed from the account's config home: Claude Code's `<home>/projects/<cwd slug>/<id>.jsonl` with its `<id>/` sidecar, Codex's `<home>/sessions/…/rollout-…-<id>.jsonl`. The capsule's `cli` part carries tool type, launch settings (model, effort, fast, permission mode and provider permission fields, harness preset), the account email, title, goal and a handoff brief; the account id, stored API keys and Codex's config source stay behind. Before sending, the CLI must still be stopped and the file byte-identical, or the move is stale. A move that ends before reaching the destination resumes the CLI.
-  - **Destination.** It answers `cliMoveSupport: 1` in preflight (the source refuses without it, since a destination without it would open the capsule as a chat) and skips chat model checks. After the lane import it writes the conversation where the CLI looks under the destination lane path: Claude Code under a new id in the matching project folder with every `cwd` and `sessionId` rewritten (`placeClaudeForkFromTransport`); Codex under the same thread id with `session_meta` and `turn_context` `cwd` set to the lane (replacing an existing thread in place). It goes in the config home of the carried email's account, else the default. The CLI row (id derived from the handoff id, so retries find it) is created and resumed (`cliLifecycle.launchMovedCli`). Without a conversation, or on resume failure, a fresh CLI starts with the same settings and the brief as first prompt. A batch's parent link becomes the orchestration parent.
-  - **Per agent.** Claude Code and Codex resume their own conversation. OpenCode (server store), Cursor, Droid, Pi, Muse, Qwen, Kimi, Grok, Copilot and Devin start fresh with the brief, as does a CLI with no findable conversation, one over 18 MiB, a compressed Codex rollout, or any `--brief` move. `cliArrival` reports `continuation: "resume" | "fresh"` and a `notice` (or an account not signed in there).
-  - **After.** The source row stays ended and locked to the destination (`crossMachineMoveLock`): Resume, restart, send or wake is refused by the terminal (`ptyService` `setMovedAwayCliLock`) with where it continues. Its menu offers Open on <machine> and Work here (`acknowledgeCrossMachineHandoff`, which lifts the lock). The move rides the row as `crossMachineHandoff` (`chatSessionProjection.withCliCrossMachineMoves`). The conversation file, recording and scheduled work stay on the source (no `scheduledWorkIds`).
-  - **Who may move it.** A person always; an agent only a CLI its own chat started (directly or under a chat it started), because a CLI has no composer for an approval card; `daex chat move` asks once on the agent's chat. `daex chat move --all` includes CLIs.
-  - **Routing.** The Work menu passes the row's `binding` to `getCrossMachineHandoffOptions`, `startCrossMachineHandoff`, `retry`, `cancel` and `acknowledgeCrossMachineHandoff`, so source steps run on the terminal's machine; the source brain calls the destination's `preflightCrossMachineDestination` and `acceptCrossMachineHandoff` over its machine transport. The brain lists DAEX Cloud computers as destinations, but no picker offers one: the desktop, web and iOS pickers hide them and show one disabled DAEX Cloud row (see the `CrossMachineHandoffModal.tsx` row).
+- **Delete** stops the CLI, waits up to 3 s for its conversation id, writes a
+  `deleted_chats` row with `kind = 'cli'`, then removes the row. **Reopen**
+  resumes it (`ptyService.resumeSession`) when the agent still has the
+  conversation, else starts a fresh CLI with the old launch settings.
+- **Archive** stops it at its prompt (a mid-turn CLI finishes first) and cancels
+  its scheduled work.
+- **Handoff and fork** start a new chat (fork via the import when the
+  conversation id is known; otherwise a deterministic brief).
+- **Moving to another machine** (`cliCrossMachineMove.ts`) packs Claude Code's or
+  Codex's conversation file, writes it under the destination lane path, and
+  resumes there; other agents start fresh with a brief. Refused mid-turn (use
+  `--when-turn-ends`). The source row is locked to the destination
+  (`setMovedAwayCliLock`). Agents may move only CLIs their own chat started.
+  The destination must answer `cliMoveSupport: 1`.
 
 #### Talking to an agent CLI session
 
-The chat commands that act on a running agent also take a tracked CLI session id: `chat.messageSession`, `steer`, `interrupt`, `restartSession`, `updateSession`, `switchAccount`, `regenerateSessionMetadata`, `listPendingInputs`, `respondToInput`, `approveToolUse`. `chat/agentCliSessionActions.ts` answers through the terminal; the service routes a CLI row there before `ensureManagedSession`, and `chat.updateSession` asks `updateAgentCliSession` first. A plain shell or untracked CLI is refused with a pointer to `daex terminal write`. These are `chat`-domain actions, so they run on the terminal's machine (`--machine`, or a pinned call).
+`chat.messageSession`, `steer`, `interrupt`, `restartSession`, `updateSession`,
+`switchAccount`, `regenerateSessionMetadata`, `listPendingInputs`,
+`respondToInput` and `approveToolUse` also take a tracked CLI session id
+(`agentCliSessionActions.ts`), running on the terminal's machine. Plain shells
+are refused with a pointer to `daex terminal write`.
 
 | Command | On a tracked agent CLI |
 | --- | --- |
-| `send` / `message` | At a free prompt (or ended and resumable): typed now through the wake path (`deliverWakeToSession`). Busy: queued as a durable `chatWaitRegistry` wait on the CLI (survives brain restarts, gives up after a day), typed at the next free prompt; the result has `delivery: "queued"` and `steerId` = the wait id (`daex chat wait --cancel <id>`). `--interrupt` presses cancel and types once the prompt returns (queues after 10 s). Images and attachments are refused. While the CLI waits on its own permission prompt, a send is refused unless `--queue`. |
-| `steer` | Typed now, even mid-turn (`ptyService.sendToSession`); Claude Code and Codex hold mid-turn text for the running turn. |
-| `interrupt` / `stop` | `ptyService.interruptAgentCli` presses the cancel key and leaves the process running: Esc; Esc twice for OpenCode (the first arms "esc again to interrupt"); Ctrl-C for Cursor. Nothing is pressed at a free prompt (Ctrl-C can exit Cursor). A clearing mode also cancels queued sends. |
-| `restart` | `ptyService.restartAgentCli`: stops the process, waits up to 5 s (two writers corrupt a provider session), then `resumeSession` in the same row (`claude --resume`, `codex resume`, `opencode --session`, …). Mid-turn needs `--stop`; `--after-turn` (and self-restart) waits for the next free prompt, in memory. Refused up front when there is nothing to resume. |
-| `update` | `--title` (kept as the user's name) and `--pin` / `--unpin` (`session.updateMeta`) are row settings. `--model`, `--effort`, `--fast`, `--permission-mode` are saved on the resume launch and the CLI relaunches. Refused mid-turn, and when the resume command cannot carry the setting (built with and without it and compared; Cursor, Qwen and Kimi take no effort flag). An agent cannot change a CLI's permissions. Chat-only settings (tag, preset, MCP servers, …) are refused by name. |
-| `switch-account` | Claude and Codex: the account goes on the resume launch (`launch.instanceId`) and the CLI relaunches under it. `restartAgentCli` stops the process, copies the conversation into the new config home (`moveProviderThread` in `beforeResume`), then relaunches; a failed copy restores the old settings and account. Refused mid-turn (`busy`), for a signed-out account (`signed_out`), and on a saved key or preset. The CLI's actions pane ends with the chat account row (`ChatAccountNote`, "Run this CLI on"), so the user never runs `/login` inside the CLI (which signs a different login into the account's folder). |
-| `generate-names` | Title only: `ptyService.regenerateAgentCliTitle` names it from the first prompt (`goal`) and output, with the automatic CLI title's cheap model. Status line and lane name are reported as skipped. |
-| `pending` / `respond` | While the CLI waits at its own prompt (`runtimeState: "waiting-input"`, or a `cli_prompt` / `provider_structured` attention), `listPendingInputs` reports one `cli-prompt` item: an `approval`, or a `question` when the CLI wants words (`getCliPromptKind`: Claude's `AskUserQuestion` and hook elicitations; without hooks, anything but Claude's "Do you want to … / Yes" menu). A question points to the terminal. `respond --approve / --approve-session / --deny` presses the provider's key: Claude Code `1` / `2` / Esc, Codex `y` / `a` / Esc, Cursor `y` / — / `n`. `--deny` with `--text` also queues the text as the next message. Other CLIs are refused with a pointer to the terminal. |
+| `send` | Typed at a free prompt (`deliverWakeToSession`); busy → a durable queued wait (`delivery: "queued"`, cancel with `daex chat wait --cancel`). No attachments. |
+| `steer` | Typed now, even mid-turn. |
+| `interrupt` | Presses the cancel key (Esc; Esc twice for OpenCode; Ctrl-C for Cursor); nothing at a free prompt. |
+| `restart` | Stops, waits up to 5 s, resumes in the same row. |
+| `update` | Title/pin are row settings; model, effort, fast and permission go on the resume launch and relaunch the CLI (refused mid-turn or when the CLI cannot carry the setting). |
+| `switch-account` | Claude and Codex: copies the conversation into the new account's config home and relaunches. |
+| `pending` / `respond` | One `cli-prompt` item while the CLI waits at its own prompt; `--approve` / `--approve-session` / `--deny` press the provider's keys (Claude Code, Codex, Cursor only). |
 
 ## New-lane launches
 
-A chat with the **Auto-create lane** target is launched by the brain, not chained by the client. The client picks the session id (`launchId`) and lane id, calls `chat.startLaunch` and opens the chat at once; the call returns when the launch is reserved. `chatLaunchService` then walks the stages and publishes a full `ChatLaunchSnapshot` after every change.
-
-The same flow backs a **configured** new lane: the picker's `+` opens the create-lane dialog and defers creation. The dialog returns a recipe (`ChatLaunchArgs.laneConfig`: `root` / `child` / `import` mode, parent or branch ref, lane template, accent colour, Linear issue), shown as the pending lane; nothing is created until Send.
-
-- `child` passes `parentLaneId` with the chosen base as start point (`create` honours `baseBranch` only for a primary parent).
-- `import` adopts an existing branch with `laneService.importBranch` on the reserved lane id; Cancel deletes the lane but never that branch.
-- `root` branches from the chosen base.
-- A configured lane keeps the user's name (never AI-renamed), and its branch derives from it.
+A chat on **Auto-create lane** is launched by the brain
+(`chatLaunchService.ts`). The client picks `launchId` (the session id) and the
+lane id, calls `chat.startLaunch` and opens the chat at once; the brain publishes
+a full `ChatLaunchSnapshot` after every change. A **configured** new lane (the
+picker's `+`) passes a recipe in `ChatLaunchArgs.laneConfig` (`root` / `child` /
+`import`); nothing is created until Send.
 
 Stages:
 
-1. **Fetch base branch:** the remote-first resolution every base-less create uses (it reports fetch success and drops a configured upstream whose remote ref is gone). The row reads `origin/main at 807fb2c`, or a warning when the last-known ref was used. Omitted when the project creates lanes from the local base.
-2. **Check out files:** `laneService.create` with the reserved id. Git's `Updating files: NN%` streams through a pipe (`GIT_PROGRESS_DELAY=0`, `runGit`'s `onStderrLine`), coalesced to about eight snapshots a second.
-   - A retry first clears what a failed attempt left at the reserved worktree path (`laneService.cleanupReservedWorktree`: only inside the worktrees folder, only when no lane row owns the id or path).
-   - If a lane row already exists for the id (DAEX restarted after the insert), the retry adopts it (`laneService.findLaneIdentity`).
-   - Worktree removal retries EBUSY/EPERM/EACCES for a few seconds (Windows handles). A checkout cancelled before git started creates and cleans nothing.
-3. **Apply lane template / Set up environment:** only with a default lane template or lane-environment config, through `runLaneEnvironmentSetup` (as `lane.initEnv` and `lane.applyTemplate` use), mirroring each step (Docker, dependencies, setup script…). A plan with no steps drops the stage.
-4. **Start agent:** `createSession` with `sessionId = launchId`, then the opening message, then messages queued during setup (`chat.queueLaunchMessage`).
-   - A queued message whose delivery fails stays in `queuedMessages` with `deliveryError`, never dropped; it retries on a short backoff and whenever another message is queued (which waits behind it). The launch can complete with it listed.
-   - `chat.queueLaunchMessage` throws `Launch not found: <id>` for an unknown launch and refuses a cancelled one.
-   - An empty `model` is auto-picked for every launch path.
-   - A CLI launch stops in phase `awaiting-client`; the client starts the PTY and reports with `chat.completeLaunchClient`.
+1. **Fetch base branch** (omitted when lanes come from the local base).
+2. **Check out files:** `laneService.create` with the reserved id, streaming
+   git's progress. Retries clean leftovers (`cleanupReservedWorktree`) and adopt
+   an existing lane row (`findLaneIdentity`).
+3. **Apply lane template / set up environment** (`runLaneEnvironmentSetup`),
+   only when configured.
+4. **Start agent:** `createSession` with `sessionId = launchId`, the opening
+   message, then messages queued during setup (`chat.queueLaunchMessage`; a
+   failed delivery stays listed and retries). A CLI launch stops at
+   `awaiting-client`; the client reports with `chat.completeLaunchClient`.
 
-The lane is named deterministically from the prompt (the client may pass the name it shows) and renamed in the background by `generateAutoLaneIdentity` once it exists (`laneNaming` true meanwhile).
+The lane gets a deterministic name, then `generateAutoLaneIdentity` renames it.
 
-**Controls.**
-
-- `chat.cancelLaunch` is for setup only. After the agent started (or the launch completed) it throws "This chat already started — delete its lane from the lane menu instead."; a second cancel returns the snapshot. During setup or after a pre-agent failure it aborts an in-flight checkout (removing its half-written worktree, even git-locked, and branch), drops queued messages, waits up to 15 s for the pipeline, and deletes everything the launch created: the chat, the worktree (including a lane row from before a restart), and the local and remote branch. Anything the pipeline creates after that wait is deleted when it settles. Desktop (`localRuntimeTimeoutPolicy.ts`) and iOS give it five minutes.
-- `chat.retryLaunch` reruns from the first unfinished stage; every stage checks what already happened, so a retry never creates a second lane, chat or environment run.
-- `chat.startLaunchNow` starts the agent while the environment runs; after an environment failure it is "Start anyway" (the failed step stays as a warning).
-
-**Where it shows.**
-
-- Snapshots stream to desktop and hosted web as the runtime event `chat_launch_event` (`window.ade.chatLaunch.onEvent`) and to phones as the pushed `chat_launch_event` sync envelope (event plus the host's `projectId` and `projectRootPath`); `chat.listLaunches` hydrates both. Every entry point uses the `chatLaunchArgs.ts` parser.
-- Once the chat exists, the brain writes an `ade_card` with variant `lane_setup` and cardId `lane-setup:<launchId>` (`buildLaneSetupCard` in `shared/chatLaunch.ts`, also the clients' stand-in; row `key` = stage id, the template in the `Template` metric): first after the opening `user_message`, then merged in place. The record survives reloads and reaches every device.
-- A device that did not start the launch holds only this card. When it shows failed, the desktop fetches the launch from the chat's machine (`chat.getLaunch` on its binding), so the live card with full error, Retry / Delete / Start anyway replaces it.
-
-**Durability.** Records persist under `.ade/cache/chat-launches/`. A brain restart turns a running launch into `failed` ("interrupted when DAEX restarted") with Retry; its `sequence` jumps ahead so clients accept it. Finished and cancelled launches are dropped (`launch-removed`) ten minutes after they end, unless a completed launch has an undelivered queued message, which is kept and delivered after a restart.
+- `chat.cancelLaunch` is for setup only (after the agent starts it refuses);
+  it deletes everything the launch created, including the branch.
+- `chat.retryLaunch` reruns from the first unfinished stage without
+  duplicating anything. `chat.startLaunchNow` starts the agent during
+  environment setup ("Start anyway" after a failure).
+- Snapshots stream as `chat_launch_event` (desktop, web, phone);
+  `chat.listLaunches` hydrates. Once the chat exists the brain writes an
+  `ade_card` `lane_setup` (`buildLaneSetupCard`, `lane-setup:<launchId>`).
+- Records persist under `.ade/cache/chat-launches/`; a brain restart turns a
+  running launch into `failed` with Retry.
 
 ### DAEX Cloud lanes
 
-A launch with `cloud: { sizeId }` (a tier id from `shared/cloudTiers.ts`) gets one new DAEX Cloud computer for its one new lane. Nothing is made before Send.
+<a id="ade-cloud-lanes"></a>
 
-- Every such launch (app, CLI or agent) goes through the server launcher (`/cloud/launches`, `docs/features/ade-cloud/README.md`).
-- The launch owner (desktop main, `services/adeCloud/cloudLaneLaunchService.ts`, or a brain for the CLI) does not depend on a window. It sends the server the launch facts and its own args (`launch`: everything but the cloud target and local files, which upload first).
-- The server makes the computer with a one-time join key. The computer signs itself in to the account (no approval), clones the repository with its own Git sign-in, and starts the same launch on its brain (`chat.startLaunch`, same `launchId` and `laneId`, lane start forced to `on: "remote"`, its three steps as `priorStages`, the server's start as `setupStartedAt`).
+A launch with `cloud: { sizeId }` (`shared/cloudTiers.ts`) gets one new DAEX
+Cloud computer for its one lane, made by the account server's launcher
+(`/cloud/launches`; see [DAEX Cloud](../ade-cloud/README.md)). The owner (desktop
+main `cloudLaneLaunchService.ts`, or a brain for the CLI) sends the launch; the
+computer joins the account, clones the repo and starts the same launch on its
+brain (same `launchId` and `laneId`).
 
-Three rows come before the brain's own, from the server's record (`cloudLaneComputerStages.ts`):
-
-1. **Make computer:** the server's create (the launch id is its request id).
-2. **Join your account:** the computer's browserless sign-in. If it cannot sign itself in, the row says so (`needs_approval`); **Approve** opens the page in DAEX's browser (`snapshot.cloud.approvalUrl`) and the CLI prints it.
-3. **Clone repository:** the computer's clone, as reported.
-
-**Hand-off.** Once the computer is in the account, the owner names its account row after the lane, pairs, finds the project and reads the brain's launch, then follows it. Messages queued meanwhile go to the brain in order, one at a time, with the record written after each. After hand-off the brain finishes the launch with the desktop closed.
-
-- **One id.** A repeated start returns the same launch; the server answers a repeated create request id with the same computer (`apps/account-directory/src/cloud/routes.ts`, `replayRequest`).
-- **Routing.** The renderer keeps `window.ade.chatLaunch.*`. A start with `cloud` goes to main (`IPC.cloudLaneLaunchCall`); calls by id ask main first, which forwards to the computer's brain after hand-off; unknown ids take the runtime route; `list` merges both. Snapshots carry `cloud` (size, computer, account machine key, pin, `handedOff`), and each project's views show only their own launches.
-- **Failures.**
-  - A failed stage shows one sentence (the server's or computer's own).
-  - Retry asks the server with `retry: true`. A computer that failed before its agent started is replaced under the same id: the server claims the retry before deleting the old computer (a join or report since keeps it), holds the launch `retrying` until the delete finishes (refusing the old computer's reports and joins, and answering a second start with the launch), and restarts the 7-day deadline. A provider-refused delete puts the launch back as failed with that computer.
-  - A computer that failed after its agent began is bound and handed off as is, so Retry goes to the computer's own retry.
-  - Cancel before hand-off asks the server first; its `launch_started` refusal (the agent can start before this app paired), or no answer, refuses the Cancel. Otherwise the server deletes the computer (even one still being made), then this app deletes computers with this `ade_request_id`, the account row and saved connections (the machine key stays; the cleanup stays open across restarts until the row is gone). A cleanup resumed at launch asks the server too and deletes nothing without an answer.
-  - A brain read older than an event already taken is dropped. After hand-off, Cancel goes to the brain, which refuses once the agent started. Each new subscription reads the snapshot once, so nothing between hand-off and the stream is missed.
-- **Restarts.** Records live in `<userData>/cloud-lane-launches/`. At launch, a setting-up launch re-reads the server (same id, same launch); a handed-off one is followed again; a cancel finishes its cleanup. A record with `via` unset (its computer was made by this app and never joins) has that computer deleted and starts again on the server.
-- **Limits.** Only GitHub origins and no uncommitted start. Files on the first message upload first (at most 10, 25 MB each); a brain host takes none.
-- **Kinds.**
-  - `chat` starts its agent on the computer.
-  - `cli` parks at `awaiting-client` on the computer's brain; the window's `useChatLaunchCliDriver` starts the tracked CLI through `snapshot.cloud.binding`, and `completeClient` goes via main to the brain. The server knows only `chat` and `lane`, so a `cli` goes as `lane` with `cli` in the app's args; a computer that cannot read those args runs it as a plain lane.
-  - `lane` (`daex lanes create --machine cloud`) has no `agent` stage, completes when its environment stage ends, and takes no queued messages.
-
-`LaneSetupCard.tsx` and `CloudLaneJobCard.tsx` draw step rows from one module, `components/chat/launch/stepCardParts.tsx` (status tones, stage line, error callout). A failed step is amber on both, never red.
+- Three rows precede the brain's (`cloudLaneComputerStages.ts`): **Make
+  computer**, **Join your account** (with **Approve** when it cannot sign
+  itself in), **Clone repository**.
+- After hand-off the brain finishes with the desktop closed. A repeated start
+  returns the same launch and computer (server `replayRequest`).
+- Retry replaces a computer that failed before its agent started, under the
+  same id. Cancel before hand-off asks the server first.
+- Records in `<userData>/cloud-lane-launches/`. Only GitHub origins, no
+  uncommitted start, ≤ 10 files of 25 MB on the first message.
+- Kinds: `chat`, `cli` (parks at `awaiting-client`), `lane`
+  (`daex lanes create --machine cloud`).
 
 #### Run on DAEX Cloud in the composer
 
-The launch shelf has three DAEX Cloud controls (`AgentChatPane.tsx`, `useAdeCloudDraft.ts`, `AdeCloudComposerParts.tsx`, `remoteTargets/cloudBrand.tsx`):
+<a id="run-on-ade-cloud-in-the-composer"></a>
 
-- **Run on.** DAEX Cloud is one machine every signed-in account has (`renderer/state/cloudAccess.ts`). `DraftMachinePicker.tsx` always lists one **DAEX Cloud** row, even with no lanes and before the account answers; only a signed-out window hides it. A blocked account sees it read-only with the server's sentence. Its line is the new-lane size and hours left ("Small · 99 h left at this size", `useAdeCloudDraft.ts`). Lane computers get no rows.
-- **A DAEX Cloud tab** (a web or desktop tab bound to DAEX Cloud) starts every draft on DAEX Cloud with Auto-create lane and the size picker; "This computer" and the AI provider banner are left out.
-- **Lane.** With DAEX Cloud picked, the list is Auto-create lane (or the "+" lane's name), then this project's DAEX Cloud lanes by name, from computer metadata (`CloudLaneMachine.lane`, filled by `toCloudMachine`), so nothing wakes. DAEX Cloud has no main checkout.
-- **Size.** For a new lane only: an icon button with the cloud mark filled a quarter to full for Small to X-Large. The menu lists `cloudTiers(catalog)` with rates; "Change the default…" saves the account preference `cloudDefaultTier` (Small at first; synced by `accountSettingsSync.ts`).
-
-Send:
-
-- A new lane calls `chatLaunch.start` with `cloud: { sizeId }`, a client-made `launchId`, and the tab's project as pin (it only names the repository). The setup card shows at once; a double press does nothing (the request key is held).
-- An existing DAEX Cloud lane sends through its computer's pin (`adeCloudLaneBinding.ts`): a paired computer at once (the send wakes it), otherwise after pairing and connecting, with "Waking <lane>…".
-- After the clone step the launch row's `binding` is `snapshot.cloud.binding` (`chatLaunchRowSourcesNow`), so the Work router sends calls to the new computer. The row stays under the tab it started in.
-
-**Before Send**, a label on the prompt box holds Send off (typed text stays) while DAEX Cloud cannot take the message:
-
-- account facts from `CloudAccountState`: out of hours, all computers in use, disk full;
-- start refusals the composer can see: a local file, an "uncommitted" start, no GitHub origin, a CLI draft, parallel models.
-
-The sentences come from `cloudLaneLaunchStartProblem` (`shared/cloudLaneLaunch.ts`), which main also uses, so none appears as an error after Send. "Upgrade" and "Free up space" open Settings › DAEX Cloud. With the sign-in strip also shown, the strip is on top and the DAEX Cloud label nearest the box, both tabs at the same inset. At 520 px or less the label shows its short form and first action only. A CLI draft or parallel models keeps the DAEX Cloud pick with Send off. A draft for DAEX Cloud shows no local sign-in strip or card.
-
-The setup card of a DAEX Cloud launch has the cloud mark and blue tone while running, and one short CSS cloud drift behind the header while the computer is made (off with reduced motion). A failed launch stays amber with Retry, Cancel (deletes the computer) and Copy details (launch id, step, sentence). The tier-change and move card (`cloudLane/CloudLaneJobCard.tsx`) uses the same parts and tones. A chat on a DAEX Cloud lane shows "DAEX Cloud" on its machine chip, "DAEX Cloud · <lane>" in the tooltip (`state/adeCloudLaneIndex.ts`).
+- **Run on:** `DraftMachinePicker` always lists one **DAEX Cloud** row for a
+  signed-in account (`renderer/state/cloudAccess.ts`); lane computers get no
+  rows.
+- **Lane:** Auto-create, then this project's DAEX Cloud lanes from computer
+  metadata (nothing wakes). DAEX Cloud has no main checkout.
+- **Size** (new lane only): tiers from the account catalog; the default is the
+  account preference `cloudDefaultTier`.
+- Send: a new lane calls `chatLaunch.start` with `cloud`; an existing DAEX Cloud
+  lane sends through its computer's pin (`adeCloudLaneBinding.ts`), waking it.
+- **Before Send**, a label holds Send off (text stays) when DAEX Cloud cannot take
+  the message (account facts from `CloudAccountState`; start problems from
+  `cloudLaneLaunchStartRefusal` in `shared/cloudLaneLaunch.ts`, which main also
+  uses). A DAEX Cloud draft shows no local sign-in strip.
 
 ### Messages to an asleep or deleted DAEX Cloud chat
 
-A send never waits for a DAEX Cloud computer to start. The account server queues the message (`POST /cloud/chats/:machineKey/:chatId/messages`, [DAEX Cloud](../ade-cloud/README.md)), and the computer takes it when up.
+<a id="messages-to-an-asleep-or-deleted-ade-cloud-chat"></a>
 
-- **Asleep computer.** The saved-chat API wrapper (`renderer/state/cloudSavedChats.ts`) sends through the queue (`sendThroughAdeCloudQueue`, `renderer/state/adeCloudChatQueue.ts`); the queue's message id is the send's `clientSendId`. Settings picked since the last send (model, effort, Fast, preset) do not wake the computer: the wrapper keeps them per chat. A queued send carries them (`settings`, sealed with the text), and the computer's drain applies them with `updateSession` before it sends (`applyChatSettings`; a CLI ignores them). A direct send (files, a message over the queue's size, an older server) applies them first. An older server or computer ignores `settings`.
-- **Deleted computer, or a lane kept without one.** Send goes to the same queue (`sendThroughCloudQueue` in `AgentChatPane.tsx`); the server starts a launch that continues the chat on a new computer in the same chat row. Claude, Codex and OpenCode continue from their native session capsule; others replay the saved transcript. Files cannot go while the chat moves; they stay in the box with a hint.
-- **A saved CLI copy** takes queued messages the same way. A saved shell copy does not (404), so it has no send box.
-- **Without queue support** (`unsupported`: 404 or `update_needed`): an asleep computer is woken and sent to; a lane without a computer starts a new chat; a deleted computer's chat shows `SAVED_CHAT_COMPUTER_GONE_MESSAGE`. DAEX never starts a new chat with only the typed text.
+A send never waits for a DAEX Cloud computer to start: the account server queues
+it (`POST /cloud/chats/:machineKey/:chatId/messages`), and the computer takes it
+when up.
 
-What the chat shows:
-
-- **Queued messages** (`useCloudQueuedBubbles.ts`, `CloudQueuedMessages.tsx`, `useAdeCloudChatQueue`): each one is the person's own sent bubble (`cloudQueuedMessageEnvelope`), with its file names and a quiet **Cancel** while queued, or "Waits for a sign-in on the computer". The working line under it says what it waits for (`cloudQueueWaitLine`: waking, moving, resizing, a new computer, or starting the agent). Read on open and on window focus; no timer.
-- **One bubble, no jump.** When the queue takes a send, the queued bubble takes the send's own bubble's place with the same timestamp (`noteSendBubble`), so the row keeps its key and plays no second entrance. A cancelled message's bubble goes with its row.
-- **Delivered.** The `user_message` carries the send's `clientSendId` (the row's `messageId`); the row goes when it arrives. From a host that writes no id, a row goes when a same-text id-less user message arrives after it showed. One arrival removes one row, the oldest. A live-typed message with an id never clears a queued row.
-- **Failed messages** keep the server's sentence until acted on: **Put back** adds the text to the box (after typed words) and drops the row; **Dismiss** drops it (kept in `ade.cloudQueue.dismissedFailed.v1`).
-- **The new computer's setup** (`CloudQueueSendCard.tsx`): waking, setting up, sign-in (code, link or paste field), confirm, running, and failed with **Put back**. It reads `cloud.serverLaunchStatus` on open, on `cloud.onStatusChanged` and on focus.
-- **Deleting soon** (`cloudLane/CloudLaneDeletingSoonBand.tsx`): when the computer goes, that its work not on GitHub is saved in DAEX Cloud first (DAEX never pushes), the size the next message starts at, and **Keep it**. A computer kept after a failed save says why and what to do, in the words of Settings › DAEX Cloud's notice (`idleHeldDetail`).
-- **Refusals** show the server's sentence. A blocked account can still read and export saved chats.
+- **Asleep computer:** `cloudSavedChats.ts` sends through the queue
+  (`sendThroughAdeCloudQueue`); the queue id is the send's `clientSendId`.
+  Settings picked since the last send ride the queued message (`settings`) and
+  are applied by the computer before sending.
+- **Deleted computer:** the queue starts a launch that continues the chat on a
+  new computer in the same chat row (native capsule for Claude, Codex,
+  OpenCode; transcript replay otherwise). Files wait.
+- Without queue support an asleep computer is woken; a deleted computer's chat
+  shows `SAVED_CHAT_COMPUTER_GONE_MESSAGE`.
+- The chat shows queued messages as the person's own bubbles with Cancel
+  (`useCloudQueuedBubbles.ts`); delivery is matched by `clientSendId`; failed
+  ones offer **Put back** / **Dismiss**. `CloudQueueSendCard.tsx` shows a new
+  computer's setup. Reads happen on open and focus, no timer.
 
 ### Launch defaults follow the account
 
-A new draft starts from the newer (`updatedAt`) of two launch defaults (`renderer/components/chat/accountLaunchDefaults.ts`):
-
-- the machine's own (`chat.launchDefaults`, pinned to the draft's machine, `main/services/chat/chatLaunchDefaults.ts`);
-- the account row `chat.launchDefaults.v1` (scope `all`): the last launch on any computer.
-
-A newer machine pick goes to the account for other computers; Fast mode never does. A machine that cannot answer (asleep, refused, DAEX Cloud as a tab) leaves the account row to seed the draft. The draft reads both on open, on window focus and on an account-store change. A saved per-pane draft with a model wins over both.
+A new draft starts from the newer (`updatedAt`) of the machine's launch defaults
+(`chat.launchDefaults`, pinned, `chatLaunchDefaults.ts`) and the account row
+`chat.launchDefaults.v1` (scope `all`), merged in `accountLaunchDefaults.ts`.
+Fast mode never goes to the account. A saved per-pane draft with a model wins
+over both.
 
 ## Session lifecycle
 
-1. **Create.** `createSession({ laneId, provider, model, modelId?, permissionMode?, ...})` via `ade.agentChat.create` creates and persists an `AgentChatSession` and emits `status: "started"`.
-2. **Warm up.** Sessions warm in the background. Claude has a 20 s watchdog around the SDK `startup()` probe; a warmup that misses it is discarded and recreated on the next turn.
-3. **Send.** `sendMessage({ sessionId, text, attachments? })` via `ade.agentChat.send` dispatches a turn; the action bridge exposes it as `chat.sendMessage`. `chat.messageSession({ sessionId, text, kind })` is the agent-to-agent primitive:
-
-   | `kind` | Effect |
-   |---|---|
-   | `auto` | Steers an active session with the provider's `defaultActiveTurnDispatchMode`; wakes an idle one. On a Cursor **Cloud** session (whose default `inline` is always refused) it routes to `interrupt`. The renderer instead downgrades that session to queue, because a person must not be pushed into a cancel they did not pick. |
-   | `queue` | Always stages for the next turn. |
-   | `wake` | Starts a normal turn. |
-   | `interrupt-replace` | Claude SDK priority `now` on an active Claude session; other providers interrupt, then send. |
-
-   - The result reports the routed action and whether a steer was delivered or queued. Provider dispatch and streaming continue after acceptance.
-   - `daex chat send` uses `auto`; `daex chat message --kind …` exposes the primitive; `daex chat create --prompt` sends the same follow-up after creating.
-   - `daex chat show` uses `chat.getSessionSummary`; `daex chat status` is the live turn snapshot (`chat.getTurnStatus`: RUNNING / BLOCKED / WAITING / IDLE; WAITING is a finished turn with running background work).
-   - `daex chat read <session>` uses bounded `chat.readTranscript` / `chat.readTranscriptPage` on any project chat registered with the machine brain: silent, a small recent window by default, older pages by byte cursor. Personal chats and shell transcripts are outside this route.
-   - **Scope.** For a session-bound agent, `chat.sendMessage` and the other scoped history, scheduling, attention, status and lifecycle calls apply only to its own chat; `chat.messageSession` is the reviewed way to message another chat. An unbound human/dev CLI keeps its wider read surface. A cross-session target fails with JSON-RPC `policyDenied` and structured `session_scope_denied` data (method, caller session, requested session, the `chat.messageSession` alternative), not `methodNotFound`.
-   - **Kickoff compatibility.** Launch planners create the session, then `chat.messageSession(kind: "auto")`. For callers that send a cross-session `chat.sendMessage` kickoff, the runtime converts it only when the target is the caller's direct child with an empty transcript; anything else keeps the denial. If the host supports neither, the client names the host and asks for a DAEX update or restart, never leaving a created chat silently blank.
-   - **Timeouts.** Interactive sends have no service clock; the turn runs until the provider completes or someone interrupts. `runSessionTurn` (automations, headless) defaults `timeoutMs` to 5 min; `null` or `0` means none, and automations pass `null` unless the step sets a limit. Optional `idleTimeoutMs` arms before the provider starts, restarts on every turn event, and pauses while a tool call, command, foreground subagent or approval is open (`trackTurnInFlight` in `sessionTurnLimits.ts`; background subagents are not tracked). Both are clamped by `clampTurnTimerMs` (at least 15 s, at most the Node ceiling) and on expiry interrupt the turn but keep the chat. If the chat goes away mid-turn (`finishSession`, delete, dispose, shutdown), the waiter rejects with `SessionTurnAbandonedError`.
-4. **Stream.** Events go through the main-process emitter to the renderer via `ade.agentChat.event` (`registerIpc.ts`). Codex turns run a watchdog: if `turn/start` succeeds but no useful event arrives, DAEX reconciles the thread with `thread/read` and `thread/turns/list`, tries at most one restart + resume, then publishes provider-neutral `turn_health` if manual recovery is needed. Parents receive it with `sourceSessionId` and target the child.
-5. **Complete.** The service emits `status: "completed" | "failed" | "interrupted"`, optionally `turn_diff_summary`, flushes text, marks the session idle and pulls the next queued steer. A terminal failure also stops still-active child subagents, without keeping the parent active.
-6. **Dispose.** `dispose({ sessionId })` ends the runtime, persists `disposed`, pauses provider-owned durable work and cancels local-only schedules. Project close and graceful quit instead end a chat at rest `completed` and a chat with work in flight `detached`, tear runtimes down and keep durable schedules for restart. Lane archive/delete disposes every session of the lane, including ones not loaded in this runtime.
+1. **Create:** `createSession` (`ade.agentChat.create`) persists an
+   `AgentChatSession` and emits `status: "started"`.
+2. **Warm up** in the background (Claude: 20 s watchdog around `startup()`).
+3. **Send:** `sendMessage` (`ade.agentChat.send`, action `chat.sendMessage`).
+   `chat.messageSession({ sessionId, text, kind })` is the agent-to-agent
+   primitive: `auto` (steer an active session with the provider's default mode,
+   wake an idle one; Cursor Cloud routes to `interrupt`), `queue`, `wake`,
+   `interrupt-replace`. CLI: `daex chat send` (auto), `daex chat message --kind`,
+   `daex chat status` (`chat.getTurnStatus`: RUNNING / BLOCKED / WAITING /
+   IDLE), `daex chat read` (bounded `chat.readTranscript` / `readTranscriptPage`).
+   - **Scope:** a session-bound agent's scoped calls apply only to its own chat;
+     `chat.messageSession` is the way to reach another. A cross-session target
+     fails with `policyDenied` / `session_scope_denied`. A kickoff
+     `chat.sendMessage` to the caller's own empty direct child is converted.
+   - **Timeouts:** interactive sends have no clock. `runSessionTurn`
+     (automations, headless) defaults to 5 min (`null`/`0` = none), with an
+     optional `idleTimeoutMs` that pauses while tools or approvals are open
+     (`sessionTurnLimits.ts`). Expiry interrupts the turn, never the chat.
+4. **Stream** to the renderer via `ade.agentChat.event`. Codex turns run a
+   no-first-output watchdog that reconciles with `thread/read`, tries one
+   restart + resume, then publishes `turn_health`.
+5. **Complete:** terminal `status`, optional `turn_diff_summary`, text flush,
+   idle, next queued steer. A terminal failure also stops active child
+   subagents.
+6. **Dispose** ends the runtime and persists `disposed`. Project close and quit
+   end chats `completed` or `detached` and keep durable schedules. Lane
+   archive/delete disposes every session of the lane.
 
 ### Settling
 
-Settling is a Work lifecycle change, not a provider answer. A normal settle writes `settledAt` (and an optional outcome note).
-
-- In `Needs you`, the desktop uses one transaction with `dismissPendingInput: true`: SDK chats go through `dismissPendingInputForSettlement`, which interrupts the provider and clears every waiter before committing. It does not call `respondToInput`, because a decline can resume a turn and a Codex plan decline can queue a revision.
-- Tracked CLIs can dismiss only an explicit `daex chat ask` marker; a native terminal prompt must be resolved in the terminal (**Resolve input to settle**).
-- A settle stops nothing: `sessions/settleWiring.ts` only refuses a running turn, and a settled chat keeps background work, wakes and subagents. The dismissal ends only the blocked turn (`stop_and_clear`).
-- Codex cards are settled only by queue-clearing stop modes (`stop_and_clear`, `stop_and_clear_and_background`) or the explicit **Dismiss & settle**, as `stop_only` spares queued follow-ups. A card on a turn that is really running is settled whatever the mode, since its app-server request dies with the turn.
+Settling writes `settledAt`; it stops nothing (`sessions/settleWiring.ts` only
+refuses a running turn). In `Needs you`, settle uses one transaction with
+`dismissPendingInput: true` (`dismissPendingInputForSettlement`), never
+`respondToInput`. Tracked CLIs can dismiss only an explicit `daex chat ask`
+marker.
 
 ### Parallel launch
 
-Parallel launch is renderer-orchestrated on the same primitives:
-
-1. `AgentChatPane` derives a deterministic slug base from the prompt (`createDeterministicAutoLaneName`), without a blocking `suggestLaneName` call.
-2. It creates one lane per model slot from the current branch, named `<base>-<model-family>`, and persists progress under `agent-chat-parallel-launch:<projectRoot>:<parentLaneId>` in `kv`. With AI titles on, `startBackgroundParallelLaneNaming` makes one background `ade.agentChat.suggestLaneName` call (the cheap helper for Claude, Codex and Cursor, else the session model, then deterministic) and renames every child to `<aiBase>-<model-family>`; one failure does not stop the rest, and `laneNamingStore` masks the labels meanwhile. Without a usable name the base stays; an empty prompt gives `parallel-task`.
-3. For each lane it creates a session, sends the same prompt and attachments, and records `sentLaneIds`.
-4. When all sends succeed, the state clears and the app opens `/lanes?laneIds=<ids>&inspectorTab=work`.
-5. On a failure, unsent lanes are cleaned up best-effort; on reload, unfinished state is recovered and cleaned before another launch.
+Renderer-orchestrated: one lane per model slot from the current branch
+(`<base>-<model-family>`), progress persisted under
+`agent-chat-parallel-launch:<projectRoot>:<parentLaneId>` in `kv`, one session
+per lane with the same prompt, then `/lanes?laneIds=…&inspectorTab=work`.
+Unfinished state is recovered and cleaned on reload.
 
 ### Runtime eviction and budget
 
-**Inactivity eviction** runs every 15 s (`SESSION_CLEANUP_INTERVAL_MS`). A runtime is torn down (`teardownRuntime(managed, "idle_ttl")`) when its session is idle, has no live pending input and passed `SESSION_INACTIVITY_TIMEOUT_MS` (3 min, every provider). Archiving an idle chat tears its runtime down at once without an accepted start, queued steer, pending input or active workload.
-
-- A restart is cheap: a resumed Claude thread reads its prefix from the prompt cache, and a Codex idle teardown keeps the delivered-directive keys (continuity recovery clears them before its capsule).
-- A fresh Codex runtime's first turn waits up to 1.5 s for its skill list to reach the chat's previous count, because Codex adds remote plugin skills about 0.5 s after start and re-sends the whole block on every change.
-
-**Background-work exemption.** A Claude or OpenCode runtime whose only claim is background work is exempt from the sweep for up to `RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS` (= `SESSION_STALE_AFTER_MS`, 3 h) of no events and no real background-level change. Then the sweep reclaims it, logs `agent_chat.runtime_workload_exemption_expired` (silence and overridden counts) and posts a `system_notice` in the chat.
-
-- A live turn, queued steer or unanswered approval always exempts the runtime.
-- OpenCode's claims are running `background: true` shells and unsettled child sessions. Other providers are not affected (Codex clears subagents at turn end; Cursor reconciles cloud runs with the server).
-- **Limit:** DAEX ages only silence it can see. `background_tasks_changed` is level-triggered and `emitClaudeScheduledWorkUpdate` dedupes unchanged levels, so a job that runs three hours with no event, task edge or membership change is stopped with the runtime. That bounds the opposite failure (a lost completion edge pinning an SDK process, its MCP children and the project context). The bar matches when the product stops calling the session live, and the chat says so.
-
-**Teardown reasons.** `teardownRuntime` has terminal reasons (`handle_close`, `ended_session`, `model_switch`) and non-terminal ones (`idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`, `project_close`, `shutdown`).
-
-- For Claude, Cursor, Pi, Copilot, Muse, ACP, OpenCode and Droid, a non-terminal teardown persists chat state at once and skips `runtimeInvalidated = true`, so the next turn resumes the same provider session:
-  - Claude pins `runtime.sdkSessionId` to the last SDK session id;
-  - Cursor keeps its SDK agent id (a dead pooled worker found during setup tears down with `pool_compaction`);
-  - OpenCode persists `providerSessionId` before the lease closes (`session.get` reopens it on any later server);
-  - Droid persists the `resumeSessionId` for its next worker.
-- Terminal reasons run full invalidation, so stops and explicit model switches leave no stale pointer.
-- Cursor model switches wait while a turn is busy: the session model updates at once, the turn reports its starting model, and teardown waits for the turn end.
-
-**Unattended release.** While nobody is connected (no desktop window, remote client, or device on a project's sync host), the brain asks every open project to release quiet chats after 30 s (`releaseUnattendedRuntimes`, from `brainIdleMemory.ts`, re-checking every 15 s while a project is open and stopping when a client connects).
-
-- It uses the same `idle_ttl` teardown, so the next send resumes from a cold start.
-- It keeps a process for a running turn, a send whose turn has not started (the send moves the activity clock), a pending question or approval, or claimed background work.
-- Draft warmups go, and shared provider processes (an OpenCode server, an ACP agent) close once nothing holds them.
-- Chats started later by a wake, automation or webhook get the same treatment.
-
-**Cursor resume** is best-effort: the pooled worker can return a different agent id. Then `stageCursorSdkAgentRotationRecovery` stages a continuity block in `pendingReconstructionContext` (a note naming the old and new agent ids, telling the agent not to claim unrestored Cursor state; the continuity summary; a recent-conversation tail) and clears the lane-directive key so the new agent gets the directive. Logged as `agent_chat.cursor_sdk_agent_rotated_after_resume`. DAEX can force the rotation itself ([Cursor thread recycling and the first-event watchdog](#cursor-thread-recycling-and-the-first-event-watchdog)). Pending reconstruction context goes ahead of the next prompt as `System context (ADE continuity, do not echo verbatim):`.
-
-**Shutdown.** `forceDisposeAll()` (from `runImmediateProcessCleanup()` in `main.ts`) stops the cleanup timer, rejects every outstanding `sessionTurnCollector` with "closed during shutdown", resolves local pending inputs with `cancel`, and tears every runtime down with `"shutdown"`.
-
-**Close guards.**
-
-- `hasActiveWorkloads()` guards close and quit: a chat counts when its session is active, it has a live pending input, or its runtime has work in flight (turn ids, approvals, queued steers, subagents, Codex plan follow-ups, Cursor cloud runs, …).
-- `hasRetainableSessions()` is broader: any managed session not explicitly closed or deleted. The project-context rebalancer checks it first, so a project with idle chats stays warm.
-- If the workload probe throws, DAEX keeps the project open.
-
-**The runtime budget.** `MAX_CONCURRENT_ACTIVE_RUNTIMES` (5) is a per-process budget, not per service.
-
-- `createChatRuntimeBudget()` is built once in `apps/desktop/src/main/main.ts` and once in `apps/ade-cli/src/bootstrap.ts` and handed to every project scope; desktop main and the brain each keep their own.
-- Eviction picks the globally least-recently-used releasable runtime, one per call, and a stale background exemption does not shield it.
-- With three projects open, five runtimes stay warm, so returning to an older project can cold-start its agent (a few seconds). Five idle SDK processes with MCP children measured 5.4 GB. If this needs changing, raise the constant; do not go back to a per-project cap.
-- The budget is injected, not a module global; a service built without one gets a private budget.
-- With nothing releasable the budget yields: over budget beats killing a live turn.
+- **Inactivity eviction** every 15 s (`SESSION_CLEANUP_INTERVAL_MS`): an idle
+  runtime with no pending input is torn down after 3 min
+  (`SESSION_INACTIVITY_TIMEOUT_MS`, all providers). Restarts are cheap (prompt
+  cache).
+- **Background-work exemption** for Claude and OpenCode runtimes, up to 3 h of
+  silence (`RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS`); then reclaimed with a
+  notice (`agent_chat.runtime_workload_exemption_expired`).
+- **Teardown reasons:** terminal (`handle_close`, `ended_session`,
+  `model_switch`) invalidate provider pointers; non-terminal (`idle_ttl`,
+  `budget_eviction`, `pool_compaction`, `paused_run`, `project_close`,
+  `shutdown`) persist state so the next turn resumes the same provider session.
+- **Unattended release:** with no client connected, the brain releases quiet
+  chats after 30 s (`releaseUnattendedRuntimes`, `brainIdleMemory.ts`), keeping
+  live turns, pending sends, pending input and claimed background work.
+- **Cursor resume** may return a new agent id; `stageCursorSdkAgentRotationRecovery`
+  stages a continuity block.
+- **Close guards:** `hasActiveWorkloads()` guards close and quit;
+  `hasRetainableSessions()` keeps projects with idle chats warm; a throwing probe
+  keeps the project open.
+- **The runtime budget** `MAX_CONCURRENT_ACTIVE_RUNTIMES` (5,
+  `chatRuntimeBudget.ts`) is per process (desktop main and brain each build one)
+  and evicts the globally least-recently-used releasable runtime. Never go back
+  to a per-project cap. With nothing releasable it yields rather than kill a live
+  turn.
 
 ### A Cursor worker that died mid-run
 
-The SDK records each run in its local store and marks it finished at the end. A worker that dies mid-run never marks it, so every later send on that agent (any worker, after any restart) is refused with `Agent <id> already has active run`. Each chat has one worker, so a worker running nothing that gets this refusal knows the run is dead: `sendExpiringDeadRun` (`cursorSdkWorker.ts`) expires it with `local.force` and sends again, keeping the agent and history. `summarize()` has no `force`, so `/compact` in that state reports `cut_off_run` and asks for a message first.
+A worker that dies mid-run leaves the run marked active in the SDK's local
+store, so later sends are refused (`Agent <id> already has active run`).
+`sendExpiringDeadRun` (`cursorSdkWorker.ts`) expires it with `local.force` and
+re-sends, keeping the agent and history.
 
 ### Cursor thread recycling and the first-event watchdog
 
-A Cursor transport failure (an `NGHTTP2` stream reset, `[internal] write ECANCELED`/`EPIPE`, a socket torn down mid-write) poisons the server-side agent thread while the local worker stays alive. Every later send then hangs at `Preparing response` with no events, result or error. The shared quiet watchdog posts "Cursor hasn't answered" after 90 s, and **Restart Cursor** is the way out; DAEX never abandons a silent run or re-sends by itself. The error-driven recoveries below (a transport error before any event, an expired token) recycle and re-send once.
+A Cursor transport failure (stream reset, `ECANCELED`/`EPIPE`) poisons the
+server-side agent thread while the worker lives; later sends hang silently.
 
-- **The quiet card.** `CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS` (90 s, Cursor's entry in `PROVIDER_QUIET_THRESHOLDS`) is how long a local turn may go without a first event before the card (Restart / Keep waiting). It is advisory: nothing is cancelled or re-sent. The per-run `sdkSilenceWatch` records whether any worker event (`seen`) or visible output arrived, for the transport and stale-token recoveries. `run_started`, the terminal `run_result` and the synthetic `status: ERROR` do not count, and late events from an abandoned run cannot mark the next turn.
-- **Recycling.** When a send rejects with a transport error before any event (or the user presses Restart, reason `quiet_restart`), `recycleCursorSdkAgentThread` cancels what is nominally running (bounded at 3 s), force-evicts the pooled worker (`poisonCursorSdkConnection`), drops the runtime and arms a forced rotation; the next `ensureCursorSdkRuntime` acquires with `agentId: null` for a new agent. Logs: `agent_chat.cursor_sdk_worker_poisoned`, `agent_chat.cursor_sdk_thread_recycling`, `agent_chat.cursor_sdk_agent_recreated_after_forced_rotation`.
-- **One re-send, one set of terminal events.** `runCursorSdkTurnWithRecovery` runs `runCursorSdkTurnOnce`, which returns a recovery sentinel (before any error/status/done emission) instead of recursing, so a turn is reported once. The automatic re-send happens at most once per user turn, with `local.force` via `forceExpireActiveRun`. A second failure reaches the user. The re-send shows in the transcript ("Cursor's connection dropped. …"); with no recovery left the turn fails with the classified error under `errorInfo.category: "network"`.
-- **Expired access tokens keep the thread.** The SDK exchanges the API key for a short-lived token once per worker and re-exchanges only on a Connect `Unauthenticated`. An in-stream expiry (about 60 min) kills the run with "Authentication error If you are logged in, try logging out and back in." and every later send on that worker fails the same way; the key is fine, the worker is spent.
-  - `isCursorSdkStaleAccessTokenText` matches exactly that text (never a bad key). The recycle runs with `reason: "stale_token"` and `preserveAgentId: true`: a new worker resumes the same `cursorSdkAgentId`, with no rotation or continuity preamble.
-  - The new worker listens on a new per-instance `hook.sock`, and the next acquire waits for the poisoned process to exit (failing rather than overlapping on timeout), so the old worker's `server.close()`/unlink cannot delete the new policy gate.
-  - The raw error card is swallowed in the bridge. Nothing streamed yet: the prompt is re-sent verbatim (`agent_chat.cursor_sdk_stale_token_recovered`). Mid-turn: Cursor is asked to continue, and the transcript says only "Reconnected to Cursor and continued."
-  - The same signature on the retry fails with "Cursor's session expired. DAEX reconnected and retried, but Cursor rejected the request again — sign in to Cursor again in Settings, then resend." (`errorInfo.category: "auth"`, Cursor request id as detail).
-- **Steers survive the swap.** The recycle lifts queued steers off the dying runtime; the caller re-queues them on the new runtime or cancels them with "Queued message cancelled because DAEX recycled the Cursor thread — resend it if still needed." Every emitter claims the steer id through `settledSteerIds`, so one notice renders.
-- **The intents are durable.** `PersistedChatState` holds `cursorSdkForceExpireNextSend` (the next send may expire a still-active run) and `cursorSdkPendingRotationPreviousAgentId` (the next runtime must open a fresh agent replacing this one). They survive restarts because `teardownRuntime("pool_compaction")` persists the wedged `cursorSdkAgentId`. Both clear when used; a rotation also clears the expiry flag.
-
-Continuity for the fresh agent is staged like Cursor's fork (`stageCursorSdkAgentRotationRecovery` → `stageCursorSdkContinuityHeader`): a short header explaining the rotation, the full transcript replayed verbatim as `pendingTranscriptReplay` (`buildFittedTranscriptReplay`, trimmed oldest-first only past the model's context window), and a cleared lane-directive key. The replay is consumed once, durably (`consumePendingTurnContextPrefix`). Staging is skipped when the transcript has no turns.
+- The shared quiet watchdog posts "Cursor hasn't answered" after 90 s
+  (`CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS`); it is advisory.
+- A transport error before any event, or **Restart Cursor**, runs
+  `recycleCursorSdkAgentThread`: cancel (≤ 3 s), force-evict the worker, arm a
+  forced rotation to a fresh agent seeded with the transcript.
+- At most one automatic re-send per user turn (`runCursorSdkTurnWithRecovery`,
+  `forceExpireActiveRun`), reported once.
+- **Expired access tokens** (`isCursorSdkStaleAccessTokenText`) recycle with
+  `preserveAgentId: true`: a new worker resumes the same agent. A second failure
+  says to sign in again.
+- Queued steers survive the swap or are cancelled with a notice. The intents
+  (`cursorSdkForceExpireNextSend`, `cursorSdkPendingRotationPreviousAgentId`)
+  persist across restarts.
 
 ### Cursor worker orphan guard
 
-A brain killed without unwinding (its loop watchdog SIGKILLs it) cannot dispose its Cursor workers, so each worker guards itself (`cursorSdkWorkerGuards.ts`):
-
-- It drops messages once `process.connected` is false, and sends with a callback, so a failed send never becomes a process `'error'`.
-- It ignores `'error'` on the process and its stdio (EPIPE after the parent dies), and its unhandled-error handler is not re-entrant. Without these, sends on a closed channel spin the worker at 100% CPU and starve every promise-based exit, SIGTERM included.
-- Every exit path arms a 2 s timer deadline, because timers fire when promises cannot settle.
-- It exits on `disconnect` and also polls its owner. The pool puts the owner pid in argv (`--ade-owner-pid=<pid>`), visible to `ps` and the Windows CIM command line.
-
-`recoverCursorSdkWorkerOrphans` (`cursorSdkWorkerOrphans.ts`) runs once at brain startup and once at desktop main startup, next to the OpenCode sweep.
-
-- It terminates only workers whose owner pid is dead: SIGTERM, then SIGKILL after 1.5 s on POSIX; an async `taskkill /T /F` on both passes on Windows.
-- Before every kill but the first it lists processes again, since a pid freed during a grace can be reused.
-- A worker with a live owner is never touched (the owner can be another brain).
-- An unmarked worker counts as orphaned only on POSIX with ppid 1, and only when its whole command line is the unmarked spawn shape: a node, Electron or `ADE.app/Contents/MacOS/ADE` executable followed by the absolute script path and nothing else (so `tail -f …/cursorSdkWorker.cjs` is safe). Windows keeps a dead parent's pid as ppid, so unmarked workers are left alone there.
-- The listing parser, exit wait and kill ladder are shared with OpenCode (`services/shared/processOrphans.ts`).
-
-At shutdown, `disposeAllCursorSdkConnections` releases every pooled worker, including the shared `cloud-oneshot:` and `local-oneshot:` workers.
+Workers guard themselves when their brain dies without unwinding
+(`cursorSdkWorkerGuards.ts`: stop sending once disconnected, ignore EPIPE,
+2 s exit deadlines, poll the owner pid from `--ade-owner-pid=<pid>`).
+`recoverCursorSdkWorkerOrphans` runs at brain and desktop startup and kills only
+workers whose owner pid is dead (shared helpers in
+`services/shared/processOrphans.ts`).
 
 ### Message delivery, turn health, and quiet diagnostics
 
-The transcript is the durable truth for whether DAEX accepted a message or the provider processed it. A user message moves `accepted` → `processed`; if the turn ends without consuming an accepted steer, the service persists `unprocessed`. Desktop, web and iOS fold these snapshots onto one bubble. An unprocessed bubble offers:
+A user message moves `accepted` → `processed`; a steer the turn never consumed
+persists `unprocessed`, offering **Run next**, **Edit**, **Dismiss**
+(`chat.resolveUnprocessedMessage`, durable `user_message_resolution`). Desktop
+draws delivery as one small line under the bubble: Steered, Steering…, Not
+steered (amber, with actions), Sent after turn, Steer failed, Couldn't send.
+`user_message_reaction` (CTO emoji on a user message) and
+`assistant_message_reaction` (person's emoji on a CTO reply) are keyed by
+`userMessageReactionKey()` / `assistantMessageReactionKey()`.
 
-- **Run next:** sends the original text and attachments as a new turn once the current turn is idle.
-- **Edit:** restores the content to the composer; the durable message is unchanged.
-- **Dismiss:** records that no turn should be created.
-
-On desktop a user bubble has no status pill; its delivery state is one small line under it, right-aligned, outside the hover actions:
-
-| `deliveryState` | Line | Tone and glyph |
-|---|---|---|
-| `inline` (Claude, Cursor, OpenCode, Pi steer into the live turn) | Steered | muted, steering wheel |
-| `accepted` (Codex, Cursor, OpenCode or Pi took the steer; the model has not read it) | Steering… | muted, steering wheel |
-| `processed` (the Codex model read the steer) | Steered | muted, steering wheel |
-| `unprocessed` (the turn ended first) | Not steered — turn ended first, then Run next / Edit / Dismiss | amber, steering wheel |
-| `delivered` with a `steerId` (sent at the turn boundary, or a refused inline steer sent as its own turn) | Sent after turn | muted, clock |
-| `failed` with a `steerId` | Steer failed | red, steering wheel |
-| `failed` on a new-lane launch message | Couldn't send — retrying (reason on hover) | amber, warning |
-| `failed` otherwise | Couldn't send | red, warning |
-
-- `queued` rows draw no line (a staged steer lives in the composer's staging strip; a queued row without `steerId` is the optimistic stand-in for a starting send). A `delivered` or `processed` message without `steerId` (a subagent's spawn prompt) draws none.
-- A resolved unprocessed steer reads `Started as the next turn` or `Dismissed`. Updates merge by `steerId`, so the line changes in place with a stable key; the row-height estimate budgets the line.
-- Run next and Dismiss go through `chat.resolveUnprocessedMessage` / `resolveUnprocessedMessage()` and a durable `user_message_resolution` event. The replacement message carries `metadata.replayedFromUnprocessedSteer` and is the commit point; a retry after a crash between dispatch and receipt rebuilds the receipt as Run next. Calls are serialized by session + steer id, and repeats return the finished outcome.
-- A `user_message_reaction` event (`targetKey`, `emoji`, `turnId`) puts the CTO's emoji on a user message. It names the message by `userMessageReactionKey()` (`steer:<id>`, else `message:<id>`, else `turn:<id>`); the newest reaction per key wins, and one whose message is not loaded draws nothing. Only the CTO writes it (see [How a turn ends](../cto/README.md#how-a-turn-ends)).
-- An `assistant_message_reaction` event (`targetKey`, `emoji`) puts the person's emoji on a CTO reply. It names the reply by `assistantMessageReactionKey()` (`message:<id>`, else `item:<id>`, else `turn:<id>`); the renderer folds the newest one per key onto the `text` row as `userReaction`. It starts no turn: the CTO reads it in its next turn's context (`docs/features/cto/README.md`).
-
-**Turn health.** Stalls use the provider-neutral `turn_health` event and `chat.recoverTurn` (`codex_turn_stalled` / `recoverCodexTurn` stay readable for clients that do not read `turn_health`). The event names the provider, owning turn, timestamps, recovery count, whether automatic recovery ran, and the actions (`wait`, `nudge`, `retry_same_runtime`, `restart_resume`). A child's event mirrored into a parent keeps `sourceSessionId`. Progress is recorded as `turn_recovery`, so a successful recovery replaces the stale warning.
-
-**The shared quiet watchdog** (`chatQuietWatchdog.ts`, fed from `emitChatEvent`) covers every provider.
-
-- `status: started` arms it, `done` ends it. Activity is an allowlist of the agent's own output (text, reasoning, tools, commands, plans, subagents, provider retries), never DAEX's `activity` placeholder, diagnostics, metadata, notices or cards. An open compaction counts, with its own budget.
-- Budgets: 2 minutes to the first event, 10 minutes of mid-turn silence. Exceptions: Cursor's first event is 90 s; Codex fails a compaction silent for 3 minutes.
-- An explainable silence is watched again: a pending approval or question, an open command or tool, and for Codex a reconcile against app-server state that backfills missed items or a terminal turn.
-- Anything else posts one card for every provider: "<Provider> hasn't answered in N minutes", **Restart <Provider>** / **Keep waiting** (`supportedActions: ["wait", "restart_resume"]`). The watchdog never restarts, re-sends or starts a queue by itself.
-- **Restart is the user's.** Codex interrupts, restarts the app-server and resumes the thread, holding its queue until the resumed turn ends. Other providers stop the turn (queued follow-ups set aside as a restorable group), end the provider process like Restart session, and pick up the last request. Cursor also rotates to a fresh agent seeded with the conversation (`recycleCursorSdkAgentThread`, `quiet_restart`). The resume message is DAEX's (`metadata.hostContinuation`), drawn as an "DAEX" row with the reason. Clients send the action with the chat's pin.
-
-**The stall banner** covers a provider that accepts a request and goes silent. When a live turn has no progress event for five minutes (`TURN_STALL_AFTER_MS`), is not waiting on the user and owns no open tool, command, Codex sleep, foreground subagent or approval, a warning banner shows above the composer ("No new activity for 5m") with **Interrupt** and ×. It never stops the turn.
-
-- Silence is measured from the transcript's newest progress event (`latestTurnProgressAt`), not the summary's `lastActivityAt`, which the renderer refreshes only on lifecycle edges.
-- DAEX's own rows (stall, recovery, diagnostics, queue and schedule bookkeeping, metadata patches, cards, `system_notice`) and dropped steers are not progress (`isTurnProgressEvent`); every other event type is, so a new provider event cannot cause a false alarm.
-- Open work suppresses it; a turn-start `status` resets the open-work fold, so a dangling tool from an interrupted turn cannot hide it.
-- Dismissal lasts for the current turn; the fold runs only once a turn is past the bar.
-- `shared/turnInFlight.ts` owns the fold and progress test; `shared/sessionStatusPresentation.ts` owns the threshold and `turnStallSilenceMs`.
+- **Turn health:** stalls use provider-neutral `turn_health` and
+  `chat.recoverTurn` (`wait`, `nudge`, `retry_same_runtime`, `restart_resume`);
+  progress is recorded as `turn_recovery`.
+- **The shared quiet watchdog** (`chatQuietWatchdog.ts`) covers every provider:
+  2 min to first event, 10 min mid-turn (Cursor first event 90 s). Explainable
+  silences (pending approval, open tool) are watched again; anything else posts
+  one "<Provider> hasn't answered" card with **Restart** / **Keep waiting**. It
+  never restarts or re-sends by itself; restart is the user's, sent with the
+  chat's pin.
+- **The stall banner:** no progress for 5 min (`TURN_STALL_AFTER_MS`,
+  `shared/sessionStatusPresentation.ts`) with no open work shows "No new
+  activity for 5m" with **Interrupt**. Progress is `isTurnProgressEvent`
+  (`shared/turnInFlight.ts`); DAEX's own rows never count.
 
 ### When the host machine sleeps
 
-A closed lid is not a provider failure. When the host announces a suspend, every session with a turn in flight gets one `system_notice` chip **Paused — computer asleep**, replaced in place on wake with **Resumed · paused 4m** (`appendCollapsedChatTranscriptEvent` keys it on `host-sleep:<sleepId>`). `AgentChatMessageList` renders a pill: a duotone moon while paused, a filled play glyph after. Only sessions with running work get chips.
+On an announced suspend, every session with a turn in flight gets a
+**Paused — computer asleep** chip, replaced on wake with **Resumed · paused 4m**
+(`hostSleepChipTracker.ts`, keyed `host-sleep:<sleepId>`).
+`shouldAttributeRetryToHostSuspend` holds (does not consume) a transport retry
+that a sleep explains: no HTTP status, a transport-class cause, and either a
+fresh `asleep` announcement or within 30 s of an announced resume
+(`HOST_RESUME_RETRY_GRACE_MS`). Logged as
+`agent_chat.api_retry_held_for_host_suspend`. Keeping the machine awake is
+opt-in ([onboarding and settings](../onboarding-and-settings/README.md#keeping-the-machine-awake)).
 
-The chip also keeps a dark socket from costing a retry. `shouldAttributeRetryToHostSuspend` decides, in order:
-
-1. Any finite HTTP status means a server answered: a real failure.
-2. A cause outside the transport allowlist (`overloaded`, `rate_limit` and `authentication_failed` are excluded): a real failure.
-3. A fresh `asleep` announcement within the 10-minute window `resolveMachinePresence` uses: sleep.
-4. Within `HOST_RESUME_RETRY_GRACE_MS` (30 s) of an announced resume (never an inferred heartbeat gap), a nameless transport failure: sleep.
-
-When it fires, the retry is held, not consumed: no `api_retry` event, no warning, no counter increment, one `agent_chat.api_retry_held_for_host_suspend` log. A turn started after the wake never gets a stray "Resumed" chip.
-
-Holding the machine awake is opt-in ([keeping the machine awake](../onboarding-and-settings/README.md#keeping-the-machine-awake)); by default turns pause.
-
-**Moderation metadata** is operational evidence. Raw `codex_moderation_metadata` events are kept but not rendered as cards. The service counts checks per turn and merges them with deduplicated optional-integration startup failures into one `turn_diagnostics` snapshot; folds keep the latest per turn, and clients show a quiet **Turn details** disclosure. On desktop it is one row per turn, merging the id-less session-startup snapshot, the turn's snapshot and its recovery receipt ([transcript-and-turns.md](transcript-and-turns.md#render-pipeline)).
+Codex moderation metadata is kept but not drawn; it folds into the turn's
+`turn_diagnostics` ("Turn details").
 
 ## Side chats (`/side`)
 
-A side chat is a read-only fork of a Work chat for a quick question or a discussion that should not clutter the chat. `/side <question>` in a composer (desktop, web, iOS) or `daex chat side <session> "<question>"` opens it and sends the question, which never reaches the main chat.
+A side chat is a read-only native fork of a Work chat for a side question.
+`/side <question>` (desktop, web, iOS) or `daex chat side <session> "<question>"`
+opens it (`startSideChat`, `sideChatService.ts`) on the main chat's machine, in
+the same lane, provider, model and account.
 
-- **A real chat session**, created by `startSideChat` (`agentChatService.ts`) on the main chat's machine, in the same lane and folder, with its provider, model, effort and account. The link is `sideChatParentSessionId` (side) and `sideChatSessionId` (main), carried with the spawn-lineage fields but not part of them: a side chat is not a spawned child and never reports, wakes or nests.
-- **One per chat.** `startSideChat` on a chat that has one sends to it; concurrent starts (phone and desktop) share one creation. A side chat cannot open its own.
-- **A native fork.** Only providers that fork their own history are offered (`SIDE_CHAT_PROVIDERS`: Claude, Codex, Muse, OpenCode, Droid, Copilot, Kimi, Pi); no summary or replay. Mid-turn, these fork at the last finished turn:
-  - Claude: `forkSession` + `resumeSessionAt` just before the running turn's prompt (`claudeSideChatCut`, which also reads a mid-turn message stored as a `queued_command` attachment);
-  - Codex: `thread/fork` with `beforeTurnId`;
-  - Muse: `session/sideChat`;
-  - Pi: the worker's `fork`, `createBranchedSession` at the last settled entry from a snapshot of the main chat's file.
-
-  The others open between turns only (Kimi's `session/fork` refuses mid-turn).
-- **Blank on screen.** No history is copied into its transcript; the provider thread holds it. The side-chat role rides the first message ahead of the typed text (`buildSideChatFirstPrompt`, shown as the typed text only), not the system prompt, so the fork keeps the main chat's prompt-cache prefix (on Claude Haiku the first side turn read a 48,111-token prefix from cache and wrote 1,878).
-- **Read-only, enforced** with each provider's read-only setting:
-
-  | Provider | Setting |
-  |---|---|
-  | Claude | `default`, plus a side-chat fence in `canUseTool` and a `PreToolUse` hook that refuses edits, subagents and MCP tools even under the user's allow rules. A shell command runs only when `claudeSideChatBashIsReadOnly` passes it (one program or a pipeline of known readers; no redirection, chaining, substitution or writing flags). |
-  | Codex | `read-only` sandbox, approval `never` |
-  | OpenCode, Copilot | `plan` |
-  | Droid | `read-only` |
-  | Muse | `denyUnmatched` |
-  | Pi | `readOnly`: `read`, `grep`, `find`, `ls`; extensions off |
-  | Kimi | `plan`, plus an ACP fence in `presentAcpPermissionRequest` refusing edit, delete, move and mode-switch requests |
-
-  `updateSession` refuses any change that raises its access or moves its model or preset.
-- **Hidden from every list.** `listSessions` omits side chats unless `includeSideChats`; the session projection and sync roster drop them; the main chat's row carries `sideChatSessionId` for its mark.
-
-**Sending to the main chat.** Only when the user asks, the side chat ends its reply with `<send_to_main>…</send_to_main>`. At turn end the brain delivers each block (`forwardSideChatSendsToMain`): it steers a running turn (`inline` where supported), queues behind an open question card, or starts a turn on an idle chat. The main chat receives `buildSideChatMainMessage` (a one-line header naming the side chat, then the message), labelled "via your side chat" (`metadata.sideChat`). The side chat gets "Sent to the main chat.", and clients draw the block as a quoted note (`sideChatSendBlocksToMarkdown`). Nothing else is reachable from a side chat.
-
-**Ending.** `endSideChat` (side or main chat id) deletes it. The desktop tool and iOS panel pass `expectedSideSessionId`; if another client replaced it, the brain refuses. Deleting or archiving the main chat deletes its side chat.
-
-**On screen.**
-
-- Desktop and web: `/side` opens the **Side chat** tool in the Work tools pane (`side-chat` in `WORK_TOOL_IDS`), present only for the pane's chat while it has a side chat (never a picker card; other chats in the lane get no tab). It hosts an `AgentChatPane` locked to the side chat, model and permission controls locked, on the main chat's pin.
-- Closing the tab asks: **Hide** (also Escape) keeps it for Tools to reopen; **End side chat** deletes it. The chat header and session card show a side-chat mark.
-- iOS slides up a nearly full-height panel, reopened from the Tools pill, with the same Hide / End question.
-
-**Remote machines.** Every call carries the main chat's pin (`startSideChat` / `endSideChat` in preload; `chat.startSideChat` / `chat.endSideChat` sync commands for iOS and web), so the side chat is created, run and ended on the main chat's machine.
+- Linked by `sideChatParentSessionId` / `sideChatSessionId`; not a spawned
+  child (never reports or nests). One per chat.
+- Only providers that fork natively (`SIDE_CHAT_PROVIDERS` in
+  `shared/sideChat.ts`: handoff-fork providers minus transcript-replay ones).
+  Mid-turn forks cut at the last finished turn where the provider can
+  (`claudeSideChatCut`, Codex `beforeTurnId`, Muse `session/sideChat`, Pi
+  `piForkCut`).
+- No history is copied into its transcript; the side-chat role rides the first
+  message (`buildSideChatFirstPrompt`) to keep the prompt cache.
+- **Read-only, enforced** per provider (Claude `default` plus a `canUseTool`
+  fence and `PreToolUse` hook, Bash only if `claudeSideChatBashIsReadOnly`;
+  Codex read-only sandbox; OpenCode/Copilot `plan`; Droid `read-only`; Muse
+  `denyUnmatched`; Pi `readOnly`; Kimi `plan` plus an ACP fence).
+  `updateSession` refuses raising access.
+- Hidden from lists unless `includeSideChats`.
+- **Sending to the main chat** only when the user asks: `<send_to_main>…</send_to_main>`
+  blocks are delivered at turn end (`forwardSideChatSendsToMain`).
+- `endSideChat` deletes it; deleting or archiving the main chat deletes it.
+- Desktop shows a **Side chat** Work tool (`side-chat`); iOS a slide-up panel.
+  Every call carries the main chat's pin (`chat.startSideChat` /
+  `chat.endSideChat`).
 
 ## Spawn types and completion reporting
 
-A chat can spawn another chat. The session carries `spawnKind = "subagent" | "peer"` (`apps/desktop/src/shared/types/chat.ts`), in the lineage field bag with `orchestrationParentSessionId` (persisted, hydrated and projected through `SPAWN_LINEAGE_FIELD_NAMES` in `agentChatService.ts`). Hydration ignores a stored `none`; a parented session with no type becomes `subagent`; `none` is rejected.
-
-The child is a full DAEX agent with normal runtime, permissions and tools. The type is a coordination contract: `subagent` (default) reports back; `peer` is side work the parent does not wait on. The product never shows "peer": the CLI flag is `--no-report`, and the UI says "Started by <parent>", "Stop reports to <parent>" and "Report back to <parent>". A tracked CLI child cannot be read for turn ends, so its launch guidance (`buildCliSpawnReportGuidance`) tells it to report with `daex chat message`.
+A chat can spawn another chat. The session carries `spawnKind = "subagent" |
+"peer"` with `orchestrationParentSessionId` (`SPAWN_LINEAGE_FIELD_NAMES` in
+`agentChatService.ts`). `subagent` (default) reports back; `peer` is side work
+the parent does not wait on. The product never says "peer": the flag is
+`--no-report`, the UI says "Started by <parent>", "Stop reports to <parent>",
+"Report back to <parent>".
 
 Where it is set:
 
-- `daex new chat --mode chat|cli [--no-report]` (`--type subagent|peer`, alias `--spawn-type`, is also accepted).
-  - Both modes default `orchestrationParentSessionId` from `ADE_CHAT_SESSION_ID`; `--parent` overrides; `--no-parent` creates an independent top-level session.
-  - When an agent creates it, the brain records the passive `launchedBySessionId` from the RPC-stamped runtime actor (never the payload). It does not nest, wake or cap permissions; it only lets Focus treat the finished helper as the launcher's business (`terminals-and-sessions/ui-surfaces.md`).
-  - A parent without a type defaults to `subagent` on every layer (CLI flags, the `--arg` bag, `start_cli_session`, `createSession`); only an unknown type errors.
-  - Chat mode stores the fields on the child and uses `spawnKind` for completion. Agent CLI mode sends them to `start_cli_session`, which stores them in `TerminalResumeMetadata` and puts the spawn chip and subagent card in the parent ([CLI children](#cli-children)). Plain shells omit them, and CLI lineage never sets `chatSessionId` (that means attached-terminal ownership).
-- `daex chat create --type subagent --provider <p> --model <m> [--instance <id>] [--custom-provider <name>]` spawns helpers from any thread; there is no separate orchestration mode.
-- The CTO's `spawnChat` sets `orchestrationParentSessionId` to the calling CTO session and defaults `spawnKind` to `"subagent"` in both the zod schema and the tool body, so the result echoes the kind.
+- `daex new chat --mode chat|cli [--no-report]` (`--type subagent|peer` also
+  works). Both modes default the parent from `ADE_CHAT_SESSION_ID`; `--parent`
+  overrides; `--no-parent` creates a top-level chat. An agent-created chat also
+  records a passive `launchedBySessionId` from the RPC-stamped actor.
+- `daex chat create --type subagent --provider <p> --model <m>`.
+- The CTO's `spawnChat` defaults to `subagent`.
 
-**Inherited permissions.** New `subagent` chats and tracked CLIs inherit a full-auto parent's permissions when the launch sets no child mode; the brain translates it to the child's provider settings, so a Claude parent can start an autonomous Codex child without another approval. Explicit child restrictions (plan mode included), host policies and the caller's ceiling still apply. Peers keep their launch defaults. User-only consent (such as the user's real screen) still needs the user.
+Rules:
 
-**Decisions.** Subagent instructions send unresolved decisions to the parent in the closing summary, delivered on the parent-wake channel. Parents resolve routine ones or escalate; the top-level parent asks the user when a critical decision has no known safe answer. When a child ends a turn with its own `daex chat ask` raised, the parent's report includes the question and `daex chat ask --clear --session <child>`; the parent can lower only that agent's ask, never a user-raised hand.
-
-**`parentIdentityKey`.** A summary carries it when the parent is an identity session (`"cto"`), so a roster can badge the origin without resolving the parent. It is host-stamped, because identity rows are filtered out of every roster.
-
-**Work list.** The by-lane list (desktop, iOS) files same-lane `spawnKind: "subagent"` chats and tracked CLI `--type subagent` sessions under their parent chat; they are not list rows. (A child of a tracked CLI or shell parent stays a row, since a terminal has no subagent list.)
-
-- The parent row carries one mark (count and worst state); its actions pane lists them in **Subagents**.
-- Peers stay top-level. Demote un-nests; promote files again. Cross-lane children stay top-level in their lane with the lineage chip.
-- A quiet parent (snoozed or settled) pulls not-done children up; done children stay filed. Grandchildren count toward the root parent.
-- `daex chat list` stays flat and appends the lane's tracked CLI children as `kind: "cli"` rows with terminal status, exit code and parent. See [Session sidebar](../terminals-and-sessions/ui-surfaces.md#session-sidebar-sessionlistpanetsx).
+- **Inherited permissions:** a new `subagent` chat or tracked CLI with no child
+  mode inherits a full-auto parent's level, translated to its provider; explicit
+  restrictions, host policies and the ceiling still apply.
+- **Decisions** go to the parent in the closing summary. A child's own
+  `daex chat ask` is reported with `daex chat ask --clear --session <child>`.
+- `parentIdentityKey` (`"cto"`) is host-stamped on summaries.
+- **Work list:** same-lane `subagent` chats and tracked CLI subagents are filed
+  under their parent row; peers stay top-level. `daex chat list` stays flat. See
+  [Session sidebar](../terminals-and-sessions/ui-surfaces.md#session-sidebar-sessionlistpanetsx).
 
 ### A subagent's question reaches its parent
 
-A turn waiting on an answer never ends, so the completion wake never fires for a child blocked on a question. `relayChildQuestionToParent` (`agentChatService.ts`) covers it: when a `subagent` child raises a blocking question (`question`, `structured_question`, `model_selection`), the parent chat gets one trusted `wake` message (`hostContinuation.reason: "subagent_question"`) with the question, numbered options and the exact `daex chat respond <child> --item <id> …` commands, written by `describePendingInputForAgent` (`shared/pendingInputCommand.ts`, also behind `daex chat pending --text`). It is sent once per child item (in memory); the card stays in the child for the person.
+A child blocked on a question never ends its turn, so `relayChildQuestionToParent`
+wakes the parent once per item (`hostContinuation.reason: "subagent_question"`)
+with the question and exact `daex chat respond <child> --item <id> …` commands
+(`describePendingInputForAgent`, `shared/pendingInputCommand.ts`). Not relayed:
+approvals, secrets and user-only consent cards, a peer's questions, parents
+outside this service.
 
-Not relayed:
-
-- approvals and permission prompts (an agent approving its child's tool call would grant itself access);
-- secret questions and user-only consent cards;
-- a peer's questions (they are the user's);
-- parents that are not a chat in this service (a CLI terminal, another project or machine).
-
-**A card's answer.** When the person answers a card an agent posted (a DAEX Cloud size request, `cloud.tier_request_answer`), or the change it asked for ends, the agent gets one `wake` in DAEX's words (`hostContinuation.reason: "card_answer"`, "Told the agent the answer to its request"); see [DAEX Cloud](../ade-cloud/README.md). It works the same on every provider: it is a `messageSession` wake, which waits for a running turn to end.
-
-**Waiting on the user.** For a secret question or user-only consent card (`isUserOnlyConsentCard`: the real-input lease, shared-desktop consent, MCP app calls, project secret requests), `relayChildAwaitingUserToParent` tells the parent the child waits on the user (`hostContinuation.reason: "subagent_awaiting_user"`), so a coordinator does not start a second chat for the same work.
-
-- This notice also reaches a parent in another project or machine: the brain's external parent router sends an `ExternalParentWake` with `notice: "awaiting_user"`, and `deliverExternalChildCompletion` posts it as a message, not a completion, so the parent's card for the child stays open.
-- Across machines it goes only to a brain whose `ade/initialize` advertises `externalWakeNotices`; for any other brain the agent machine bridge drops it (`agent_cross_machine.wake_notice_skipped`), and the parent hears of the child at its turn end.
-- A `peer` child's parent is not told; a caller waiting with `daex chat wait` still hears it.
-- The summary carries `pendingInputUserOnly` and `chat.getTurnStatus` carries `ask.userOnly`, which `daex chat status` prints as "only the user can answer this".
-
-**Open cards.** A scheduled wake does not fire while a card is open (`shouldDefer` checks `hasLivePendingInput`), since it would be refused and close the row "Not delivered". The real-input lease card is withdrawn after `MAC_DESKTOP_INPUT_LEASE_WAIT_MS` (170 s, inside the caller's 180 s budget for `mac_desktop.requestInputLease`). `daex chat respond` lists inputs via `chat.listPendingInputs` and answers via `chat.respondToInput`; a send to a chat with an open card is refused with a message naming both commands.
+- For user-only cards, `relayChildAwaitingUserToParent` tells the parent the
+  child waits on the user (`subagent_awaiting_user`), also across machines to
+  brains advertising `externalWakeNotices`.
+- When the person answers a card an agent posted (e.g. a DAEX Cloud size
+  request), the agent gets one `card_answer` wake.
+- A scheduled wake does not fire while a card is open. `daex chat respond`
+  answers via `chat.respondToInput`.
 
 ### Type-decided completion reporting
 
-When a spawned chat child completes a turn, `reportChildSpawnEnded` (`agentChatService.ts`) derives the parent from persisted lineage and acts on the child's current `spawnKind`.
+When a spawned chat completes a turn, `reportChildSpawnEnded` acts on the
+child's current `spawnKind`.
 
-**`subagent`.** DAEX always wakes the parent through the trusted `messageSession({ kind: "wake", metadata: { spawnCompletion } })` path.
-
-- An active Claude parent gets it inline as SDK `priority: "next"`, Codex as `turn/steer`, allowed while awaiting input. Other active providers use the normalized `steer()` fallback (may queue at their safe boundary); an idle parent gets the normal message path.
-- The message carries a typed `AgentChatSpawnCompletion` (`childSessionId`, `childTitle`, `childTurnId`, `spawnKind`, `status`, the latest bounded assistant `summary`, and `humanMessageCount` when the user also messaged the child that turn).
-- **The report is the child's final message, lines kept.** `boundChildReport` (`childReportText.ts`) keeps lists, code and line breaks and changes only line endings and the blank edges (inner blank lines and the first line's indentation stay), capped at `CHILD_REPORT_MAX_CHARS` (3,500, under the 4,000-character `summary` cap a cross-scope wake keeps). A longer reply keeps its **end**, where the closing summary lives, behind `[The start of this reply was cut. Read all of it with: daex chat read <id>]`, and a cut inside a code fence reopens it (the active fence is tracked, so a shorter fence inside a longer one is content; the reopened line keeps at most 40 characters of its info string and counts against the budget). The wake text reads `Your subagent "<title>" (<id>) finished a turn.`, an optional relink line, a blank line, then the report and its notes (the user's messages, a raised hand).
-- **Durable delivery.** With the brain's router installed, a report to a chat parent in the same service goes through the brain's outbox (`router.queueLocal`, `crossScopeChats.ts`): written to the brain's outbox file under `~/.ade/cross-machine/` first, tried at once, then retried from disk with the outbox backoff (30 s up to 5 min, given up after 24 h with a note on the child). A restart or a failed wake no longer loses it, and a disposed service answers `failed` so the entry waits for the next start. A stop during shutdown is queued like any report (the disposing service answers `failed`, so it waits for the next start). Restart recovery's close of a turn it is about to continue is not reported (`restartContinuingTurnId`, logged `agent_chat.spawn_completion_skipped_restart_continue`): the parent hears from the continued turn. If the resume then is not armed (capped, archived, the arm failed), the held "stopped" report goes out (`restartHeldStopTurnId`). A turn recovery does not continue (held for the user, capped, too old) still reports "stopped". It logs `agent_chat.spawn_completion_queued` and, on delivery, `cross_scope_chats.delivered`. Brains sharing one home keep one outbox file each, `external-parent-wakes-<hash of the brain's endpoint>.json` (`ownerId`, the socket path): one writer per file, so none overwrites or delivers another's reports, and an empty outbox leaves no file. At start a brain takes over the file of a brain that has not written for the 24 h give-up age (it never came back), and only the machine's own brain (`adoptLegacyOutbox`) takes over the shared `external-parent-wakes.json` older builds wrote; taken entries are tried once more, then given up with the usual note. A report whose outbox write fails is handed back (`queueLocal` returns false) and delivered directly. Without a router (desktop-only, tests) the old direct path runs.
-- The renderer draws a navigable `spawn_wake_divider` **Subagent returned**, whether the completion joined an active turn or started idle work. Scheduled wakes, by contrast, wait for a safe turn boundary.
-- **Batching.** A mid-turn parent takes each result inline. For an idle parent, `createParentWakeBatcher` (`parentWakeBatcher.ts`) holds the wake while another subagent of that parent runs, for at most `PARENT_WAKE_BATCH_HOLD_MS` (15 s), and delivers all held results in one wake ("N of your subagents finished: …"). The lead child rides `spawnCompletion`; each other child gets a `spawn_completed` notice, written only after the wake succeeded so a failed wake retries with them. `agent_chat.parent_wake_delivered` logs `completions` and `heldMs`. Shutdown drops a held batch. For a chat parent behind the outbox the batcher sits inside the outbox's delivery attempt, so the dropped wake answers `failed` and the entry, already on disk, is delivered after the restart. A retried attempt does not post the parent's `subagent_result` card again (`spawnResultCardsPosted`). A report pinned to a scope whose chat is not there is looked up in every open scope before it counts as parent gone.
-
-**`peer`.** Nothing is posted and the parent is not woken; the child's card in the parent closes (`subagent_result`). A `peer` child never pays for the ownership transcript read.
-
-**`spawn_completed` notices.** Transcripts can hold quiet `system_notice` rows with `status: "spawn_completed"` for peer turns, and they render.
-
-- The line reads `Chat "<title>" finished its turn` (`spawnCompletedNoticeMessage(childTitle)` in `shared/types/chat.ts`), re-stated rather than echoing the stored `message`, with no `peer` kicker. The turn summary says **Chat turn finished.** (subagents: **Subagent turn finished.**).
-- For a notice whose detail lost `spawnCompletion`, `readSpawnCompletedNotice` recovers the title with one anchored pattern matching both `Chat "<title>" finished its turn` and `Peer "<title>" turn finished`; anything else falls back to `"Chat"`. Every surface reads notices through it.
-
-**Folding.**
-
-1. `appendCollapsedChatTranscriptEvent` replaces the row it just appended when both name the same `childSessionId`, bumping a render-only `repeatCount`. It is adjacency-only, which keeps incremental and full collapses byte-identical.
-2. `foldSpawnCompletionLines` (`spawnCompletionLines.ts`) runs over drawn rows: each child keeps only its newest notice, and `repeatCount` becomes its turns across the thread. Neighbouring notices share one line ("2 chats finished their turns: A ×3 · B"), each name a button that opens the chat. A notice with an unidentified child keeps its own row and closes any line it sits in.
-
-`repeatCount` is render-only; nothing persists or emits it.
-
-**Jumps.** A deep link to an older notice lands on the line showing its child (`findSpawnCompletionLine`, used by `chatListScrollAnchoring.ts`). A jump from a line goes through `openSpawnedChat` (`AgentChatMessageList.tsx`): a child that ran elsewhere (`childMachineName`) is left to the Work list; any other jump carries this chat's pin.
+- **`subagent`:** the parent is woken through `messageSession({ kind: "wake",
+  metadata: { spawnCompletion } })` (inline steer for an active Claude or Codex
+  parent). `AgentChatSpawnCompletion` carries child ids, status and the bounded
+  report.
+- **The report is the child's final message, lines kept**
+  (`boundChildReport`, `childReportText.ts`, `CHILD_REPORT_MAX_CHARS` 3,500),
+  keeping the **end** of a long reply behind a "start was cut" line.
+- **Durable delivery:** with the brain's router, reports go through the brain's
+  outbox (`router.queueLocal`, `crossScopeChats.ts`) under
+  `~/.ade/cross-machine/`, retried 30 s to 5 min for up to 24 h. One outbox
+  file per brain endpoint. Restart recovery does not report a turn it is about
+  to continue.
+- **Batching:** for an idle parent, `createParentWakeBatcher` holds a result up
+  to 15 s (`PARENT_WAKE_BATCH_HOLD_MS`) while siblings run, then wakes once.
+- **`peer`:** nothing is posted; the child's card in the parent closes.
+- `spawn_completed` notices fold per child (`foldSpawnCompletionLines`); a
+  render-only `repeatCount` counts turns.
 
 ### A CTO parent gets one line
 
-When the parent is the CTO, the completion renders as one `system_notice`. The CTO still gets the child's `subagent_result`, once per child turn, so the child's row there settles; the CTO surfaces never draw its summary. The CTO runs dozens of chats, and a card restating each closing summary would bury the thread.
+For a CTO parent the completion renders as one `system_notice`
+(`formatCtoChildReportLine` in `ctoTurnContext.ts`: title · provider · outcome ·
+PR #n). The CTO itself is woken with the line plus the bounded report
+(`hostContinuation` `cto_child_report`). The wake is sent first and the notice
+written after, since the notice is the dedupe anchor.
 
-- `formatCtoChildReportLine` (`services/chat/ctoTurnContext.ts`) builds `"<child title>" · <provider> · finished | was stopped | failed`, plus `· PR #<n>` when `readChildPullRequestNumber` finds one (report artifacts first, then the closing summary, since many agents write the number only in prose).
-- The notice is `warning` for a failure, else `info`, and carries the same `spawnCompletion` payload so delivery dedupe anchors on it.
-- The line is for the person. For a subagent the CTO itself is woken with that line, the child's bounded report (the same wake text any parent gets: final message with its lines, the notes), and unread worker discoveries. The wake has no `spawnCompletion` metadata (the notice owns that row; a second copy would draw the wake divider over it); its `hostContinuation` (`cto_child_report`) carries `childSessionId` and `childTurnId`. The CTO thread's steer queue cap is zero, so the wake goes into the running turn.
-- **Wake first, then the notice.** The notice is the dedupe anchor, so it is written only after the wake succeeded: a notice written first made a retry after a failed wake read as delivered. A retry that finds the wake by its ids but no notice adds only the notice. Clients draw nothing for the wake, so the order is invisible.
+### Takeover, parents and moves
 
-**Takeover.** `spawnKind` is mutable.
-
-- Taking over a subagent (desktop/iOS banner, context menu, `daex chat demote`, `/session demote`) sets `spawnKind = "peer"` and posts a quiet parent notice `status: "spawn_takeover"`: `The user took over "‹child title›" — reports stop here.`
-- Promoting (`daex chat promote`, `/session promote`) restores `subagent` while the parent chat exists. A parent `spawnDispatch` into a peer child auto-promotes it without a note.
-- A human message to a subagent does not take the report channel; the next wake appends `The user also sent N message(s) to this chat.` The takeover banner shows once (`subagentTakeoverPromptShownAt` on the child); sending does not dismiss it.
-
-**Parent gone: the nearest live ancestor.** A subagent whose parent was deleted reports to the closest chat above it that takes reports: the parent's parent, and so on (loop-safe, put-away chats skipped), up to the CTO; with nothing live above it, the project's CTO thread, unless that CTO sits below the child (`childAncestry.ts`). Links past the TTL are ignored at lookup. `deleteSession` records each deleted chat's own parent ("" for a top-level chat) and title in a machine-local file (`.ade/cache/chat-sessions/deleted-parent-links.json`, 90-day TTL, 500 links), because deleting removes the row and state that held it; local, not the synced kv, since it names deleted chats. A put-away (archived) parent is not gone: it keeps its children and still gets their reports. The relink happens at the child's next report, or earlier when a chat list runs the orphan repair (`reconcileOrphanedSubagent`, which now relinks before it demotes). The child is relinked for good (`orchestrationParentSessionId`, `session_meta_updated`), gets one info `system_notice` `status: "spawn_parent_relinked"` (`The chat that started this one is gone. It reports to "<title>" now.`, the CTO named "CTO", with `openSessionId`), and its first report to the new parent carries a line saying which chat is gone (`pendingRelinkNote`, `composeChildWakeText`; after a restart the child's own relink line stands in, without the title). It logs `agent_chat.spawn_parent_relinked`. A report already in the outbox when its parent is deleted goes to the chat the child reports to now (`noteExternalParentUnreachable` with the wake); it never demotes a child that already points at a live chat. A deleted tracked-CLI parent leaves no link.
-
-**Parent gone, nothing above.** There is no silent spawn type. With no live ancestor and no CTO, a deleted or missing parent is not a delivery failure: DAEX demotes the child to peer (if still a subagent), skips further parent notices and wakes, and emits at most one child `system_notice` `status: "spawn_parent_gone"`: `This chat used to report back to another chat that was deleted. It will keep working here on its own.` It logs `agent_chat.spawn_completion_parent_gone`.
-
-**Delivery failure.** Through the outbox, a failed attempt is retried from disk until it lands or 24 h pass; only then does the child get a note. On the direct path (no router) delivery retries three times in memory. A real failure against a reachable parent logs `agent_chat.spawn_completion_delivery_failed` and emits one child warning (`spawnCompletionDeliveryFailedNoticeMessage`) with no session id or recovery command, not repeated on later turns. Per-turn dedupe uses the child turn id found in the persisted parent transcript, so brain restarts neither sever the channel nor replay a report. Every child turn completion writes one `agent_chat.spawn_completion_routed` line (`routedTo: "wake"` or `"quiet_notice"`), so an unwoken parent is distinguishable from an unfinished child.
-
-**Changing the parent.** `chat.setParent` (`daex chat set-parent <session> --parent <chat> [--no-report]`, `--no-parent` to detach) points a chat at any chat this machine can reach, refusing a self-parent or a loop. Reports go to the new parent from the next turn.
-
-- Without `--no-report` or `--type` a chat keeps its kind, except that a chat demoted because its parent was gone becomes a subagent again.
-- A chat-bound agent may move its own chat, adopt a chat with no live parent, or release a chat that reports to it. The runtime stamps `actingAgentSessionId` and the service enforces this, so an agent cannot take another coordinator's child.
-- `chat.updateSession` refuses a parent field rather than dropping it.
-
-**Cross-machine moves keep the tree.** The capsule carries `source.orchestrationParentSessionId` and `source.spawnKind`. On arrival the destination restores the parent when reachable (`remote:<this machine>:<chat>` reads as the local chat) and relinks every local chat whose parent was `remote:<source>:<moved chat>` to the new copy, keeping each kind; a retried accept relinks too. Children on the source machine are not relinked (they would need a wake token from the destination); fix them with `daex chat set-parent`.
+- **Takeover:** `spawnKind` is mutable. Taking over (`daex chat demote`, banner,
+  menu) sets `peer` and posts `spawn_takeover`; promoting restores `subagent`.
+  A human message to a subagent does not take the report channel.
+- **Parent gone:** a subagent reports to the nearest live ancestor, up to the
+  project's CTO (`childAncestry.ts`; deleted links in
+  `.ade/cache/chat-sessions/deleted-parent-links.json`, 90 days). It is relinked
+  with a `spawn_parent_relinked` notice. With nothing above, it is demoted to
+  peer with one `spawn_parent_gone` notice.
+- **Delivery failure:** the outbox retries for 24 h before noting it on the
+  child; every completion logs `agent_chat.spawn_completion_routed`.
+- **Changing the parent:** `chat.setParent` (`daex chat set-parent <session>
+  --parent <chat> [--no-report]`, `--no-parent`), refusing self-parents and
+  loops. An agent may move only its own chat, adopt an orphan, or release its
+  own child (`actingAgentSessionId`).
+- **Cross-machine moves keep the tree:** the capsule carries the parent and
+  kind; the destination relinks local children of the moved chat.
 
 #### Mission ownership decides the wake
 
-Wake versus quiet is the child's persisted `spawnKind`, not the latest human message. A plain human message does not close the report channel; `isHumanChildMessage` (`spawnMissionOwnership.ts`) counts such messages for the next wake's `The user also sent N message(s) to this chat.`
+Wake versus quiet is the child's persisted `spawnKind`, never the latest human
+message (`isHumanChildMessage` in `spawnMissionOwnership.ts` only counts them).
+Host-authored inputs (`scheduledWake`, `spawnCompletion`, `agentRelay`,
+`hostContinuation`, `orchestrationOrigin`, `spawnDispatch`, `boardMove`) are
+never human.
 
-Host-authored inputs that are not human messages:
-
-- `scheduledWake` (the child's own scheduler);
-- `spawnCompletion` (a result from the child's grandchild);
-- `agentRelay` (any other bound agent messaging the child);
-- `hostContinuation` (DAEX prompting the chat to resume or repair its work: plan follow-ups, interrupted-turn recovery, provider schedule cleanup, the CTO intro seed, continuity recovery, also stored as `kind: "continuity_recovery"`);
-- any `orchestrationOrigin`;
-- a `deliveryState: "queued"` row whose delivered twin carries the authoritative metadata;
-- a parent `spawnDispatch` (which auto-promotes a peer child).
-
-**Provenance is host-authored**, never accepted from a caller.
-
-- The RPC edge runs `withTrustedAgentProvenance` on `chat.messageSession`, `chat.sendMessage` and `chat.steer` before any role or scope branch: it strips every key in `HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS`, then re-derives `spawnDispatch` when the caller is the target's persisted parent, or `agentRelay` for any other bound agent.
-- Positional invocation of those three actions is rejected (`chat.<action>` needs object arguments via `--input-json`), and the automation action bridge strips the same keys before a `chat` action.
-- So a child cannot manufacture ownership of itself, and a grandchild's report cannot revoke its grandparent's. `boardMove` is in the list too, so neither a rule nor an agent can forge "the user moved this card".
-- The agent reading the chat is told who sent an `agentRelay` message. `prepareSendMessage` puts one line before the text the model gets (`agentRelaySenderNote`, `chat/agentRelayNote.ts`): another agent sent it, from which chat (and, for a caller on another computer, `remote:<device>:<chat>`, that computer's name from `externalChatContext`), and how to read that chat. Without it an agent took another agent's request (a test prompt, a coordination note) as the person's own. Every provider's turn text and steer comes through there. The bubble keeps the sent text (`displayText`); the stored `text` keeps the note. Commands get no note, so they still run: a provider slash command (`isProviderSlashCommandInput`; `/review is this safe?` reads as chat text and gets one) and, on Muse only, Muse's own commands (`parseMuseControlCommand`, including `!cmd`); and a rerun replaces the note instead of adding a second. A message an agent types into an agent CLI's terminal is not covered.
-
-**User activity.** `messageClearsAttentionMarkers(metadata)` is the one predicate every send path reads:
-
-- no metadata clears the markers;
-- `boardMove` clears them, except a move into Needs you (which must leave the raised hand);
-- `scheduledWake`, `spawnCompletion`, `hostContinuation` or `agentRelay` clear nothing (DAEX or an agent wrote them).
-
-iOS mirrors the key list by hand in `SyncService.hostAuthoredChatMessageMetadataKeys`.
+**Provenance is host-authored**, never accepted from a caller:
+`withTrustedAgentProvenance` (RPC edge, on `chat.messageSession`,
+`chat.sendMessage`, `chat.steer`) strips every key in
+`HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS` and re-derives `spawnDispatch` (caller
+is the persisted parent) or `agentRelay`. Positional invocation of those actions
+is rejected. An `agentRelay` message reaches the model with one line naming the
+sending agent and chat (`agentRelaySenderNote`, `chat/agentRelayNote.ts`);
+slash commands get no note. `messageClearsAttentionMarkers(metadata)` is the one
+predicate for whether a send clears attention markers. iOS mirrors the key list
+in `SyncService.hostAuthoredChatMessageMetadataKeys`.
 
 ### CLI children
 
-A `--mode cli` child is a tracked PTY session with no turns, so it reports once per run. `agentChatService` listens on `ptyService.onExit` and, for a terminal with parent lineage, closes the parent's `chat:<terminalId>` card through `deliverChildCompletionToParent` (as chat children do): `subagent` wakes the parent, `peer` leaves the quiet note, the CTO gets one line.
-
-- Exit 0 is finished; non-zero failed; a closed or orphaned terminal stopped unless the CLI already wrote its closing message.
-- The report is that closing message (from the Codex rollout or Claude Code session file) or the last meaningful terminal lines.
-- An interactive CLI stays open after it finishes, so its card closes only at process exit; use `--mode chat` for a subagent that must report every turn.
-- A parent polls a CLI child with `daex chat status <id>`, finds it in `daex chat list`, and reads it with `daex chat read <id>` (last message plus terminal tail) or `daex terminal read <id>` (full output).
-- After a brain restart the stale-run sweep hands an ended CLI child's open card to the same path with quiet routing, never treating the terminal row as a missing chat.
-- Rules: `apps/desktop/src/main/services/chat/cliChildSessions.ts`.
-
-Both child types get lineage env (`ADE_PARENT_CHAT_SESSION_ID`, `ADE_SPAWN_KIND`) and injected guidance on the type contract and direct-report recovery through `chat.messageSession`. When the parent is gone, the recovery line becomes guidance not to report back.
+A `--mode cli` child is a tracked PTY with no turns, so it reports once per run
+at process exit (`ptyService.onExit` → `deliverChildCompletionToParent`; rules
+in `cliChildSessions.ts`): exit 0 finished, non-zero failed, closed stopped
+unless it already wrote a closing message. The report is its last assistant
+message (Codex rollout, Claude Code session file) or the terminal tail. Use
+`--mode chat` for a subagent that must report every turn. Both child types get
+`ADE_PARENT_CHAT_SESSION_ID` and `ADE_SPAWN_KIND`.
 
 ### Inline card vs. quiet pill
 
-A spawn emits an inline `subagent_started` / `subagent_result` card pair, so the `subagent_spawned` notice sets `hasInlineCard: true` and the renderer suppresses the deep-link pill. The completion report follows `spawnKind`, whether or not an inline card was emitted. When a spawned chat starts a later turn, its parent card reopens as running and the turn gets its own summary.
-
-Stopped subagent cards keep the host's stop source and plain cause: only a user stop says **Stopped — interrupted**; a system, foreign-brain or provider stop names its cause; an unknown stop stays neutral. A stopped card also shows the last activity and whether the report arrived or work was lost. Two or more adjacent stopped results fold only when source and cause match.
+A spawn emits inline `subagent_started` / `subagent_result` cards, so the
+`subagent_spawned` notice sets `hasInlineCard: true` and the pill is suppressed.
+Stopped cards keep the host's stop source and cause.
 
 ### Navigation and lineage surfacing
 
-Every spawn surface routes through `navigateToSpawnedChat` (`spawnNavigation.ts`). `spawnKind` and `orchestrationParentSessionId` are projected onto `TerminalSessionSummary` (`apps/desktop/src/shared/types/sessions.ts`) from the chat session or a tracked CLI's normalized `resumeMetadata`; CLI resume-command refreshes merge, so the fields survive. The Work sidebar renders, with no extra fetch:
-
-- a type pill on the child (`SessionCard`: violet `subagent`, slate `peer`; invalid values ignored);
-- a live-children badge (`▸N`) counting still-`running` children, derived in `SessionListPane` from the loaded list;
-- a lineage identicon left of the status slot on every top-level child with a parent (cross-lane rows, peers). Nested same-lane subagents sit under the parent, so there it leads the compact row. The tooltip names the parent from the unfiltered title index; clicking the top-level glyph opens the parent without selecting the child.
-
-**Way back.**
-
-- `AgentChatPane` has one back control at the left of a spawned chat's header, labelled with the parent's title (also the tooltip), returning to the parent and reopening its actions pane if it was open. It is the keyboard and assistive-technology route. A runtime subagent's transcript uses the same control, labelled **Back to main thread**.
-- The spawned chat's actions pane leads with its parent's roster (`data-testid="chat-actions-parent-roster"`), this chat highlighted; clicking it goes back too.
-
-**Takeover controls.**
-
-- A subagent that has not answered the takeover prompt shows a non-blocking composer banner, **Take over** / **Keep reporting**. Take over demotes to peer; dismiss and Keep reporting persist `subagentTakeoverPromptShownAt` without changing `spawnKind`.
-- The Work context menu offers **Demote to peer** / **Promote to subagent**. The iOS long-press menu says **Stop reports to <parent>** / **Report back to <parent>** (long titles cut in the middle; "parent" when unknown).
-
-**Subagents panel.** Spawned-chat rows in `ChatSubagentsPanel` derive an explicit `childSessionId`, navigate to it and ask for its actions pane in the same press. Labels prefer the live child title from `WorkViewArea`; keeping the `chat:` task id and `spawnKind` through the dotted/underscore event twin keeps rows navigable in any event order.
+Every spawn surface routes through `navigateToSpawnedChat`
+(`spawnNavigation.ts`). `spawnKind` and the parent are projected onto
+`TerminalSessionSummary`; the Work sidebar shows a type pill, a live-children
+badge and a lineage identicon. A spawned chat's header has one back control to
+the parent; its actions pane leads with the parent's roster. Takeover controls:
+the composer banner (**Take over** / **Keep reporting**), the Work context menu,
+the iOS long-press menu.
 
 ## IPC surface
 
-Channel constants: `apps/desktop/src/shared/ipc.ts`. Handlers: `apps/desktop/src/main/services/ipc/registerIpc.ts`. All are `invoke` unless marked push.
+Channel constants: `apps/desktop/src/shared/ipc.ts`; handlers:
+`apps/desktop/src/main/services/ipc/registerIpc.ts`; renderer API:
+`window.ade.agentChat.*` in `preload/preload.ts`. Most channels mirror a
+`chat.*` runtime action. Read those files for the full list. Contracts worth
+knowing:
 
-| Channel | Purpose |
+- `ade.agentChat.getEventHistory` / `getEventHistoryPage` take one object;
+  `sessionFound: false` vs `unavailable: true`; `hasOlderHistory` is
+  authoritative ([transcript doc](transcript-and-turns.md#history-snapshots-scroll-back-and-misses)).
+- `ade.agentChat.create` accepts `fastMode` / `fastTier`, caller-injected
+  `mcpServers` and tristate `strictMcpConfig` ([Caller-injected MCP](#caller-injected-mcp)).
+- `ade.agentChat.steer` returns `AgentChatSteerResult`; `cancelSteer({
+  requireQueued: true })` refuses a row delivery already claimed;
+  `dispatchSteer` delivers a staged row now (a refused Cursor inline dispatch
+  answers `{ dispatchedAt: null }` without throwing; callers must read it).
+- `ade.agentChat.interrupt` takes a stop mode; a queue-clearing mode settles
+  Codex cards on every path.
+- `ade.agentChat.stopTask` (one Claude task), `restoreCancelledQueue` (8 s
+  undo), `recoverCodexTurn` (one guarded recovery per turn).
+- `ade.agentChat.respondToInput` is the unified pending-input answer;
+  `dismissPendingInput` only for `providerMetadata.dismissible: true`.
+- `ade.agentChat.delete` waits for Claude cron cancellation confirmation and
+  leaves the chat unchanged on a provider timeout.
+- `ade.agentChat.switchAccount` / `continueUsageLimitOnAlternate` move a Claude
+  or Codex chat between accounts (owner-only; refused mid-turn).
+- `ade.agentChat.modelCatalog({ mode?, refreshProvider? }, pin?)` answers for the
+  machine that served it; composers pass their machine's pin.
+- `ade.agentChat.saveTempAttachment` (base64, 10 MB) /
+  `copyTempAttachment` (local copy, 50 MB) /
+  `ade.remoteRuntime.uploadChatAttachment` (streamed upload).
+- `ade.agentChat.getImageDataUrl` reads only inside allowed roots (realpath
+  containment).
+- `ade.agentChat.getSubagentTranscript`, `listSubagents`, `getMainTranscript`
+  (Claude-only provider view), `rewindFiles`, `getContextUsage` and
+  `getClaudeUsage` (Claude `/usage` via `get_usage`).
+- `ade.agentChat.event` (push) is the envelope stream.
+- Provider connections live on `ade.ai.*` (OpenCode OAuth and keys, Pi login,
+  Cursor Cloud fleet); cloud agents on `ade.cloudAgents.*`.
+
+### Handoff and fork
+
+`ade.agentChat.handoff`: `mode: "brief"` sends a compact hidden first message
+and may target another lane; `mode: "fork"` needs the same provider and keeps
+the lane; `handoffNote` rides the brief or becomes a fork's first turn.
+
+| Provider | Fork |
 |---|---|
-| `ade.agentChat.list` | List sessions; optional `includeIdentity`, `includeAutomation`, `includeArchived` (default `true`). Claude summaries include `nextWakeAt` (earliest armed, unpaused schedule), `scheduledWorkPaused` and the optional KV-backed `scheduledWork` snapshot. |
-| `ade.agentChat.drafts.list` / `.create` / `.delete` / `.update` / `.claim` | Drafts and scheduled-send store, mirrored as `chat.listDrafts` / `getDraft` / `createDraft` / `updateDraft` / `deleteDraft` / `claimDraft`. `list` runs the retention prune and returns newest first; `create`/`update` validate text, images and an optional schedule and re-arm via `refreshDraftScheduler`; `claim` deletes the row as the take. Arming, editing or claiming a scheduled row feeds the exactly-once claim in [Drafts and scheduled send](drafts-and-scheduled-send.md); `chat.sendDraftNow` delivers one now through the same path. |
-| `ade.agentChat.getSummary` | One session's `AgentChatSessionSummary`, with the durable schedule summary and management fields. |
-| `ade.agentChat.scheduledWork.create` | Durable DAEX-owned work for an eligible chat or tracked CLI, with exactly one of brain-local five-field `cron` (recurring by default), offset-qualified `runAt` or relative `delaySeconds` (one-shot). Returns the brain's IANA `timeZone` and absolute `nextRunAt`. Preload: `window.ade.agentChat.createScheduledWork`. |
-| `ade.agentChat.listScheduledWork` | KV-backed durable jobs for the project or one `sessionId`; active by default, `includeTerminal: true` adds bounded recent history. |
-| `ade.agentChat.cancelScheduledWork` | Cancel one job by `sessionId` + `scheduleId`. DAEX-only jobs cancel at once. Claude-owned jobs are paused and routed through that chat's `CronDelete`, reporting `providerCancellationRequested` and `providerCancellationConfirmed` honestly. An owner from an earlier SDK session is tombstoned locally with both fields false. |
-| `ade.agentChat.setScheduledWorkPaused` | Pause or resume every durable schedule of one session; returns the pause state and `nextWakeAt`. Overdue work follows the one-late-fire rule after resume. |
-| `ade.agentChat.resumeUsageLimitNow` | Send the usage-limit continue prompt now: cancels `auto-resume:<sessionId>`, resets the two-arm streak, dismisses the quota card, sends `AUTO_RESUME_PROMPT` as a user turn (`metadata.usageLimitResume: "manual"`). Refuses with no live limit (`{ok: false, reason: "no_live_usage_limit"}`) or a row already delivering (`"resume_in_flight"`), changing nothing and carrying a `message`. The row cancel is awaited first; a failed or refused dispatch throws after restoring the armed state, mirror and row. |
-| `ade.agentChat.continueUsageLimitOnAlternate` | Continue a usage-limited Claude or Codex chat on another signed-in account with room: the runtime stops, the thread file is copied to that account's config home, and the task continues as the next turn (source auto-resume cancelled). A thread that cannot move (none yet, failed copy) falls back to a new chat in the lane with a continuation prompt, followed by the messages the limit held (a compaction-only turn reports the failure), and the original stops waiting. The account comes from the live resume's `alternateAccount`. Refused mid-turn or with an open approval (`handoff_failed`). Answers `{ ok: true, sessionId }` or `{ ok: false, reason: "no_live_usage_limit" \| "no_alternate_account" \| "handoff_in_flight" \| "handoff_failed", message }`. Owner-only. CLI: `daex chat continue-on-account`. |
-| `ade.agentChat.getEventHistory` | `AgentChatEventHistorySnapshot` from one object argument (`{ sessionId, maxEvents?, maxBytes? }`); the registry also accepts a positional call from packaged clients. `sessionFound: false` is the stale-session signal that clears dead locked panes; `unavailable: true` means the runtime was unreachable, not a miss. `hasOlderHistory` (from the tail read) is the authoritative "more to scroll"; `tailStartOffset` is the `beforeOffset` cursor. See [History snapshots, scroll-back, and misses](transcript-and-turns.md#history-snapshots-scroll-back-and-misses). |
-| `ade.agentChat.getEventHistoryPage` | Older events from `{ sessionId, beforeOffset, maxBytes? }` → `AgentChatEventHistoryPage`. `startOffset` strictly decreases while `hasMore`; a non-decreasing cursor is a retryable protocol failure. Same `sessionFound` / `unavailable` split; an unreachable page echoes the caller's cursor as `startOffset`. |
-| `ade.agentChat.dismissPendingInput` | Discard one non-blocking question (`{ sessionId, itemId }`), only with `providerMetadata.dismissible: true`; else "This question needs an answer. Answer it or stop the turn." Emits `pending_input_resolved` (`resolution: "cancelled"`) and a "Question dismissed" notice. Mirrored as `chat.dismissPendingInput` (action and sync, `viewerAllowed: true`). |
-| `ade.agentChat.switchAccount` | Move a Claude or Codex chat to another signed-in account of the provider (`{ sessionId, instanceId }`): runtime stops, thread file copied, next turn resumes there. Answers `{ ok: true, instanceId }` or `{ ok: false, reason: "busy" \| "signed_out" \| "failed", message }`. Owner-only. CLI: `daex chat switch-account <session> --account <id>`. |
-| `ade.usage.consumeResetCredit` | Spend one banked Codex reset credit for `{ accountId }`, clearing its rate-limit windows. Single-flight per account with the idempotency key held across a timeout, so a retry cannot burn a second credit. Returns `{ ok, status: "reset" \| "nothingToReset" \| "noCredit" \| "alreadyRedeemed" \| "failure", message? }` after a forced quota refresh. Mirrored as `usage.consumeResetCredit` (`viewerAllowed: false`). |
-| `ade.agentChat.create` | Create a session; returns `AgentChatSession`. Accepts `fastMode?` (or `codexFastMode`) for models advertising `serviceTiers: ["fast"]`, `fastTier: "ultrafast"` where the Codex catalog offers it, caller-injected `mcpServers` and tristate `strictMcpConfig` (reported back as `mcpCapability`; see [Caller-injected MCP](#caller-injected-mcp)). |
-| `ade.agentChat.suggestLaneName` | Slug-safe lane name from a launch prompt via the title prompt, with a prompt-slug and optional unique temporary fallback. |
-| `ade.agentChat.parallelLaunchState.get` / `.set` | Crash-recovery state for parallel launches, scoped by project root and source lane id. |
-| `ade.agentChat.handoff` | Create a handoff session (see the handoff notes below the table). |
-| `ade.agentChat.send` | Dispatch a user message + attachments; on an ended session this is the continuation path. |
-| `ade.agentChat.steer` | Mid-turn follow-up (see the dispatch notes below). Returns `AgentChatSteerResult` (`{ steerId, queued, reason?: "queue_full" }`). |
-| `ade.agentChat.cancelSteer` / `.editSteer` | Queued-steer management. `cancelSteer({ requireQueued: true })` rejects if delivery already claimed the row; desktop Edit uses it before restoring the message to the composer. |
-| `ade.agentChat.dispatchSteer` | Deliver a staged steer now (see the dispatch notes below). |
-| `ade.agentChat.cancelDispatchedSteer` | Claude-only: resolves the `steerId` to its command UUID, probes `cancelAsyncMessage`, and returns `{ cancelled: true }` only after Claude confirms. |
-| `ade.agentChat.interrupt` | Provider-specific interrupt. Claude takes `mode: "stop_and_clear" \| "stop_only" \| "stop_and_background" \| "stop_and_clear_and_background"` (default `stop_and_clear`, which keeps background jobs once `perTaskStopAffordance` is on) and returns the mode, cancelled queue count and an optional eight-second recovery id. Codex reads the queue axis: a queue-clearing mode settles pending Codex cards via `settleCodexPendingInputs` on every arm, including the early returns with no thread or active turn (the common case: a plan approval comes after its turn completes). `stop_only` and `stop_and_background` leave the cards. Others keep their own stop. |
-| `ade.agentChat.stopTask` | Claude-only: stop one background task or native subagent by `taskId`; siblings run on. Not for spawned DAEX chats (`chat:` ids). Used by Chat Info, spawn cards, iOS Work, `daex chat stop-task`, `chat.stopTask`. |
-| `ade.agentChat.restoreCancelledQueue` | Claude-only: restore the queued steers from a recent queue-clearing Stop while the recovery id is live; returns `{ restored, restoredCount }`, never expired or foreign entries. |
-| `ade.agentChat.recoverCodexTurn` | One guarded recovery for the active stalled Codex turn: `wait`, `steer`, `interrupt_retry_same_thread`, `restart_resume_thread`. Single-flight per session/turn; rejects stale cards. |
-| `ade.agentChat.approve` | Approval channel for clients without pending inputs. |
-| `ade.agentChat.respondToInput` | Unified pending-input answer, including Codex and Claude MCP elicitation forms and Codex metadata-gated consent (`accept_for_session` → `_meta.persist: "session"` when offered; `"always"` only when it is the only scope). |
-| `ade.agentChat.getMcpApp` | The MCP App a tool call produced (page, declared origins, input, result), from the chat's machine. Action `chat.getMcpApp`. |
-| `ade.agentChat.mcpAppRequest` | One `tools/call` or `resources/read` from an app frame, routed to its server through the chat's session. Action `chat.mcpAppRequest`, user clients only. |
-| `ade.agentChat.listMcpAppGrants`, `.revokeMcpAppGrant` | Always-allowed tools for an app's server, and revoking one. Actions `chat.listMcpAppGrants` / `chat.revokeMcpAppGrant` (user clients only). |
-| `ade.mcpApp.prepare` | Store an app page in `mcpAppDocumentStore` and return `ade-scene://app/<id>`; main builds its policy from declared origins. Local, like `ade.scene.prepare`. |
-| `ade.agentChat.delete` | Permanently remove a chat: waits for current-session Claude jobs to confirm provider cancellation (tombstoning jobs whose earlier owner is unreachable), disposes the runtime, cancels the turn collector, resolves input waiters, removes the JSON + transcript and the `terminal_sessions` row. A provider timeout leaves the chat unchanged. Archive uses the same gate. |
-| `ade.agentChat.updateSession` | Change permission modes, `manuallyNamed`, capability mode, `fastMode` (or `codexFastMode`) and Codex `fastTier` (only when named), Claude SDK title/tag, `spawnKind`, `subagentTakeoverPromptShown`, `autoContinueAtUsageLimit`. `autoContinueAtUsageLimit: false` persists Don't continue, clears `usageLimitParkedUntil`, cancels DAEX auto-resume and interrupts a busy Claude query with default Stop. An empty tag clears the SDK tag. Demoting to peer posts a takeover note on the parent. |
-| `ade.agentChat.codex.goal.get` / `.set` / `.setStatus` / `.clear` | Codex-only, behind `window.ade.agentChat.codex.getGoal` / `.setGoal` / `.setGoalStatus` / `.clearGoal`: call the app-server goal RPCs directly (no `/goal` prompt text), preserve CLI/PTY sessions, validate objective length, persist goal state into summaries, and clear provider token budgets. |
-| `ade.agentChat.warmupModel` | Preload a Claude SDK runtime. |
-| `ade.agentChat.slashCommands` | Provider + local slash commands. |
-| `ade.agentChat.getContextUsage` | Claude-only: the SDK context usage breakdown (`AgentChatContextUsage`) for `/context`, classified by `kind` (`used` / `free` / `buffer` / `deferred`), never by the name `"free"`. Also read after initialization, each settled turn and compaction; streamed estimates cover the in-turn view. |
-| `ade.agentChat.getClaudeUsage` | Claude-only: Claude Code's `/usage` report via the SDK `get_usage` control request (`sendClaudeControlRequest` in `claudeSdkCompat.ts`), normalized by `shared/claudeUsageReport.ts`: session cost, per-model tokens, plan limit windows and, unless `skipBehaviors`, the transcript scan with recommendations and `fix` messages. `/usage` in a desktop or web Claude chat opens `ClaudeUsageSheet` (right-side `Dialog`), asking with `skipBehaviors` first. Fix applies `/effort <level>` through the chat's effort control (`planClaudeUsageFix`) and sends the rest, queued behind a running turn. Pinned; `chat` read action and `chat.getClaudeUsage` sync command. |
-| `ade.agentChat.rewindFiles` | Dry-run and apply file rewind for a user message. Claude uses SDK file checkpoints and leaves history; `skippedLinks` reports linked paths it could not restore, with a notice. Codex restores DAEX's git-tracked file plan and moves the thread back: `thread/fork` before the turn on servers >= 0.145.0, else `thread/rollback` (latest user message only) on servers below 0.156. The dry-run opens the confirmation dialog with context, stats, per-file rows and lazy diffs. |
-| `ade.agentChat.claudePlugins.list` / `.reload` | Claude-only: discovered plugins and forced reload (`/plugin`). |
-| `ade.agentChat.codexPlugins.list` | Codex: `plugin/reconcile` then `plugin/list`. Settings shows installed/enabled plugins only. Fail-open on a missing runtime or `-32601`. No marketplace, no toggle. |
-| `ade.agentChat.claudeOutputStyles.list` / `.set` | Claude-only: list and pick output styles (user, project, plugin roots) for `/output-style`. |
-| `ade.agentChat.claudeSessions.list` / `.info` / `.messages` | Claude-only: SDK sessions, info and messages for `forkSession` handoff and resume. |
-| `ade.agentChat.fileSearch` | Debounced attachment picker backend. |
-| `ade.agentChat.saveTempAttachment` | Write pasted image bytes to a runtime-owned temp file (the base64 leg, capped by `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`, 10 MB; the image MIME sniff runs on the sync leg only). Clipboard pastes, renderer-converted HEIC and every hosted-web file use it. For a paired machine with streamed upload, preload sends the bytes to `ade.remoteRuntime.uploadChatAttachment` as `data` instead, using this only when upload is not offered or fails for a payload this can carry. |
-| `ade.agentChat.copyTempAttachment` | Stage a file already on this machine by copying it, so bytes never enter the renderer. Backs preload `agentChat.stageFileAttachment` for `kind: "local"` bindings, with the 50 MB `MAX_CHAT_ATTACHMENT_BYTES` cap and no type limit. Reached only after `getAttachmentStagingMode` answers `copy` (preload answers itself). It is on the action allowlist and so reachable from a paired peer, which is no escalation: the channel needs a runtime-host pairing grant, which already reaches `chat.launchCli`. |
-| `ade.remoteRuntime.attachmentUploadCapability` / `.uploadChatAttachment` | The remote half. The probe answers a `ChatAttachmentStagingMode` (`upload` with the host ceiling, or `base64` with the base64 ceiling). The upload mints a ticket over the sync socket and streams the body over HTTP, from a local `sourcePath` or base64 `data` (checked against the smaller of `maxBytes` and 50 MB, written to a private temp file, uploaded, removed). Its IPC budget is 6 minutes (`ipcTimeouts.ts`), above the client's 5, so a slow upload reports its reason. |
-| `ade.agentChat.getImageDataUrl` | Bounded image read through the runtime as a data URL. Allows the project, its lane worktrees, temp, and Downloads, Documents, Desktop, checking realpath containment, type and size. Renderer callers use `readAttachmentImageDataUrl(path, pin)` (`renderer/lib/attachmentImage.ts`): a personal chat's own reader, else the pin's runtime, and the local `app.getImageDataUrl` only when this computer owns the file and the runtime gave no final answer. A remote-owned path is never read locally. |
-| `ade.agentChat.listSubagents` | Provider-neutral subagent snapshots, keyed `agentId + parentToolUseId`; the panel has Subagents, Teammates and Background tabs. Claude snapshots get `agentType` (the Task tool's `subagent_type`, joined on `parentToolUseId`); the Task `name` rides as `label`, never as `agentType`. Codex: `Agent #N` per turn plus the threadId as `agentId`. OpenCode: child session id. Cursor: tool call id plus any child agent id. Droid: worker session id. |
-| `ade.agentChat.getSubagentTranscript` | One subagent run's transcript as `AgentChatSubagentTranscriptMessage[]`. Claude reads `~/.claude/projects/<projectDir>/<sessionId>/subagents/agent-<agentId>.jsonl`; OpenCode reads the child session over HTTP; Codex merges captured child-thread rows with `thread/turns/list` backfill (parent `subagent_*` filter as fallback); Cursor filters the parent stream by child `agentId` or Task `taskId`; LM Studio / Droid return `null`. |
-| `ade.agentChat.getMainTranscript` | Claude-only provider-fidelity view: the mirrored SDK session with system messages, byte-bounded, without DAEX-only envelopes. |
-| `ade.agentChat.models` | `{ provider, activateRuntime? }`. OpenCode needs `activateRuntime: true` to launch a probe; otherwise it returns the cached inventory (`peekOpenCodeInventoryCache`) or empty. Cursor and Droid always activate. `aiDiscoveryCache.ts` keys on `(projectRoot, OpenProjectBinding, provider, activateRuntime)`. |
-| `ade.agentChat.modelCatalog` | `({ mode?, refreshProvider? }, pin?)` → `AgentChatModelCatalog` for the machine that served it (its ollama/LM Studio endpoints, `cursor-agent`, opencode inventory), so a composer for another machine passes its binding and caches under it; no pin keeps the bound-runtime path. Grouped claude / codex / cursor / droid / opencode plus `ollama` / `lmstudio` when OpenCode-routed. OpenCode contributes connected providers only; unconnected ones get empty blocks that no picker renders. Each project's OpenCode rows use its own inventory. `mode`: `"cached"`, `"refresh-stale"` (re-probe the named runtime past its TTL), `"force"`. `refreshProvider`: `"opencode" \| "cursor" \| "droid" \| "lmstudio" \| "ollama"`. Optional `stale: true`; per-model `connected` / `requiresConfiguration` / `sourceRuntime` / `providerId` / `providerName` / `serviceTiers`; Cursor rows add `cursorAvailability` (SDK chat vs CLI launch). |
-| `ade.agentChat.getSessionCapabilities` | Supported subagent/review features. |
-| `ade.agentChat.getTurnFileDiff` | Lazy diff for a turn-file-summary row. |
-| `ade.agentChat.event` (push) | `AgentChatEventEnvelope` stream to the renderer. |
+| Claude | SDK session pointer |
+| Codex | `thread/fork` in a short-lived private app-server (`codexEphemeralFork.ts`); goals cleared |
+| OpenCode | `session.fork` |
+| Droid | SDK `session.fork()`, then reopen the source branch |
+| Copilot | SDK session fork ([Copilot doc](copilot-sdk-provider.md#fork-and-rewind)) |
+| Pi | Worker `fork` (`createBranchedSession`) |
+| Cursor | No provider fork: the new agent gets the source transcript replayed (`buildFittedTranscriptReplay`) |
 
-**Handoff (`ade.agentChat.handoff`).**
-
-- `fastMode` and `fastTier` (Codex Ultrafast) are forwarded when the target model supports them.
-- `mode: "brief"` sends a compact hidden first message and may move the chat to any active lane via `targetLaneId` (unknown, unavailable or archived lanes are rejected).
-- `mode: "fork"` needs the same provider (the model may change) and keeps the source lane (a differing `targetLaneId` is rejected). Local forks seed the source transcript with fork provenance.
-- `handoffNote`: brief mode appends it to the hidden prompt; fork mode sends it as the first user turn.
-- Fork per provider:
-
-  | Provider | Fork |
-  |---|---|
-  | Claude | SDK session pointer |
-  | Codex | `thread/fork` in a short-lived private app-server that exits before the new chat resumes (`codexEphemeralFork.ts`; the source's app-server would hold the writer lock). Forked threads are goal-cleared before any note; Codex targets never inherit DAEX goals. Replay inputs stay under the app-server's 1,048,576-character limit. |
-  | OpenCode | SDK `session.fork` (`POST /session/{id}/fork`); persists `providerSessionId` |
-  | Droid | SDK `session.fork()` (`droid.fork_session`), then reopens the source branch (0.9.x retires the source handle on fork); persists `droidSdkSessionId` |
-  | Cursor | No provider fork, and a thread cannot be resumed twice. The new chat has no `cursorSdkAgentId`, so its first send opens a new agent prefixed with the full source transcript (`buildFittedTranscriptReplay`, trimmed oldest-first past the context window or input limit; then the result carries `replayFork` and the chat shows a truncation notice). |
-
-- Cross-machine fork also transports provider-native history for Claude, Codex and OpenCode; cross-machine Cursor and Droid handoffs are brief-only.
-
-**Steer dispatch (`steer`, `dispatchSteer`).** Accepted modes per provider come from `ACTIVE_TURN_DISPATCH_MODES` (`shared/types/chat.ts`), one guard rather than a per-provider ladder. A mode a provider does not list is rejected with `unsupportedActiveTurnDispatchModeMessage`; a provider with no entry (Droid) has no active-turn mode.
-
-| Provider | Modes | `inline` | `interrupt` |
-|---|---|---|---|
-| Claude | inline, queue, interrupt | SDK `priority: "next"` | SDK `priority: "now"` |
-| Codex | inline, queue | `turn/steer` folded into the running turn | rejected |
-| Cursor | inline, queue, interrupt | `Run.steer()` into the live local run | cancel + resend on the same thread |
-| OpenCode | inline, queue | v2 session prompt `delivery: "steer"` | rejected |
-| Muse | inline, queue, interrupt | `turn/steer` into the live turn | `turn/interrupt`, then a fresh turn |
-| Pi | inline, queue | the SDK's `steer` into the running turn | rejected |
-| Copilot | inline, queue | live-turn steer | rejected |
-| Kimi | queue, interrupt | rejected | interrupt, then send |
-| Qwen, Grok, Antigravity | queue | rejected | rejected |
-
-- `steer` without a mode stages the message, except on the CTO thread (queue cap zero), where it resolves to the provider's first non-queue mode.
-- A refused Cursor or OpenCode `inline` steer is not an error: the message is staged as a queued send, gets one "will send as a new message" notice, the queue head flushes if the turn boundary passed, and `queued: true` tells the truth.
-- `dispatchSteer`, Claude: pushes the message with `shouldQuery: true`; the row is removed only after the input pump accepts it.
-- `dispatchSteer`, Cursor `interrupt`: splices the row out, resolves it with "Delivering your queued message...", and promotes it to the interrupt-and-continue redirect; a throw puts the row back and reopens its settlement.
-- `dispatchSteer`, Cursor `inline`: offers the row via `Run.steer()` and removes it only on `complete_delivered`. A refusal (Cursor Cloud run, attachments, per-message overrides, a declining turn, no steer channel) answers `{ dispatchedAt: null }` without throwing, keeps the row and chip, emits one "couldn't go into the running turn" notice, and flushes the queue head if the boundary passed. Callers must read `dispatchedAt` (the iOS staged strip does).
-- `dispatchSteer`, Codex: splices and resolves the row as above, then re-enters via `steerWithOptions({ dispatchMode: "inline" })`, keeping the expected-turn retry and accepted-steer bookkeeping in one place. With no `threadId` or `activeTurnId` the row stays staged; a throw restores it.
-- `dispatchSteer`, OpenCode: splices and resolves the row, then folds it in; a throw restores it.
-
-**Provider connections** live on `ade.ai.*` (`registerIpc.ts`, backed by `openCodeAuthService.ts` and `modelsDevService.ts`), used by `ProvidersSection.tsx`:
-
-| Channel | Purpose |
-|---|---|
-| `ade.ai.opencodeAuthMethods` | Auth methods per OpenCode provider (`GET /provider/auth`); Settings builds OAuth subscription rows from `oauth` entries. Best-effort; rows stay hidden if unavailable. |
-| `ade.ai.opencodeOAuthStart` | Start OAuth for `{ providerId, methodIndex, inputs? }`; opens the browser and polls. Returns `{ url, method, instructions }`. |
-| `ade.ai.opencodeOAuthCancel` | Cancel the flow for `{ providerId }`. |
-| `ade.ai.setOpencodeProviderKey` | Seed a plain API key (`PUT /auth/{id}`) and mirror it to DAEX's key store. Backs the Kimi for Coding key and the `alsoOpenCode` key-save path. Invalidates readiness caches. |
-| `ade.ai.refreshModelsDev` | Force a models.dev refresh; returns `{ lastFetchedAt }`. The service also refreshes at boot and every 6 h. |
-| `ade.ai.opencodeOAuthStatus` (push) | `OpenCodeOAuthStatusEvent` (`pending`/`connected`/`cancelled`/`timeout`/`failed`) for the connect modal. |
-| `ade.ai.piLoginProviders` | Pi providers with interactive sign-in (`PiLoginProvider[]`, by name): `authTypes` (`oauth` / `api_key`), `configured`, Pi's OAuth wording. Providers with an ambient API key are omitted. |
-| `ade.ai.piLoginStart` | One sign-in for `{ providerId, method? }`, resolving when it settles. Budget `PI_LOGIN_IPC_TIMEOUT_MS` (11 min, in `ipcTimeouts.ts` and `localRuntimeTimeoutPolicy.ts`), outliving `piAuthService`'s 10-minute bound. Invalidates readiness caches. |
-| `ade.ai.piLoginSubmit` | Answer Pi's open prompt (`{ providerId, requestId, value }`). Relayed, never retained; `value` is in the IPC redaction set. A stale `requestId` is rejected. |
-| `ade.ai.piLoginCancel` | Stop the sign-in for `{ providerId }`, settle any prompt, release the worker, and claim a fresh generation so a start still acquiring its worker is cancelled. |
-| `ade.ai.piAuthStatus` (push) | `PiAuthStatusEvent` (`pending` / `prompt` / `success` / `error`) with Pi's prompts and auth-URL / device-code / progress notices, never a credential. Broadcast from `registerIpc.ts`; the `ai` action domain pushes the same to each runtime's event buffer for remote/web. |
-| `ade.ai.cursorCloud.fleet` | Account-wide Cursor Cloud fleet: every agent with latest-run status, pushed branch/PR, model, ownership (session/lane/Linear id) and `matchedBy`, plus `relayState` + `lastEventAt`. `cursorCloudFleetService.ts`; repository matching is scoped to safe pull/merge actions. |
-| `ade.ai.cursorCloud.pullIntoLane` / `.resolveLane` / `.stopRun` | Fleet row actions. Pull merges a finished agent's branch into its owning, matching or new lane (dirty worktrees refused; conflicts abort); resolve maps an agent to a lane without git; stop cancels the latest run host-side. |
-| `ade.ai.cursorCloud.fleetEvent` (push) | Per-project re-broadcast of relay deliveries with terminal statuses (FINISHED/ERROR): wakes open fleet surfaces (no timer), lights the unread badge, carries `agentId`, `status`, `summary`, `branchName`, `prUrl` and relay identity. |
-| `ade.cloudAgents.list` / `.open` / `.stop` / `.archive` / `.launch` | Provider-neutral cloud agents (`cloudAgentsService`), also the `ai` actions `listCloudAgents`, `openCloudAgent`, `stopCloudAgent`, `archiveCloudAgent`, `launchCloudAgent`. List returns DAEX statuses, PRs, models and chat/lane links; open and launch resolve or create a cloud lane (`ade:cloud:<provider>`) and return `{chatSessionId, laneId, laneName, createdLane}`. Sync: `ai.listCloudAgents` (viewer-allowed); the other four controllers only, never queued. The web adapter maps `window.ade.cloudAgents` onto them. |
+Cross-machine fork transports native history for Claude, Codex and OpenCode;
+Cursor and Droid cross-machine handoffs are brief-only.
 
 ## Async questions and provider dialogs
 
-Two provider features raise a card DAEX renders but is not blocked on; both leave the composer live. Each is listed per provider, so "not supported" is a recorded decision.
-
 ### Async questions (a card you may ignore)
-
-Codex (0.156.0 and later) can attach questions to an `agentMessage` item: `delivery: "async"` plus `questions: [{ title, options }]`. There is no question id or multi-select flag, and free text is always accepted, so DAEX keys questions by position and marks each `allowsFreeform`.
 
 | Provider | Async questions | Reply channel | Dismissible |
 |---|---|---|---|
-| Codex | Yes (`agentMessage` `delivery: "async"`) | An ordinary user message: `turn/steer` mid-turn, else `turn/start` | Yes |
-| Claude | No (`AskUserQuestion` is a blocking tool gate) | `canUseTool` result | No |
-| Cursor, OpenCode, Droid, Pi / ACP | No | — | No |
+| Codex | Yes (`agentMessage` `delivery: "async"`, 0.156+) | An ordinary user message (`responseMode: "message"`) | Yes (local) |
+| Claude | No (`AskUserQuestion` blocks) | `canUseTool` result | No |
+| Cursor, OpenCode, Droid, Pi, Copilot, Muse, ACP | No | — | No |
 
-- The reply is `"<question title>\n<answer>"` per answered question, blank-line separated, sent on the normal send path. The request carries `providerMetadata.responseMode: "message"`, so `deliverInputResponse` sends rather than answers.
-- **Dismiss** (`chat.dismissPendingInput`) is local (Codex has no dismiss RPC) and only for `providerMetadata.dismissible: true`; else "This question needs an answer. Answer it or stop the turn." Codex steering is non-blocking but not dismissible: it holds an open app-server request.
-- Every dismissal writes `pending_input_resolved` (`resolution: "cancelled"`) plus "Question dismissed"; desktop, web and iOS render receipts for `accepted` / `declined` / `cancelled`.
+Dismissing writes `pending_input_resolved` (`cancelled`) plus "Question
+dismissed".
 
 ### Claude dialog kinds (capability gate)
 
-The Agent SDK (0.3.287 and later) can ask the host to render a dialog (`Options.onUserDialog` + `Options.supportedDialogKinds`). The CLI fails closed: an undeclared kind is never emitted and its flow falls back to no-dialog behaviour. Declaring a kind DAEX cannot draw parks an unanswerable dialog, so the list is a capability claim.
+The SDK can ask the host to render dialogs (`onUserDialog` +
+`supportedDialogKinds`). Declaring a kind DAEX cannot draw would park an
+unanswerable dialog, so the list is a capability claim.
 
 | Dialog kind | Declared | Decision |
 |---|---|---|
-| `resume_return` | Yes | A blocking question card: "Compact and continue" / "Keep full history" / "Don't ask again" → SDK `compact` / `continue` / `never`. |
-| `refusal_fallback_prompt` | No | The no-dialog behaviour is the refusal error ending the turn, which DAEX renders. A mid-turn fallback would change which model answered a turn DAEX attributes to one model. Revisit only with a card that names the switch. |
-| anything else | No | The handler answers `{behavior: "cancelled"}`, as the SDK requires for an undeclared kind. |
+| `resume_return` | Yes | Blocking card: Compact and continue / Keep full history / Don't ask again (`claudeResumeReturnDismissed` stops declaring it on this machine). |
+| `refusal_fallback_prompt` | No | The refusal ends the turn; a mid-turn model switch would misattribute the turn. |
+| anything else | No | Answers `{ behavior: "cancelled" }`. |
 
-- `resume_return`'s payload is `{ sessionAgeMinutes, estimatedTokens }`; `shared/claudeCompaction.ts` builds the text.
-- "Don't ask again" persists `claudeResumeReturnDismissed` in machine-level `globalState`, and DAEX stops declaring the kind on this machine (the callback stays).
-- Every dialog logs `chat.claude.user_dialog` with kind and result. Dialogs use the tool gate's sessions; a lightweight or embedder-owned personal chat declares none.
+Lightweight and embedder-owned personal chats declare none.
 
 ### Claude MCP elicitations
 
-An MCP server can ask for input mid-tool (a form or an authorization link). Without `Options.onElicitation` the SDK declines every request at once. DAEX passes `buildClaudeElicitationHandler` to the sessions that get dialogs, raising the card Codex and Copilot raise:
-
-- `providerMetadata.mcpElicitation`; a `structured_question` from `mcpElicitationQuestions` for a form (an `approval` when the schema has no fields); **Open authorization** for a URL.
-- It parks on `runtime.approvals` like `resume_return`, so every turn-ending path settles it; the SDK's abort signal cancels it.
-- Accept answers `{action: "accept", content}` (`mcpElicitationContent`); Deny answers `decline`; an interrupt answers `cancel`. A host policy with `fallback: "deny"` declines at once but still writes the card and its `decline` receipt.
-
-While a card is up, the tool and the turn are stuck. Nobody answers a full-auto chat (`bypassPermissions`, outside plan mode) or an automation run (`automationRunId`, any mode), so DAEX answers itself and writes the card, receipt and an info `system_notice`:
-
-- a form with no fields (yes/no) is accepted;
-- a form whose required fields all have a schema `default` is accepted with them (`mcpElicitationDefaultAnswers`);
-- a form needing a value only a person has, a URL sign-in, and everything in a dry-run (plan mode) automation are declined.
-
-Elsewhere the card waits at most `CLAUDE_MCP_ELICITATION_TIMEOUT_MS` (5 minutes), then answers `cancel` with a notice; a later answer is settled like any closed card.
-
-- Every elicitation logs `chat.claude.mcp_elicitation`.
-- The card lives on the chat's brain; remote clients answer through the pinned `respondToInput`.
-- It appears only when a server asks, and only in sessions that render DAEX cards; embedded (SDK) personal chats and other lightweight sessions get no callback, so the SDK declines there.
-- There is no **Always allow** (the SDK has no persistent consent for elicitations); whether an MCP tool may run is the separate `canUseTool` approval with its own Always allow.
+`buildClaudeElicitationHandler` raises the same card Codex and Copilot raise
+(form → `structured_question`, URL → **Open authorization**), parked on
+`runtime.approvals` so every turn end settles it. In full-auto chats and
+automation runs DAEX answers itself (empty or fully defaulted forms accepted,
+everything else declined) with a notice; elsewhere the card waits 5 min
+(`CLAUDE_MCP_ELICITATION_TIMEOUT_MS`) then cancels. No **Always allow**.
 
 ### Refusal fallback follows the model
 
-When Claude Code retries a refused turn on its fallback model (`system/model_refusal_fallback`) with `scope: "session"` or no scope, it runs the chat on that model. DAEX writes the fallback's registry id to `session.modelId`/`model` (`followClaudeRefusalFallbackModel`) and emits `session_meta_updated`, so the picker, next resume and pricing agree with the CLI. `scope: "local"` (a subagent or side question) changes nothing, and a chat on a harness preset or stored credential keeps its model. The fallback prompt dialog stays undeclared (above).
+When Claude Code retries a refused turn on its fallback model with session scope
+(`system/model_refusal_fallback`), DAEX writes the fallback model to the session
+(`followClaudeRefusalFallbackModel`) and emits `session_meta_updated`.
+`scope: "local"` changes nothing; presets and stored credentials keep their
+model.
 
 ### Title refinement
 
-The first title comes from the first prompt. After the first completed run, DAEX asks once more with the run's output (`autoTitleRefine`, then `maybeAutoTitleSession({ mode: "refine" })`), whichever of title and run arrives first.
-
-- It rewrites only a title DAEX wrote in this process: never a manual title, a runtime's own title or a reloaded chat's. A runtime echoing DAEX's title (Codex `thread/name/set`) is not a runtime title.
-- A fork carries its source's title and first and latest requests into its first title prompt (`autoTitleInheritedContext`), so "now do the same for mobile" is named after what it inherited.
-- Placeholder answers such as `title`, `thread` or `none` are rejected like other generic titles.
+After the first completed run DAEX re-asks for a title once with the run's output
+(`maybeAutoTitleSession({ mode: "refine" })`), only for a title DAEX wrote in
+this process. Forks carry their source's context into the first title prompt.
 
 ## Provider accounts
 
-Claude and Codex each keep a whole signed-in identity in one config directory named by an env var: `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. A DAEX **provider account** ("instance") is that directory plus a label, so switching accounts is switching one path. `HOME`/`USERPROFILE` and `process.env` are never changed; a per-launch env object carries the one variable (rewriting `HOME` would move every other tool's config).
+Claude and Codex keep a signed-in identity in one config directory
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`). A DAEX **provider account** ("instance") is
+that directory plus a label; a per-launch env carries the variable (`HOME` is
+never changed). Other providers have one identity per machine.
 
-Only `claude` and `codex` take part. Cursor, Droid, OpenCode, Pi and the ACP providers have no config-home override or no local account file, so they have one identity per machine and are absent rather than a synthetic single entry.
-
-- **Registry.** Machine-local `provider-instances.json` beside `projects.json` under the DAEX home (`~/.ade` or `ADE_HOME`). Created accounts get `<adeHome>/provider-homes/<provider>/<instanceId>/`.
-- **The default account is synthesized, not migrated.** The machine's existing login is the default: its id is the provider slug (`claude`, `codex`), its home whatever `main/services/shared/providerConfigHomes.ts` resolves on each read (so a `CLAUDE_CONFIG_DIR` in a shell profile moves it). Deleting the registry file is a complete reset.
-- **A chat's account is pinned to the chat.** The session carries optional `instanceId` beside `piProfileId`.
-  - `daex chat create --instance <id>` and `daex new chat --instance <id>` set it; `--instance` for any other provider is refused.
-  - Every new Claude or Codex chat records its launch account (`createSession`): smart balance's pick, else the caller's id, else the current default (`currentDefaultInstanceId`).
-  - A chat with no recorded account is tied once by `resolveSessionInstance` to the account whose home holds its thread (`findInstanceHoldingThread`: Claude's `<home>/projects/<cwd slug>/<id>.jsonl`, Codex's rollout path), else the default. The pin persists at once (`agent_chat.provider_instance_pinned`, `persistChatState`).
-  - Switching the default changes where new chats go; running chats keep theirs. Switching a chat's provider resets its account to the new provider's default.
-  - A native fork or handoff runs as the source chat's account (`forkInstanceId`), since it resumes the source's thread.
-- **A new launch can name its account.** The composer's `⋯` menu offers **Account** for Claude or Codex models when there is a real choice (more than one working login, or one that is not the default). It lists `Default (machine picks)` (where Smart balance picks) and each signed-in account by email (an email-less Claude pass by its title).
-  - The pick travels as `instanceId` on `chat.create` or the CLI launch to `createSession` / `materializeRuntimeCliLaunch`; a saved preset or stored key carries its own sign-in and wins.
-  - A failed account read keeps the pick and shows a retry; it never clears it.
-  - Desktop and phone draw the same menu. The list comes from the account commands, never the machine inventory, so a provider's own sign-ins (OpenCode's Anthropic / OpenAI rows) are never offered.
-- **Switching a chat's account.** The account row at the bottom of the actions drawer lists the provider's other signed-in accounts (copies of one login hidden), each with its tighter of five-hour and weekly room when known. Picking one calls `chat.switchAccount`:
-  - The runtime stops, the thread file is copied into the other account's home (`moveChatToAccount`, shared with the usage-limit move), and `instanceId` changes, so the next turn resumes the same thread id there. A native Claude fork that has not run carries its source thread too (one readable thread is enough). The old account keeps its copy.
-  - Viewers learn the account from `session_meta_updated` with `instanceId`; a send arriving mid-switch waits, so it never relaunches on the old account. The first turn after has no prompt cache.
-  - Refused mid-turn ("Wait for this turn to finish.") and for chats on a saved key or custom provider. It cancels any armed usage-limit resume.
-  - CLI: `daex chat switch-account <session> --account <id>`. The phone's Chat Info has the same row; the sync command is controller-allowed (the owner's phone, not other peers).
-- **A Claude resume never quietly starts blank.** Before a resume, a thread missing from the chat's home is copied from the account with the newest copy (`ensureClaudeThreadInSessionHome`). A thread found nowhere fails into `thread_missing` continuity recovery, even when first seen from `setPermissionMode`. After a teardown (switch, usage-limit move) the chat resumes the thread last persisted while live; the hydrate-time `claudeBackgroundResumeSessionId` serves only background-job chats.
-- **Launch injection happens once, in `buildAgentRuntimeEnv`**, so the SDK query, background CLI, Codex app-server, slash-command discovery and rollout lookup all share the account.
-- **A removed account falls back silently.** If `instanceId` names no account, the chat resolves to the default, drops the id and forgets its thread pointer (the thread lived in a home that is gone; resuming would fail or resume someone else's conversation). Dropping the id makes the reset happen once. No notice.
-- **Removing an account deletes nothing on disk.** The home holds credentials the provider's CLI wrote, which DAEX cannot revoke, so `remove` forgets the account and returns the path. The machine's default login and the current default cannot be removed.
-- **Signing in is a command DAEX hands back.** `provider_instances.loginCommand` returns `{ command, args, env }` (provider binary plus the one env var); `daex providers accounts add` prints it.
-
-CLI: `daex providers accounts list|add|remove|rename|default`, with `--text` and `--json`.
+- Registry: machine-local `provider-instances.json` under the DAEX home; new
+  accounts get `<ADE home>/provider-homes/<provider>/<instanceId>/`. The default
+  account is synthesized from the machine's existing login.
+- **A chat's account is pinned to the chat** (`instanceId`). New chats record
+  their launch account; older chats are tied once by
+  `findInstanceHoldingThread`. Forks run as the source's account.
+- A new launch can name its account (composer `⋯` → Account; `daex chat create
+  --instance <id>`).
+- **Switching a chat's account** (`chat.switchAccount`, `daex chat
+  switch-account`) copies the thread file to the other home
+  (`moveChatToAccount`); refused mid-turn and for saved keys or custom providers.
+- A Claude resume never quietly starts blank: a missing thread is copied from
+  the account with the newest copy (`ensureClaudeThreadInSessionHome`), else
+  continuity recovery.
+- **Injection happens once, in `buildAgentRuntimeEnv`.**
+- A removed account falls back to the default and forgets the thread pointer.
+  Removing an account deletes nothing on disk.
+- CLI: `daex providers accounts list|add|remove|rename|default`.
 
 ## Harness presets
 
-A **harness preset** generalizes the account: a saved pairing of a harness with its source of intelligence (a provider account, a stored API key, or a Claude/Codex subscription through DAEX's proxy), carrying model, effort and subagent pins as one value. It carries no permission mode (the harness's tier is chosen at launch), so it never disagrees with the composer. Full doc: `docs/features/onboarding-and-settings/harness-presets.md`.
+A **harness preset** pairs a harness with a source of intelligence (account,
+stored key, or a Claude/Codex subscription through DAEX's proxy) plus model,
+effort and subagent pins. No permission mode. Full doc:
+[harness presets](../onboarding-and-settings/harness-presets.md).
 
-- **One id travels.** `presetId` (or `credentialId` for a stored key without a preset) rides `AgentChatCreateArgs`, the session, persisted state, the summary, `PtyCreateArgs.runtimeCliLaunch` and the CLI resume metadata. The lane's runtime resolves it (`main/services/chat/harnessPresetLaunch.ts`), the only process that can read that machine's presets, keys and accounts. No key or config path crosses IPC or sync.
-- **Injection happens once, in `buildAgentRuntimeEnv`,** right after and on top of the provider-account patch, so a preset that owns its config home outranks the account. That covers the Claude SDK query, Codex app-server, ACP spawn plan and slash-command discovery. Claude's `agents` entries and model-id passthrough are read in `buildClaudeQueryOptions`; OpenCode's provider block merges into the session config (OpenCode has no env var for endpoint-plus-key).
-- **Unsupported is a value, not a throw.** The resolver answers a plan or `{ unsupported: "<reason>" }`, and the chat runs on the harness's own sign-in with a notice: a deleted preset, removed key, proxy without login, or a harness that cannot take an outside key.
-- **The create path records the preset's harness.** A caller with only `presetId` (CLI, action bus, scheduled wake) has `createSessionInternal` read the preset's harness (and model, when none was sent), so the session row, Work provider filter, notices and permission labels name the harness that runs.
-- **The composer keeps the preset's model.** A preset or ad-hoc route (`--via opencode-go`) can run a model the registry does not list (DeepSeek in Claude Code). `AgentChatPane` takes the composer model from the preset's launch model id and the model check keeps it, so a send never says "Select a model first" or switches model.
+- `presetId` (or `credentialId`) travels on create args, session, summary and
+  CLI launch metadata; the lane's runtime resolves it
+  (`harnessPresetLaunch.ts`). No key crosses IPC or sync.
+- Injection happens in `buildAgentRuntimeEnv`, on top of the account patch.
+- Unsupported is a value (`{ unsupported: "<reason>" }`): the chat runs on the
+  harness's own sign-in with a notice.
+- Create with only `presetId` records the preset's harness and model.
 
 ### Capability gate
 
 | Harness | Key source | Subscription source | Preset in CLI mode | Subagent model |
 |---|---|---|---|---|
-| Claude Code | Yes | Yes | Yes | Yes (`CLAUDE_CODE_SUBAGENT_MODEL` + `_FORCE`, plus per-built-in `agents` pins) |
-| Codex CLI | Yes (preset-owned `CODEX_HOME` + `config.toml`) | Yes | Yes | No |
-| OpenCode | Yes (config provider block; needs an endpoint) | Yes | Yes | No |
-| Droid | Yes (`FACTORY_HOME_OVERRIDE` + `customModels`) | Yes (via proxy) | Yes | No |
-| Qwen Code | Yes | Yes (via proxy) | Yes | No |
-| Kimi | Yes (preset-owned `KIMI_CODE_HOME` + `config.toml`) | Yes (via proxy) | Yes | No |
-| Grok | Yes (preset-owned `GROK_HOME` + `config.toml`) | Yes (via proxy) | Yes | Yes (`[subagents.models]`) |
-| GitHub Copilot CLI | Yes (`COPILOT_PROVIDER_*`; chats pass it as the session `provider`) | Yes (via proxy) | Yes | No |
-| Cursor | No (one key in its own store) | No | **No** (native CLI) | No |
-| Pi | Yes (preset-owned `PI_CODING_AGENT_DIR` with `models.json` + `settings.json`) | Yes (via proxy) | Yes | No |
+| Claude Code | Yes | Yes | Yes | Yes |
+| Codex CLI | Yes | Yes | Yes | No |
+| OpenCode | Yes (needs an endpoint) | Yes | Yes | No |
+| Droid | Yes | Yes (proxy) | Yes | No |
+| Qwen Code | Yes | Yes (proxy) | Yes | No |
+| Kimi | Yes | Yes (proxy) | Yes | No |
+| Grok | Yes | Yes (proxy) | Yes | Yes |
+| GitHub Copilot | Yes | Yes (proxy) | Yes | No |
+| Pi | Yes | Yes (proxy) | Yes | No |
+| Cursor | No | No | **No** | No |
 
-The CLI-mode column is the locked gate (`CLI_PRESET_GATED_HARNESSES` in `shared/harnessPresetCliGate.ts`): the Cursor CLI takes no key from the launch, so a preset is dropped with its reason and the native CLI starts. CLI-mode surfaces list no presets.
+Harnesses are `HARNESS_PRESET_BODIES` (`shared/harnessPresets.ts`); Muse, Devin and Antigravity are not among them. The CLI-mode gate is
+`CLI_PRESET_GATED_HARNESSES` in `shared/harnessPresetCliGate.ts`.
 
 ## Configuration
 
-Config flags that shape chat (all in the project config service):
+Chat config keys (project config service; read `AiConfig` in
+`shared/types/config.ts`):
 
 | Key | Meaning |
 |---|---|
-| `ai.mode` | `subscription` vs `guest`; gates auto-title, tool availability and provider selection. |
-| `ai.sessionIntelligence.titles.*` | Parsed for compatibility. Naming ignores `enabled` and has no model picker: one model per provider (the cheap helper for Claude, Codex and Cursor, else the session model), then deterministic. `ai.chat.autoTitleReasoningEffort` is migrated into this tree. |
-| `ai.permissions.providers.*` | Per-provider permission defaults: one `AgentChatPermissionMode` per key (`claude`, `codex`, `cursor`, `droid`, `opencode`, `pi`, one per ACP provider), plus `codexSandbox` as Codex's second axis. Written by Settings and the only per-provider source `resolveChatConfig` reads. `ai.permissions.cli` / `ai.permissions.inProcess` are the shared fallbacks. See [Agent routing](agent-routing.md#one-source-for-a-configured-default). |
-| `ai.taskRouting` | Provider/model per task type. |
-| `ai.customProviders` | Advanced OpenAI-/Anthropic-compatible providers (`{ id, name, baseURL, npm, models[] }`) for the managed OpenCode config. |
-| `ai.customModelSlugs` | Extra `providerId/modelId` slugs for the picker. Both custom keys follow the `coerceAiConfig` + `mergeAiConfig` rule ([Fragile and tricky wiring](#fragile-and-tricky-wiring)). |
-| `ai.chat.piExtensionsEnabled` | Load the user's Pi extensions in DAEX chat, bound to the UI bridge. Default **true** (as `pi` in a terminal). Off runs Pi's built-in tools only; the Pi CLI is unaffected. Plan-mode and personal sessions never load extensions. |
-| `ai.chat.claudePluginUiEnabled` | Draw what Claude Code mods show (status lines, toasts, a band above the prompt, panes). Default **false**; the hooks run either way. See [Claude mod UI](#claude-mod-ui). |
-| `ai.chat.codexPromptSuggestionsEnabled` | Next-prompt suggestions in Codex chats (Settings › Chat › Next prompt). Default **true**; per project and machine, read on the chat's machine. |
-| `ai.chat.promptSuggestionsEnabled` | The same for every other provider without a native suggestion. Default **false**. See [Next prompt suggestions](#next-prompt-suggestions). |
-| `ai.chat.smartDecisionsEnabled` | "Smart decisions (Jev)" in Settings › Chat (`SmartDecisionsSection.tsx`). No sign-in needed: OpenCode's free Jev answers first, the DAEX bonus after ([Jev decisions](#jev-decisions)). Default **true**. Off makes every `ai.jevDecide` answer `null` with no network call. |
-| `ai.chat.jevZenCreditEnabled` | "Use my OpenCode Zen credit", the last Smart decisions row: after the free allowance, Jev is paid from the user's Zen balance (`jev-1.13`) before the bonus. Default **false**. Without a valid Zen sign-in the row offers **Sign in to OpenCode** (the Providers page's `OAuthConnectModal` for `opencode`, on the settings page's pin); after connecting it shows the switch and re-reads `ai.jevStatus` once the brain's one-minute sign-in cache expires. |
-
-**Smart decisions groups** show under the master switch while it is on, one row each with an icon, switch and description. Each defaults to **true**; off answers `null` for its features with no network call (`jevEnabled` in `shared/jevSettings.ts`, read per call by `jevService`).
-
-| Key | Row | Features |
-|---|---|---|
-| `ai.chat.smartChatStatusEnabled` | "Waiting on you" | `turn_end`, `cli_status`, `status_line`. Its option `ai.chat.smartPlainTerminalsEnabled` (default **true**, "Also check plain terminals") lets `cli_status` read plain terminals too; their last screen goes with secrets removed (`redactSecrets`), at most 4 KB (`cliStatusInspector.ts`). |
-| `ai.chat.smartSettleNudgeEnabled` | "Settle finished chats" | `settle_nudge` |
-| `ai.chat.modelHintMode` | "Model and effort hint" | `model_hint`. The switch sets `off`; while on, the option picks `model_and_effort` (default) or `effort_only`, restored when switched back on. See [Composer and UI](composer-and-ui.md#composer). |
-| `ai.chat.smartPaletteEnabled` | "⌘K suggestions" | `palette` |
-| `ai.chat.smartLaneEmojiEnabled` | "Lane emoji" | `lane_emoji` |
+| `ai.permissions.providers.*` | Per-provider permission defaults (the only source `resolveChatConfig` reads). |
+| `ai.customProviders`, `ai.customModelSlugs` | Custom OpenAI/Anthropic-compatible providers and extra model slugs (both in `coerceAiConfig` and `mergeAiConfig`). |
+| `ai.chat.piExtensionsEnabled` | Load Pi extensions in chat (default true). |
+| `ai.chat.claudePluginUiEnabled` | Draw Claude mod UI (default false). |
+| `ai.chat.codexPromptSuggestionsEnabled` / `ai.chat.promptSuggestionsEnabled` | Next-prompt suggestions (Codex default true; others default false). |
+| `ai.chat.smartDecisionsEnabled` | Jev master switch (default true); groups `smartChatStatusEnabled`, `smartSettleNudgeEnabled`, `modelHintMode`, `smartPaletteEnabled`, `smartLaneEmojiEnabled` (`jevEnabled` in `shared/jevSettings.ts`). |
+| `ai.chat.jevZenCreditEnabled` | Pay Jev from the user's OpenCode Zen balance after the free allowance (default false). |
+| `ai.chat.scheduledWorkPaused` | Pause all scheduled work. |
 
 ### Jev decisions
 
-`apps/desktop/src/main/services/jev/jevService.ts` is the one helper for asking the Jev decision model a typed question (`noul` yes/no, `choice`, `score`; types in `shared/types/jev.ts`). `decide({ feature, state, questions, priority, timeoutMs? })` answers every question or returns `null`, meaning "use your existing logic". It returns `null` on every failure (off, every route spent or down, call cap, timeout, network, non-2xx, bad JSON, a missing answer, a choice/score outside the criteria), never throws, and never shows a Jev failure to the user. `score` answers normalize to the criterion index, its label and one probability per criterion.
+`main/services/jev/jevService.ts` asks the Jev decision model typed questions
+(`noul`, `choice`, `score`; `shared/types/jev.ts`). `decide(…)` answers every
+question or returns `null` ("use your existing logic") on any failure; it never
+throws or shows an error.
 
-**Routes.** One call tries them in order in one time budget (`callRoutes`, `JEV_ROUTES`). A rate-limited, refused or broken route hands the call to the next while at least 300 ms remain; a timeout ends the chain.
-
-1. `free`: OpenCode's `jev-1.13-free`, no key. The allowance is per network (about 220 calls a day), shared by every Jev feature and every DAEX on the network, reset at midnight UTC.
-2. `zen_credit`: OpenCode's paid `jev-1.13` on the user's Zen balance, only with `ai.chat.jevZenCreditEnabled` and an unexpired Zen sign-in (`jevAvailability`: the `credential` row `integration_id = 'opencode'`, active first, else newest, in `opencode.db`, searched in `openCodeDataDirs()` order, read-only with `busy_timeout = 0`, cached 60 s; DAEX never refreshes the token).
-3. `bonus`: the account directory's `POST /jev/systemone` with the DAEX account bearer; the Worker forwards to TypeSafe's Jev API with DAEX's key, capped per account per UTC day (500 by default) and for the fleet (100,000, which bounds the key's spend). Any feature may use it. The account token is fetched within the call's remaining time. See the account directory README, "Jev bonus".
-
-**Resilience.**
-
-- Timeouts default to 1500 ms (`interactive`) and 4000 ms (`background`).
-- Each route has a breaker: 429 backs off until `retry-after` (the free allowance and bonus cap both name midnight UTC) or 5 min; 401/402/403 back off 30 min; two consecutive 5xx/timeout/network failures back off 1 min, doubling to 15; any 200 resets.
-- At most four calls in flight, three for background; a background call over the cap is dropped, never queued.
-- Identical questions share one call and a 10-minute LRU cache (128 entries) keyed by a hash of state and questions.
-- Breakers, cap and cache are per brain process; counts are per project runtime, and the day tally counts answers per route (`answeredByRoute`).
-
-**Why it fell back.** A call with no answer that never reached the bonus records why (`JEV_KEY_SKIP_REASONS`: `key_spent`, `key_failing`, `key_rejected`, `signed_out`, `no_account_token`, `no_account_server`, `out_of_time`) in `keySkippedByReason`, beside `unsentByFeature`.
-
-- DAEX-side problems log once per UTC day per brain at `error` (each a Sentry issue): `jev.key_no_account_server`, `jev.key_no_token` (signed in, no token), `jev.key_rejected`, `jev.key_call_failed`, `jev.decide_failed`.
-- A token read outlasting the call is `warn` (`jev.key_token_slow`); expected cases are `info` (`jev.key_spent`, `jev.key_signed_out`); odd OpenCode answers are `warn` (`jev.route_failed`).
-- `status().answerable` says whether any route could take a call now: free not backing off, Zen credit on and signed in, or bonus not backing off and the machine signed in.
-
-**Reach.** `ai.jevDecide` and `ai.jevStatus` are read actions reachable remotely; the renderer calls `window.ade.ai.jevDecide(request, pin)` and `window.ade.ai.jevStatus(pin)` on the pinned machine, both answering `null` rather than throwing. `feature` is a closed union (`JEV_FEATURES`): `turn_end`, `cli_status`, `settle_nudge`, `palette`, `lane_emoji`, `model_hint`, `status_line`. A feature whose group is off answers `null` (outcome `disabled`) before any route.
+- **Routes** (`JEV_ROUTES`, one time budget): `free` (OpenCode's
+  `jev-1.13-free`, per-network daily allowance), `zen_credit` (the user's Zen
+  balance, only when enabled and signed in), `bonus` (the account server's
+  `POST /jev/systemone`; the Worker holds the partner key and caps per account
+  and fleet).
+- **Resilience:** 1.5 s interactive / 4 s background timeouts; per-route
+  breakers; ≤ 4 calls in flight; a 10-minute cache.
+- `ai.jevDecide` / `ai.jevStatus` are remote read actions, called with the
+  machine's pin. `feature` is the closed union `JEV_FEATURES`.
 
 ### Next prompt suggestions
 
-After a turn, the empty prompt box shows a one-line guess at the next message, cut with an ellipsis so the box never grows. **Tab** fills it in with the caret at the end; **Esc** hides it until the next turn.
-
-- **Claude Code** sends its own (`promptSuggestions` on the SDK query), held back on a chat's first turn, in plan mode and near plan limits. DAEX never adds one for Claude.
-- **Every other provider** gets one from DAEX (`chat/nextPromptSuggestion.ts`): Codex unless `ai.chat.codexPromptSuggestionsEnabled` is false, the rest when `ai.chat.promptSuggestionsEnabled` is on. After a completed turn with no open card, no subagent parent and no running background work, one call on the naming model (Luna for Codex, Composer for Cursor, else the chat's model) at lowest effort, from a scratch folder, capped at 120 characters.
-- **Codex fallback:** when the helper fails or has no model, a Codex chat on Codex 0.164+ asks its own thread (`thread/sample`, `chat/codexThreadSample.ts`). It runs on the chat's model with full context (about 16x the helper's cost on a short chat), so it is never first. It is skipped for Fast chats, mid-turn, and for an account Codex rate-limited recently (for that 429's Retry-After). The same fallback names a Codex chat after its first run and answers Regenerate names when the helper fails.
-- Both go out as the live-only `prompt_suggestion` event, never saved. A user message or new turn before the answer drops it.
+After a turn the empty prompt box shows a one-line guess (Tab fills, Esc hides).
+Claude Code sends its own (`promptSuggestions`); DAEX never adds one for Claude.
+Others get one from `chat/nextPromptSuggestion.ts` (one cheap call after a
+clean turn, ≤ 120 chars). Codex falls back to `thread/sample`
+(`codexThreadSample.ts`, 0.164+). Both are live-only `prompt_suggestion` events.
 
 ## Related docs
 
-- [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md): clean/published Git, bounded context, destination setup, transport security and retries.
-- [Personal chats](../personal-chats/README.md): projectless sessions on the chat engine behind a machine-scoped isolation boundary.
-- [DAEX SDK](../sdk/README.md): embeddable sidecar (`@ade-dev/sdk`, `@ade-dev/chat-ui`) that creates chats through the personal-chat machine RPC.
-- [Agents README](../agents/README.md): the CTO identity, persona overlays and tool policy.
-- [Terminals and sessions](../terminals-and-sessions/README.md): Work list nesting for same-lane subagent chats, including the [session sidebar](../terminals-and-sessions/ui-surfaces.md#session-sidebar-sessionlistpanetsx).
-- [History README](../history/README.md): chat sessions are not in the operations timeline; the git changes their turns cause (lanes, PRs, commits) are.
-- [Search README](../search/README.md): chat transcripts (`.jsonl`) are FTS-indexed per message as the `chat` source, deep-linking to the message; ⌘K merges those hits inline.
+- [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md)
+- [Personal chats](../personal-chats/README.md)
+- [DAEX SDK](../sdk/README.md) (`@daex-dev/sdk`, `@daex-dev/chat-ui`)
+- [Agents](../agents/README.md), [CTO](../cto/README.md)
+- [Terminals and sessions](../terminals-and-sessions/README.md)
+- [Search](../search/README.md): chat transcripts are FTS-indexed per message.
