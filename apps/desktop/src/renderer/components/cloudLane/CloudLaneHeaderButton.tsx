@@ -125,7 +125,7 @@ export function CloudLaneHeaderButton({ laneId, turnRunning, runningKind = "chat
  * scope a chat pane gives it. `runtimePin` is the session's machine (the Work
  * row's pin; null for the tab's own machine), so the menu's Wake connects the
  * session's machine, never the tab's. Nothing for a lane that isn't on
- * ADE Cloud, and nothing is mounted (no scope, no watch) until it is.
+ * DAEX Cloud, and nothing is mounted (no scope, no watch) until it is.
  *
  * Sleep asks first while the session is open: its output-based state reads
  * idle during a quiet build, so only an ended session skips the question.
