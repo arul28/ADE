@@ -196,8 +196,10 @@ export function CloudSizeButton({
               const shape = `${tier.cpu} CPU · ${tier.memoryGb} GB`;
               const runs = facts.full ? `Full computer: ${facts.runs}` : facts.runs;
               // Hours as time at this size (Small reads "Unlimited", never a multiplier); a bigger size waits for the account.
-              const usesHours = cloudTierUsesHours(tier);
-              const hoursAt = usesHours && hoursLeftMilli == null ? null : cloudTierHoursAt({ multiplierMilli: cloudTierRateNowMilli(tier, startView) }, hoursLeftMilli ?? 0);
+              // At the price this start pays now: a size free with ads now (Free's Small) reads "Unlimited" and claims no time.
+              const rateNow = { multiplierMilli: cloudTierRateNowMilli(tier, startView) };
+              const usesHours = cloudTierUsesHours(rateNow);
+              const hoursAt = usesHours && hoursLeftMilli == null ? null : cloudTierHoursAt(rateNow, hoursLeftMilli ?? 0);
               const price = priceOf(tier);
               const about = `${facts.specs.join(", ")}. ${runs}. ${price ?? facts.rateLine}.${usesHours && hoursAt ? ` Your ${words.noun} last ${hoursAt} here.` : ""}`;
               const aboutId = `${idBase}-${tier.id}`;
