@@ -299,12 +299,12 @@ struct CloudSessionCopyScreen: View {
       } label: {
         HStack(spacing: 6) {
           if waking { ProgressView().controlSize(.small).tint(.white) }
-          Text(waking ? (onMac ? "Starting the lane's Mac…" : "Waking the lane's computer…") : (onMac ? "Start to use it" : "Wake to use it"))
+          Text(instance?.macStopping == true ? "Stopping the Mac…" : waking ? (onMac ? "Starting the lane's Mac…" : "Waking the lane's computer…") : (onMac ? "Start to use it" : "Wake to use it"))
         }
         .frame(maxWidth: .infinity)
       }
       .buttonStyle(ADEKitButtonStyle(prominent: true))
-      .disabled(waking || fleetKey == nil || instance?.unavailable != nil)
+      .disabled(waking || fleetKey == nil || instance?.unavailable != nil || instance?.macStopping == true)
       .adeInspectable("Work.CloudSessionCopy.Wake")
     }
     .padding(.horizontal, 16)

@@ -214,7 +214,7 @@ struct CloudLaneAtRestScreen: View {
         } label: {
           if waking { ProgressView().controlSize(.small) } else { Label(onMac ? "Start" : "Wake", systemImage: "power") }
         }
-        .disabled(waking || subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) || laneInstance?.unavailable != nil)
+        .disabled(waking || subject.fleetKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) || laneInstance?.unavailable != nil || laneInstance?.macStopping == true)
         .accessibilityLabel(onMac ? "Start the lane's Mac" : "Wake the lane's computer")
         .adeInspectable("CloudLane.AtRest.Wake")
       }

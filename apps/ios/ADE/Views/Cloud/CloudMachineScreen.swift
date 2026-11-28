@@ -529,7 +529,7 @@ struct CloudMachineControls: View {
             }
               .buttonStyle(ADEKitButtonStyle())
               .disabled(busy)
-          } else if machine.isAsleep, machine.unavailable == nil, machine.macPhase != .driveLost {
+          } else if machine.isAsleep, machine.unavailable == nil, machine.macPhase != .driveLost, machine.macPhase != .stopping {
             Button { ADEHaptics.light(); Task { await store.wake(machine) } } label: {
               Label(machine.isMac ? "Start" : "Wake", systemImage: machine.isMac ? "play.circle" : "sun.max")
             }

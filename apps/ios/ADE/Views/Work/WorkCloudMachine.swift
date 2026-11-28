@@ -306,6 +306,8 @@ struct CloudLaneHeaderStateButton: View {
     if let phase = computer.macPhase {
       switch state {
       case .asleep? where phase == .startFailed || phase == .driveLost: return nil
+      // Still saving its drive: no Start until it has stopped.
+      case .asleep? where phase == .stopping: return Shown(word: phase.label, symbol: "hourglass", asleep: false)
       case .asleep?: return Shown(word: CloudMacPhase.stopped.label, symbol: "stop.circle", asleep: true)
       case .waking?: return Shown(word: phase == .queued ? phase.label : CloudMacPhase.starting.label, symbol: "hourglass", asleep: false)
       case .awake?: return Shown(word: CloudMacPhase.running.label, symbol: "apple.logo", asleep: false)
@@ -428,6 +430,12 @@ struct CloudLaneStateLinesContent: View {
           symbol: "hourglass",
           title: computer.macPhase == .queued ? CloudMacPhase.queued.label : "Starting the Mac",
           detail: computer.macSentence ?? CloudMacWords.stateSentence(computer.macPhase == .queued ? "queued" : "starting") ?? ""
+        )
+      case .asleep? where showsRestingState && computer.macPhase == .stopping:
+        line(
+          symbol: "hourglass",
+          title: "Stopping the Mac",
+          detail: computer.macSentence ?? CloudMacWords.stateSentence("stopping") ?? ""
         )
       case .asleep? where showsRestingState && computer.macPhase != nil:
         line(

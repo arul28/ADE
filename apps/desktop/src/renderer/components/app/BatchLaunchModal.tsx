@@ -7,7 +7,8 @@ import { ADE_CLOUD_MACHINE_ID, type AdeCloudLaneChoice } from "../lanes/useAdeCl
 import { CloudSizeButton } from "../chat/AdeCloudComposerParts";
 import { adeCloudCapacityProblem } from "../chat/launch/adeCloudLaunch";
 import type { CloudTierId } from "../../../shared/cloudTiers";
-import { cloudMacRateText } from "../../../shared/cloudMac";
+import { cloudMacProviderRefusal, cloudMacRateText } from "../../../shared/cloudMac";
+import { providerDisplayName } from "../../../shared/pendingInputLabels";
 import {
   getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
@@ -17,6 +18,7 @@ import {
   defaultIssueKickoffPrompt,
   findIssueConflicts,
   launchIssueIdentity,
+  resolveLaunchProviderAndModel,
   type BatchLaunchIssueConfig,
   type LaunchIssue,
 } from "../../lib/linearBatchLaunch";
@@ -527,8 +529,17 @@ export function BatchLaunchModal({
     const state = perIssue[launchIssueIdentity(issue)];
     return (multiIssue ? state?.sessionType : defaultConfig.sessionType) === "cli";
   });
+  // On a Mac, each chat's provider as the catalog lists it: one the Mac can't run holds the whole batch, in the server's words.
+  const macProviderRefusal = adeCloudPicked && !laneOnly && adeCloud.os === "mac" && adeCloud.macOffer
+    ? includedIssues.map((issue) => {
+      const modelId = (multiIssue ? perIssue[launchIssueIdentity(issue)]?.modelId : defaultConfig.modelId)?.trim();
+      if (!modelId) return null;
+      const { provider } = resolveLaunchProviderAndModel(modelId);
+      return cloudMacProviderRefusal(adeCloud.macOffer, provider, "chat", providerDisplayName(provider));
+    }).find((refusal): refusal is string => refusal != null) ?? null
+    : null;
   const adeCloudProblem = adeCloudPicked
-    ? adeCloudCapacityProblem(adeCloud.account, adeCloud.tierId, adeCloud.os) ?? (cliOnAdeCloud ? ADE_CLOUD_NO_CLI_BATCH : null)
+    ? adeCloudCapacityProblem(adeCloud.account, adeCloud.tierId, adeCloud.os) ?? (cliOnAdeCloud ? ADE_CLOUD_NO_CLI_BATCH : null) ?? macProviderRefusal
     : null;
   const adeCloudChoice: AdeCloudLaneChoice | null = adeCloud.offered
     ? {

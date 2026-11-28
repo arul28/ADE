@@ -69,6 +69,8 @@ export function cloudLanePower(input: {
   if (input.unavailable) return "trouble";
   if (input.macPhase === "start_failed" || input.macPhase === "drive_lost") return "trouble";
   if (input.macPhase === "queued" || input.macPhase === "starting") return "waking";
+  // A Mac saving its drive reads stopped on the server: it is still stopping, so no Start yet.
+  if (input.macPhase === "stopping") return "stopping";
   if (input.resting) return input.state === "starting" ? "waking" : input.state === "stopping" ? "stopping" : "asleep";
   return cloudLanePowerOfState(input.state);
 }
