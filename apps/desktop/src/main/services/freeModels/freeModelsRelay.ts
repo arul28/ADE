@@ -333,7 +333,10 @@ export function createFreeModelsRelay(deps: FreeModelsRelayDeps): FreeModelsRela
   const ensureListening = (): Promise<number> => {
     if (listening) return listening;
     const created = http.createServer((req, res) => {
-      void handle(req, res).catch(() => res.destroy());
+      void handle(req, res).catch((error: unknown) => {
+        deps.logger?.warn("free_models_relay.request_failed", { error: error instanceof Error ? error.message : String(error) });
+        res.destroy();
+      });
     });
     server = created;
     listening = new Promise<number>((resolve, reject) => {

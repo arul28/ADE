@@ -6826,6 +6826,17 @@ describe("ADE Free Models", () => {
     harness.exec("update cloud_free_model_meters set calls = 400 where user_id = ?", OWNER);
     expect([await code(await chat()), await code(await chat({}, otherChat))]).toEqual(["free_models_no_cards", "free_models_no_cards"]);
     expect((await state())?.throttle).toBe("paused");
+    // A brand-new chat refused while paused still counts as one these models serve, so the ad its
+    // refused reply asks for (the person's message alone) lifts the pause.
+    harness.insert("cloud_free_model_viewers", { user_id: OWNER, chat_id: "chat-3", ip: PERSON_IP, ua: "ADE/1", device_type: "desktop", os: "macos", country: "US", seen_at: NOW });
+    expect(await code(await chat({}, { "x-ade-chat-id": "chat-3" }))).toBe("free_models_no_cards");
+    const recovery = await fromPerson("POST", "/cloud/sponsored/ad", {
+      instanceId: null, chatId: "chat-3", turnId: "turn-refused", device: DEVICE, messages: [{ role: "user", content: "hi" }],
+    }).then((response) => response.json() as Promise<{ ad: Row | null; reason?: string }>);
+    expect(recovery.reason).not.toBe("not_cloud");
+    expect(meter()).toEqual({ calls: 0, input_tokens: 0 });
+    harness.exec("update cloud_free_model_meters set calls = 400 where user_id = ?", OWNER);
+    adRequests.length = 0;
     // The owner's report counts each account once a stretch.
     expect(harness.rows("select kind, count from cloud_sponsored_days where user_id = '*' and kind in ('fm_slowed', 'fm_paused') order by kind")).toEqual([{ kind: "fm_paused", count: 1 }, { kind: "fm_slowed", count: 1 }]);
     // A card asked for under a finished reply in one of these chats starts it over, whatever Gravity answers.
