@@ -26,6 +26,13 @@ export const CLOUD_SETTINGS = {
    * the arm it was first given (`cloud_sponsored_formats`).
    */
   gravity_format_split: ["70-20-10", "80-15-5", "60-25-15", "50-30-20", "34-33-33"],
+  /**
+   * The DAEX Cloud Mac (`macSwitch.ts`): nobody, the owner's testers by email
+   * (`cloud_mac_testers`), or everyone. Held under the NoMac key: no key, off.
+   */
+  mac_computers: ["off", "testers", "all"],
+  /** Minutes with no work before a Mac stops (it keeps only its drive). */
+  mac_idle_stop_minutes: ["5", "3", "10", "15"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

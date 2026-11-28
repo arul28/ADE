@@ -31,6 +31,8 @@ export type CreateComputerExtras = {
   onMade?: (instance: CloudInstance) => D1PreparedStatement[];
   /** The disk this launch's repository's setup grew to before: a plain create starts there, inside its size's disk (`setupStartDiskGb`). */
   setupDiskGb?: number | null;
+  /** The server launcher's Mac lane (`os: "mac"`): the only create that may make a Mac. */
+  mac?: boolean;
 };
 
 export const createInProgress = () => fail("create_in_progress", "DAEX Cloud is still making this computer. Try again in a moment.", 409);

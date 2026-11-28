@@ -40,7 +40,7 @@ const VISITOR_SECONDS = 600;
 /** NoMac's signature on a webhook older than this is refused. */
 const WEBHOOK_TOLERANCE_SECONDS = 300;
 
-type NomacAnswer = { status: number; body: Record<string, unknown> | null };
+export type NomacAnswer = { status: number; body: Record<string, unknown> | null };
 
 /** NoMac's label for an ADE account: its id, never an email. */
 export function phoneLabelFor(userId: string): string | null {
@@ -53,7 +53,7 @@ export function userIdOfLabel(label: unknown): string | null {
   return typeof label === "string" && label.startsWith("ade:") && label.length > 4 ? label.slice(4) : null;
 }
 
-async function nomac(env: Pick<CloudEnv, "NOMAC_API_KEY">, method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<NomacAnswer> {
+export async function nomac(env: Pick<CloudEnv, "NOMAC_API_KEY">, method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<NomacAnswer> {
   const key = env.NOMAC_API_KEY?.trim();
   if (!key) return { status: 503, body: null };
   const response = await fetch(`${NOMAC_ORIGIN}${path}`, {
@@ -74,7 +74,7 @@ async function nomac(env: Pick<CloudEnv, "NOMAC_API_KEY">, method: string, path:
   return { status: response.status, body: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null };
 }
 
-function errorOf(answer: NomacAnswer): { code: string; message: string } {
+export function errorOf(answer: NomacAnswer): { code: string; message: string } {
   const error = answer.body?.error as { code?: unknown; message?: unknown } | undefined;
   return {
     code: typeof error?.code === "string" ? error.code : `http_${answer.status}`,

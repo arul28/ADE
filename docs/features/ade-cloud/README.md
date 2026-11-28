@@ -129,6 +129,41 @@ activity, so the brain pings its wake URL while work runs (5-minute provider
 timer as backstop); a sleep usually keeps memory but not always; an `update`
 recreates the container (home folder stays).
 
+### The DAEX Cloud Mac (behind a switch)
+
+A Mac (NoMac's, secret `NOMAC_API_KEY`) is a second kind of cloud computer:
+a `cloud_computers` row with `provider = 'nomac'`, `os = 'mac'`, `type =
+'mac'`, id `mac` + 32 hex (Agent 37's are 10 characters). Every caller holds
+one router, `createComputerProvider` (`macProvider.ts`): a Mac's id goes to
+NoMac, everything else to Agent 37. Contract shapes: `CloudMacOffer`,
+`CloudMacState`, `CLOUD_MAC_UNSUPPORTED` in `contract.ts`.
+
+- **Switch.** `mac_computers` (`off`/`testers`/`all`, ceiling `MAC_COMPUTERS`,
+  testers through `cloud-owner.mjs mac`; [account test tool](account-test-tool.md)).
+  At `off`, or for an account it doesn't reach, no answer names the Mac: no
+  catalog `mac`, no Mac in a list (a GET answers 404), `os: "mac"` refused
+  like an unknown size, a Mac lane without a computer reads as `default`, and
+  a hidden Mac doesn't count toward the computer limit. Going back stops a
+  running Mac (the tick) and keeps its drive under the idle cleanup clock.
+- **Launch.** Only through the server launcher (`os: "mac"`): the bare machine
+  launch and `POST /cloud/instances` refuse a Mac (`mac_unsupported`).
+- **Lifecycle.** A start asks NoMac for the label `adem:<id>` with its drive
+  (`reuse`, `require_drive`, the template drive `mac_template_drive_<channel>`
+  for a first start). A full NoMac queue holds the start (`mac_state =
+  'queued'`, an hour at most, retried by the tick). A ready Mac is booted once
+  per session by a NoMac job running `~/drive/.daex/boot.sh` with the join
+  code worked out again from the launch. The tick also extends a session near
+  its time limit, and stops NoMac sessions no row holds. Webhooks (`mac.*`,
+  `drive.*`) re-read the Mac rather than trust the delivery.
+- **Money.** 500 thousandths a minute (`multiplier_milli = 30000`), by the
+  whole minute (`stretchChargeEnd`); only `running` meters. The drive is the
+  Mac's (no plan disk). A kept drive unused for 25 days gets a short upkeep
+  session (DAEX pays). The owner report carries Mac minutes, drive saves and
+  upkeep.
+- **Not on a Mac.** Resize, disk grow, copy, move, update, backups, public
+  ports, signed URLs, auto-sleep settings: `409 mac_unsupported` with the
+  sentence in `CLOUD_MAC_UNSUPPORTED_SENTENCES`.
+
 ## Access
 
 `getCloudProvider` returns DAEX Cloud for a signed-in account (the bearer is the

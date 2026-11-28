@@ -64,6 +64,8 @@ import {
 } from "./store";
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 import { launchChannel, readUpdateChannel, readUpdateTargets } from "./updates";
+import { MAC_SIZE, isMacRow, macStateForClient } from "./macProvider";
+import { macReaches } from "./macSwitch";
 import { markKeepLaneStatement } from "./lanesWithoutComputer";
 import type { ServerGitCheck } from "./accountVault";
 // A cycle (chatMessages imports this file); only called at request time.
@@ -286,6 +288,9 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
   const sizeOmitted = body.sizeId === undefined || body.sizeId === null;
   const sizeId = sizeOmitted ? CLOUD_AUTO_SIZE.from : body.sizeId;
   if (!cloudSizeForTier(sizeId)) return "That size isn't one DAEX Cloud offers.";
+  // Linux (left out) or a Mac; anything else is refused as a size DAEX doesn't offer (the switch's own check is in `handleStart`).
+  if (body.os != null && body.os !== "linux" && body.os !== "mac") return "That size isn't one DAEX Cloud offers.";
+  const os = body.os === "mac" ? "mac" as const : undefined;
   const project = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
   const origin = githubOriginOf(project?.origin);
   if (!origin) return "Only GitHub repositories can start a lane on DAEX Cloud.";
@@ -366,8 +371,10 @@ export function parseLaunchRequest(body: Record<string, unknown>): ParsedLaunchR
   return {
     launchId,
     kind,
+    ...(os ? { os } : {}),
     sizeId: sizeId as CloudTierId,
-    ...(sizeChoice ? { sizeChoice } : {}),
+    // A Mac has one size: nothing may move it.
+    ...(os ? { sizeChoice: "picked" as const } : sizeChoice ? { sizeChoice } : {}),
     project: { origin },
     lane: {
       id: laneId,
@@ -426,10 +433,38 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     signIn: row.state === "waiting_for_sign_in" ? signInOfRow(row) : null,
     machine: row.kind === "machine" ? machineFactsOf(row) : null,
+    ...(row.kind !== "machine" && row.request_json?.includes('"os":"mac"') ? { os: "mac" as const } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
   };
+}
+
+/**
+ * A Mac launch's record with its Mac's state while it is made (queued,
+ * starting), from its computer's row: what the launch card shows on its
+ * computer step until the Mac's brain reports its own stages.
+ */
+export async function withMacFacts(env: CloudEnv, record: CloudLaunchRecord): Promise<CloudLaunchRecord> {
+  if (record.os !== "mac") return record;
+  if (!record.instanceId || !(record.state === "making" || record.state === "joining")) return { ...record, mac: null };
+  const row = await env.DB.prepare("select * from cloud_computers where instance_id = ? and deleted_at is null").bind(record.instanceId).first<ComputerRow>();
+  return { ...record, mac: row && isMacRow(row) && row.mac_state !== "running" ? macStateForClient(row) : null };
+}
+
+/**
+ * The join code for a Mac's first boot (`bootMac`), worked out again from
+ * the launch's kept salt (the code is never stored): only while the launch
+ * still joins on this computer. Null otherwise (a later boot of a signed-in
+ * brain needs none).
+ */
+export async function macBootJoinCode(env: CloudEnv, launchId: string, instanceId: string, now: number): Promise<string | null> {
+  const row = await readLaunch(env, launchId);
+  if (!row || !row.join_salt || row.instance_id !== instanceId) return null;
+  if (!(row.state === "joining" || row.state === "needs_approval")) return null;
+  if (row.join_expires_at != null && row.join_expires_at <= now) return null;
+  if (!await launchCodeStillJoins(env, row)) return null;
+  return joinCodeOf(env, launchId, row.join_salt);
 }
 
 /** A `machine` launch's facts, kept in its `request_json`. */
@@ -662,6 +697,9 @@ const computerNameOf = (laneName: string): string => laneName.replace(/\s+/g, " 
 
 /* ---- Start ---- */
 
+/** How much longer a Mac launch's join window stays open: the longest a start waits for a free Mac. */
+const MAC_QUEUE_JOIN_GRACE_MS = 60 * 60_000;
+
 async function handleStart(request: Request, env: CloudEnv, userId: string, deps: LaunchRouteDeps): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
@@ -676,6 +714,8 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   }
   const parsed = parseLaunchRequest(body);
   if (typeof parsed === "string") return badRequest(parsed);
+  // The Mac exists only for an account the switch reaches: anyone else hears the plain size refusal.
+  if (parsed.os === "mac" && !await macReaches(env, userId)) return badRequest("That size isn't one DAEX Cloud offers.");
   let restarted = false;
   if (body.retry === true) {
     const answer = await restartFailedLaunch(env, userId, parsed.launchId, deps);
@@ -897,7 +937,7 @@ export async function startServerLaunch(
     else await first.run();
   }
 
-  const size = cloudSizeForTier(sizeId)!;
+  const size: CloudSize = parsed.os === "mac" ? MAC_SIZE : cloudSizeForTier(sizeId)!;
   const metadata: Record<string, string> = {
     [CLOUD_LANE_METADATA.laneId]: parsed.lane.id,
     [CLOUD_LANE_METADATA.laneName]: parsed.lane.name,
@@ -910,7 +950,8 @@ export async function startServerLaunch(
     // The same id as the launch: a repeated start finds the computer it made.
     ade_request_id: launchId,
   };
-  const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS;
+  // A Mac may wait in line for a free Mac (up to an hour) before its brain can join: its window holds that long too.
+  const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS + (parsed.os === "mac" ? MAC_QUEUE_JOIN_GRACE_MS : 0);
   const joinHash = await sha256Hex(joinCode);
   const outcome = await deps.createComputer(userId, deps.provider, {
     // The disk this repository's setup needed before: no fill, restart and setup again.
@@ -920,10 +961,12 @@ export async function startServerLaunch(
       type: size.type,
       resources: { cpu: size.cpu, memory: size.memoryGb },
       metadata,
-      publicPorts: [{ port: WAKE_PORT, label: "ADE wake" }],
+      // A Mac has no public ports: its brain reaches the account outward, and its wake is a new Mac.
+      ...(parsed.os === "mac" ? {} : { publicPorts: [{ port: WAKE_PORT, label: "ADE wake" }] }),
       channel: launchChannel(await readUpdateTargets(env), parsed.channel),
     },
     serverEnv: { [CLOUD_LAUNCH_ENV.launchId]: launchId, [CLOUD_LAUNCH_ENV.join]: joinCode },
+    ...(parsed.os === "mac" ? { mac: true } : {}),
     // A computer this call made: its join window opens with the adoption, in
     // one batch. It holds exactly this call's code, so the hash is rewritten to
     // match it (a start retried across a key rotation works the code out under
@@ -970,7 +1013,7 @@ export async function startServerLaunch(
   // A cancel landed while the computer was being made: it goes now.
   if (after.state === "cancelled" && after.instance_id) await deleteLaunchComputer(env, deps.provider, after, deps.now);
   logCloud("cloud.launch_started", { userId, launchId, instanceId: after.instance_id, launchKind: parsed.kind, replay: outcome.kind === "replayed" });
-  return json(recordOf(after, now), outcome.kind === "made" ? 201 : 200);
+  return json(await withMacFacts(env, recordOf(after, now)), outcome.kind === "made" ? 201 : 200);
 }
 
 /* ---- A computer with nothing on it (`kind: "machine"`) ---- */
@@ -1378,7 +1421,7 @@ export async function routeLaunches(request: Request, path: string, env: CloudEn
   const row = await ownLaunch(env, userId, launchId);
   if (!row) return notFound();
   if (action === undefined) {
-    if (request.method === "GET") return json(recordOf(row, deps.now));
+    if (request.method === "GET") return json(await withMacFacts(env, recordOf(row, deps.now)));
     if (request.method === "DELETE") return await followedBy(await handleCancel(env, row, deps), env, launchId, deps);
     return notFound();
   }

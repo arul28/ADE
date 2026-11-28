@@ -1,3 +1,4 @@
+import { macMode } from "./macSwitch";
 import { isSponsoredFormat, type GravityEnv } from "./gravity";
 import { sponsoredAbReport } from "./sponsoredReport";
 import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsoredSmall";
@@ -359,8 +360,8 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
   return json({
     ok: true,
     settings,
-    ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off" },
-    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off" },
+    ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off", mac_computers: env.MAC_COMPUTERS?.trim() || "off" },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", mac_computers: await macMode(env, settings) },
   });
 }
 

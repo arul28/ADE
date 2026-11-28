@@ -171,10 +171,12 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
       (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ?) as phones,
       (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ? and free = 1) as free_phones,
       (select coalesce(sum(cost_micros), 0) from cloud_revyl_days where day >= ?) as revyl,
-      (select coalesce(sum(cost_micros), 0) from cloud_revyl_days where day >= ? and free = 1) as free_revyl
-  `).bind(monthStart, monthStart, monthStart, monthStart, monthStartMs, monthStartMs, monthStart, monthStart).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number; phones: number; free_phones: number; revyl: number; free_revyl: number }>();
+      (select coalesce(sum(cost_micros), 0) from cloud_revyl_days where day >= ? and free = 1) as free_revyl,
+      (select coalesce(sum(cost_micros), 0) from cloud_mac_sessions where created_at >= ? and upkeep = 1) as mac_upkeep
+  `).bind(monthStart, monthStart, monthStart, monthStart, monthStartMs, monthStartMs, monthStart, monthStart, monthStartMs).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number; phones: number; free_phones: number; revyl: number; free_revyl: number; mac_upkeep: number }>();
   // The ADE Cloud iPhone's cost counts too (Revyl's builds with it), and free-plan use toward the free-use cap.
-  let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.phones ?? 0) + (row?.revyl ?? 0);
+  // A Mac's minutes are in the computer-days; its drive saves and upkeep sessions are DAEX's own cost, no account's use.
+  let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.phones ?? 0) + (row?.revyl ?? 0) + (row?.mac_upkeep ?? 0);
   let freeMicros = (row?.free_compute ?? 0) + (row?.free_gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.free_phones ?? 0) + (row?.free_revyl ?? 0);
   // The stretches running now count as free unless their account is on paid rules now.
   const running = awake.filter((computer) => computer.awake_since != null && computer.awake_since <= now);
@@ -334,6 +336,26 @@ async function paidPhoneReportLine(env: CloudEnv, monthStartMs: number, dayEndMs
   const cost = all.reduce((sum, row) => sum + row.cost, 0);
   const buildWords = builds?.cost ? `, plus ${usd(builds.cost)} of Revyl builds` : "";
   return `Paid iPhone this month through ${lastDay}: ${minutes} minutes, ${usd(cost)}; Revyl ${revyl.minutes} minutes (${Math.round((revyl.minutes / minutes) * 100)}%), ${usd(revyl.cost)}${buildWords}.`;
+}
+
+/**
+ * The DAEX Cloud Mac this month (`macProvider.ts`): the minutes NoMac billed
+ * and their cost (60¢ an hour), the drive saves NoMac charged (1¢ per GB
+ * changed beyond its free saves), and the upkeep sessions that keep a kept
+ * drive from NoMac's 30-day delete. Null when no Mac ran this month.
+ */
+async function macReportLine(env: CloudEnv, monthStartMs: number, dayEndMs: number): Promise<string | null> {
+  const row = await env.DB.prepare(`
+    select coalesce(sum(case when upkeep = 0 then (billed_seconds + 59) / 60 else 0 end), 0) as minutes,
+      coalesce(sum(case when upkeep = 0 then cost_micros else 0 end), 0) as cost,
+      coalesce(sum(case when upkeep = 1 and end_reason = 'drive_save' then cost_micros else 0 end), 0) as saves,
+      coalesce(sum(case when upkeep = 1 and coalesce(end_reason, '') <> 'drive_save' then 1 else 0 end), 0) as upkeeps,
+      coalesce(sum(case when upkeep = 1 and coalesce(end_reason, '') <> 'drive_save' then cost_micros else 0 end), 0) as upkeep_cost
+    from cloud_mac_sessions where created_at >= ? and created_at < ?
+  `).bind(monthStartMs, dayEndMs).first<{ minutes: number; cost: number; saves: number; upkeeps: number; upkeep_cost: number }>();
+  if (!row || (row.minutes === 0 && row.saves === 0 && row.upkeeps === 0)) return null;
+  const lastDay = new Date(dayEndMs - 1).toISOString().slice(0, 10);
+  return `Mac this month through ${lastDay}: ${row.minutes} minutes, ${usd(row.cost)} (60¢ an hour); drive saves ${usd(row.saves)} (1¢ per GB changed beyond the free saves); ${row.upkeeps} drive upkeep sessions, ${usd(row.upkeep_cost)}.`;
 }
 
 /** Cloudflare's newest invoice, or null with no token or no answer (reported). */
@@ -562,6 +584,10 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     reportCloudFailure("cloud.paid_phone_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return null;
   });
+  const macLine = await macReportLine(env, Date.parse(`${monthStart}T00:00:00Z`), dayStart + 86_400_000).catch((error: unknown) => {
+    reportCloudFailure("cloud.mac_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return null;
+  });
   const allCosts = await allCostsLines(env, day, monthCost, monthIncome).catch((error: unknown) => {
     reportCloudFailure("cloud.all_costs_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return [] as string[];
@@ -580,6 +606,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
       ? "Free-use cap: not set, so nothing is refused."
       : `Free-use cap: $${owner.limitUsd}, ${Math.round((owner.freeCostMtdMicros / (owner.limitUsd * 1_000_000)) * 100)}% used${owner.reached ? " (reached: free accounts get no new computers or disk growth; paid accounts are not affected)" : ""}.`,
     ...(phoneLine ? [phoneLine] : []),
+    ...(macLine ? [macLine] : []),
     ...(idleLine ? [idleLine] : []),
     ...safety.lines,
     ...sponsored,
@@ -590,7 +617,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     "Accounts that cost the most against what they pay (day):",
     ...worst.map((row) => `${row.userId} (${row.planId}): cost ${usd(row.costMicros)}, income ${usd(row.incomeMicros)}`),
     "",
-    "DAEX Cloud use is each provider's own bill where it gives one (Agent 37 after its daily reconcile, NoMac and Revyl per phone, Revyl's builds) and public prices otherwise, before Stripe's fees and taxes.",
+    "DAEX Cloud use is each provider's own bill where it gives one (Agent 37 after its daily reconcile, NoMac and Revyl per phone, NoMac per Mac session, Revyl's builds) and public prices otherwise, before Stripe's fees and taxes.",
   ];
   await sendCloudEmail(env, {
     owner: true,

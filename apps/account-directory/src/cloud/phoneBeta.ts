@@ -9,7 +9,7 @@
 
 import { fail, json } from "./http";
 import { phoneAccessSetting, stopAccountPhones } from "./phones";
-import { logCloud, phoneBetaAddStatement, reportCloudFailure, type CloudEnv } from "./store";
+import { MAC_TESTERS, PHONE_TESTERS, logCloud, reportCloudFailure, testerAddStatement, type CloudEnv, type TesterList } from "./store";
 
 /** Clerk's lookups wait this long. */
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -47,19 +47,19 @@ const PENDING_BETA_BATCH = 10;
 const PENDING_BETA_RECHECK_MS = 60 * 60_000;
 
 /**
- * The owner check's retry for waiting tester emails (`cloud_phone_beta_pending`):
- * an account's own claim (`claimPhoneBetaInvite` in `store.ts`) runs once,
+ * The owner check's retry for waiting tester emails (each list's pending table):
+ * an account's own claim (`claimTesterInvites` in `store.ts`) runs once,
  * when its row is made, so a Clerk read that failed then, or an address
  * verified later, would leave the email waiting for good. Each email is asked
  * again about once an hour, at most `PENDING_BETA_BATCH` a run, oldest asked
  * first; an empty table costs one read. Clerk not answering stops the run,
  * and that batch is asked again next hour.
  */
-export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promise<void> {
+export async function resolvePendingTesters(env: CloudEnv, list: TesterList, now: number): Promise<void> {
   // No Clerk key (a development Worker): nothing can be looked up.
   if (!env.CLERK_SECRET_KEY?.trim()) return;
   const due = await env.DB.prepare(`
-    select email from cloud_phone_beta_pending where coalesce(checked_at, 0) < ? order by coalesce(checked_at, 0), added_at limit ?
+    select email from ${list.pendingTable} where coalesce(checked_at, 0) < ? order by coalesce(checked_at, 0), added_at limit ?
   `).bind(now - PENDING_BETA_RECHECK_MS, PENDING_BETA_BATCH).all<{ email: string }>();
   for (const { email } of due.results ?? []) {
     let failure: string | null = null;
@@ -70,20 +70,89 @@ export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promi
     if (found == null) {
       // The whole batch waits its hour, so a Clerk outage is reported once a run, never once a minute.
       const emails = (due.results ?? []).map((row) => row.email);
-      await env.DB.prepare("update cloud_phone_beta_pending set checked_at = ? where email in (select value from json_each(?))").bind(now, JSON.stringify(emails)).run();
-      reportCloudFailure("cloud.phone_beta_pending_check_failed", { waiting: emails.length, message: failure ?? "Clerk did not answer" });
+      await env.DB.prepare(`update ${list.pendingTable} set checked_at = ? where email in (select value from json_each(?))`).bind(now, JSON.stringify(emails)).run();
+      reportCloudFailure(`cloud.${list.event}_pending_check_failed`, { waiting: emails.length, message: failure ?? "Clerk did not answer" });
       return;
     }
     if (!found.length) {
-      await env.DB.prepare("update cloud_phone_beta_pending set checked_at = ? where email = ?").bind(now, email).run();
+      await env.DB.prepare(`update ${list.pendingTable} set checked_at = ? where email = ?`).bind(now, email).run();
       continue;
     }
     await env.DB.batch([
-      ...found.map((userId) => phoneBetaAddStatement(env.DB, userId, email, now, { whilePending: true })),
-      env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(email),
+      ...found.map((userId) => testerAddStatement(env.DB, list, userId, email, now, { whilePending: true })),
+      env.DB.prepare(`delete from ${list.pendingTable} where email = ?`).bind(email),
     ]);
-    logCloud("cloud.phone_beta_claimed", { count: found.length, retried: true });
+    logCloud(`cloud.${list.event}_claimed`, { count: found.length, retried: true });
   }
+}
+
+/** Both lists' waiting emails (the owner check, about hourly). */
+export async function resolvePendingPhoneBeta(env: CloudEnv, now: number): Promise<void> {
+  await resolvePendingTesters(env, PHONE_TESTERS, now);
+  await resolvePendingTesters(env, MAC_TESTERS, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.mac_tester_pending_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
+}
+
+/**
+ * One tester list's add or remove, for the owner routes: `{ email? | userId?,
+ * enabled? }` adds (or with `enabled: false` removes) an account. An email is
+ * looked up in Clerk once; the list keeps the user id (and the address the
+ * owner typed). An email no ADE account has yet waits in the list's pending
+ * table until an account with it first appears (`claimTesterInvites` in
+ * `store.ts`) or the owner check finds it in Clerk (`resolvePendingTesters`).
+ * Removing an email removes a waiting one too. `onRemoved` runs after a
+ * remove (stop what the list let them run). `alongside`: the caller's
+ * statements, written with the change in one batch.
+ */
+export async function handleOwnerTesterList(
+  env: CloudEnv,
+  list: TesterList,
+  body: Record<string, unknown>,
+  now: number,
+  { alongside = [], onRemoved }: { alongside?: readonly D1PreparedStatement[]; onRemoved?: (userIds: string[]) => Promise<void> } = {},
+): Promise<Response> {
+  const typedEmail = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const typedUserId = typeof body.userId === "string" ? body.userId.trim() : "";
+  if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) return fail("bad_request", "That email isn't valid.", 400);
+  if (typedUserId && !/^[A-Za-z0-9_-]{1,100}$/.test(typedUserId)) return fail("bad_request", "That userId isn't valid.", 400);
+  let userIds = typedUserId ? [typedUserId] : [];
+  if (!userIds.length) {
+    const found = await clerkUserIdsFor(env, typedEmail);
+    if (found == null) return fail("unavailable", "Clerk could not be asked for that email. Try again, or pass userId.", 503);
+    if (!found.length) {
+      // No ADE account has it yet: the email waits for the account that signs up with it.
+      if (body.enabled === false) {
+        const removed = await env.DB.prepare(`delete from ${list.pendingTable} where email = ?`).bind(typedEmail).run();
+        if ((removed.meta?.changes ?? 0) === 0) return fail("not_found", "No DAEX account or waiting tester has that email.", 404);
+        logCloud(`cloud.${list.event}_pending_removed`);
+        return json({ ok: true, removed: [], pending: true });
+      }
+      await env.DB.prepare(`insert into ${list.pendingTable} (email, added_at) values (?, ?) on conflict(email) do nothing`).bind(typedEmail, now).run();
+      logCloud(`cloud.${list.event}_pending_added`);
+      return json({ ok: true, added: [], pending: true });
+    }
+    userIds = found;
+  }
+  const pendingDelete = typedEmail ? [env.DB.prepare(`delete from ${list.pendingTable} where email = ?`).bind(typedEmail)] : [];
+  if (body.enabled === false) {
+    // The account exists now: no email of it needs to wait. The caller's statements (its log) land in the same write.
+    await env.DB.batch([...pendingDelete, ...userIds.map((userId) => env.DB.prepare(`delete from ${list.table} where user_id = ?`).bind(userId)), ...alongside]);
+    if (onRemoved) await onRemoved(userIds);
+    logCloud(`cloud.${list.event}_removed`, { count: userIds.length });
+    return json({ ok: true, removed: userIds });
+  }
+  // The grants and the waiting email's end in one write: a failed write leaves the email waiting for its retry.
+  await env.DB.batch([
+    ...userIds.flatMap((userId) => [
+      testerAddStatement(env.DB, list, userId, typedEmail || null, now),
+      ...(typedEmail ? [testerAddStatement(env.DB, list, userId, typedEmail, now, { whilePending: true })] : []),
+    ]),
+    ...pendingDelete,
+    ...alongside,
+  ]);
+  logCloud(`cloud.${list.event}_added`, { count: userIds.length });
+  return json({ ok: true, added: userIds });
 }
 
 /**
@@ -110,45 +179,12 @@ export async function handleOwnerPhoneBeta(env: CloudEnv, body: Record<string, u
     return json({ ok: true, access: phoneAccessSetting(env), users: (rows.results ?? []).map(shown), pending: (pending.results ?? []).map(shown) });
   }
   if (body.provider !== undefined) return fail("bad_request", "Testers pick their own provider in a DAEX beta app now; the list only adds and removes.", 400);
-  if (typedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(typedEmail)) return fail("bad_request", "That email isn't valid.", 400);
-  if (typedUserId && !/^[A-Za-z0-9_-]{1,100}$/.test(typedUserId)) return fail("bad_request", "That userId isn't valid.", 400);
-  let userIds = typedUserId ? [typedUserId] : [];
-  if (!userIds.length) {
-    const found = await clerkUserIdsFor(env, typedEmail);
-    if (found == null) return fail("unavailable", "Clerk could not be asked for that email. Try again, or pass userId.", 503);
-    if (!found.length) {
-      // No ADE account has it yet: the email waits for the account that signs up with it.
-      if (body.enabled === false) {
-        const removed = await env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail).run();
-        if ((removed.meta?.changes ?? 0) === 0) return fail("not_found", "No DAEX account or waiting tester has that email.", 404);
-        logCloud("cloud.phone_beta_pending_removed");
-        return json({ ok: true, removed: [], pending: true });
-      }
-      await env.DB.prepare("insert into cloud_phone_beta_pending (email, added_at) values (?, ?) on conflict(email) do nothing").bind(typedEmail, now).run();
-      logCloud("cloud.phone_beta_pending_added");
-      return json({ ok: true, added: [], pending: true });
-    }
-    userIds = found;
-  }
-  const pendingDelete = typedEmail ? [env.DB.prepare("delete from cloud_phone_beta_pending where email = ?").bind(typedEmail)] : [];
-  if (body.enabled === false) {
-    // The account exists now: no email of it needs to wait. The caller's statements (its log) land in the same write.
-    await env.DB.batch([...pendingDelete, ...userIds.map((userId) => env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId)), ...alongside]);
-    // Off the list is off now: a running phone stops (under `all`, the list doesn't matter).
-    if (phoneAccessSetting(env) === "beta") for (const userId of userIds) await stopAccountPhones(env, userId, now, "access_removed");
-    logCloud("cloud.phone_beta_removed", { count: userIds.length });
-    return json({ ok: true, removed: userIds });
-  }
-  // The grants and the waiting email's end in one write: a failed write leaves the email waiting for its retry.
   // A tester's own provider pick (the row's `provider`) stays as they set it.
-  await env.DB.batch([
-    ...userIds.flatMap((userId) => [
-      phoneBetaAddStatement(env.DB, userId, typedEmail || null, now),
-      ...(typedEmail ? [phoneBetaAddStatement(env.DB, userId, typedEmail, now, { whilePending: true })] : []),
-    ]),
-    ...pendingDelete,
-    ...alongside,
-  ]);
-  logCloud("cloud.phone_beta_added", { count: userIds.length });
-  return json({ ok: true, added: userIds });
+  return handleOwnerTesterList(env, PHONE_TESTERS, body, now, {
+    alongside,
+    // Off the list is off now: a running phone stops (under `all`, the list doesn't matter).
+    onRemoved: async (userIds) => {
+      if (phoneAccessSetting(env) === "beta") for (const userId of userIds) await stopAccountPhones(env, userId, now, "access_removed");
+    },
+  });
 }

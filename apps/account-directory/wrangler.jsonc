@@ -164,6 +164,15 @@
     // production's provider key (`isOwnEnvironment`, src/cloud/store.ts).
     "CLOUD_ENVIRONMENT": "development",
     "ONLINE_WINDOW_MS": "150000",
+    // The DAEX Cloud Mac (src/cloud/macSwitch.ts): the ceiling of the instant
+    // `mac_computers` setting, which starts off (no row reads off); that
+    // setting is the lock, flipped by the owner with scripts/cloud-owner.mjs.
+    // `off` here is the hard off. NOMAC_API_KEY is a secret; without it the
+    // Mac is off whatever this says.
+    "MAC_COMPUTERS": "all",
+    // This development Worker's own URL: a DAEX Cloud Mac it starts signs in
+    // here, not to production (the brain's default). Not set in production.
+    "MAC_DIRECTORY_URL": "https://ade-account-directory.arulsharma1028.workers.dev",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
     // events in). SENTRY_RELEASE is set at deploy, not here. No
     // SENTRY_ENVIRONMENT here: this development Worker and `wrangler dev`
@@ -355,6 +364,9 @@
         // ads stay Gravity's free test ads. GRAVITY_API_KEY is a secret.
         "GRAVITY_ADS": "all",
         "GRAVITY_LIVE": "1",
+        // The DAEX Cloud Mac's ceiling, restated (vars aren't inherited): the
+        // instant `mac_computers` setting starts off and is the lock.
+        "MAC_COMPUTERS": "all",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.
